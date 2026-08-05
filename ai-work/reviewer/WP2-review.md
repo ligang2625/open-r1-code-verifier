@@ -299,3 +299,120 @@ stderr: full Python traceback ending in MemoryError
 - 但上一轮主要问题 M1 未完整闭合：约 10 KB 的深层一元表达式即可触发未捕获 `MemoryError`，API 和 CLI 再次出现非结构化崩溃。
 - 根据 reviewer 复审规则，上轮主要问题仍未完全修复，因此不得合并 `feat/wp2`，不得更新 `proceedings.md`，不得清理 worktree或 push。
 - 下一轮复审 Gate：处理 AST 复杂度触发的 `MemoryError`（并评估 `RecursionError`），补 API/CLI 负向测试，重跑 `make lint`、`make test`、正常 smoke、NUL/lone-surrogate 和深层表达式探针。
+
+---
+
+# WP2 独立复审 R3
+
+## 1. 复审范围与方法
+
+- 复审日期：2026-08-05
+- 计划文件：`ai-work/planner/WP2-plan.md`
+- 上一轮结果：本文件“WP2 独立复审 R2”
+- executor 修复记录：`ai-work/executor/WP2-executor.md` 中“代码修复报告 R2”
+- 复审方式：逐条核验 M1-R2；阅读修复后的 AST 异常边界与新增测试；独立运行修复测试、lint、全量测试、CLI help/smoke、NUL、lone-surrogate、深层表达式 API/CLI 探针，并补充多类 10–100 KB AST 复杂度输入检查。
+- 审查边界：未修改 `src/`、`tests/`、`third_party/open-r1/` 或 `proceedings.md`；仅追加本轮复审结果。
+
+## 2. 上轮问题核验
+
+| 上轮问题 | 严重级别 | 状态 | 证据 |
+|---|---|---|---|
+| M1-R2：深层表达式使 `ast.parse()` 抛 `MemoryError`，API 与 CLI 非结构化崩溃 | 主要 | **已修复** | `src/code_verifier/parsing/code_extractor.py:130-135` 已在严格限定的 `ast.parse()` 边界捕获 `MemoryError` 与 `RecursionError`；10,000 个连续一元 `+` 的 API 调用返回 `invalid_python_syntax`，CLI 返回 1、stdout 单行 JSON、stderr 为空。 |
+| 建议：更新 CLI 测试模块说明 | 建议 | 未处理 | 不影响接口、行为或验收。 |
+| 建议：明确 Unicode line separator 合同 | 建议 | 未处理 | 当前实现与计划明确的 LF/CRLF/CR 边界均通过；未发现验收级问题。 |
+
+## 3. 修复代码与测试核验
+
+### 3.1 实现核验
+
+- `src/code_verifier/parsing/code_extractor.py:132-135` 当前捕获：
+  - `SyntaxError`
+  - `ValueError`
+  - `UnicodeError`
+  - `MemoryError`
+  - `RecursionError`
+- 捕获范围只包围 `ast.parse(code)`，没有捕获 `BaseException`，也没有吞掉目标函数遍历或 parser 其他实现异常。
+- 上述异常统一返回 `(False, False)`，公共接口稳定映射为 `ParseResult(False, "", "invalid_python_syntax", num_code_blocks)`。
+- 未改变 `ParseResult` 字段、`extract_python_code()` 签名、fence 选择顺序或 CLI JSON 字段。
+
+### 3.2 新增测试真实性
+
+- `tests/unit/parsing/test_code_extractor.py:236-252`：
+  - 使用真实 10,000 个一元 `+` 输入触发 Python 3.10 AST 复杂度边界；
+  - 断言返回结构化 `invalid_python_syntax`；
+  - 通过 monkeypatch 明确覆盖 `RecursionError` 映射。
+- `tests/unit/test_cli.py:264-292`：
+  - 创建真实深层表达式 UTF-8 文件；
+  - 断言退出码 1；
+  - 断言 stdout 可解析为精确 JSON；
+  - 断言 stderr 为空且无 traceback。
+- 测试预期与计划的有限 error taxonomy、CLI 退出码和机器可读输出合同一致，未见为迁就实现而弱化断言。
+
+## 4. 独立测试结果
+
+### 4.1 修复测试与全量回归
+
+- `.venv/bin/python -m pytest tests/unit/parsing/test_code_extractor.py tests/unit/test_cli.py`：**54 passed**。
+- `make lint`：退出码 0。
+  - Ruff check：`All checks passed!`
+  - Ruff format：`30 files already formatted`
+  - Mypy：`Success: no issues found in 30 source files`
+- `make test`：退出码 0，**177 passed in 4.09s**。
+
+### 4.2 公共 API 与 CLI Gate
+
+| 检查 | 实际结果 | 状态 |
+|---|---|---|
+| NUL API | `invalid_python_syntax` | 通过 |
+| lone-surrogate API | `invalid_python_syntax` | 通过 |
+| 10,000 个连续一元 `+` API | `invalid_python_syntax` | 通过 |
+| 深层表达式文件 CLI | 退出 1、stdout JSON、stderr 为空 | 通过 |
+| 正常文件 smoke | 退出 0、成功 JSON、代码不含 reasoning/fence | 通过 |
+| root help | 退出 0，列出 `parse-code` | 通过 |
+| `parse-code --help` | 退出 0，公共参数与 parser 参数完整 | 通过 |
+
+### 4.3 额外 AST 复杂度探针
+
+对下列约 10–100 KB 的表达式调用 `extract_python_code(..., "solve")`，均未出现未捕获异常：
+
+- 20,000 个一元 `+`；
+- 20,000 个一元 `-`；
+- 20,000 个按位 `~`；
+- 20,000 个 `not`；
+- 10,000 层 lambda 链；
+- 5,000 层括号；
+- 5,000 层列表；
+- 20,000 位整数；
+- 20,000 项加法表达式。
+
+前八类稳定返回 `invalid_python_syntax`；20,000 项普通加法可正常 AST 解析并成功识别顶层 `solve`。未发现新的未分类 AST 异常。
+
+### 4.4 上游、配置与范围
+
+- `third_party/open-r1` 无 changed files、无 diff。
+- 上游固定 commit：`1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+- WP2 未增加依赖，未修改 `pyproject.toml`、Makefile 或 YAML 配置。
+- 未实现 WP3 执行器、奖励、训练或评测功能。
+- `proceedings.md` 在本轮通过结论前保持未修改。
+
+## 5. executor R2 修复声明核验
+
+| R2 修复声明 | 核验状态 | 说明 |
+|---|---|---|
+| 捕获 `MemoryError` 与 `RecursionError` | 核实通过 | 代码位置与行为一致。 |
+| 深层表达式 API 返回结构化失败 | 核实通过 | 独立真实输入复现通过。 |
+| 深层表达式 CLI 不再 traceback | 核实通过 | 退出 1、stdout JSON、stderr 为空。 |
+| 修复测试 54 passed | 核实通过 | 本审查方独立运行。 |
+| `make lint` 通过 | 核实通过 | 本审查方独立运行。 |
+| `make test` 为 177 passed | 核实通过 | 本审查方独立运行。 |
+| NUL、Unicode、内存复杂度与递归边界使用有限 taxonomy | 核实通过 | 原始 Gate 与额外复杂度探针均未发现异常逃逸。 |
+| 未修改上游、配置或 proceedings | 核实通过 | 上游无 diff，配置未变，阶段记录尚未提前更新。 |
+
+## 6. 结论
+
+- 复审结论：**通过，WP2 判定验收通过。**
+- 上一轮主要问题 M1-R2 已完整修复；首轮 M1 的 NUL/Unicode 路径及 R2 的内存复杂度/递归路径均返回稳定、可统计的 `invalid_python_syntax`。
+- `ParseResult`、`extract_python_code()`、确定性 fenced block 解析、顶层函数验证、有限 error taxonomy、`parse-code` CLI、单元测试和文档交付均符合计划与规格 §9、§17、§20。
+- 独立 lint、177 项全量测试、正常 CLI、原始异常 Gate 和额外复杂度探针全部通过；无新增阻断或主要问题。
+- 残余项仅为两条非阻断建议：CLI 测试模块说明文字与 Unicode line-separator 合同说明。
+- 合并状态：本轮审查报告提交后按 reviewer 流程执行；合并提交 hash 将在合并完成后记录。
