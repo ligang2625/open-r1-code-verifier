@@ -9,9 +9,11 @@ from typing import Any, cast
 import pytest
 
 from code_verifier.execution import (
+    CodeExecutor,
     ExecutionContractError,
     ExecutionResult,
     ExecutionStatus,
+    MockExecutor,
     execution_result_to_mapping,
     validate_execution_request,
     validate_execution_result,
@@ -316,3 +318,9 @@ def test_execution_result_to_mapping_is_exact_and_json_serializable() -> None:
         ],
     }
     assert json.loads(json.dumps(mapping, allow_nan=False)) == mapping
+
+
+def test_mock_implementation_is_assignable_to_code_executor() -> None:
+    executor: CodeExecutor = MockExecutor([_execution_result()])
+
+    assert executor.execute("def solve():\n    return 1\n", "solve", [], 1.0, 64).status is ExecutionStatus.PASSED
