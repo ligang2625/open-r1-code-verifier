@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -23,6 +24,20 @@ class _FencedCodeBlock:
     language: str | None
     code: str
     closed: bool
+
+
+_ERROR_TYPES = frozenset(
+    {
+        "invalid_input",
+        "invalid_expected_function_name",
+        "empty_completion",
+        "no_supported_code_block",
+        "unclosed_code_block",
+        "empty_code_block",
+        "invalid_python_syntax",
+        "missing_target_function",
+    }
+)
 
 
 def _normalize_newlines(value: str) -> str:
@@ -112,18 +127,53 @@ def _select_code_block(blocks: Sequence[_FencedCodeBlock]) -> _FencedCodeBlock |
     return unmarked_blocks[-1] if unmarked_blocks else None
 
 
+def _contains_top_level_function(code: str, expected_function_name: str) -> tuple[bool, bool]:
+    """Return (syntax_valid, target_found) for a module-level def or async def."""
+    try:
+        module = ast.parse(code)
+    except SyntaxError:
+        return False, False
+    target_found = any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == expected_function_name
+        for node in module.body
+    )
+    return True, target_found
+
+
+def _failure(error_type: str, *, num_code_blocks: int) -> ParseResult:
+    """Build one invariant-preserving structured parse failure."""
+    if error_type not in _ERROR_TYPES:
+        raise ValueError(f"unsupported parser error type {error_type!r}")
+    return ParseResult(success=False, code="", error_type=error_type, num_code_blocks=num_code_blocks)
+
+
 def extract_python_code(
     completion: str,
     expected_function_name: str | None = None,
 ) -> ParseResult:
-    """Extract a fenced candidate; target-function validation is completed in WP2 step 2."""
-    del expected_function_name
+    """Extract the deterministic final Python code candidate from one model completion."""
+    if not isinstance(completion, str):
+        return _failure("invalid_input", num_code_blocks=0)
+    if expected_function_name is not None and (
+        not isinstance(expected_function_name, str) or not expected_function_name.strip()
+    ):
+        return _failure("invalid_expected_function_name", num_code_blocks=0)
+    if not completion.strip():
+        return _failure("empty_completion", num_code_blocks=0)
+
     blocks = _scan_fenced_code_blocks(completion)
     selected = _select_code_block(blocks)
     if selected is None:
-        return ParseResult(False, "", "no_supported_code_block", len(blocks))
+        return _failure("no_supported_code_block", num_code_blocks=len(blocks))
     if not selected.closed:
-        return ParseResult(False, "", "unclosed_code_block", len(blocks))
+        return _failure("unclosed_code_block", num_code_blocks=len(blocks))
     if not selected.code.strip():
-        return ParseResult(False, "", "empty_code_block", len(blocks))
-    return ParseResult(True, selected.code, None, len(blocks))
+        return _failure("empty_code_block", num_code_blocks=len(blocks))
+
+    if expected_function_name is not None:
+        syntax_valid, target_found = _contains_top_level_function(selected.code, expected_function_name)
+        if not syntax_valid:
+            return _failure("invalid_python_syntax", num_code_blocks=len(blocks))
+        if not target_found:
+            return _failure("missing_target_function", num_code_blocks=len(blocks))
+    return ParseResult(success=True, code=selected.code, error_type=None, num_code_blocks=len(blocks))

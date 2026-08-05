@@ -37,4 +37,19 @@
 
 ### 偏离说明
 
-- 为满足步骤 1 时 `parsing.__init__` 可重导出公共接口，`extract_python_code()` 在本步骤提供了基于 scanner/selector 的最小实现；输入防御、AST 目标函数检查和完整错误分类将在步骤 2 完成。
+- 为满足步骤 1 时 `parsing.__init__` 可重导出公共接口，`extract_python_code()` 在本步骤提供了基于 scanner/selector 的最小实现；输入防御、AST 目标函数检查和完整错误分类在步骤 2 完成。
+
+## 步骤 2：公共提取函数、目标函数检查与失败分类
+
+### 实现
+
+- 完成 `extract_python_code(completion, expected_function_name=None)` 的规格签名与全部防御性边界。
+- 新增 `_contains_top_level_function()`，仅通过 `ast.parse()` 检查 module body 的同名 `FunctionDef` / `AsyncFunctionDef`。
+- 新增固定错误 taxonomy：`invalid_input`、`invalid_expected_function_name`、`empty_completion`、`no_supported_code_block`、`unclosed_code_block`、`empty_code_block`、`invalid_python_syntax`、`missing_target_function`。
+- 所有失败保证 `code=""`；无目标函数要求时不因 Python 语法错误拒绝已提取代码。
+- 补充 §9.3 全部边界、不可变结果、换行统一、目标函数与错误 taxonomy 测试。
+
+### 实际验证
+
+- `make lint`：通过；Ruff check、Ruff format check、strict Mypy 全绿，30 个源文件无问题。
+- `.venv/bin/python -m pytest tests/unit/parsing/test_code_extractor.py`：29 passed。
