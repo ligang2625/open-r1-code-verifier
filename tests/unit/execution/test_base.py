@@ -135,15 +135,38 @@ def test_validate_execution_request_rejects_unknown_or_missing_test_fields(tests
         validate_execution_request("def solve():\n    pass\n", "solve", tests, 1.0, 64)
 
 
-def test_validate_execution_request_rejects_non_json_values_without_echoing_payload() -> None:
-    marker = "DO_NOT_ECHO_PAYLOAD_314159"
-    tests = [{"input": {"marker": object()}, "expected": marker}]
+@pytest.mark.parametrize(
+    ("invalid_field", "sentinel_key"),
+    [("input", "UNTRUSTED_KEY_SENTINEL"), ("expected", "EXPECTED_KEY_SENTINEL")],
+)
+def test_validate_execution_request_rejects_non_json_values_without_echoing_payload(
+    invalid_field: str,
+    sentinel_key: str,
+) -> None:
+    sentinel_value = "PAYLOAD_VALUE_SENTINEL_314159"
+    tests: list[dict[str, Any]] = [{"input": sentinel_value, "expected": sentinel_value}]
+    tests[0][invalid_field] = {sentinel_key: object()}
 
     with pytest.raises(ExecutionContractError) as exc_info:
         validate_execution_request("def solve():\n    pass\n", "solve", tests, 1.0, 64)
 
-    assert marker not in str(exc_info.value)
-    assert "tests[0].input.marker" in str(exc_info.value)
+    assert str(exc_info.value) == f"tests[0].{invalid_field} contains an invalid JSON value"
+    assert sentinel_key not in str(exc_info.value)
+    assert sentinel_value not in str(exc_info.value)
+
+
+def test_validate_execution_request_rejects_recursive_json_value_as_contract_error() -> None:
+    recursive_value: list[Any] = []
+    recursive_value.append(recursive_value)
+
+    with pytest.raises(ExecutionContractError, match=r"^tests\[0\]\.input contains an invalid JSON value$"):
+        validate_execution_request(
+            "def solve():\n    pass\n",
+            "solve",
+            [{"input": recursive_value, "expected": None}],
+            1.0,
+            64,
+        )
 
 
 @pytest.mark.parametrize(
@@ -154,6 +177,7 @@ def test_validate_execution_request_rejects_non_json_values_without_echoing_payl
         (float("nan"), 64),
         (float("inf"), 64),
         (cast(float, True), 64),
+        (cast(float, 10**1000), 64),
         (1.0, 0),
         (1.0, -1),
         (1.0, cast(int, True)),
@@ -193,6 +217,7 @@ def test_validate_test_case_result_rejects_passed_status_mismatch(result: Execut
         replace(_test_result(), runtime_ms=cast(float, True)),
         replace(_test_result(), runtime_ms=-0.1),
         replace(_test_result(), runtime_ms=float("nan")),
+        replace(_test_result(), runtime_ms=cast(float, 10**1000)),
         replace(_test_result(), stdout=cast(str, 1)),
         replace(_test_result(), stderr=cast(str, None)),
     ],
@@ -262,7 +287,10 @@ def test_validate_execution_result_rejects_count_and_result_mismatches(result: E
         validate_execution_result(result)
 
 
-@pytest.mark.parametrize("pass_rate", [float("nan"), float("inf"), -0.1, 1.1, 0.5, cast(float, True)])
+@pytest.mark.parametrize(
+    "pass_rate",
+    [float("nan"), float("inf"), -0.1, 1.1, 0.5, cast(float, True), cast(float, 10**1000)],
+)
 def test_validate_execution_result_rejects_invalid_pass_rate(pass_rate: float) -> None:
     with pytest.raises(ExecutionContractError):
         validate_execution_result(_execution_result(pass_rate=pass_rate))
@@ -286,7 +314,10 @@ def test_validate_execution_result_rejects_inconsistent_overall_status(result: E
         validate_execution_result(result)
 
 
-@pytest.mark.parametrize("runtime_ms", [-0.1, float("nan"), float("inf"), cast(float, True)])
+@pytest.mark.parametrize(
+    "runtime_ms",
+    [-0.1, float("nan"), float("inf"), cast(float, True), cast(float, 10**1000)],
+)
 def test_validate_execution_result_rejects_invalid_runtime(runtime_ms: float) -> None:
     with pytest.raises(ExecutionContractError):
         validate_execution_result(_execution_result(runtime_ms=runtime_ms))

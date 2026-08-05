@@ -69,7 +69,20 @@ class ExecutionContractError(ValueError):
 
 
 def _is_finite_number(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, int | float) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _validate_request_json_value(value: object, *, field_path: str) -> None:
+    """Validate one request value while keeping user-controlled paths out of errors."""
+    try:
+        validate_json_value(value, field_path=field_path)
+    except (RecursionError, SchemaError):
+        raise ExecutionContractError(f"{field_path} contains an invalid JSON value") from None
 
 
 def validate_execution_request(
@@ -98,11 +111,8 @@ def validate_execution_request(
             raise ExecutionContractError(f"{field_path} must be an object")
         if set(test) != {"input", "expected"}:
             raise ExecutionContractError(f"{field_path} fields must be exactly input and expected")
-        try:
-            validate_json_value(test["input"], field_path=f"{field_path}.input")
-            validate_json_value(test["expected"], field_path=f"{field_path}.expected")
-        except SchemaError as exc:
-            raise ExecutionContractError(str(exc)) from None
+        _validate_request_json_value(test["input"], field_path=f"{field_path}.input")
+        _validate_request_json_value(test["expected"], field_path=f"{field_path}.expected")
 
     if not _is_finite_number(timeout_seconds) or timeout_seconds <= 0:
         raise ExecutionContractError("timeout_seconds must be a finite positive number")
