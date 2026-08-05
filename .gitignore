@@ -1,0 +1,15 @@
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+
+# Generated experiment artifacts.
+data/raw/
+data/interim/
+data/processed/
+outputs/
+results/per_problem/

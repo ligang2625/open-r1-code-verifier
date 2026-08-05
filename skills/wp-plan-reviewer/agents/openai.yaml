@@ -1,0 +1,4 @@
+interface:
+  display_name: "WP Plan Reviewer"
+  short_description: "Independent review and re-test of a WP"
+  default_prompt: "Use $wp-plan-reviewer to independently review and re-test the WP just executed at plans/WP1-plan.md."
