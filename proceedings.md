@@ -126,3 +126,36 @@ WP0 已完成以下工作：
 - `make test`：177 passed。
 - 正常解析、NUL、lone surrogate、深层一元表达式及额外 AST 复杂度探针均符合结构化结果合同。
 - 合并提交：`3f6d4415b503fd03032244ae354cbba2badbaae5`。
+
+---
+
+## WP3-a：安全执行器基础合同与 Mock 基线
+
+- **完成日期**：2026-08-05
+- **阶段状态**：子阶段已完成；WP3 整体仍为部分完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP3-review.md` R2）
+- **执行计划**：`ai-work/planner/WP3-a-plan.md`
+- **实施范围**：完成 Execution Layer 的公共合同、严格校验、JSON 序列化和非执行 Mock；未实现真实沙箱、资源限制、批量并发、缓存或完整 WP3 安全验收。
+
+### 本阶段完成的功能
+
+- 实现规格 §8.3 的 `ExecutionStatus`、`TestCaseResult`、`ExecutionResult` 与 `CodeExecutor` Protocol。
+- 实现执行请求、逐测试结果和聚合结果的严格合同校验，统一结构化异常并避免回显隐藏测试内容。
+- 实现稳定 JSON mapping 与 FIFO `MockExecutor`，支持调用记录、防御性复制和 parser → Mock 集成测试，且不执行模型代码。
+
+### 相关文件
+
+- 新增：`src/code_verifier/execution/{__init__,base,mock}.py`、`tests/unit/execution/*`、`tests/integration/test_wp3a_mock_execution.py`
+- 修改：`README.md`、`AGENTS.md`
+- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+### 配置影响
+
+- 未修改 `pyproject.toml`、Makefile、YAML 配置或依赖版本。
+
+### 验收结论
+
+- 独立 worktree 静态检查、专项测试 86 项与全量回归 263 项通过。
+- 合并后的 `main` 通过原样 `make lint` 与 `make test`（263 passed）。
+- 循环 JSON、超大整数及隐藏测试 sentinel 探针均符合稳定、无泄漏的 `ExecutionContractError` 合同。
+- 合并提交：`f77c4a2ad511120cfa8112182a8cb828a53db55f`。
