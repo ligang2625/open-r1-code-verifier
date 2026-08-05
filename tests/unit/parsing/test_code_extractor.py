@@ -233,6 +233,25 @@ def test_lone_surrogate_during_target_validation_returns_invalid_python_syntax()
     assert result == ParseResult(False, "", "invalid_python_syntax", 1)
 
 
+def test_deep_unary_expression_returns_invalid_python_syntax() -> None:
+    completion = f"```python\ndef solve():\n    return {'+' * 10_000}1\n```\n"
+
+    result = extract_python_code(completion, "solve")
+
+    assert result == ParseResult(False, "", "invalid_python_syntax", 1)
+
+
+def test_ast_recursion_error_returns_invalid_python_syntax(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_parse(_: str) -> Any:
+        raise RecursionError
+
+    monkeypatch.setattr("code_verifier.parsing.code_extractor.ast.parse", fail_parse)
+
+    result = extract_python_code("```python\ndef solve():\n    return 1\n```\n", "solve")
+
+    assert result == ParseResult(False, "", "invalid_python_syntax", 1)
+
+
 def test_windows_and_unix_newlines_produce_identical_result() -> None:
     unix = "```python\ndef solve():\n    return 1\n```\n"
     crlf = unix.replace("\n", "\r\n")

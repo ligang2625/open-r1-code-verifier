@@ -261,6 +261,37 @@ def test_parse_code_null_byte_file_returns_structured_failure(tmp_path: Path, ca
     }
 
 
+def test_parse_code_deep_unary_file_returns_structured_failure(tmp_path: Path, capsys: Any) -> None:
+    """AST complexity failures remain JSON parser failures rather than CLI tracebacks."""
+    completion = tmp_path / "deep-unary.txt"
+    completion.write_text(
+        f"```python\ndef solve():\n    return {'+' * 10_000}1\n```\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "parse-code",
+                "--completion-file",
+                str(completion),
+                "--expected-function-name",
+                "solve",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert "Traceback" not in output.err
+    assert json.loads(output.out) == {
+        "success": False,
+        "code": "",
+        "error_type": "invalid_python_syntax",
+        "num_code_blocks": 1,
+    }
+
+
 def test_parse_code_missing_file_returns_two_without_traceback(tmp_path: Path, capsys: Any) -> None:
     """Input I/O failures use exit code two and a concise stderr error."""
     missing = tmp_path / "missing.txt"

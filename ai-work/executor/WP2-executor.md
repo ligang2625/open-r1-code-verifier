@@ -171,3 +171,53 @@ WP2 计划的 4 个步骤均已实现并通过实际验收。改动已提交到�
 ### 修复结论
 
 `WP2-review.md` 中唯一主要问题 M1 已完成修复，相关负向探针、静态检查与完整测试全部通过。当前状态为“修复完成，待 reviewer 独立复审”；本报告不替代复审结论，未 push、未合并到 `main`。
+
+---
+
+## 代码修复报告 R2
+
+- **修复依据**：`ai-work/reviewer/WP2-review.md` 中“WP2 独立复审 R2”
+- **修复日期**：2026-08-05
+- **修复范围**：主要问题 M1-R2
+- **审查报告文件**：未修改
+- **proceedings.md**：未修改
+
+### M1-R2：AST 复杂度触发 `MemoryError` 导致 API 与 CLI 崩溃
+
+状态：已修复。
+
+改动位置：
+
+- `src/code_verifier/parsing/code_extractor.py`
+  - `_contains_top_level_function()` 的 `ast.parse()` 边界新增捕获 `MemoryError` 和 `RecursionError`。
+  - 这些由源码复杂度或解析递归边界触发的异常统一映射为 `invalid_python_syntax`。
+  - 捕获范围仍严格限定在 `ast.parse()` 调用，不捕获 `BaseException`，不吞掉 parser 之外的系统或实现异常。
+- `tests/unit/parsing/test_code_extractor.py`
+  - 新增 10,000 个连续一元 `+` 的真实回归测试，要求公共 API 返回结构化 `invalid_python_syntax`。
+  - 新增显式 `RecursionError` 边界测试，确认同样映射为结构化失败。
+- `tests/unit/test_cli.py`
+  - 新增深层一元表达式文件测试，要求退出码 1、stdout 单行 JSON、stderr 为空且无 traceback。
+
+### 实际复测结果
+
+1. 修复前独立复现：10,000 个连续一元 `+` 的 API 调用抛出 `MemoryError` 和 traceback。
+2. `.venv/bin/python -m pytest tests/unit/parsing/test_code_extractor.py tests/unit/test_cli.py`：54 passed。
+3. `make lint`：通过；Ruff check、Ruff format check、strict Mypy 全绿，30 个源文件无问题。
+4. `make test`：177 passed。
+5. `.venv/bin/code-verifier --help`：退出 0，列出 `parse-code`。
+6. `.venv/bin/code-verifier parse-code --help`：退出 0，参数合同保持不变。
+7. reviewer Gate 组合探针：
+   - NUL API：结构化 `invalid_python_syntax`。
+   - lone-surrogate API：结构化 `invalid_python_syntax`。
+   - 深层一元表达式 API：结构化 `invalid_python_syntax`。
+   - 正常 stdin CLI：退出 0，成功 JSON，代码不含 reasoning 或 fence。
+   - 深层一元表达式文件 CLI：退出 1，stdout 为有效 `invalid_python_syntax` JSON，stderr 为空。
+
+### 未处理建议项
+
+- `tests/unit/test_cli.py` 模块说明更新为 WP0–WP2：仍为建议项，本轮未扩大修复范围。
+- Unicode line separator 的严格 fence 合同：仍为建议项，未发现验收级缺陷，本轮未修改。
+
+### 修复结论
+
+复审 R2 的主要问题 M1-R2 已完成修复。AST 文本、编码、内存复杂度与递归边界现均返回有限 error taxonomy，不再破坏 CLI JSON 合同。当前状态为“修复完成，待 reviewer 独立复审”；未 push、未合并到 `main`。
