@@ -131,7 +131,7 @@ def _contains_top_level_function(code: str, expected_function_name: str) -> tupl
     """Return (syntax_valid, target_found) for a module-level def or async def."""
     try:
         module = ast.parse(code)
-    except SyntaxError:
+    except (SyntaxError, ValueError, UnicodeError):
         return False, False
     target_found = any(
         isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == expected_function_name

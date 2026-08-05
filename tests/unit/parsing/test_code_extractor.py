@@ -217,6 +217,22 @@ def test_invalid_python_syntax_is_only_rejected_when_target_validation_is_reques
     assert with_target == ParseResult(False, "", "invalid_python_syntax", 1)
 
 
+def test_null_byte_during_target_validation_returns_invalid_python_syntax() -> None:
+    completion = "```python\ndef solve():\n    return 1\x00\n```\n"
+
+    result = extract_python_code(completion, "solve")
+
+    assert result == ParseResult(False, "", "invalid_python_syntax", 1)
+
+
+def test_lone_surrogate_during_target_validation_returns_invalid_python_syntax() -> None:
+    completion = "```python\ndef solve():\n    return '\ud800'\n```\n"
+
+    result = extract_python_code(completion, "solve")
+
+    assert result == ParseResult(False, "", "invalid_python_syntax", 1)
+
+
 def test_windows_and_unix_newlines_produce_identical_result() -> None:
     unix = "```python\ndef solve():\n    return 1\n```\n"
     crlf = unix.replace("\n", "\r\n")

@@ -123,3 +123,51 @@
 ### 状态与下一步
 
 WP2 计划的 4 个步骤均已实现并通过实际验收。改动已提交到独立分支 `feat/wp2`，未 push、未合并到 `main`。下一步应使用 `wp-plan-reviewer` 对该分支进行独立审查；审查通过后由 reviewer 合并并更新 `proceedings.md`。
+
+---
+
+## 代码修复报告 R1
+
+- **修复依据**：`ai-work/reviewer/WP2-review.md`
+- **修复日期**：2026-08-05
+- **修复范围**：主要问题 M1
+- **审查报告文件**：未修改
+- **proceedings.md**：未修改
+
+### M1：AST 文本异常导致公共 API 与 CLI 未处理崩溃
+
+状态：已修复。
+
+改动位置：
+
+- `src/code_verifier/parsing/code_extractor.py`
+  - `_contains_top_level_function()` 现在捕获 `SyntaxError`、`ValueError` 和 `UnicodeError`。
+  - 上述异常统一返回 `(False, False)`，由公共接口稳定映射为 `invalid_python_syntax`。
+  - 未捕获 `BaseException`，未扩大到代码执行、语义判断或其它 WP 范围。
+- `tests/unit/parsing/test_code_extractor.py`
+  - 新增 NUL 字符 API 回归测试。
+  - 新增真实运行时 lone surrogate API 回归测试。
+- `tests/unit/test_cli.py`
+  - 新增含 NUL 的 UTF-8 文件测试，要求退出码 1、stdout 单行 JSON、stderr 为空且无 traceback。
+
+### 实际复测结果
+
+1. `.venv/bin/python -m pytest tests/unit/parsing/test_code_extractor.py tests/unit/test_cli.py`：51 passed。
+2. `make lint`：通过；Ruff check、Ruff format check、strict Mypy 全绿，30 个源文件无问题。
+3. `make test`：174 passed。
+4. `.venv/bin/code-verifier --help`：退出 0，列出 `parse-code`。
+5. `.venv/bin/code-verifier parse-code --help`：退出 0，参数合同保持不变。
+6. 正常 stdin smoke：退出 0，返回 `success=true`、`error_type=null`，代码不含 reasoning 或 fence。
+7. reviewer 异常探针：
+   - NUL API：返回 `ParseResult(False, "", "invalid_python_syntax", 1)`。
+   - lone surrogate API：返回 `ParseResult(False, "", "invalid_python_syntax", 1)`。
+   - NUL 文件 CLI：退出 1；stdout 为有效 JSON；stderr 为空。
+
+### 未处理建议项
+
+- `tests/unit/test_cli.py` 模块说明更新为 WP0–WP2：属于建议项，当前任务未明确要求处理建议，因此未修改。
+- Unicode line separator 的严格 fence 合同：属于后续建议，当前未发现验收级错误，未扩大本轮修复范围。
+
+### 修复结论
+
+`WP2-review.md` 中唯一主要问题 M1 已完成修复，相关负向探针、静态检查与完整测试全部通过。当前状态为“修复完成，待 reviewer 独立复审”；本报告不替代复审结论，未 push、未合并到 `main`。
