@@ -89,4 +89,4 @@ hf dup-key decode: {'input': {'a': 2}, 'expected': 0}   # '{"a":1,"a":2}' 静默
 - 复审结论：**通过，WP1 判定验收通过，可进入 WP2。**
 - 依据：上一轮“阻断/主要”问题（M1-R2 两个绕过）均已修复并独立复现验证；无新增“阻断/主要”问题；计划验收项全部通过。
 - 残余问题：HF 回读严格化（次要，m3-R3）与两条建议项不阻断验收，建议在 WP2 前或随 WP2 一并处理。
-- 合并提交：本审查方在结论为“通过”后执行 `git merge --no-ff feat/wp1` 回主分支；合并 hash 见合并记录（如已执行）。
+- 合并提交：本审查方在结论为“通过”后执行 `git merge --no-ff feat/wp1` 回主分支，合并提交 hash：`02017be`（`feat: complete WP1 data schema and three-layer test split`）。
