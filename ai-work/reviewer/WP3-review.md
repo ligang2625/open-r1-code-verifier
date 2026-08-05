@@ -176,3 +176,4 @@ PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
 - R1 的两个主要问题均已完整修复；计划验收项、静态检查、专项测试、全量回归、无泄漏探针和不执行代码检查均通过。
 - 本结论仅表示 **WP3-a 基础合同与 Mock 基线通过**；真实沙箱、资源隔离、批量执行和完整 WP3 验收仍属于 WP3-b / WP3-c，WP3 整体不得标记为完成。
 - 合并提交：`f77c4a2ad511120cfa8112182a8cb828a53db55f`，消息 `feat: complete WP3-a execution contract foundation`。
+- 清理状态：`.worktrees/wp3` 内曾初始化 submodule；执行非强制 `git worktree remove` 在反初始化 submodule 前后均被 Git 拒绝。按失败处理规则未使用 `--force`，worktree 目录暂时保留，但分支与主仓库均无已跟踪文件的未提交修改。
