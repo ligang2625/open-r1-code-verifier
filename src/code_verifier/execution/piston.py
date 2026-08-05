@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
+import secrets
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, OpenerDirector, ProxyHandler, Request, build_opener
 
 from code_verifier.config import ConfigError, load_yaml_mapping
+from code_verifier.execution.base import (
+    ExecutionContractError,
+    ExecutionResult,
+    ExecutionStatus,
+    TestCaseResult,
+    validate_execution_request,
+    validate_execution_result,
+)
+from code_verifier.execution.harness import HarnessReport, build_python_test_program, parse_harness_report
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _CONFIG_FIELDS = frozenset(
@@ -239,3 +252,382 @@ def _is_finite_positive_number(value: object) -> bool:
 
 def _reject_json_constant(value: str) -> object:
     raise ValueError(f"invalid JSON constant: {value}")
+
+
+@dataclass(frozen=True)
+class _PistonStageResult:
+    stdout: str
+    stderr: str
+    code: int | None
+    signal: str | None
+    message: str | None
+    status: str | None
+    cpu_time_ms: float
+    wall_time_ms: float
+    memory_bytes: int | None
+
+
+def _parse_piston_stage(value: object) -> _PistonStageResult:
+    """Parse one exact bounded compile/run stage without coercing malformed fields."""
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise PistonTransportError("invalid piston response")
+    stage = cast(dict[str, object], value)
+    allowed_fields = {
+        "stdout",
+        "stderr",
+        "output",
+        "code",
+        "signal",
+        "message",
+        "status",
+        "cpu_time",
+        "wall_time",
+        "memory",
+    }
+    if not {"stdout", "stderr"}.issubset(stage) or not set(stage).issubset(allowed_fields):
+        raise PistonTransportError("invalid piston response")
+    stdout = stage["stdout"]
+    stderr = stage["stderr"]
+    code = stage.get("code")
+    signal_value = stage.get("signal")
+    message = stage.get("message")
+    status = stage.get("status")
+    cpu_time = stage.get("cpu_time", 0.0)
+    wall_time = stage.get("wall_time", 0.0)
+    memory = stage.get("memory")
+    if not isinstance(stdout, str) or not isinstance(stderr, str):
+        raise PistonTransportError("invalid piston response")
+    if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
+        raise PistonTransportError("invalid piston response")
+    if signal_value is not None and not isinstance(signal_value, str):
+        raise PistonTransportError("invalid piston response")
+    if message is not None and not isinstance(message, str):
+        raise PistonTransportError("invalid piston response")
+    if status is not None and not isinstance(status, str):
+        raise PistonTransportError("invalid piston response")
+    cpu_time_ms = _require_non_negative_finite_number(cpu_time)
+    wall_time_ms = _require_non_negative_finite_number(wall_time)
+    if memory is not None and (isinstance(memory, bool) or not isinstance(memory, int) or memory < 0):
+        raise PistonTransportError("invalid piston response")
+    return _PistonStageResult(
+        stdout=stdout,
+        stderr=stderr,
+        code=code,
+        signal=signal_value,
+        message=message,
+        status=status,
+        cpu_time_ms=cpu_time_ms,
+        wall_time_ms=wall_time_ms,
+        memory_bytes=memory,
+    )
+
+
+def _map_piston_stage_failure(
+    stage: _PistonStageResult,
+    *,
+    memory_limit_bytes: int,
+) -> ExecutionStatus | None:
+    """Map a failed Piston stage to one deterministic public execution status."""
+    status = None if stage.status is None else stage.status.upper()
+    signal_value = None if stage.signal is None else stage.signal.upper()
+    message = "" if stage.message is None else stage.message.lower()
+    if status == "TO":
+        return ExecutionStatus.TIMEOUT
+    if status in {"OL", "EL"}:
+        return ExecutionStatus.OUTPUT_LIMIT
+    if status == "XX":
+        return ExecutionStatus.SANDBOX_ERROR
+    if status == "SG":
+        if "memory" in message:
+            return ExecutionStatus.MEMORY_LIMIT
+        if (
+            signal_value == "SIGKILL"
+            and stage.memory_bytes is not None
+            and stage.memory_bytes >= math.ceil(memory_limit_bytes * 0.95)
+        ):
+            return ExecutionStatus.MEMORY_LIMIT
+        return ExecutionStatus.RUNTIME_ERROR
+    if status in {"RE"}:
+        return ExecutionStatus.RUNTIME_ERROR
+    if stage.signal is not None or (stage.code is not None and stage.code != 0):
+        return ExecutionStatus.RUNTIME_ERROR
+    return None
+
+
+class PistonExecutor:
+    """Synchronous single-test-job executor backed by a loopback Piston service."""
+
+    def __init__(
+        self,
+        config: PistonExecutorConfig,
+        *,
+        transport: PistonTransport | None = None,
+        marker_factory: Callable[[], str] | None = None,
+    ) -> None:
+        """Create a synchronous single-request executor backed by one local Piston service."""
+        self._config = config
+        self._transport = transport if transport is not None else UrlLibPistonTransport(config.base_url)
+        self._marker_factory = marker_factory if marker_factory is not None else lambda: secrets.token_hex(16)
+
+    def validate_runtime(self) -> str:
+        """Require the configured exact Python runtime to be installed and return its version."""
+        try:
+            value = self._transport.list_runtimes(
+                timeout_seconds=self._config.request_timeout_margin_seconds,
+                max_response_bytes=self._config.max_response_bytes,
+            )
+            if not isinstance(value, list):
+                raise PistonTransportError("invalid piston runtimes response")
+            matches = 0
+            for record_value in value:
+                if not isinstance(record_value, dict) or not all(isinstance(key, str) for key in record_value):
+                    raise PistonTransportError("invalid piston runtimes response")
+                record = cast(dict[str, object], record_value)
+                if set(record) != {"language", "version", "aliases", "runtime"}:
+                    raise PistonTransportError("invalid piston runtimes response")
+                language = record["language"]
+                version = record["version"]
+                aliases = record["aliases"]
+                runtime = record["runtime"]
+                if (
+                    not isinstance(language, str)
+                    or not isinstance(version, str)
+                    or not isinstance(aliases, list)
+                    or not all(isinstance(alias, str) for alias in aliases)
+                    or not isinstance(runtime, str)
+                ):
+                    raise PistonTransportError("invalid piston runtimes response")
+                if language == self._config.language and version == self._config.version:
+                    matches += 1
+            if matches != 1:
+                raise PistonTransportError("configured piston runtime unavailable")
+        except PistonTransportError:
+            raise
+        except Exception:
+            raise PistonTransportError("piston runtime validation failed") from None
+        return self._config.version
+
+    def execute(
+        self,
+        code: str,
+        function_name: str,
+        tests: list[dict[str, Any]],
+        timeout_seconds: float,
+        memory_limit_mb: int,
+    ) -> ExecutionResult:
+        """Execute tests in request order using one isolated Piston job per test."""
+        validate_execution_request(code, function_name, tests, timeout_seconds, memory_limit_mb)
+        timeout_ms = math.ceil(timeout_seconds * 1000.0)
+        if timeout_ms > 3_600_000:
+            raise ExecutionContractError("timeout_seconds exceeds the supported Piston limit")
+        memory_limit_bytes = memory_limit_mb * 1024 * 1024
+        copied_tests = copy.deepcopy(tests)
+        total_tests = len(copied_tests)
+        if total_tests == 0:
+            result = ExecutionResult(
+                status=ExecutionStatus.PASSED,
+                passed_tests=0,
+                total_tests=0,
+                pass_rate=0.0,
+                runtime_ms=0.0,
+                test_results=[],
+            )
+            validate_execution_result(result)
+            return result
+
+        test_results: list[TestCaseResult] = []
+        for test in copied_tests:
+            test_result = self._execute_one(
+                code,
+                function_name,
+                test,
+                timeout_seconds=timeout_seconds,
+                timeout_ms=timeout_ms,
+                memory_limit_bytes=memory_limit_bytes,
+            )
+            test_results.append(test_result)
+            if self._must_stop(test_result.status):
+                break
+
+        passed_tests = sum(test_result.passed for test_result in test_results)
+        status = next(
+            (test_result.status for test_result in test_results if test_result.status is not ExecutionStatus.PASSED),
+            ExecutionStatus.PASSED,
+        )
+        result = ExecutionResult(
+            status=status,
+            passed_tests=passed_tests,
+            total_tests=total_tests,
+            pass_rate=passed_tests / total_tests,
+            runtime_ms=sum(test_result.runtime_ms for test_result in test_results),
+            test_results=list(test_results),
+        )
+        validate_execution_result(result)
+        return ExecutionResult(
+            status=result.status,
+            passed_tests=result.passed_tests,
+            total_tests=result.total_tests,
+            pass_rate=result.pass_rate,
+            runtime_ms=result.runtime_ms,
+            test_results=list(result.test_results),
+        )
+
+    def _execute_one(
+        self,
+        code: str,
+        function_name: str,
+        test: dict[str, Any],
+        *,
+        timeout_seconds: float,
+        timeout_ms: int,
+        memory_limit_bytes: int,
+    ) -> TestCaseResult:
+        marker = self._marker_factory()
+        program = build_python_test_program(
+            code,
+            function_name,
+            test,
+            marker=marker,
+            max_output_bytes=self._config.max_output_bytes,
+        )
+        payload: dict[str, object] = {
+            "language": self._config.language,
+            "version": self._config.version,
+            "files": program.files,
+            "stdin": program.stdin,
+            "args": [],
+            "compile_timeout": timeout_ms,
+            "run_timeout": timeout_ms,
+            "compile_cpu_time": timeout_ms,
+            "run_cpu_time": timeout_ms,
+            "compile_memory_limit": memory_limit_bytes,
+            "run_memory_limit": memory_limit_bytes,
+        }
+        start = time.monotonic()
+        try:
+            response = self._transport.execute_request(
+                payload,
+                timeout_seconds=timeout_seconds + self._config.request_timeout_margin_seconds,
+                max_response_bytes=self._config.max_response_bytes,
+            )
+            return self._parse_single_response(
+                response,
+                marker=marker,
+                memory_limit_bytes=memory_limit_bytes,
+                fallback_runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
+            )
+        except PistonTransportError:
+            return TestCaseResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed=False,
+                runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
+                stdout="",
+                stderr="piston transport failed",
+            )
+        except Exception:
+            return TestCaseResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed=False,
+                runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
+                stdout="",
+                stderr="invalid piston response",
+            )
+
+    def _parse_single_response(
+        self,
+        value: object,
+        *,
+        marker: str,
+        memory_limit_bytes: int,
+        fallback_runtime_ms: float,
+    ) -> TestCaseResult:
+        if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+            raise PistonTransportError("invalid piston response")
+        response = cast(dict[str, object], value)
+        if "run" not in response or not set(response).issubset({"language", "version", "compile", "run"}):
+            raise PistonTransportError("invalid piston response")
+        if "compile" in response:
+            compile_stage = _parse_piston_stage(response["compile"])
+            if _map_piston_stage_failure(compile_stage, memory_limit_bytes=memory_limit_bytes) is not None:
+                return TestCaseResult(
+                    status=ExecutionStatus.SANDBOX_ERROR,
+                    passed=False,
+                    runtime_ms=compile_stage.wall_time_ms,
+                    stdout="",
+                    stderr="piston compile stage failed",
+                )
+        run_stage = _parse_piston_stage(response["run"])
+        failure_status = _map_piston_stage_failure(run_stage, memory_limit_bytes=memory_limit_bytes)
+        if failure_status is not None:
+            return TestCaseResult(
+                status=failure_status,
+                passed=False,
+                runtime_ms=run_stage.wall_time_ms or fallback_runtime_ms,
+                stdout=_bounded_text(run_stage.stdout, self._config.max_output_bytes),
+                stderr=_bounded_text(run_stage.stderr, self._config.max_output_bytes),
+            )
+        report = parse_harness_report(
+            run_stage.stdout,
+            marker=marker,
+            max_output_bytes=self._config.max_output_bytes,
+        )
+        if report is None:
+            return TestCaseResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed=False,
+                runtime_ms=run_stage.wall_time_ms or fallback_runtime_ms,
+                stdout="",
+                stderr="invalid harness report",
+            )
+        return _test_case_result_from_harness(report)
+
+    def _must_stop(self, status: ExecutionStatus) -> bool:
+        if status is ExecutionStatus.PASSED:
+            return False
+        if self._config.stop_on_first_failure:
+            return True
+        return status in {
+            ExecutionStatus.SYNTAX_ERROR,
+            ExecutionStatus.TIMEOUT,
+            ExecutionStatus.MEMORY_LIMIT,
+            ExecutionStatus.OUTPUT_LIMIT,
+            ExecutionStatus.SANDBOX_ERROR,
+        }
+
+
+def _test_case_result_from_harness(report: HarnessReport) -> TestCaseResult:
+    status_mapping: dict[str, ExecutionStatus] = {
+        "passed": ExecutionStatus.PASSED,
+        "wrong_answer": ExecutionStatus.WRONG_ANSWER,
+        "syntax_error": ExecutionStatus.SYNTAX_ERROR,
+        "runtime_error": ExecutionStatus.RUNTIME_ERROR,
+        "output_limit": ExecutionStatus.OUTPUT_LIMIT,
+        "harness_error": ExecutionStatus.SANDBOX_ERROR,
+    }
+    status = status_mapping[report.outcome]
+    return TestCaseResult(
+        status=status,
+        passed=status is ExecutionStatus.PASSED,
+        runtime_ms=report.runtime_ms,
+        stdout=report.stdout,
+        stderr=report.stderr,
+    )
+
+
+def _require_non_negative_finite_number(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise PistonTransportError("invalid piston response")
+    try:
+        converted = float(value)
+    except OverflowError:
+        raise PistonTransportError("invalid piston response") from None
+    if not math.isfinite(converted) or converted < 0:
+        raise PistonTransportError("invalid piston response")
+    return converted
+
+
+def _bounded_text(value: str, max_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
