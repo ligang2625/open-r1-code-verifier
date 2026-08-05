@@ -53,3 +53,20 @@
 
 - `make lint`：通过；Ruff check、Ruff format check、strict Mypy 全绿，30 个源文件无问题。
 - `.venv/bin/python -m pytest tests/unit/parsing/test_code_extractor.py`：29 passed。
+
+## 步骤 3：`parse-code` CLI 调试命令
+
+### 实现
+
+- `_add_common_arguments()` 新增 `output_dir_default`，保持 `prepare-data` 必填参数和 `check-data` 的 `outputs/check-data` 默认值。
+- 新增 `_read_completion()`：`-` 读取 stdin，其他值按 UTF-8 文件读取。
+- 新增 `_parse_code()`：成功/结构化失败均输出单行 JSON；退出码分别为 0 / 1；I/O 错误写 stderr 并返回 2。
+- 新增 `parse-code` 子命令及 `--completion-file`、`--expected-function-name`，并保留五项公共参数。
+- 新增 CLI 注册、公共参数、stdin/file、失败 JSON、I/O 错误和 WP1 默认值回归测试。
+
+### 实际验证
+
+- `make lint`：通过；30 个源文件静态检查全绿。
+- `.venv/bin/python -m pytest tests/unit/test_cli.py`：19 passed。
+- 工具策略禁止 shell 管道，因此使用 Python `StringIO` 等价注入 stdin 调用 `parse-code --completion-file - --expected-function-name solve`：退出 0，stdout 为单行 JSON，`success=true`、`error_type=null`，代码不含 fence。
+- 第一次等价 smoke 的 shell 字符串包含未转义反引号，被 shell 命令替换并返回结构化 `empty_completion`；改用 `chr(96) * 3` 构造 fence 后验证通过。该失败属于验证命令转义问题，不是 parser/CLI 缺陷。

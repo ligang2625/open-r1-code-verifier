@@ -7,9 +7,11 @@ Example:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +29,7 @@ from code_verifier.data.prepare import (
 )
 from code_verifier.data.schema import SchemaError
 from code_verifier.environment import write_environment_record
+from code_verifier.parsing import extract_python_code
 
 CommandHandler = Callable[[argparse.Namespace], int]
 DATA_ERRORS = (
@@ -43,21 +46,22 @@ def _add_common_arguments(
     parser: argparse.ArgumentParser,
     *,
     config_required: bool = False,
+    output_dir_default: Path | None = None,
 ) -> None:
-    """Add --config, --seed, --output-dir, and --log-level to one command parser."""
+    """Add the common project options while allowing command-specific output defaults."""
     parser.add_argument(
         "--config",
         type=Path,
         required=config_required,
-        help="YAML config path (required for prepare-data)",
+        help="YAML config path; required by prepare-data and otherwise unused",
     )
     parser.add_argument("--seed", type=int, default=42, help="deterministic seed (default: 42)")
     parser.add_argument(
         "--output-dir",
         type=Path,
         required=config_required,
-        default=None if config_required else Path("outputs/check-data"),
-        help="output root; check-data accepts it for CLI consistency and does not modify data",
+        default=None if config_required else output_dir_default,
+        help="command output root; accepted by read-only commands for CLI consistency",
     )
     parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
 
@@ -111,8 +115,27 @@ def _check_data(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_completion(path_text: str) -> str:
+    """Read UTF-8 completion text from stdin for '-' or from one local file."""
+    if path_text == "-":
+        return sys.stdin.read()
+    return Path(path_text).read_text(encoding="utf-8")
+
+
+def _parse_code(args: argparse.Namespace) -> int:
+    """Run the WP2 parser and print one deterministic JSON ParseResult."""
+    try:
+        completion = _read_completion(str(args.completion_file))
+    except (OSError, UnicodeError) as error:
+        print(f"error: {' '.join(str(error).splitlines())}", file=sys.stderr)
+        return 2
+    result = extract_python_code(completion, expected_function_name=args.expected_function_name)
+    print(json.dumps(asdict(result), ensure_ascii=False, sort_keys=True))
+    return 0 if result.success else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0 and WP1 commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP2 commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -145,8 +168,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="verify an existing WP1 prepared dataset",
     )
     check_parser.add_argument("--dataset", type=Path, required=True, help="prepared dataset root to verify")
-    _add_common_arguments(check_parser)
+    _add_common_arguments(check_parser, output_dir_default=Path("outputs/check-data"))
     check_parser.set_defaults(handler=_check_data)
+
+    parse_parser = subparsers.add_parser(
+        "parse-code",
+        help="extract the deterministic final Python fenced code block",
+    )
+    parse_parser.add_argument(
+        "--completion-file",
+        default="-",
+        help="UTF-8 completion file path, or '-' for stdin (default: -)",
+    )
+    parse_parser.add_argument(
+        "--expected-function-name",
+        default=None,
+        help="optional top-level function name to validate",
+    )
+    _add_common_arguments(parse_parser)
+    parse_parser.set_defaults(handler=_parse_code)
     return parser
 
 
