@@ -1,0 +1,11 @@
+input:
+  path: tests/fixtures/wp1/raw_problems.jsonl
+  format: raw_jsonl
+test_split:
+  visible_count: 2
+  train_hidden_count: 2
+  eval_hidden_count: 2
+output:
+  formats:
+    - jsonl
+    - hf_dataset

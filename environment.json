@@ -1,0 +1,15 @@
+{
+  "open_r1_commit": "1416fa0cf21595d2083b399a2a0bbddd7f6e9563",
+  "packages": {
+    "accelerate": null,
+    "datasets": null,
+    "open-r1": "0.1.0.dev0",
+    "peft": null,
+    "torch": null,
+    "transformers": null,
+    "trl": null
+  },
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "project_commit": "a0e0853f42dd17a4edce7ba765cc82904c26c02d",
+  "python_version": "3.10.12"
+}
