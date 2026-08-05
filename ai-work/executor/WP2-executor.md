@@ -70,3 +70,56 @@
 - `.venv/bin/python -m pytest tests/unit/test_cli.py`：19 passed。
 - 工具策略禁止 shell 管道，因此使用 Python `StringIO` 等价注入 stdin 调用 `parse-code --completion-file - --expected-function-name solve`：退出 0，stdout 为单行 JSON，`success=true`、`error_type=null`，代码不含 fence。
 - 第一次等价 smoke 的 shell 字符串包含未转义反引号，被 shell 命令替换并返回结构化 `empty_completion`；改用 `chr(96) * 3` 构造 fence 后验证通过。该失败属于验证命令转义问题，不是 parser/CLI 缺陷。
+
+## 步骤 4：文档与 WP2 全量验收
+
+### 文档变更
+
+- `README.md` 更新项目状态并新增“WP2 code parser”小节，包含 Python API、文件/stdin CLI、0/1/2 退出码、默认禁用完整 completion 回退，以及“不执行代码、不判断语义”的边界说明。
+- `AGENTS.md` 增加 Parsing Layer 与 parser 测试路径，并将当前范围更新为 WP0–WP2 已实现、不得提前实现 WP3+。
+- `proceedings.md` 保持只读，未修改。
+
+### 最终实际验证
+
+- `make lint`：通过；Ruff check、Ruff format check、strict Mypy 全绿，30 个源文件无问题。
+- `make test`：171 passed（WP1 基线 135 项无回归，WP2 parser/CLI 新增测试全部收集）。
+- `.venv/bin/code-verifier --help`：退出 0，列出 `parse-code`。
+- `.venv/bin/code-verifier parse-code --help`：退出 0，列出 `--completion-file`、`--expected-function-name` 与五项公共参数。
+- README stdin smoke 的等价 `StringIO` 执行：退出 0；JSON 中 `success=true`、`error_type=null`、`num_code_blocks=1`，代码仅为 `def solve...`，不含 reasoning 或 fence。
+- `third_party/open-r1`：无 changed files、无 diff；commit 为 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+## 完成结果
+
+### 新建文件
+
+- `src/code_verifier/parsing/__init__.py`
+- `src/code_verifier/parsing/code_extractor.py`
+- `tests/unit/parsing/__init__.py`
+- `tests/unit/parsing/test_code_extractor.py`
+- `ai-work/planner/WP2-plan.md`（从主工作区复制到独立分支）
+- `ai-work/executor/WP2-executor.md`
+
+### 修改文件
+
+- `src/code_verifier/cli.py`
+- `tests/unit/test_cli.py`
+- `README.md`
+- `AGENTS.md`
+
+### 主要公共交付
+
+- `ParseResult`
+- `extract_python_code()`
+- `parse-code` CLI
+- 29 项 parser 单元测试与 7 项新增/扩展 CLI 测试场景
+
+### 计划偏离与限制
+
+- CodexPro 安全根目录不允许打开仓库同级 worktree，因此 worktree 建在主仓库内部 `.worktrees/wp2`；仍是独立 Git worktree 与 `feat/wp2` 分支，主工作区业务文件未被修改。
+- 远程 submodule 初始化失败后使用本地固定 checkout 作为 clone 源；目标 commit 与计划一致，上游内容未修改。
+- 工具策略禁止 shell 管道，stdin smoke 使用 `StringIO` 等价执行；CLI 单元测试同时直接覆盖真实 stdin 路径。
+- parser 只覆盖计划定义的 fenced block 子集，不实现完整 CommonMark、语义/安全判断或代码执行。
+
+### 状态与下一步
+
+WP2 计划的 4 个步骤均已实现并通过实际验收。改动已提交到独立分支 `feat/wp2`，未 push、未合并到 `main`。下一步应使用 `wp-plan-reviewer` 对该分支进行独立审查；审查通过后由 reviewer 合并并更新 `proceedings.md`。

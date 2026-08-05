@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding is complete, and WP1 now provides the data schema, deterministic three-layer test splitting, deduplication, leakage checks, training-safe views, and a committed 20-problem smoke fixture.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, and the WP2 deterministic code parser are implemented.
 
-Training, code parsing, untrusted-code execution, reward computation, and model evaluation are not implemented yet. Those capabilities belong to later Work Packages.
+Untrusted-code execution, reward computation, training, and model evaluation are not implemented yet. Those capabilities belong to later Work Packages.
 
 ## Upstream dependency
 
@@ -94,6 +94,43 @@ The `training/` files contain only the 12 train-split problems and are built fro
 - No training artifact contains `eval_hidden_tests`.
 
 Preparation refuses to overwrite a non-empty output directory. Both preparation and checking validate schema completeness, duplicate IDs, independent cross-split prompt/signature, reference-solution and test-overlap signals, test-layer overlap, training-field isolation, row order, exact training-record equivalence to canonical train problems, and HF Dataset round-trip equivalence. Renaming eval-hidden content into an allowed training field therefore fails validation.
+
+## WP2 code parser
+
+Use the deterministic Python API to select the final supported fenced code block and optionally require a module-level target function:
+
+~~~~python
+from code_verifier.parsing import extract_python_code
+
+completion = """Reasoning text.
+```python
+def solve(value):
+    return value + 1
+```
+"""
+result = extract_python_code(completion, expected_function_name="solve")
+~~~~
+
+Parse a UTF-8 completion file:
+
+```bash
+.venv/bin/code-verifier parse-code \
+  --completion-file completion.txt \
+  --expected-function-name solve
+```
+
+Read the completion from stdin:
+
+```bash
+printf '%s\n' '```python' 'def solve(x):' '    return x + 1' '```' | \
+  .venv/bin/code-verifier parse-code \
+    --completion-file - \
+    --expected-function-name solve
+```
+
+The command prints one JSON object with `success`, `code`, `error_type`, and `num_code_blocks`. Exit code 0 means successful extraction, 1 means a structured parse failure, and 2 means a CLI or input I/O error.
+
+The parser selects the last Python fenced block, or the last unmarked fenced block when no Python block exists. It does not treat the complete completion as code by default. It does not execute code, assess semantic correctness, repair output, or apply security checks.
 
 ## Current limitations
 

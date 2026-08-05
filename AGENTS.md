@@ -13,6 +13,8 @@ open-r1-code-verifier/
 │       ├── config.py                 # Strict YAML loading
 │       ├── environment.py            # Reproducibility metadata collection
 │       ├── data/                     # WP1 schema, split, dedup, leakage, export
+│       ├── parsing/
+│       │   └── code_extractor.py     # WP2 deterministic fenced-code parser
 │       └── training/
 │           └── open_r1_adapter.py    # Open-R1 integration boundary
 ├── tests/
@@ -20,6 +22,8 @@ open-r1-code-verifier/
 │   │   └── test_wp1_data_pipeline.py
 │   └── unit/
 │       ├── data/
+│       ├── parsing/
+│       │   └── test_code_extractor.py
 │       ├── test_cli.py
 │       ├── test_config.py
 │       ├── test_environment.py
@@ -74,5 +78,5 @@ Run `make lint` before committing — it runs all three checks.
 ## Agent-Specific Instructions
 
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
-- **Current scope**: WP0 is complete and WP1 Data Layer is implemented. Do not add WP2 parser, WP3 executor, rewards, training, or evaluation without a later WP plan.
+- **Current scope**: WP0, WP1 Data Layer, and WP2 Parsing Layer are implemented. Do not add WP3 executor, rewards, training, or evaluation without a later WP plan.
 - When adding new modules, update `pyproject.toml` `tool.mypy.files` if needed.
