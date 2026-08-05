@@ -7,7 +7,7 @@
 | 目标 WP | WP1：数据 Schema 与三层测试划分 |
 | 规格依据 | `PROJECT_SPEC_Open-R1_CodeVerifier.md` §0、§4.1、§6.2、§7、§16、§17、§19、§20 WP1、§24 Risk 2 / Risk 7、§29 |
 | 前置 WP | WP0（`proceedings.md` 状态：已完成，验收通过） |
-| 计划文件 | `plans/WP1-plan.md` |
+| 计划文件 | `ai-work/planner/WP1-plan.md` |
 | 面向的执行者 | 仅需仓库文件读写和基础 shell，可运行项目自带的 `make`、pytest 与 CLI |
 | 预计配置影响 | 会修改 `pyproject.toml`、`Makefile`，并新增 `configs/data/smoke.yaml`；不会修改上游 submodule |
 

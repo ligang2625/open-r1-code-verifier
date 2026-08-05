@@ -29,49 +29,32 @@
 - 不得仅凭阅读代码推断测试通过；每个验收项对应一条实际命令输出或明确的客观证据。
 - 存在未完成项时如实记录，不得将阶段标记为完成。
 
-## 四、proceedings 追加示例
+## 四、阶段报告文件格式（ai-work/executor/WP{n}-executor.md）
+
+同一阶段内所有结果写入同一文件：执行结果在最前，之后每次 review 后的修复报告依次追加。文件头部必须记录所依据的计划文件路径，用于阶段识别。
 
 ```markdown
-## WP{n}：<名称>
+# WP{n} 执行报告
 
-- **完成日期**：YYYY-MM-DD
-- **阶段状态**：已完成 / 部分完成 / 受阻
-- **验收结论**：通过 / 未通过（列出未通过项）
-- **实施范围**：<一句话>
+- **计划文件**：`ai-work/planner/WP{n}-plan.md`（阶段识别依据）
+- **分支**：`feat/wp{n}`
 
-### 1. 本阶段完成事项
+## 一、基于 plan 的执行结果
 
-1. ...
+- 执行的计划文件、新建/修改文件清单、新增函数/类清单
+- 每个验证命令的实际结论
+- 偏离计划的点及原因（如有）、已知限制、下一步建议
 
-### 2. 文件变更
+## 二、代码修复报告（R1，依据 ai-work/reviewer/WP{n}-review.md）
 
-- 新增：`src/code_verifier/...`
-- 修改：`src/code_verifier/...`
+- 修复的问题清单、改动位置、复测结果、异议项
 
-### 3. 配置影响
+## 三、代码修复报告（R2，依据 …）
 
-- ...
-
-### 4. 验收结果
-
-- 命令：`make lint` → 结论：全绿
-- 命令：`make test` → 结论：N passed
-- 命令：<CLI 验证命令> → 结论：...
-
-### 5. 设计决策
-
-- ...
-
-### 6. 已知问题
-
-- ...
-
-### 7. Review 重点
-
-- ...
+- …
 ```
 
-> 追加时必须保留文件中已有内容；本项目代码变更与 `third_party/open-r1` 变更分开记录。
+> 新阶段判定：若当前计划文件与文件头部记录的 plan 不同，清空文件后重新写入；本项目代码变更与 `third_party/open-r1` 变更分开记录。`proceedings.md` 不由 executor 写入。
 
 ## 五、修复任务参考
 
@@ -99,19 +82,16 @@
 4. 计划总体验收（若适用）；
 5. 提交到独立分支（`git commit -m "fix: ..."`）。
 
-### proceedings 修复记录示例（追加在文件末尾，保留历史）
+### 修复报告追加示例（阶段报告文件末尾追加）
 
 ```markdown
-## 修复轮次：WP{n}（依据 reviews/WP{n}-review-r{round}.md）
+## 代码修复报告（R{round}，依据 ai-work/reviewer/WP{n}-review.md）
 
-- **修复日期**：YYYY-MM-DD
-- **修复范围**：<审查问题清单条目>
-- **文件变更**：...
-- **复测结果**：
-  - `make lint` → 全绿
-  - `make test` → N passed
-- **异议项**：...（如有，附证据）
-- **遗留问题**：...（如有）
+- 修复范围：<审查问题清单条目>
+- 文件变更：...
+- 复测结果：`make lint` → 全绿；`make test` → N passed
+- 异议项：...（如有，附证据）
+- 遗留问题：...（如有）
 ```
 
 ## 六、阶段工作区与提交
@@ -125,7 +105,7 @@ git worktree list
 git worktree add ../open-r1-code-verifier-wp{n} -b feat/wp{n}
 ```
 
-已存在同名 worktree 或分支则复用；创建后所有阶段文件操作与命令在 worktree 目录中执行。
+已存在同名 worktree 或分支则复用；创建后所有阶段文件操作与命令在 worktree 目录中执行。计划文件放入 worktree 的 `ai-work/planner/` 目录。
 
 ### 每任务提交（worktree 目录中执行）
 
@@ -139,9 +119,9 @@ git commit -m "feat: <本步骤能力概述>"
 
 - 实现步骤：`feat: add data schema and validation`
 - 修复轮次：`fix: resolve WP1 review findings`
-- 审查报告（由 reviewer 提交）：`docs: add WP1 review report r1`
+- 审查报告（由 reviewer 提交）：`docs: add WP1 review round r1`
 
 ### 收尾与合并边界
 
-- proceedings 记录随最后一次提交或单独一条提交，落在独立分支上；
-- 执行方不合并、不 push；合并回主分支由 wp-plan-reviewer 在审查通过后执行。
+- 阶段报告 `ai-work/executor/WP{n}-executor.md` 随对应提交落在独立分支上；
+- 执行方不写入 `proceedings.md`、不合并、不 push；合并回主分支与 proceedings 简洁记录由 wp-plan-reviewer 在审查通过后执行。

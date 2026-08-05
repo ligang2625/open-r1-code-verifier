@@ -1,4 +1,4 @@
 interface:
   display_name: "WP Plan Executor"
   short_description: "Execute a WP plan: code, tests, verification"
-  default_prompt: "Use $wp-plan-executor to execute the WP plan at plans/WP1-plan.md and report results."
+  default_prompt: "Use $wp-plan-executor to execute the WP plan at ai-work/planner/WP1-plan.md and report results."

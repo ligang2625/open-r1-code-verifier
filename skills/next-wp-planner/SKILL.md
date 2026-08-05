@@ -65,7 +65,17 @@ description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生�
 
 ### 第 4 步：编写计划
 
-在 `plans/WP{n}-plan.md`（n 为 WP 编号，如 `plans/WP1-plan.md`）按 `references/plan-template.md` 的模板产出计划。默认使用中文（与 proceedings/规格一致），代码标识符、签名、文件路径保留英文。若用户另行指定语言或路径，以用户要求为准。
+在 `ai-work/planner/WP{n}-plan.md`（n 为 WP 编号，如 `ai-work/planner/WP1-plan.md`）按 `references/plan-template.md` 的模板产出计划。默认使用中文（与 proceedings/规格一致），代码标识符、签名、文件路径保留英文。若用户另行指定语言或路径，以用户要求为准。
+
+阶段边界以**一个计划文件覆盖的内容**为准：不同计划文件视为不同阶段。
+
+### 规划粒度约束
+
+一次规划的内容不宜过多，保持"一个可独立验收的阶段"的粒度：
+
+- 单个计划的实施步骤原则上不超过 6 个，涉及的新模块不超过 4 个；
+- 若目标 WP 任务过多（步骤超过 6 个、跨多个独立模块或存在长依赖链），必须拆分为多个连续阶段计划（如 `WP{n}-a`、`WP{n}-b`，或拆为子计划），每个子计划仍满足函数级精度、测试方案与独立验收标准；
+- 拆分后每个计划文件视为独立阶段，按各自计划执行、审查与合并。
 
 ### 第 5 步：自检
 
@@ -81,4 +91,5 @@ description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生�
 - [ ] 无任何步骤修改 `third_party/open-r1/`；
 - [ ] 计划不依赖 Codex 工具、MCP、其它 skill；只涉及仓库文件、项目自带命令与执行 agent 自身的文件/shell 能力；
 - [ ] 计划不含创建/启动执行 agent 的步骤；
+- [ ] 计划粒度适中（步骤 ≤ 6、新模块 ≤ 4）；任务过多时已拆分为多个阶段计划；
 - [ ] 通过标准可判定（通过/失败无需主观判断）。

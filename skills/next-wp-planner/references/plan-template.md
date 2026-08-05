@@ -12,8 +12,10 @@
 | 目标 WP | WP{n}：[名称] |
 | 规格依据 | `PROJECT_SPEC_Open-R1_CodeVerifier.md` §20 WP{n} |
 | 前置 WP | WP{n-1}（proceedings.md 状态：已完成） |
-| 计划文件 | `plans/WP{n}-plan.md` |
+| 计划文件 | `ai-work/planner/WP{n}-plan.md` |
 | 面向的执行 agent | 仅文件读写 + 基础 shell；无 Codex 工具 / MCP / 其它 skill |
+
+> 粒度约束：单个计划实施步骤不超过 6 个、新模块不超过 4 个；任务过多时拆分为多个阶段计划，每个计划文件视为独立阶段。
 
 ## 2. 目标与范围
 
