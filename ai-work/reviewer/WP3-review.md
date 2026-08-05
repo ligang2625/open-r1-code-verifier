@@ -117,3 +117,62 @@ secret_key ExecutionContractError tests[0].input.HIDDEN_SECRET_KEY contains unsu
 - 常规接口、Mock 行为、文档、静态检查和 257 项回归均表现正常，但 WP3-a 的核心交付之一是稳定、无泄漏的执行合同边界。当前存在两个“主要”问题：非法输入可逃逸公开异常类型，且异常文本可泄漏隐藏测试键名。
 - executor 应修复 P1、P2，增加对应回归测试，并重新运行 `make lint`、专项测试和 `make test` 后申请复审。
 - 本轮禁止合并 `feat/wp3`，不修改 `proceedings.md`，不把 WP3-a 或 WP3 标记为完成。
+
+---
+
+# WP3-a 独立复审报告 R2
+
+- **复审日期**：2026-08-05
+- **修复报告**：`ai-work/executor/WP3-executor.md`“代码修复报告（R1）”
+- **修复提交**：`2bcd2ab` — `fix: harden execution contract validation`
+- **复审方式**：逐条核验 R1 问题、源码与测试检查、静态检查、专项测试、全量回归和独立恶意输入探针
+
+## 7. 上轮问题核验
+
+| 上轮问题 | 严重级别 | 状态 | 证据 |
+|---|---|---|---|
+| P1：循环 JSON 和超大整数可逃逸为 `RecursionError` / `OverflowError` | 主要 | **已修复** | `src/code_verifier/execution/base.py:71-85,117-118,131-132,169-175`：有限数检查安全处理 `OverflowError`，JSON 校验将 `RecursionError` / `SchemaError` 归一为 `ExecutionContractError`。独立探针覆盖循环 input、超大 timeout、per-test runtime、pass rate 和 aggregate runtime，全部得到预期的 `ExecutionContractError`。 |
+| P2：错误文本泄漏隐藏测试中的自定义键名或 sibling 值 | 主要 | **已修复** | `src/code_verifier/execution/base.py:80-85,114-115` 使用固定错误消息；`tests/unit/execution/test_base.py:138-169` 覆盖 input / expected、嵌套 sentinel key、sibling sentinel value 和循环结构。独立探针仅输出 `tests[0].input|expected contains an invalid JSON value`，未回显 sentinel。 |
+
+## 8. 回归与新问题检查
+
+- `ExecutionStatus`、两个 dataclass 和 `CodeExecutor` 的规格 §8.3 公开合同未变化。
+- `MockExecutor` FIFO、调用记录、防御性复制和不执行代码的行为未变化。
+- `src/code_verifier/execution/` 未发现 `exec(`、`eval(`、`compile(` 或 `subprocess`。
+- 未发现新增阻断、主要或次要问题。
+- `third_party/open-r1` 固定 commit 仍为 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+- 未修改项目配置、依赖、Makefile、YAML 或真实沙箱范围。
+
+## 9. 独立测试结果
+
+```text
+make lint
+→ 当前 worktree 无 .venv/bin/python，Error 127
+
+make test
+→ 当前 worktree 无 .venv/bin/python，Error 127
+
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ 37 files already formatted
+→ strict Mypy: Success, no issues found in 37 source files
+
+PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -m pytest \
+  tests/unit/execution tests/integration/test_wp3a_mock_execution.py
+→ 86 passed
+
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 263 passed
+
+导入 smoke
+→ passed
+```
+
+原样 `make` 命令失败仅因独立 worktree 没有复制 gitignored 的虚拟环境；显式使用主仓库同一固定依赖环境并设置 `PYTHONPATH=src` 后，检查与测试均针对本 worktree 源码执行并全部通过。该环境差异不涉及源码、配置或验收行为缺陷。
+
+## 10. R2 结论
+
+- **审查结论：通过**。
+- R1 的两个主要问题均已完整修复；计划验收项、静态检查、专项测试、全量回归、无泄漏探针和不执行代码检查均通过。
+- 本结论仅表示 **WP3-a 基础合同与 Mock 基线通过**；真实沙箱、资源隔离、批量执行和完整 WP3 验收仍属于 WP3-b / WP3-c，WP3 整体不得标记为完成。
+- 合并提交：待完成最终合并后补充。
