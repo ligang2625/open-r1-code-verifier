@@ -150,3 +150,64 @@ git -C third_party/open-r1 rev-parse HEAD
 
 - WP3-b：本地 Piston 执行、函数测试 harness、安全资源限制与真实沙箱状态映射；
 - WP3-c：批量并发、可选缓存、CLI 和 WP3 完整验收。
+
+---
+
+## 代码修复报告（R1）
+
+- **审查依据**：`ai-work/reviewer/WP3-review.md` R1
+- **修复提交**：`2bcd2ab` — `fix: harden execution contract validation`
+- **修复状态**：P1、P2 两个“主要”问题均已修复，无异议项或未处理项。
+
+### 1. P1：非法请求逃逸为 `RecursionError` / `OverflowError`
+
+已完成以下最小修复：
+
+- `_is_finite_number()` 不再直接把任意大小整数传给 `math.isfinite()`；先安全转换为 float，并将 `OverflowError` 归一为非法数值。
+- request timeout、per-test runtime、aggregate runtime 和 pass rate 中无法表示为有限 float 的超大整数均由公共校验函数拒绝，并统一抛出 `ExecutionContractError`。
+- 新增 `_validate_request_json_value()`，将底层 `SchemaError` 与递归 JSON 结构产生的 `RecursionError` 统一转换为 `ExecutionContractError`。
+- 增加自引用 list 和四类超大整数边界回归测试。
+
+### 2. P2：错误文本泄漏用户控制的 JSON 键名
+
+已完成以下修复：
+
+- execution 层不再透传 `validate_json_value()` 的原始 `SchemaError` 文本。
+- 非法 input / expected JSON 值统一使用固定格式：`tests[index].input|expected contains an invalid JSON value`。
+- 新增 input 与 expected 参数化测试，确认嵌套对象键名和合法 sibling 字符串值均不会出现在异常文本中。
+
+### 3. 修改文件
+
+- `src/code_verifier/execution/base.py`
+- `tests/unit/execution/test_base.py`
+
+未修改审查报告、`proceedings.md`、配置、依赖或 `third_party/open-r1/**`。
+
+### 4. 实际复测结果
+
+```text
+PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -m pytest tests/unit/execution/test_base.py
+→ 74 passed
+
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ 37 files already formatted
+→ strict Mypy: no issues found in 37 source files
+
+PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -m pytest \
+  tests/unit/execution tests/integration/test_wp3a_mock_execution.py
+→ 86 passed
+
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 263 passed
+
+PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -c \
+  "from code_verifier.execution import CodeExecutor, ExecutionResult, ExecutionStatus, MockExecutor, TestCaseResult; print(ExecutionStatus.PASSED.value)"
+→ passed
+```
+
+在 `src/code_verifier/execution/` 中分别精确搜索 `exec(`、`eval(`、`compile(`，均无匹配。一次正则组合搜索因当前环境未安装 `rg` 无法运行，随后使用上述三次精确搜索完成同等核对。
+
+### 5. 环境说明
+
+当前独立 worktree 仍未包含自己的 `.venv`，因此复测沿用审查报告采用的主仓库虚拟环境，通过显式 `VENV` 与 `PYTHONPATH=src` 确保导入和执行的是本 worktree 源码。未为此修改项目配置或提交环境文件。
