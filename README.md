@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, and the WP2 deterministic code parser are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, and the WP3-a execution contract/mock foundation are implemented.
 
-Untrusted-code execution, reward computation, training, and model evaluation are not implemented yet. Those capabilities belong to later Work Packages.
+Real untrusted-code execution, reward computation, training, and model evaluation are not implemented yet. The WP3-a mock is only a test double and does not provide sandboxing or execute supplied code.
 
 ## Upstream dependency
 
@@ -131,6 +131,47 @@ printf '%s\n' '```python' 'def solve(x):' '    return x + 1' '```' | \
 The command prints one JSON object with `success`, `code`, `error_type`, and `num_code_blocks`. Exit code 0 means successful extraction, 1 means a structured parse failure, and 2 means a CLI or input I/O error.
 
 The parser selects the last Python fenced block, or the last unmarked fenced block when no Python block exists. It does not treat the complete completion as code by default. It does not execute code, assess semantic correctness, repair output, or apply security checks.
+
+## WP3-a execution contract
+
+WP3-a defines the stable structured result types and a deterministic `MockExecutor` for offline tests. The mock validates requests, records defensive copies of calls, and returns preconfigured results in FIFO order. It does not execute code.
+
+```python
+from code_verifier.execution import (
+    CodeExecutor,
+    ExecutionResult,
+    ExecutionStatus,
+    MockExecutor,
+    TestCaseResult,
+)
+
+configured = ExecutionResult(
+    status=ExecutionStatus.PASSED,
+    passed_tests=1,
+    total_tests=1,
+    pass_rate=1.0,
+    runtime_ms=0.5,
+    test_results=[
+        TestCaseResult(
+            status=ExecutionStatus.PASSED,
+            passed=True,
+            runtime_ms=0.5,
+            stdout="",
+            stderr="",
+        )
+    ],
+)
+executor: CodeExecutor = MockExecutor([configured])
+result = executor.execute(
+    code="def solve(value):\n    return value + 1\n",
+    function_name="solve",
+    tests=[{"input": 1, "expected": 2}],
+    timeout_seconds=1.0,
+    memory_limit_mb=64,
+)
+```
+
+Piston or Docker execution, network and filesystem isolation, process/resource limits, output limits, and the real WP3 security acceptance tests remain unimplemented. Do not use `MockExecutor` as evidence that untrusted code can be run safely.
 
 ## Current limitations
 
