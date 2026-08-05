@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,11 @@ def test_root_help_lists_wp1_commands() -> None:
     assert "check-data" in help_text
 
 
+def test_root_help_lists_wp2_parse_command() -> None:
+    """The root help exposes the WP2 parser command."""
+    assert "parse-code" in build_parser().format_help()
+
+
 def test_no_command_prints_help(capsys: Any) -> None:
     """Invoking the CLI without a command is a successful help operation."""
     assert main([]) == 0
@@ -36,7 +43,7 @@ def test_no_command_prints_help(capsys: Any) -> None:
     assert "Open-R1 CodeVerifier project commands" in output.out
 
 
-@pytest.mark.parametrize("command", ["record-environment", "prepare-data", "check-data"])
+@pytest.mark.parametrize("command", ["record-environment", "prepare-data", "check-data", "parse-code"])
 def test_all_subcommands_expose_common_arguments(command: str, capsys: Any) -> None:
     """Every command advertises the common WP1 CLI options."""
     with pytest.raises(SystemExit) as error:
@@ -167,3 +174,143 @@ def test_record_environment_behavior_remains_compatible(monkeypatch: pytest.Monk
 
     assert main(["record-environment", "--output", str(output)]) == 0
     assert seen == [output]
+
+
+def test_parse_code_reads_stdin_and_emits_success_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    """parse-code reads '-' from stdin and emits exactly the ParseResult JSON fields."""
+    monkeypatch.setattr(
+        "code_verifier.cli.sys.stdin",
+        StringIO("```python\ndef solve(value):\n    return value\n```\n"),
+    )
+
+    assert main(["parse-code", "--completion-file", "-", "--expected-function-name", "solve"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"success", "code", "error_type", "num_code_blocks"}
+    assert payload == {
+        "success": True,
+        "code": "def solve(value):\n    return value\n",
+        "error_type": None,
+        "num_code_blocks": 1,
+    }
+
+
+def test_parse_code_reads_file_and_forwards_expected_function(tmp_path: Path, capsys: Any) -> None:
+    """parse-code reads UTF-8 files and applies target-function validation."""
+    completion = tmp_path / "completion.txt"
+    completion.write_text("```python\ndef other():\n    return 1\n```\n", encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "parse-code",
+                "--completion-file",
+                str(completion),
+                "--expected-function-name",
+                "solve",
+            ]
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error_type"] == "missing_target_function"
+    assert payload["code"] == ""
+
+
+def test_parse_code_failure_emits_json_and_returns_one(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    """Structured parser failures remain machine-readable on stdout."""
+    monkeypatch.setattr("code_verifier.cli.sys.stdin", StringIO("explanation only"))
+
+    assert main(["parse-code"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "success": False,
+        "code": "",
+        "error_type": "no_supported_code_block",
+        "num_code_blocks": 0,
+    }
+
+
+def test_parse_code_null_byte_file_returns_structured_failure(tmp_path: Path, capsys: Any) -> None:
+    """AST text failures remain JSON parser failures rather than CLI tracebacks."""
+    completion = tmp_path / "null-byte.txt"
+    completion.write_text("```python\ndef solve():\n    return 1\x00\n```\n", encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "parse-code",
+                "--completion-file",
+                str(completion),
+                "--expected-function-name",
+                "solve",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert "Traceback" not in output.err
+    assert json.loads(output.out) == {
+        "success": False,
+        "code": "",
+        "error_type": "invalid_python_syntax",
+        "num_code_blocks": 1,
+    }
+
+
+def test_parse_code_deep_unary_file_returns_structured_failure(tmp_path: Path, capsys: Any) -> None:
+    """AST complexity failures remain JSON parser failures rather than CLI tracebacks."""
+    completion = tmp_path / "deep-unary.txt"
+    completion.write_text(
+        f"```python\ndef solve():\n    return {'+' * 10_000}1\n```\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "parse-code",
+                "--completion-file",
+                str(completion),
+                "--expected-function-name",
+                "solve",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert "Traceback" not in output.err
+    assert json.loads(output.out) == {
+        "success": False,
+        "code": "",
+        "error_type": "invalid_python_syntax",
+        "num_code_blocks": 1,
+    }
+
+
+def test_parse_code_missing_file_returns_two_without_traceback(tmp_path: Path, capsys: Any) -> None:
+    """Input I/O failures use exit code two and a concise stderr error."""
+    missing = tmp_path / "missing.txt"
+
+    assert main(["parse-code", "--completion-file", str(missing)]) == 2
+    output = capsys.readouterr()
+    assert str(missing) in output.err
+    assert "Traceback" not in output.err
+    assert output.out == ""
+
+
+def test_wp1_command_defaults_remain_compatible_after_common_argument_refactor() -> None:
+    """The common option refactor preserves WP1 required and default values."""
+    parser = build_parser()
+    check_args = parser.parse_args(["check-data", "--dataset", "prepared"])
+    parse_args = parser.parse_args(["parse-code"])
+
+    assert check_args.output_dir == Path("outputs/check-data")
+    assert parse_args.output_dir is None
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["prepare-data", "--config", "config.yaml"])
+    assert error.value.code == 2
