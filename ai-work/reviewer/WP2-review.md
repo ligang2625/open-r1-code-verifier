@@ -417,3 +417,5 @@ stderr: full Python traceback ending in MemoryError
 - 残余项仅为两条非阻断建议：CLI 测试模块说明文字与 Unicode line-separator 合同说明。
 - 合并提交：`3f6d4415b503fd03032244ae354cbba2badbaae5`（`feat: complete WP2 deterministic code parser`）。
 - 合并后主分支复验：`make lint` 通过；`make test` 为 177 passed。
+- 阶段记录提交：`a4fd681f8c642d04f7c435b22cd5dca2bae0ca58`（`docs: record WP2 completion in proceedings`）。
+- worktree 清理：标准 `git worktree remove .worktrees/wp2` 因 worktree 含 submodule 被 Git 拒绝；非强制 `git submodule deinit --all` 后仍被拒绝。遵循审查规则未使用 `--force`，因此 `.worktrees/wp2` 暂时保留，不影响已合并代码或验收结论。
