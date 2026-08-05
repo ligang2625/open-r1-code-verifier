@@ -415,4 +415,5 @@ stderr: full Python traceback ending in MemoryError
 - `ParseResult`、`extract_python_code()`、确定性 fenced block 解析、顶层函数验证、有限 error taxonomy、`parse-code` CLI、单元测试和文档交付均符合计划与规格 §9、§17、§20。
 - 独立 lint、177 项全量测试、正常 CLI、原始异常 Gate 和额外复杂度探针全部通过；无新增阻断或主要问题。
 - 残余项仅为两条非阻断建议：CLI 测试模块说明文字与 Unicode line-separator 合同说明。
-- 合并状态：本轮审查报告提交后按 reviewer 流程执行；合并提交 hash 将在合并完成后记录。
+- 合并提交：`3f6d4415b503fd03032244ae354cbba2badbaae5`（`feat: complete WP2 deterministic code parser`）。
+- 合并后主分支复验：`make lint` 通过；`make test` 为 177 passed。

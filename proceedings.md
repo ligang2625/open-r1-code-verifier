@@ -92,3 +92,37 @@ WP0 已完成以下工作：
 - `make test`：135 passed。
 - fresh `prepare-data` / `check-data` 返回 0，20 problems（12/4/4）；HF Dataset 解码 20 行。
 - 三层测试无重复；训练 artifact 不含 eval-hidden；删除/混入字段、重复 key 隐藏与 bool/int/float 类型漂移篡改均被拒绝。
+
+---
+
+## WP2：代码解析器
+
+- **完成日期**：2026-08-05
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP2-review.md` 最终轮次）
+- **执行计划**：`ai-work/planner/WP2-plan.md`
+- **实施范围**：完成 WP2 Parsing Layer；未实现 WP3 执行器、奖励、训练或评测功能。
+
+### 本阶段完成的功能
+
+- 实现冻结的 `ParseResult` 与确定性 `extract_python_code()`，按固定优先级提取最后一个 Python fenced block，或在无 Python block 时提取最后一个无语言标记 block。
+- 支持反引号/波浪号 fence、3+ fence 长度、LF/CRLF/CR、未闭合与空 block 分类，并通过 AST 验证模块顶层同步或异步目标函数。
+- 实现有限、可统计的 parser error taxonomy；NUL、Unicode、语法、内存复杂度和递归边界均返回结构化失败，不产生未处理 traceback。
+- 新增 `parse-code` CLI，支持 UTF-8 文件或 stdin 输入，成功、结构化失败和 I/O 错误分别使用退出码 0、1、2，并输出机器可读 JSON。
+
+### 相关文件
+
+- 新增：`src/code_verifier/parsing/{__init__,code_extractor}.py`、`tests/unit/parsing/*`
+- 修改：`src/code_verifier/cli.py`、`tests/unit/test_cli.py`、`README.md`、`AGENTS.md`
+- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+### 配置影响
+
+- 未修改 `pyproject.toml`、Makefile、YAML 配置或依赖版本。
+
+### 验收结论
+
+- 独立 worktree 与合并后的 `main` 均通过 `make lint`。
+- `make test`：177 passed。
+- 正常解析、NUL、lone surrogate、深层一元表达式及额外 AST 复杂度探针均符合结构化结果合同。
+- 合并提交：`3f6d4415b503fd03032244ae354cbba2badbaae5`。
