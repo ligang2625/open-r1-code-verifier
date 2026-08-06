@@ -253,9 +253,12 @@ def batch_execution_result_to_mapping(result: BatchExecutionResult) -> dict[str,
         raise ExecutionContractError("total_requests must be a non-negative integer")
     if isinstance(result.cache_hits, bool) or not isinstance(result.cache_hits, int) or result.cache_hits < 0:
         raise ExecutionContractError("cache_hits must be a non-negative integer")
-    if result.cache_hits > result.total_requests or len(result.items) != result.total_requests:
+    if not isinstance(result.items, list):
+        raise ExecutionContractError("items must be a list")
+    item_mappings = [batch_execution_item_to_mapping(item) for item in result.items]
+    if result.cache_hits > result.total_requests or len(item_mappings) != result.total_requests:
         raise ExecutionContractError("batch result counts are inconsistent")
-    if sum(item.cache_hit for item in result.items) != result.cache_hits:
+    if sum(cast(bool, item["cache_hit"]) for item in item_mappings) != result.cache_hits:
         raise ExecutionContractError("cache_hits must equal the number of cache-hit items")
     if isinstance(result.runtime_ms, bool) or not isinstance(result.runtime_ms, int | float):
         raise ExecutionContractError("runtime_ms must be a finite non-negative number")
@@ -273,7 +276,7 @@ def batch_execution_result_to_mapping(result: BatchExecutionResult) -> dict[str,
         "total_requests": result.total_requests,
         "cache_hits": result.cache_hits,
         "runtime_ms": runtime_ms,
-        "items": [batch_execution_item_to_mapping(item) for item in result.items],
+        "items": item_mappings,
     }
 
 

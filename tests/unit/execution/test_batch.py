@@ -15,6 +15,7 @@ import pytest
 from code_verifier.config import ConfigError
 from code_verifier.execution import (
     BatchExecutionError,
+    BatchExecutionItemResult,
     BatchExecutionRequest,
     BatchExecutor,
     BatchExecutorConfig,
@@ -560,6 +561,49 @@ def test_batch_result_mapping_accepts_maximum_finite_float_runtime() -> None:
     maximum = float.fromhex("0x1.fffffffffffffp+1023")
     mapping = batch_execution_result_to_mapping(replace(result, runtime_ms=maximum))
     assert mapping["runtime_ms"] == maximum
+
+
+@pytest.mark.parametrize("items", [None, (), [object()]])
+def test_batch_result_mapping_rejects_invalid_items_without_builtin_exceptions(items: object) -> None:
+    executor = BatchExecutor(
+        _factory(lambda code: _result(), []),
+        executor_version="executor-v1",
+        config=_batch_config(),
+    )
+    result = executor.execute_batch([])
+    invalid = replace(result, total_requests=1, items=cast(list[BatchExecutionItemResult], items))
+    with pytest.raises(ExecutionContractError):
+        batch_execution_result_to_mapping(invalid)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        BatchExecutionItemResult(
+            request_id="request-1",
+            problem_id="problem-1",
+            test_layer=cast(ExecutionTestLayer, "visible"),
+            cache_hit=False,
+            result=_result(),
+        ),
+        BatchExecutionItemResult(
+            request_id="request-1",
+            problem_id="problem-1",
+            test_layer=ExecutionTestLayer.VISIBLE,
+            cache_hit=cast(bool, 1),
+            result=_result(),
+        ),
+    ],
+)
+def test_batch_result_mapping_rejects_invalid_item_fields(item: BatchExecutionItemResult) -> None:
+    executor = BatchExecutor(
+        _factory(lambda code: _result(), []),
+        executor_version="executor-v1",
+        config=_batch_config(),
+    )
+    result = replace(executor.execute_batch([]), total_requests=1, items=[item])
+    with pytest.raises(ExecutionContractError, match="batch item fields are invalid"):
+        batch_execution_result_to_mapping(result)
 
 
 def test_batch_result_runtime_is_wall_clock_and_cache_hit_count_is_exact() -> None:
