@@ -161,8 +161,11 @@ make test
    - 若全部子阶段已完成，把该 WP 的所有子阶段记录整合为**一条** `## WP{n}：<WP 名称>` 记录：头部为 WP 级元信息与实施范围，主体为整合后的完成功能与相关文件（汇总），各子阶段以小节保留（如 `### 子阶段 WP{n}-a`）；删除独立的子阶段小节，内容仍保持简洁，不含 review/execution 细节；
    - 未拆分（单一计划）的 WP 跳过整合，其阶段记录即为最终 WP 记录。
 7. **提交**：提交 proceedings 记录（普通场景 `docs: record WP{n} completion in proceedings`；整合场景 `docs: consolidate WP{n} sub-stages in proceedings`），并将合并提交 hash 与提交信息记录到审查报告的结论节。
-8. **清理**：合并成功后 `git worktree remove .worktrees/wp{n}`（或 `.worktrees/wp{n}-{sub}`）；分支默认保留（如需删除按项目约定执行）。
-9. **失败处理**：冲突、hook 拒绝或暂存异常时不强行绕过（不用 `--no-verify`、`--force` 等），停下报告。
+8. **清理阶段分支与 worktree（合并与 proceedings 提交完成后执行）**：
+   - 再次确认阶段 worktree 无未提交改动（`git status`）；
+   - 移除 worktree：`git worktree remove .worktrees/wp{n}`（或 `.worktrees/wp{n}-{sub}`）；若因 submodule 限制被拒绝，先执行 `git -C <worktree 路径> submodule deinit --all` 后重试；仍被拒绝且 worktree 干净（无未提交/未跟踪改动）时，允许 `git worktree remove --force <路径>` 兜底；
+   - **默认删除阶段分支**：`git branch -d <分支名>`（已合并，安全删除）；若删除失败（如仍被 worktree 检出），先确保 worktree 已移除再重试；仍失败则如实报告并保留分支。
+9. **失败处理**：合并或提交阶段的冲突、hook 拒绝或暂存异常时不强行绕过（不用 `--no-verify`、`--force` 等），停下报告；worktree 清理的 `--force` 兜底仅限第 8 步列出的干净 worktree 场景。
 10. **不自动 push**：push 仅在任务或人工明确要求时执行。
 
 ## 自检清单
@@ -186,4 +189,5 @@ make test
 - [ ] 最终审查方已写入简洁 proceedings 记录（仅功能概述与相关文件，无中间 review/execution 细节）并提交；
 - [ ] 本 WP 拆分为多子阶段时：各子阶段先分节记录；整个 WP 最后一个子阶段通过后，已整合为一条 WP 记录（子阶段保留为小节）；未拆分时跳过整合；
 - [ ] 合并使用 `--no-ff` 且消息符合 Conventional Commits，合并 hash 已记录到审查报告；
+- [ ] 合并与 proceedings 提交完成后，已默认删除阶段分支（`git branch -d`）并移除阶段 worktree；非强制移除失败且 worktree 干净时使用 `--force` 兜底，删除失败已如实报告；
 - [ ] 未自动 push。
