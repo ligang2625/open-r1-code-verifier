@@ -219,6 +219,16 @@ def test_transport_builds_exact_runtime_and_execute_paths(monkeypatch: pytest.Mo
     assert opener.timeouts == [1.5, 2.5]
 
 
+def test_transport_rejects_non_utf8_request_payload_without_network() -> None:
+    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+    with pytest.raises(PistonTransportError, match="invalid piston request"):
+        transport.execute_request(
+            {"language": "python", "source": "\ud800"},
+            timeout_seconds=1.0,
+            max_response_bytes=64,
+        )
+
+
 def test_transport_disables_proxy_and_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_handlers: tuple[object, ...] = ()
     opener = _FakeOpener([_FakeResponse(b"[]")])

@@ -77,6 +77,10 @@ class ExecutionCache(Protocol):
 def _require_nonempty_string(value: object, *, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ExecutionContractError(f"{field_name} must be a non-empty string")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ExecutionContractError(f"{field_name} contains invalid UTF-8 text") from None
     return value
 
 
@@ -126,8 +130,10 @@ def _cache_key_mapping(key: ExecutionCacheKey) -> dict[str, object]:
 
 def _canonical_json(value: object) -> str:
     try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    except (TypeError, ValueError, RecursionError):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        text.encode("utf-8")
+        return text
+    except (TypeError, ValueError, RecursionError, UnicodeEncodeError):
         raise ExecutionCacheError("execution cache serialization failed") from None
 
 
@@ -264,7 +270,7 @@ class SQLiteExecutionCache:
             )
         except ExecutionCacheError:
             raise
-        except (ExecutionContractError, StrictJsonError, TypeError, ValueError, sqlite3.Error):
+        except (ExecutionContractError, StrictJsonError, TypeError, ValueError, UnicodeEncodeError, sqlite3.Error):
             raise ExecutionCacheError("execution cache entry is corrupted") from None
 
     def put(self, key: ExecutionCacheKey, result: ExecutionResult) -> None:
@@ -284,7 +290,7 @@ class SQLiteExecutionCache:
         except ExecutionCacheError:
             connection.rollback()
             raise
-        except (ExecutionContractError, sqlite3.Error):
+        except (ExecutionContractError, UnicodeEncodeError, sqlite3.Error):
             connection.rollback()
             raise ExecutionCacheError("execution cache write failed") from None
 

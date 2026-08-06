@@ -170,6 +170,26 @@ def test_validate_execution_request_rejects_recursive_json_value_as_contract_err
         )
 
 
+@pytest.mark.parametrize("field", ["code", "function_name", "input", "expected", "input_key"])
+def test_validate_execution_request_rejects_non_utf8_text_without_echoing_payload(field: str) -> None:
+    sentinel = "\ud800"
+    code = "def solve(value):\n    return value\n"
+    function_name = "solve"
+    tests: list[dict[str, Any]] = [{"input": 1, "expected": 1}]
+    if field == "code":
+        code = sentinel
+    elif field == "function_name":
+        function_name = sentinel
+    elif field == "input_key":
+        tests[0]["input"] = {sentinel: 1}
+    else:
+        tests[0][field] = sentinel
+
+    with pytest.raises(ExecutionContractError, match="invalid UTF-8 text") as exc_info:
+        validate_execution_request(code, function_name, tests, 1.0, 64)
+    assert sentinel not in str(exc_info.value)
+
+
 @pytest.mark.parametrize(
     ("timeout_seconds", "memory_limit_mb"),
     [
@@ -226,6 +246,14 @@ def test_validate_test_case_result_rejects_passed_status_mismatch(result: Execut
 def test_validate_test_case_result_rejects_invalid_field_types(result: ExecutionTestCaseResult) -> None:
     with pytest.raises(ExecutionContractError):
         validate_test_case_result(result)
+
+
+@pytest.mark.parametrize("field", ["stdout", "stderr"])
+def test_validate_test_case_result_rejects_non_utf8_output(field: str) -> None:
+    result = _test_result()
+    invalid = replace(result, stdout="\ud800") if field == "stdout" else replace(result, stderr="\ud800")
+    with pytest.raises(ExecutionContractError, match="invalid UTF-8 text"):
+        validate_test_case_result(invalid)
 
 
 def test_validate_execution_result_accepts_full_pass() -> None:

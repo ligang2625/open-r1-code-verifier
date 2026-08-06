@@ -222,6 +222,37 @@ def test_batch_request_mapping_requires_exact_fields_and_valid_test_layer() -> N
             batch_execution_request_from_mapping(invalid)
 
 
+@pytest.mark.parametrize("cache_mode", list(ExecutionCacheMode))
+@pytest.mark.parametrize("field", ["code", "request_id", "problem_id", "tests"])
+def test_batch_rejects_non_utf8_requests_before_cache_or_factory_side_effects(
+    cache_mode: ExecutionCacheMode,
+    field: str,
+) -> None:
+    request = _request("1")
+    if field == "tests":
+        request = replace(request, tests=[{"input": "\ud800", "expected": 1}])
+    elif field == "code":
+        request = replace(request, code="\ud800")
+    elif field == "request_id":
+        request = replace(request, request_id="\ud800")
+    else:
+        request = replace(request, problem_id="\ud800")
+    cache = None if cache_mode is ExecutionCacheMode.DISABLED else _MemoryCache()
+    factory_calls: list[CodeExecutor] = []
+    executor = BatchExecutor(
+        _factory(lambda code: _result(), factory_calls),
+        executor_version="executor-v1",
+        config=_batch_config(cache_mode=cache_mode),
+        cache=cache,
+    )
+    with pytest.raises(ExecutionContractError, match="invalid UTF-8 text"):
+        executor.execute_batch([request])
+    assert factory_calls == []
+    if cache is not None:
+        assert cache.get_calls == []
+        assert cache.put_calls == []
+
+
 def test_batch_prevalidates_all_requests_before_factory_is_called() -> None:
     factory_calls: list[CodeExecutor] = []
     executor = BatchExecutor(

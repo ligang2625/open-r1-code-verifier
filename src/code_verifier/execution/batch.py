@@ -126,6 +126,10 @@ class BatchExecutionResult:
 def _require_nonempty_string(value: object, *, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ExecutionContractError(f"{field_name} must be a non-empty string")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ExecutionContractError(f"{field_name} contains invalid UTF-8 text") from None
     return value
 
 

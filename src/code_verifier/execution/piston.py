@@ -120,7 +120,7 @@ class UrlLibPistonTransport:
         """POST one bounded local /api/v2/execute JSON request."""
         try:
             body = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        except (TypeError, ValueError, RecursionError):
+        except (TypeError, ValueError, RecursionError, UnicodeEncodeError):
             raise PistonTransportError("invalid piston request") from None
         request = Request(
             f"{self._base_url}/api/v2/execute",

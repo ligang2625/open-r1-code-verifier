@@ -408,6 +408,17 @@ def test_load_batch_requests_rejects_empty_blank_duplicate_key_and_invalid_recor
             cli_module._load_batch_requests(path)
 
 
+def test_load_batch_requests_rejects_escaped_lone_surrogate_as_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "requests.jsonl"
+    path.write_bytes(
+        b'{"request_id":"request-1","problem_id":"problem-1","test_layer":"visible",'
+        b'"code":"\\ud800","function_name":"target",'
+        b'"tests":[{"input":1,"expected":2}],"timeout_seconds":1.0,"memory_limit_mb":64}\n'
+    )
+    with pytest.raises(BatchExecutionError, match="line 1 is invalid"):
+        cli_module._load_batch_requests(path)
+
+
 def test_load_batch_requests_error_does_not_echo_code_or_test_sentinel(tmp_path: Path) -> None:
     sentinel = "PRIVATE_BATCH_INPUT_SENTINEL"
     path = tmp_path / "requests.jsonl"
@@ -589,7 +600,7 @@ def test_execute_batch_applies_concurrency_and_cache_overrides(
                 "--cache-path",
                 str(cache),
                 "--workload-mode",
-                "training",
+                "evaluation",
             ]
         )
         == 0
@@ -597,7 +608,7 @@ def test_execute_batch_applies_concurrency_and_cache_overrides(
     batch_config = cast(BatchExecutorConfig, seen["batch_config"])
     assert batch_config.max_concurrency == 7
     assert batch_config.cache_mode is ExecutionCacheMode.READ_WRITE
-    assert seen["workload_mode"] is ExecutionWorkloadMode.TRAINING
+    assert seen["workload_mode"] is ExecutionWorkloadMode.EVALUATION
     assert seen["cache_path"] == cache
     assert seen["cache_closed"] is True
 

@@ -13,6 +13,7 @@ import pytest
 
 from code_verifier.execution import (
     ExecutionCacheError,
+    ExecutionContractError,
     ExecutionResult,
     ExecutionStatus,
     ExecutionTestLayer,
@@ -102,6 +103,24 @@ def test_code_hash_is_exact_and_tests_hash_is_order_sensitive() -> None:
     assert _key(tests=forward_tests).tests_hash != _key(tests=reversed_tests).tests_hash
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"code": "\ud800"},
+        {"problem_id": "problem-\ud800"},
+        {"tests": [{"input": "\ud800", "expected": 1}]},
+    ],
+)
+def test_cache_key_rejects_non_utf8_request_fields(overrides: dict[str, object]) -> None:
+    with pytest.raises(ExecutionContractError, match="invalid UTF-8 text"):
+        _key(**overrides)
+
+
+def test_cache_key_digest_rejects_non_utf8_manual_key() -> None:
+    with pytest.raises(ExecutionCacheError, match="serialization failed"):
+        execution_cache_key_digest(replace(_key(), problem_id="\ud800"))
+
+
 def test_sqlite_cache_miss_put_hit_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "cache.sqlite3"
     key = _key()
@@ -113,6 +132,17 @@ def test_sqlite_cache_miss_put_hit_round_trip(tmp_path: Path) -> None:
     assert hit == result
     assert hit is not result
     assert hit is not None and hit.test_results is not result.test_results
+
+
+def test_sqlite_cache_rejects_non_utf8_cached_output_as_cache_error(tmp_path: Path) -> None:
+    result = _result()
+    invalid_test = replace(result.test_results[0], stdout="\ud800")
+    invalid_result = replace(result, test_results=[invalid_test])
+    with (
+        SQLiteExecutionCache(tmp_path / "cache.sqlite3") as cache,
+        pytest.raises(ExecutionCacheError, match="write failed"),
+    ):
+        cache.put(_key(), invalid_result)
 
 
 def test_sqlite_cache_rejects_sandbox_error_result(tmp_path: Path) -> None:
