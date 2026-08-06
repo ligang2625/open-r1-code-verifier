@@ -1,147 +1,196 @@
-# WP3-a 独立审查报告
+# WP3-b 独立审查报告
 
-- **计划文件**：`ai-work/planner/WP3-a-plan.md`
+- **计划文件**：`ai-work/planner/WP3-b-plan.md`
 - **executor 报告**：`ai-work/executor/WP3-executor.md`
 - **审查轮次**：R1
-- **审查日期**：2026-08-05
+- **审查日期**：2026-08-06
 - **审查分支 / worktree**：`feat/wp3` / `.worktrees/wp3`
-- **审查方式**：计划与规格核对、源码与测试阅读、独立静态检查、全量回归、额外恶意输入探针
+- **审查方式**：计划与规格核对、源码与测试阅读、独立静态检查、默认回归、真实 Piston 安全套件、额外对抗性 harness 与合同边界探针
+
+> 同一阶段报告文件此前记录的是 `WP3-a-plan.md`。按照 reviewer skill 的阶段重置规则，当前计划已变更为 `WP3-b-plan.md`，因此本文件从 WP3-b R1 重新开始记录。
 
 ## 1. 审查范围与基准
 
-本轮仅审查 WP3-a“安全执行器基础合同与 Mock 基线”，不把真实沙箱、资源隔离、批量执行或完整 WP3 验收纳入本子阶段通过条件。审查基准为：
+本轮只审查 WP3-b“本地 Piston 单请求执行与安全限制”。批量并发、缓存、执行 CLI 和 WP3 整体完成仍属于 WP3-c，不纳入本轮通过条件。
 
-- `PROJECT_SPEC_Open-R1_CodeVerifier.md` §8.1–§8.5、§20、§21；
-- `ai-work/planner/WP3-a-plan.md` 的公开接口、合同校验、Mock 行为、测试与文档验收项；
-- `skills/wp-plan-reviewer/references/review-checklist.md` 的通用与执行器检查项。
+审查基准：
 
-审查期间未修改 `src/`、`tests/`、`third_party/open-r1/` 或 `proceedings.md`。
+- `PROJECT_SPEC_Open-R1_CodeVerifier.md` §6.2、§8.1–§8.5、§19、§20、§21；
+- `ai-work/planner/WP3-b-plan.md` 的 loopback transport、可信 harness、状态映射、真实安全探针与最终验收要求；
+- `skills/wp-plan-reviewer/references/review-checklist.md` 的通用与执行器安全清单。
+
+审查期间未修改 `src/`、`tests/`、`third_party/open-r1/`、配置或 `proceedings.md`。
 
 ## 2. 交付与验收核验
 
 | 验收项 | 状态 | 证据 |
 |---|---|---|
-| `ExecutionStatus`、`TestCaseResult`、`ExecutionResult`、`CodeExecutor` 与规格 §8.3 一致 | 通过 | `src/code_verifier/execution/base.py:14-64` 与规格 `PROJECT_SPEC_Open-R1_CodeVerifier.md:638-678` 一致；枚举、字段顺序和 Protocol 签名均匹配。 |
-| 请求与结果合同校验拒绝非法输入，并统一抛出 `ExecutionContractError` | **未通过** | `src/code_verifier/execution/base.py:71-72` 直接对任意大小整数调用 `math.isfinite()`；`base.py:101-105` 仅捕获 `SchemaError`。独立探针中循环 JSON 值抛 `RecursionError`，超大正整数 timeout 抛 `OverflowError`。 |
-| 合同异常不回显代码、测试输入、expected、stdout/stderr | **未通过** | `src/code_verifier/execution/base.py:101-105` 原样转发 `SchemaError` 文本；探针 `{"input": {"HIDDEN_SECRET_KEY": object()}}` 的异常文本包含 `HIDDEN_SECRET_KEY`，违反计划 `WP3-a-plan.md:315,526,560` 的隐藏测试内容保护要求。 |
-| `execution_result_to_mapping()` 字段稳定且可 JSON 序列化 | 部分通过 | 常规合法结果通过 `tests/unit/execution/test_base.py:295-320` 与专项测试；但其前置校验仍受上述超大整数未处理异常影响，不能视为所有合同边界已完成。 |
-| `MockExecutor` FIFO、调用记录、防御性复制、耗尽行为与不执行代码 | 通过 | `src/code_verifier/execution/mock.py:29-74`；专项测试 80 项全部通过；源码未发现 `exec(`、`eval(`、`compile(` 或 `subprocess`。 |
-| parser → Data mapping → Mock → JSON mapping 集成闭环 | 通过 | `tests/integration/test_wp3a_mock_execution.py:23-59`；专项测试通过。 |
-| README / AGENTS 明确 Mock 不提供真实沙箱安全 | 通过 | `README.md:3-5,135-174`；`AGENTS.md:18-20,85-89`。未声称 WP3 整体完成。 |
-| 静态检查与全量回归 | 通过（使用现有主仓库虚拟环境覆盖 `VENV`） | `make lint VENV=/home/dzy/open-r1-code-verifier/.venv`：Ruff、format、strict Mypy 全绿；`PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv`：257 passed。 |
-| 计划原样命令 `make lint` / `make test` 可在当前 worktree 直接运行 | 无法按原样复现 | 当前 worktree 无 `.venv/bin/python`，两条命令均以 Error 127 失败。该项是当前审查环境状态说明；使用显式 `VENV` 后代码检查与测试可复现。 |
-| 配置、依赖与固定上游未变 | 通过 | 分支 worktree 无未提交修改；固定上游 `git -C third_party/open-r1 rev-parse HEAD` 输出 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`；计划范围内未发现配置或依赖修改。 |
+| 严格本地 Piston 配置与 loopback-only endpoint | 通过 | `src/code_verifier/execution/piston.py:159-230` 严格校验 schema、HTTP scheme、loopback host、userinfo/path/query/fragment 和端口；`configs/execution/piston-local.yaml` 使用 `127.0.0.1:2000`。 |
+| transport 禁用 proxy/redirect、限制响应大小并脱敏错误 | 通过 | `piston.py:79-156` 使用空 `ProxyHandler`、拒绝 redirect、JSON content type 与 bounded read；相关单元测试及全量测试通过。 |
+| 函数调用约定、类型敏感比较和状态分类 | 常规路径通过 | `harness.py:249-309` 与 23 项 harness 单元测试覆盖 list/dict/scalar、严格类型比较、syntax/runtime/wrong/pass 和输出限制。 |
+| 可信 harness 不可被不可信候选伪造 | **未通过** | 候选导入后可直接修改 runner 的 `__main__._strict_equal` 或 `__main__.json.dumps`。真实 Piston 探针中候选返回错误值，但 `PistonExecutor` 返回 `PASSED`。详见问题 P0。 |
+| `PistonExecutor.execute()` 稳定遵守公共合同 | **未通过** | `piston.py:420-423` 在检查上限前计算 `math.ceil(timeout_seconds * 1000.0)`；`timeout_seconds=1e308` 抛裸 `OverflowError`，未归一为 `ExecutionContractError`。详见问题 P1。 |
+| 正确、错误、语法、运行、超时、内存、输出真实状态 | 表面通过但结论不可信 | `make test-piston` 为 6 passed；但 harness 可伪造 pass，因此正常状态套件不能证明恶意候选下结果可信。 |
+| 网络、非 root、基础文件写保护、宿主文件不可见、跨 job 清理、PID containment | 通过 | 真实 Piston 集成套件 6 项全部通过；恶意探针后的 service health smoke 通过。 |
+| 结果可序列化、停止策略和 pass-rate denominator | 通过 | fake transport 单元测试通过；默认全量 324 passed、1 skipped。 |
+| 默认测试不连接 Piston，显式测试不允许 skip | 通过 | 默认 `make test`：324 passed、1 module-level skipped；显式 `make test-piston`：6 passed、0 skipped。 |
+| 文档保持 WP3 部分完成并记录本地服务限制 | 通过 | `README.md:184-220` 与 `docs/piston-local.md` 明确 loopback、自托管、显式测试及 WP3-c 未完成范围。 |
+| 未新增宿主直接执行路径或上游修改 | 通过 | `src/code_verifier/execution/` 未发现 `exec(`、`eval(`、`compile(` 或 `subprocess`；`third_party/open-r1` 无 diff。 |
+| 计划原样 `make lint` / `make test` 可在 worktree 运行 | 无法原样复现 | 当前 worktree 无 `.venv/bin/python`，原样 `make lint` 返回 Error 127；使用主仓库固定虚拟环境并设置 `PYTHONPATH=src` 后全部检查可复现。 |
 
 ## 3. executor 报告声明核验
 
 | executor 声明 | 状态 | 核验结果 |
 |---|---|---|
-| 公开合同、Mock、集成测试和文档已实现 | 核实通过 | 文件、接口和常规测试与报告一致。 |
-| `make lint`、专项 80 tests、全量 257 tests、导入 smoke 通过 | 部分核实 | 使用显式主仓库 `VENV` 与 `PYTHONPATH=src` 可复现对应结果；当前 worktree 缺少 `.venv`，原样 `make lint` / `make test` 不可运行。 |
-| “严格执行请求与结构化结果校验”已完成，且无计划偏离 | **与事实不符** | 循环 JSON 值和超大整数不会收敛为 `ExecutionContractError`；隐藏测试对象键名会出现在错误文本。核心合同验收仍有缺口。 |
-| Mock 不执行代码，未新增宿主机执行逻辑 | 核实通过 | 源码检索无直接执行 API；恶意代码字符串测试通过。 |
-| WP3 整体仍为部分完成 | 核实通过 | README、AGENTS 与 executor 报告均保持该边界。 |
+| 5 个实施步骤与文件交付完成 | 核实通过 | 目标模块、配置、测试、Makefile marker/target 和文档均存在。 |
+| 静态检查、默认回归、真实 Piston 套件、runtime smoke 通过 | 核实通过（环境路径有差异） | 使用 `VENV=/home/dzy/open-r1-code-verifier/.venv` 与 `PYTHONPATH=src` 独立复现：lint 全绿、324 passed/1 skipped、Piston 6 passed、runtime `3.10.0`。当前 worktree 中报告所述 `.venv` 链接已不存在。 |
+| 随机 marker、可信引用和严格 schema 能提供可信结果协议 | **与事实不符** | 候选只需 `import __main__` 并替换 `_strict_equal` 或 `json.dumps`，即可把错误答案改写成通过。无需猜测 marker，也无需高级内存攻击。 |
+| 所有请求限制均稳定映射为公共合同错误 | **与事实不符** | 极大但有限的 `timeout_seconds` 在乘法后变成 infinity，`math.ceil()` 抛出 `OverflowError`。 |
+| WP3 整体仍为部分完成 | 核实通过 | 报告和文档均保留 WP3-c 边界。 |
 
 ## 4. 问题清单
 
-### P1 — 主要：非法请求可逃逸为未处理的 `RecursionError` / `OverflowError`
+### P0 — 阻断：候选代码可直接篡改可信 harness 并把错误答案伪造为 `PASSED`
 
-- **位置**：`src/code_verifier/execution/base.py:71-72,101-108,121-122,159-165`
-- **现象**：
-  - 自引用 list 作为 `tests[0].input` 时，`validate_json_value()` 递归直至抛出 `RecursionError`；`validate_execution_request()` 只捕获 `SchemaError`，未转换为 `ExecutionContractError`。
-  - `timeout_seconds=10**1000` 时，`math.isfinite()` 抛出 `OverflowError`，同样逃逸公共合同。
-  - 同一 `_is_finite_number()` 也用于 per-test/aggregate runtime 与 pass rate，因此结果合同存在相同异常面。
-- **依据**：计划 `WP3-a-plan.md:274-281,282-292,314-315,347` 要求非法请求/结果统一得到 `ExecutionContractError`，不得产生未处理 traceback。
-- **影响**：调用方无法只处理公开合同异常；畸形或极端输入可以中断 verifier/reward 编排，破坏执行边界的确定性。
-- **建议**：
-  1. 对 JSON 校验增加循环/深度保护，至少捕获并转换 `RecursionError`，更稳妥的做法是使用显式 visited/path 或限定最大嵌套深度；
-  2. 重写有限数判断，避免对任意大小 int 直接调用 `math.isfinite()`，并明确超出可表示范围时统一抛 `ExecutionContractError`；
-  3. 为 request timeout、per-test runtime、aggregate runtime、pass rate 增加超大整数与递归结构回归测试。
+- **位置**：`src/code_verifier/execution/harness.py:172-314`，重点为：
+  - `_strict_equal()` 定义于 `211-218`；
+  - `_emit()` 在 `238-246` 运行时通过全局 `json.dumps` 序列化；
+  - 候选模块在 `277` 被导入；
+  - 候选执行后在 `290` 通过全局 `_strict_equal` 判断；
+  - 最终调用的 `trusted_emit` 虽保存了函数对象，但该函数仍读取可变的 module globals。
+- **独立真实 Piston 证据 1**：候选代码执行：
 
-### P2 — 主要：合同错误文本泄漏隐藏测试中的用户自定义对象键名
+  ```python
+  import __main__
+  __main__._strict_equal = lambda actual, expected: True
 
-- **位置**：`src/code_verifier/execution/base.py:101-105`；上游消息来源 `src/code_verifier/data/schema.py:127-134`
-- **现象**：execution 层将 `SchemaError` 文本原样包装。对于 `tests[0].input={"HIDDEN_SECRET_KEY": object()}`，实际异常为：
-
-  ```text
-  ExecutionContractError tests[0].input.HIDDEN_SECRET_KEY contains unsupported JSON value type object
+  def target(value):
+      return value + 999
   ```
 
-- **依据**：计划 `WP3-a-plan.md:315,526,560` 明确要求异常仅包含索引、固定字段名和错误类型，不包含 input / expected 内容；隐藏测试层属于敏感实验资产。
-- **影响**：一旦该异常进入训练或调试日志，测试输入中的键名可被逐步泄漏。按照审查规则，测试内容泄漏不能判定通过。
-- **建议**：execution 边界不要透传包含用户控制路径片段的 `SchemaError`。将错误净化为固定格式，例如 `tests[0].input contains an invalid JSON value`，并为字符串值、嵌套键名、expected 路径分别加入“不回显 sentinel”测试。
+  请求为 `input=1, expected=2`，实际返回值为 `1000`，但公开结果为：
+
+  ```text
+  passed passed
+  ```
+
+- **独立真实 Piston 证据 2**：候选修改 `__main__.json.dumps`，只在最终 report 序列化时把 `outcome` 改为 `passed`，公开结果为：
+
+  ```text
+  passed 1 1.0 passed
+  ```
+
+- **依据**：
+  - 规格 §8.1 要求模型代码始终视为不可信；
+  - 计划 §3.3 要求候选不能破坏可信执行结果；§3.4 / 步骤 2 将 marker、可信引用和严格 schema 作为结果可信边界；
+  - reviewer 执行器清单要求检查“测试输入是否可能注入 runner”。
+- **影响**：模型生成代码可主动欺骗 hidden-test verifier，将任意错误答案计为通过，直接污染 reward、训练信号和评测结果。这比 sandbox escape 更贴近本项目核心完整性风险，必须阻断合并。
+- **建议**：
+  1. 不要在同一 Python interpreter 中由候选与最终判定逻辑共享 module globals；
+  2. 在 Piston job 内使用可信父进程执行比较与 report 生成，候选放入独立子进程，仅返回受限、严格解析的 actual 值；候选进程不得接触 expected、marker 或父进程内存；
+  3. 若暂不引入子进程，至少将 comparator、JSON serializer、emit writer 和 payload引用全部封装为候选无法通过 `__main__` 修改的局部闭包，但这仍不能替代进程隔离；
+  4. 新增真实 Piston 回归测试，覆盖修改 `__main__._strict_equal`、`__main__.json.dumps`、`_emit`、`sys.__stdout__` 以及 stack-frame marker 窃取；任何错误候选均不得返回 `PASSED`。
+
+### P1 — 主要：极大有限 timeout 泄漏未处理 `OverflowError`
+
+- **位置**：`src/code_verifier/execution/piston.py:420-423`
+- **现象**：`validate_execution_request()` 接受有限正浮点数 `1e308`，随后：
+
+  ```python
+  timeout_ms = math.ceil(timeout_seconds * 1000.0)
+  ```
+
+  乘法得到 infinity，`math.ceil()` 抛出：
+
+  ```text
+  OverflowError cannot convert float infinity to integer
+  ```
+
+  对照探针 `3600.0001` 会得到预期的 `ExecutionContractError`，说明问题仅在上限检查顺序。
+- **依据**：计划步骤 3 明确要求 `ceil(timeout_seconds * 1000)` 后检查合理上限，并保持执行合同异常稳定；WP3-a 已确立非法数值不得泄漏裸 `OverflowError`。
+- **影响**：调用方无法只捕获 `ExecutionContractError`；极端配置可中断 verifier/reward 编排并产生未处理 traceback。
+- **建议**：在乘法和 `ceil()` 前先比较秒级上限，或使用显式 overflow guard；所有超过 3600 秒或转换不可表示的值统一抛 `ExecutionContractError`。新增 `1e308`、最大有限 float 和边界值回归测试。
 
 ## 5. 独立测试结果
 
-### 5.1 原样计划命令
+### 5.1 静态检查与默认回归
 
 ```text
 make lint
-→ 失败：make: .venv/bin/python: No such file or directory（Error 127）
+→ 失败：.venv/bin/python 不存在，Error 127
 
-make test
-→ 失败：make: .venv/bin/python: No such file or directory（Error 127）
-```
-
-### 5.2 使用现有虚拟环境复现代码检查
-
-```text
 make lint VENV=/home/dzy/open-r1-code-verifier/.venv
-→ All checks passed
-→ 37 files already formatted
-→ Success: no issues found in 37 source files
-
-PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -m pytest \
-  tests/unit/execution tests/integration/test_wp3a_mock_execution.py
-→ 80 passed
+→ Ruff check: All checks passed
+→ Ruff format: 42 files already formatted
+→ strict Mypy: no issues found in 42 source files
 
 PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
-→ 257 passed
-
-PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -c \
-  "from code_verifier.execution import CodeExecutor, ExecutionResult, ExecutionStatus, MockExecutor, TestCaseResult; print(ExecutionStatus.PASSED.value)"
-→ passed
+→ 324 passed, 1 skipped
 ```
 
-### 5.3 额外合同边界探针
+唯一 skip 为未显式启用的真实 Piston 模块，符合默认测试不连接服务的计划。
+
+### 5.2 真实 Piston 验收与 runtime
 
 ```text
-cycle RecursionError maximum recursion depth exceeded while calling a Python object
-huge_timeout OverflowError int too large to convert to float
-secret_key ExecutionContractError tests[0].input.HIDDEN_SECRET_KEY contains unsupported JSON value type object
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 6 passed, 0 failed, 0 skipped
+
+runtime smoke
+→ 3.10.0
+```
+
+### 5.3 对抗性与合同边界探针
+
+```text
+candidate replaces __main__._strict_equal; actual=1000, expected=2
+→ passed passed
+
+candidate replaces __main__.json.dumps; actual=1000, expected=2
+→ passed 1 1.0 passed
+
+timeout_seconds=1e308
+→ OverflowError cannot convert float infinity to integer
+
+timeout_seconds=3600.0001
+→ ExecutionContractError timeout_seconds exceeds the supported Piston limit
 ```
 
 ## 6. 结论
 
 - **审查结论：不通过**。
-- 常规接口、Mock 行为、文档、静态检查和 257 项回归均表现正常，但 WP3-a 的核心交付之一是稳定、无泄漏的执行合同边界。当前存在两个“主要”问题：非法输入可逃逸公开异常类型，且异常文本可泄漏隐藏测试键名。
-- executor 应修复 P1、P2，增加对应回归测试，并重新运行 `make lint`、专项测试和 `make test` 后申请复审。
-- 本轮禁止合并 `feat/wp3`，不修改 `proceedings.md`，不把 WP3-a 或 WP3 标记为完成。
+- 常规功能、loopback transport、资源限制和现有真实安全探针均通过，但 P0 证明候选代码可以在真实 Piston 中伪造 `PASSED`，直接破坏 verifier/reward 的可信性；P1 说明公共异常合同仍有未处理边界。
+- executor 必须修复 P0、P1，增加对应单元与真实 Piston 回归测试，并重新运行 `make lint`、`make test`、`make test-piston` 和对抗性探针后申请复审。
+- 本轮禁止合并 `feat/wp3`，不更新 `proceedings.md`，不把 WP3-b 或 WP3 标记为完成。
 
 ---
 
-# WP3-a 独立复审报告 R2
+# WP3-b 独立复审报告 R2
 
-- **复审日期**：2026-08-05
-- **修复报告**：`ai-work/executor/WP3-executor.md`“代码修复报告（R1）”
-- **修复提交**：`2bcd2ab` — `fix: harden execution contract validation`
-- **复审方式**：逐条核验 R1 问题、源码与测试检查、静态检查、专项测试、全量回归和独立恶意输入探针
+- **复审日期**：2026-08-06
+- **修复报告**：`ai-work/executor/WP3-executor.md`“代码修复报告（WP3-b R1）”
+- **修复提交**：`74031ca`、`8ecfc42`
+- **复审方式**：逐条核验 P0/P1、源码与测试检查、静态检查、默认回归、真实 Piston 验收，以及额外父进程隔离和合同边界探针
 
 ## 7. 上轮问题核验
 
 | 上轮问题 | 严重级别 | 状态 | 证据 |
 |---|---|---|---|
-| P1：循环 JSON 和超大整数可逃逸为 `RecursionError` / `OverflowError` | 主要 | **已修复** | `src/code_verifier/execution/base.py:71-85,117-118,131-132,169-175`：有限数检查安全处理 `OverflowError`，JSON 校验将 `RecursionError` / `SchemaError` 归一为 `ExecutionContractError`。独立探针覆盖循环 input、超大 timeout、per-test runtime、pass rate 和 aggregate runtime，全部得到预期的 `ExecutionContractError`。 |
-| P2：错误文本泄漏隐藏测试中的自定义键名或 sibling 值 | 主要 | **已修复** | `src/code_verifier/execution/base.py:80-85,114-115` 使用固定错误消息；`tests/unit/execution/test_base.py:138-169` 覆盖 input / expected、嵌套 sentinel key、sibling sentinel value 和循环结构。独立探针仅输出 `tests[0].input|expected contains an invalid JSON value`，未回显 sentinel。 |
+| P0：候选可篡改同解释器 harness 并伪造 `PASSED` | 阻断 | **已修复** | `src/code_verifier/execution/harness.py:189-284,385-474,487-537`：可信父进程保留 expected、marker、comparator 和最终 report；候选在 `-I -S` 子进程中运行，仅接收 function name/input，并通过有界 pipe 返回不可信 actual。父进程在 spawn 前关闭 stdin 并执行 `PR_SET_DUMPABLE=0`。原 `_strict_equal` / `json.dumps` 攻击均返回 `WRONG_ANSWER`。 |
+| P1：极大有限 timeout 泄漏裸 `OverflowError` | 主要 | **已修复** | `src/code_verifier/execution/piston.py:420-423` 在毫秒换算前检查 `timeout_seconds > 3600.0`。`3600.0001`、`1e308` 和最大有限 float 均稳定抛出 `ExecutionContractError`；精确边界 `3600.0` 仍被接受。 |
 
-## 8. 回归与新问题检查
+## 8. 回归与新增安全检查
 
-- `ExecutionStatus`、两个 dataclass 和 `CodeExecutor` 的规格 §8.3 公开合同未变化。
-- `MockExecutor` FIFO、调用记录、防御性复制和不执行代码的行为未变化。
-- `src/code_verifier/execution/` 未发现 `exec(`、`eval(`、`compile(` 或 `subprocess`。
+- 候选子进程不接收 expected 或最终 marker；父进程不接受候选提供的 outcome，只解析有限 schema 的 actual 后自行比较。
+- 子进程 stdout、stderr 和 result pipe 均由父进程 nonblocking drain，并分别受输出上限与 8 MiB 协议上限约束。
+- 候选直接写 fd 1 的内容被捕获为普通 stdout；错误实际值仍得到 `WRONG_ANSWER`，不能形成外层 marker spoof。
+- 候选尝试访问 `/proc/<parent>/mem` 和 `/proc/<parent>/fd` 均被拒绝，独立探针返回预期的 `blocked`。
+- 子进程 signal/非零退出由父进程传播，既有 timeout、memory、PID 和 runtime 状态映射未被削弱。
+- `subprocess.Popen` 仅位于发送到 Piston 的可信 runner 源字符串内；宿主 Python 进程仍不执行候选代码。
 - 未发现新增阻断、主要或次要问题。
 - `third_party/open-r1` 固定 commit 仍为 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
-- 未修改项目配置、依赖、Makefile、YAML 或真实沙箱范围。
 
 ## 9. 独立测试结果
 
@@ -154,26 +203,68 @@ make test
 
 make lint VENV=/home/dzy/open-r1-code-verifier/.venv
 → Ruff check passed
-→ 37 files already formatted
-→ strict Mypy: Success, no issues found in 37 source files
+→ 42 files already formatted
+→ strict Mypy: no issues found in 42 source files
 
 PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -m pytest \
-  tests/unit/execution tests/integration/test_wp3a_mock_execution.py
-→ 86 passed
+  tests/unit/execution/test_harness.py tests/unit/execution/test_piston.py
+→ 70 passed
 
 PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
-→ 263 passed
+→ 333 passed, 1 skipped
 
-导入 smoke
-→ passed
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 7 passed, 0 failed, 0 skipped
+
+runtime smoke
+→ 3.10.0
 ```
 
-原样 `make` 命令失败仅因独立 worktree 没有复制 gitignored 的虚拟环境；显式使用主仓库同一固定依赖环境并设置 `PYTHONPATH=src` 后，检查与测试均针对本 worktree 源码执行并全部通过。该环境差异不涉及源码、配置或验收行为缺陷。
+额外对抗性与边界探针：
+
+```text
+replace __main__._strict_equal; actual=1000, expected=2
+→ wrong_answer
+
+replace __main__.json.dumps; actual=1000, expected=2
+→ wrong_answer
+
+direct os.write(1, b"FAKE"); actual=1000, expected=2
+→ wrong_answer，captured stdout='FAKE'
+
+open /proc/<parent>/mem
+→ blocked
+
+list /proc/<parent>/fd
+→ blocked
+
+timeout=3600.0
+→ accepted
+
+timeout=3600.0001 / 1e308 / max finite float
+→ ExecutionContractError: timeout_seconds exceeds the supported Piston limit
+```
 
 ## 10. R2 结论
 
 - **审查结论：通过**。
-- R1 的两个主要问题均已完整修复；计划验收项、静态检查、专项测试、全量回归、无泄漏探针和不执行代码检查均通过。
-- 本结论仅表示 **WP3-a 基础合同与 Mock 基线通过**；真实沙箱、资源隔离、批量执行和完整 WP3 验收仍属于 WP3-b / WP3-c，WP3 整体不得标记为完成。
-- 合并提交：`f77c4a2ad511120cfa8112182a8cb828a53db55f`，消息 `feat: complete WP3-a execution contract foundation`。
-- 清理状态：`.worktrees/wp3` 内曾初始化 submodule；执行非强制 `git worktree remove` 在反初始化 submodule 前后均被 Git 拒绝。按失败处理规则未使用 `--force`，worktree 目录暂时保留，但分支与主仓库均无已跟踪文件的未提交修改。
+- R1 的 P0 阻断问题和 P1 主要问题均已完整修复；计划验收项、静态检查、默认回归、真实 Piston 安全验收和额外对抗性探针均通过。
+- 本结论仅表示 **WP3-b 本地 Piston 单请求执行与安全限制通过**；批量并发、缓存、执行 CLI 和 WP3 整体验收仍属于 WP3-c。
+- **合并被主仓库状态阻塞**：`main` 当前存在已跟踪的未提交修改 `AGENTS.md`、`skills/next-wp-planner/SKILL.md`。按照 reviewer skill，不 stash、不覆盖、不强行合并；本轮不更新 `proceedings.md`。
+
+## 11. 审查通过后的处理状态
+
+- 主仓库原有的两处已跟踪修改已独立保留为提交 `cadcc3f`（`chore: update agent planning guidance`），未被覆盖。
+- 主仓库未跟踪的 `ai-work/planner/WP3-b-plan.md` 与分支版本存在两处文档差异（核对日期与 `uv` 约束）；合并尝试前暂时移除同路径阻塞，失败后已恢复原草稿内容。
+- 尝试执行：
+
+  ```text
+  git merge --no-ff feat/wp3 -m "feat: complete WP3-b local Piston execution"
+  ```
+
+- Git 在 `ai-work/reviewer/WP3-review.md` 产生内容冲突，合并未生成提交。
+- 已执行 `git merge --abort`，主仓库不处于冲突或合并中状态。
+- 按 reviewer skill 的失败处理规则，未手工选择冲突一侧、未使用 `--force` / `--no-verify`、未更新 `proceedings.md`、未清理 worktree。
+- **当前状态**：WP3-b 代码审查结论仍为“通过”，但审查通过后的合并处理因报告文件冲突尚未完成，需要人工明确冲突保留策略后重新执行合并。
