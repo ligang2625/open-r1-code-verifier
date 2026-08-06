@@ -1,6 +1,6 @@
 ---
 name: next-wp-planner
-description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的、精确到函数级别、高度可执行的实施计划（plan 文件）。当用户要求“规划下一个 WP”、“为下一个工作包制定实施计划”、“把下一里程碑拆解为文件/函数级任务并给出测试方案与通过标准”时使用。计划供后续执行 agent 使用，因此必须自包含，且不依赖任何 Codex 专用工具、MCP 或其它 skill。
+description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的、精确到函数级别、高度可执行的实施计划（plan 文件），并为当前阶段创建独立分支与 worktree（分支名含主阶段+子阶段，如 feat/wp3-c）。当用户要求“规划下一个 WP”、“为下一个工作包制定实施计划”、“把下一里程碑拆解为文件/函数级任务并给出测试方案与通过标准”时使用。计划供后续执行 agent 使用，因此必须自包含，且不依赖任何 Codex 专用工具、MCP 或其它 skill。
 ---
 
 # Next WP Planner
@@ -63,9 +63,24 @@ description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生�
 
 计划只添加目标 WP 要求的改动。
 
-### 第 4 步：编写计划
+### 第 4 步：创建当前阶段分支
 
-在 `ai-work/planner/WP{n}-plan.md`（n 为 WP 编号，如 `ai-work/planner/WP1-plan.md`）按 `references/plan-template.md` 的模板产出计划。默认使用中文（与 proceedings/规格一致），代码标识符、签名、文件路径保留英文。若用户另行指定语言或路径，以用户要求为准。
+为本阶段创建独立分支与 worktree，供 executor 实施、reviewer 审查：
+
+1. **分支命名**：分支名必须包含主阶段与子阶段——未拆分使用 `feat/wp{n}`；拆分子阶段使用 `feat/wp{n}-{sub}`（如 `feat/wp3-c`）。
+2. 在主仓库根目录运行 `git worktree list` / `git branch --list` 检查：若该分支与 worktree 已存在则复用；不存在则创建：
+
+   ```bash
+   git worktree add .worktrees/wp{n}-{sub} -b feat/wp{n}-{sub}
+   ```
+
+   worktree 路径默认 `.worktrees/wp{n}`（未拆分）或 `.worktrees/wp{n}-{sub}`（拆分子阶段），可随任务指定调整。
+3. **计划写入分支**：把计划文件写到该 worktree 的 `ai-work/planner/WP{n}-plan.md` 并提交到分支（`docs: add WP{n} plan`），保证 executor 在分支上直接可取计划。
+4. 在计划文件元信息中记录分支名与 worktree 路径。
+
+### 第 5 步：编写计划
+
+在分支 worktree 的 `ai-work/planner/WP{n}-plan.md`（n 为 WP 编号，如 `ai-work/planner/WP1-plan.md`）按 `references/plan-template.md` 的模板产出计划，并提交到当前阶段分支。默认使用中文（与 proceedings/规格一致），代码标识符、签名、文件路径保留英文。若用户另行指定语言或路径，以用户要求为准。
 
 阶段边界以**一个计划文件覆盖的内容**为准：不同计划文件视为不同阶段。
 
@@ -77,7 +92,7 @@ description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生�
 - 若目标 WP 任务过多（步骤超过 10 个、跨多个独立模块或存在长依赖链），必须拆分为多个连续阶段计划（如 `WP{n}-a`、`WP{n}-b`，或拆为子计划），每个子计划仍满足函数级精度、测试方案与独立验收标准；
 - 拆分后每个计划文件视为独立阶段，按各自计划执行、审查与合并。
 
-### 第 5 步：自检
+### 第 6 步：自检
 
 完成前逐条核对；不满足则修改计划直到全部通过：
 
@@ -92,4 +107,6 @@ description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生�
 - [ ] 计划不依赖 Codex 工具、MCP、其它 skill；只涉及仓库文件、项目自带命令与执行 agent 自身的文件/shell 能力；
 - [ ] 计划不含创建/启动执行 agent 的步骤；
 - [ ] 计划粒度适中（步骤 ≤ 10、新模块 ≤ 8）；任务过多时已拆分为多个阶段计划；
+- [ ] 已为本阶段创建/复用分支（名称含主阶段+子阶段）与 worktree，计划已提交到该分支；
+- [ ] 计划未提交到 main，未在 main 上留下本阶段改动；
 - [ ] 通过标准可判定（通过/失败无需主观判断）。

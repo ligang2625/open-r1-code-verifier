@@ -96,16 +96,17 @@
 
 ## 六、阶段工作区与提交
 
-### 创建独立 worktree（首次任务时，主仓库根目录执行）
+### 确认 planner 创建的分支与 worktree（executor 只复用，不创建）
+
+分支与 worktree 由 planner 创建：`.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，分支 `feat/wp{n}` 或 `feat/wp{n}-{sub}`（如 `feat/wp3-c`）。
 
 ```bash
-# 先检查是否已存在，避免重复创建
-git worktree list
-# 不存在则创建（分支名 feat/wp{n}，路径默认为主仓库同级目录）
-git worktree add ../open-r1-code-verifier-wp{n} -b feat/wp{n}
+git worktree list          # 定位分支对应的 worktree；找不到则停下报告
+git branch --show-current  # 必须等于计划元信息中的分支名
+git switch <分支名>         # 若不在该分支先切换；禁止在 main 上修改或提交
 ```
 
-已存在同名 worktree 或分支则复用；创建后所有阶段文件操作与命令在 worktree 目录中执行。计划文件放入 worktree 的 `ai-work/planner/` 目录。
+所有阶段文件操作与命令都在该 worktree 目录中执行。
 
 ### 每任务提交（worktree 目录中执行）
 
@@ -124,4 +125,4 @@ git commit -m "feat: <本步骤能力概述>"
 ### 收尾与合并边界
 
 - 阶段报告 `ai-work/executor/WP{n}-executor.md` 随对应提交落在独立分支上；
-- 执行方不写入 `proceedings.md`、不合并、不 push；合并回主分支与 proceedings 简洁记录由 wp-plan-reviewer 在审查通过后执行。
+- 执行方不创建分支/worktree、不写入 `proceedings.md`、不合并、不 push；分支由 planner 创建，合并回主分支与 proceedings 简洁记录由 wp-plan-reviewer 在审查通过后执行。

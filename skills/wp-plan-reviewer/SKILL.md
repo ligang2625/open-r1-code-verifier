@@ -25,13 +25,14 @@ description: 在 wp-plan-executor 完成计划执行与代码测试之后，在�
 
 执行前读取以下文件：
 
-- **阶段 worktree**：本阶段代码位于独立 worktree（默认 `../open-r1-code-verifier-wp{n}`，以任务指定为准）；所有审查与测试命令在 worktree 目录中运行。
+- **阶段 worktree**：本阶段代码位于 planner 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）；所有审查与测试命令在 worktree 目录中运行。
 1. **计划文件**：任务给出的路径（如 `ai-work/planner/WP1-plan.md`）；未给出时取 `ai-work/planner/` 下编号最大的 `WP{n}-plan.md` 并在报告中注明。计划中的交付与验收是审查基准。
-2. **executor 的阶段报告**：`ai-work/executor/WP{n}-executor.md`（执行结果与历次修复报告），待核验的声明。
-3. **历史审查报告**（复审时）：同一阶段文件 `ai-work/reviewer/WP{n}-review.md` 中此前轮次的内容；上一轮问题清单是复审焦点。
-4. `PROJECT_SPEC_Open-R1_CodeVerifier.md`：精读计划引用的章节，以及 §21 的 Code Review 清单（通用/数据/执行器/奖励/结果）。
-5. `proceedings.md` 历史：了解前置阶段状态与已记录决策。
-6. 当前 `src/` 与 `tests/` 代码：审查对象。
+2. **分支名**：从计划元信息读取当前阶段分支（`feat/wp{n}` 或 `feat/wp{n}-{sub}`，如 `feat/wp3-c`），合并时使用该分支名。
+3. **executor 的阶段报告**：`ai-work/executor/WP{n}-executor.md`（执行结果与历次修复报告），待核验的声明。
+4. **历史审查报告**（复审时）：同一阶段文件 `ai-work/reviewer/WP{n}-review.md` 中此前轮次的内容；上一轮问题清单是复审焦点。
+5. `PROJECT_SPEC_Open-R1_CodeVerifier.md`：精读计划引用的章节，以及 §21 的 Code Review 清单（通用/数据/执行器/奖励/结果）。
+6. `proceedings.md` 历史：了解前置阶段状态与已记录决策。
+7. 当前 `src/` 与 `tests/` 代码：审查对象。
 
 ## 审查原则
 
@@ -150,17 +151,17 @@ make test
 4. **合并回主分支**：在主仓库目录运行：
 
    ```bash
-   git merge --no-ff feat/wp{n} -m "feat: complete WP{n} <标题>"
+   git merge --no-ff <分支名> -m "feat: complete WP{n} <标题>"
    ```
 
-   产生合并提交；消息可用 Conventional Commits 或任务指定消息。
+   `<分支名>` 为计划元信息记录的 `feat/wp{n}` 或 `feat/wp{n}-{sub}`（如 `feat/wp3-c`）；产生合并提交；消息可用 Conventional Commits 或任务指定消息。
 5. **写入简洁 proceedings 记录**：合并完成后，在 `proceedings.md` 末尾追加当前阶段完成记录，**内容保持简洁**：只写本阶段完成的功能概述与相关文件（新增/修改清单）、验收结论；**不写入中间多次 review 与 execution 的细节**（那些细节在 `ai-work/` 报告文件中）。未拆分的 WP 使用 `## WP{n}：<名称>`；拆分的子阶段使用 `## WP{n}-<后缀>：<名称>`。
 6. **WP 整合（仅当本 WP 被拆分为多个子阶段，且本轮是其最后一个子阶段）**：
    - 检查 `ai-work/planner/` 下同前缀 `WP{n}-*` 的全部计划文件，并核对 `proceedings.md` 中每个子阶段是否都已有对应记录；
    - 若全部子阶段已完成，把该 WP 的所有子阶段记录整合为**一条** `## WP{n}：<WP 名称>` 记录：头部为 WP 级元信息与实施范围，主体为整合后的完成功能与相关文件（汇总），各子阶段以小节保留（如 `### 子阶段 WP{n}-a`）；删除独立的子阶段小节，内容仍保持简洁，不含 review/execution 细节；
    - 未拆分（单一计划）的 WP 跳过整合，其阶段记录即为最终 WP 记录。
 7. **提交**：提交 proceedings 记录（普通场景 `docs: record WP{n} completion in proceedings`；整合场景 `docs: consolidate WP{n} sub-stages in proceedings`），并将合并提交 hash 与提交信息记录到审查报告的结论节。
-8. **清理**：合并成功后 `git worktree remove ../open-r1-code-verifier-wp{n}`；分支默认保留（如需删除按项目约定执行）。
+8. **清理**：合并成功后 `git worktree remove .worktrees/wp{n}`（或 `.worktrees/wp{n}-{sub}`）；分支默认保留（如需删除按项目约定执行）。
 9. **失败处理**：冲突、hook 拒绝或暂存异常时不强行绕过（不用 `--no-verify`、`--force` 等），停下报告。
 10. **不自动 push**：push 仅在任务或人工明确要求时执行。
 
@@ -179,6 +180,7 @@ make test
 - [ ] 审查结果追加到 `ai-work/reviewer/WP{n}-review.md`（同阶段单文件、轮次追加、未覆盖历史）；新阶段时按 plan 覆盖内容清空重写；
 - [ ] 复审：上一轮每条问题均已标记“已修复/未修复/修复不完整/新问题”并附证据；
 - [ ] 审查与测试均在阶段 worktree 中执行；
+- [ ] 合并使用的分支名为计划元信息记录的 `feat/wp{n}` 或 `feat/wp{n}-{sub}`；
 - [ ] 审查结果已提交到独立分支；结论为“通过”才合并回主分支，不通过 / 需修改时未合并；
 - [ ] 合并前 worktree 与主仓库均无意外未提交改动；合并仅含本 WP 分支内容；
 - [ ] 最终审查方已写入简洁 proceedings 记录（仅功能概述与相关文件，无中间 review/execution 细节）并提交；
