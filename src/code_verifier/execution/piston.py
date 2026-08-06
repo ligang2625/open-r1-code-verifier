@@ -337,17 +337,15 @@ def _map_piston_stage_failure(
         return ExecutionStatus.OUTPUT_LIMIT
     if status == "XX":
         return ExecutionStatus.SANDBOX_ERROR
-    if status == "SG":
-        if "memory" in message:
-            return ExecutionStatus.MEMORY_LIMIT
-        if (
-            signal_value == "SIGKILL"
-            and stage.memory_bytes is not None
-            and stage.memory_bytes >= math.ceil(memory_limit_bytes * 0.95)
-        ):
-            return ExecutionStatus.MEMORY_LIMIT
-        return ExecutionStatus.RUNTIME_ERROR
-    if status in {"RE"}:
+    if status == "SG" and "memory" in message:
+        return ExecutionStatus.MEMORY_LIMIT
+    if (
+        (signal_value == "SIGKILL" or stage.code == 137)
+        and stage.memory_bytes is not None
+        and stage.memory_bytes >= math.ceil(memory_limit_bytes * 0.95)
+    ):
+        return ExecutionStatus.MEMORY_LIMIT
+    if status in {"SG", "RE"}:
         return ExecutionStatus.RUNTIME_ERROR
     if stage.signal is not None or (stage.code is not None and stage.code != 0):
         return ExecutionStatus.RUNTIME_ERROR
@@ -383,18 +381,21 @@ class PistonExecutor:
                 if not isinstance(record_value, dict) or not all(isinstance(key, str) for key in record_value):
                     raise PistonTransportError("invalid piston runtimes response")
                 record = cast(dict[str, object], record_value)
-                if set(record) != {"language", "version", "aliases", "runtime"}:
+                if set(record) not in (
+                    {"language", "version", "aliases"},
+                    {"language", "version", "aliases", "runtime"},
+                ):
                     raise PistonTransportError("invalid piston runtimes response")
                 language = record["language"]
                 version = record["version"]
                 aliases = record["aliases"]
-                runtime = record["runtime"]
+                runtime = record.get("runtime")
                 if (
                     not isinstance(language, str)
                     or not isinstance(version, str)
                     or not isinstance(aliases, list)
                     or not all(isinstance(alias, str) for alias in aliases)
-                    or not isinstance(runtime, str)
+                    or (runtime is not None and not isinstance(runtime, str))
                 ):
                     raise PistonTransportError("invalid piston runtimes response")
                 if language == self._config.language and version == self._config.version:

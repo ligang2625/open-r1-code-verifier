@@ -412,6 +412,8 @@ def test_execute_maps_memory_signal_only_with_message_or_threshold() -> None:
     assert _execute(with_message).status is ExecutionStatus.MEMORY_LIMIT
     near_limit, _ = _executor([_run_response(status="SG", signal="SIGKILL", memory=math.ceil(memory_limit * 0.95))])
     assert _execute(near_limit).status is ExecutionStatus.MEMORY_LIMIT
+    exit_137, _ = _executor([_run_response(status="RE", code=137, memory=math.ceil(memory_limit * 0.95))])
+    assert _execute(exit_137).status is ExecutionStatus.MEMORY_LIMIT
     below_limit, _ = _executor([_run_response(status="SG", signal="SIGKILL", memory=1024)])
     assert _execute(below_limit).status is ExecutionStatus.RUNTIME_ERROR
 
