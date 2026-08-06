@@ -259,7 +259,10 @@ def batch_execution_result_to_mapping(result: BatchExecutionResult) -> dict[str,
         raise ExecutionContractError("cache_hits must equal the number of cache-hit items")
     if isinstance(result.runtime_ms, bool) or not isinstance(result.runtime_ms, int | float):
         raise ExecutionContractError("runtime_ms must be a finite non-negative number")
-    runtime_ms = float(result.runtime_ms)
+    try:
+        runtime_ms = float(result.runtime_ms)
+    except OverflowError:
+        raise ExecutionContractError("runtime_ms must be a finite non-negative number") from None
     if not math.isfinite(runtime_ms) or runtime_ms < 0:
         raise ExecutionContractError("runtime_ms must be a finite non-negative number")
     return {

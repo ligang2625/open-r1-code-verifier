@@ -514,6 +514,33 @@ def test_batch_result_mapping_is_json_serializable_and_omits_request_payload() -
     assert json.loads(encoded) == mapping
 
 
+@pytest.mark.parametrize(
+    "runtime_ms",
+    [10**1000, float("nan"), float("inf"), -0.1, True],
+)
+def test_batch_result_mapping_rejects_invalid_runtime_without_builtin_overflow(runtime_ms: object) -> None:
+    executor = BatchExecutor(
+        _factory(lambda code: _result(), []),
+        executor_version="executor-v1",
+        config=_batch_config(),
+    )
+    result = executor.execute_batch([])
+    with pytest.raises(ExecutionContractError, match="finite non-negative"):
+        batch_execution_result_to_mapping(replace(result, runtime_ms=cast(float, runtime_ms)))
+
+
+def test_batch_result_mapping_accepts_maximum_finite_float_runtime() -> None:
+    executor = BatchExecutor(
+        _factory(lambda code: _result(), []),
+        executor_version="executor-v1",
+        config=_batch_config(),
+    )
+    result = executor.execute_batch([])
+    maximum = float.fromhex("0x1.fffffffffffffp+1023")
+    mapping = batch_execution_result_to_mapping(replace(result, runtime_ms=maximum))
+    assert mapping["runtime_ms"] == maximum
+
+
 def test_batch_result_runtime_is_wall_clock_and_cache_hit_count_is_exact() -> None:
     hit_request = _request("hit")
     miss_request = _request("miss")
