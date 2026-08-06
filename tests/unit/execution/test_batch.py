@@ -453,6 +453,27 @@ def test_batch_does_not_cache_sandbox_error() -> None:
     assert cache.put_calls == []
 
 
+def test_batch_rejects_invalid_custom_cache_result_without_builtin_attribute_error() -> None:
+    request = _request("1")
+
+    class InvalidCache(_MemoryCache):
+        def get(self, key: ExecutionCacheKey) -> ExecutionResult | None:
+            self.get_calls.append(key)
+            return cast(ExecutionResult, object())
+
+    cache = InvalidCache()
+    factory_calls: list[CodeExecutor] = []
+    executor = BatchExecutor(
+        _factory(lambda code: _result(), factory_calls),
+        executor_version="executor-v1",
+        config=_batch_config(cache_mode=ExecutionCacheMode.READ_ONLY),
+        cache=cache,
+    )
+    with pytest.raises(BatchExecutionError, match="invalid result"):
+        executor.execute_batch([request])
+    assert factory_calls == []
+
+
 def test_batch_rejects_sandbox_error_returned_by_custom_cache_without_running_factory() -> None:
     request = _request("1")
     cache = _MemoryCache({_key(request): _result(ExecutionStatus.SANDBOX_ERROR)})
