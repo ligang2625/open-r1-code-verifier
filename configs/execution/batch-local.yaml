@@ -1,0 +1,13 @@
+piston:
+  base_url: http://127.0.0.1:2000
+  language: python
+  version: "3.10.0"
+  request_timeout_margin_seconds: 2.0
+  max_response_bytes: 131072
+  max_output_bytes: 4096
+  stop_on_first_failure: false
+
+batch:
+  max_concurrency: 4
+  cache_mode: disabled
+  allow_training_cache: false
