@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 build/
 dist/
+.worktrees/
 
 # Generated experiment artifacts.
 data/raw/
