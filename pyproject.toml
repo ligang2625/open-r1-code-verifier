@@ -33,6 +33,7 @@ open-r1 = { path = "third_party/open-r1", editable = true }
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+markers = ["piston: requires an explicitly enabled self-hosted loopback Piston service"]
 
 [tool.mypy]
 python_version = "3.10"
