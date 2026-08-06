@@ -2,6 +2,7 @@
 # Repository Guidelines
 project instructions are in `PROJECT_SPEC_Open-R1_CodeVerifier.md`
 project proceedings are in `proceedings.md`
+use `uv` to manage virtual environment and python packages
 ## Project Structure & Module Organization
 
 ```
