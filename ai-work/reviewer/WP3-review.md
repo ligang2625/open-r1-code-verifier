@@ -278,3 +278,5 @@ timeout=3600.0001 / 1e308 / max finite float
 - 合并后的 `main` 独立复验：`make lint` 通过；`make test` 为 333 passed、1 skipped；`make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` 为 7 passed、0 failed、0 skipped。
 - `proceedings.md` 已追加简洁的 WP3-b 子阶段完成记录。WP3-c 尚未完成，因此未执行 WP3 子阶段整合，WP3 整体继续标记为部分完成。
 - 未执行 push；分支按项目约定默认保留。
+- 清理阶段 worktree 时，`git worktree remove .worktrees/wp3` 在 submodule deinit 前后均被 Git 拒绝，错误为 `fatal: working trees containing submodules cannot be moved or removed`。
+- 已执行非强制 `git -C .worktrees/wp3 submodule deinit --all`；未使用 `git worktree remove --force`。因此 `.worktrees/wp3` 暂时保留，但不影响 WP3-b 合并、验收和主分支完成记录。
