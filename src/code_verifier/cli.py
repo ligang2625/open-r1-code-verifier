@@ -51,6 +51,7 @@ from code_verifier.execution import (
     batch_execution_request_from_mapping,
     load_batch_execution_config,
     piston_executor_version,
+    validate_batch_cache_policy,
 )
 from code_verifier.parsing import extract_python_code
 
@@ -262,6 +263,7 @@ def _execute_batch(args: argparse.Namespace) -> int:
         resolved_cache = cache_path.resolve(strict=False)
         if resolved_cache == resolved_output or resolved_output in resolved_cache.parents:
             raise BatchExecutionError("cache path must not be inside the output directory")
+    validate_batch_cache_policy(batch_config, workload_mode)
 
     probe = PistonExecutor(config.piston)
     probe.validate_runtime()

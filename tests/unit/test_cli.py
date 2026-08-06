@@ -479,6 +479,59 @@ def test_execute_batch_rejects_cache_path_mode_mismatch(
     assert "cache path is required" in capsys.readouterr().err
 
 
+def test_execute_batch_rejects_training_cache_before_piston_or_cache_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    seen: list[str] = []
+
+    class UnexpectedPistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+            seen.append("piston")
+
+    class UnexpectedCache:
+        def __init__(self, path: Path) -> None:
+            del path
+            seen.append("cache")
+
+    class UnexpectedBatchExecutor:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            seen.append("batch")
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", UnexpectedPistonExecutor)
+    monkeypatch.setattr(cli_module, "SQLiteExecutionCache", UnexpectedCache)
+    monkeypatch.setattr(cli_module, "BatchExecutor", UnexpectedBatchExecutor)
+    output = tmp_path / "output"
+    cache_path = tmp_path / "cache.sqlite3"
+    assert (
+        main(
+            [
+                "execute-batch",
+                "--config",
+                "configs/execution/batch-local.yaml",
+                "--requests",
+                "tests/fixtures/wp3c/batch_requests.jsonl",
+                "--output-dir",
+                str(output),
+                "--workload-mode",
+                "training",
+                "--cache-mode",
+                "read_only",
+                "--cache-path",
+                str(cache_path),
+            ]
+        )
+        == 2
+    )
+    assert seen == []
+    assert not cache_path.exists()
+    assert not output.exists()
+    assert "training cache requires explicit opt-in" in capsys.readouterr().err
+
+
 def test_execute_batch_applies_concurrency_and_cache_overrides(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -27,6 +27,7 @@ from code_verifier.execution.batch import (
     batch_execution_request_from_mapping,
     batch_execution_result_to_mapping,
     load_batch_execution_config,
+    validate_batch_cache_policy,
 )
 from code_verifier.execution.cache import (
     ExecutionCache,
@@ -82,6 +83,7 @@ __all__ = [
     "load_batch_execution_config",
     "load_piston_executor_config",
     "piston_executor_version",
+    "validate_batch_cache_policy",
     "validate_execution_request",
     "validate_execution_result",
     "validate_test_case_result",

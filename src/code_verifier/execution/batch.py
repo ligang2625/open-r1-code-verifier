@@ -294,6 +294,22 @@ def _validate_batch_executor_config(config: BatchExecutorConfig) -> None:
         raise ConfigError("allow_training_cache must be a boolean")
 
 
+def validate_batch_cache_policy(
+    config: BatchExecutorConfig,
+    workload_mode: ExecutionWorkloadMode,
+) -> None:
+    """Reject unsafe workload/cache combinations before any execution side effects."""
+    _validate_batch_executor_config(config)
+    if not isinstance(workload_mode, ExecutionWorkloadMode):
+        raise ExecutionContractError("workload_mode must be an ExecutionWorkloadMode")
+    if (
+        workload_mode is ExecutionWorkloadMode.TRAINING
+        and config.cache_mode is not ExecutionCacheMode.DISABLED
+        and not config.allow_training_cache
+    ):
+        raise BatchExecutionError("training cache requires explicit opt-in")
+
+
 def batch_execution_config_from_mapping(value: object) -> BatchExecutionConfig:
     """Parse exact piston and batch mappings and reject unknown fields."""
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
@@ -408,21 +424,13 @@ class BatchExecutor:
         started = time.monotonic()
         if not isinstance(requests, Sequence):
             raise ExecutionContractError("requests must be a sequence")
-        if not isinstance(workload_mode, ExecutionWorkloadMode):
-            raise ExecutionContractError("workload_mode must be an ExecutionWorkloadMode")
+        validate_batch_cache_policy(self._config, workload_mode)
         copied_requests = [_validate_batch_request(request) for request in list(requests)]
         request_ids: set[str] = set()
         for request in copied_requests:
             if request.request_id in request_ids:
                 raise ExecutionContractError("request_id values must be unique within a batch")
             request_ids.add(request.request_id)
-        if (
-            workload_mode is ExecutionWorkloadMode.TRAINING
-            and self._config.cache_mode is not ExecutionCacheMode.DISABLED
-            and not self._config.allow_training_cache
-        ):
-            raise BatchExecutionError("training cache requires explicit opt-in")
-
         item_results: list[BatchExecutionItemResult | None] = [None] * len(copied_requests)
         misses: list[tuple[int, BatchExecutionRequest, ExecutionCacheKey | None]] = []
         for index, request in enumerate(copied_requests):
