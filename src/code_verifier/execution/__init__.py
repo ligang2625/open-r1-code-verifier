@@ -6,6 +6,7 @@ from code_verifier.execution.base import (
     ExecutionResult,
     ExecutionStatus,
     TestCaseResult,
+    execution_result_from_mapping,
     execution_result_to_mapping,
     validate_execution_request,
     validate_execution_result,
@@ -17,6 +18,7 @@ from code_verifier.execution.piston import (
     PistonExecutorConfig,
     PistonTransportError,
     load_piston_executor_config,
+    piston_executor_version,
 )
 
 __all__ = [
@@ -30,8 +32,10 @@ __all__ = [
     "PistonExecutorConfig",
     "PistonTransportError",
     "TestCaseResult",
+    "execution_result_from_mapping",
     "execution_result_to_mapping",
     "load_piston_executor_config",
+    "piston_executor_version",
     "validate_execution_request",
     "validate_execution_result",
     "validate_test_case_result",

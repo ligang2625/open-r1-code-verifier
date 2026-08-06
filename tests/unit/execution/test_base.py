@@ -14,6 +14,7 @@ from code_verifier.execution import (
     ExecutionResult,
     ExecutionStatus,
     MockExecutor,
+    execution_result_from_mapping,
     execution_result_to_mapping,
     validate_execution_request,
     validate_execution_result,
@@ -349,6 +350,97 @@ def test_execution_result_to_mapping_is_exact_and_json_serializable() -> None:
         ],
     }
     assert json.loads(json.dumps(mapping, allow_nan=False)) == mapping
+
+
+def test_execution_result_from_mapping_round_trips_exact_mapping() -> None:
+    mapping = execution_result_to_mapping(_execution_result())
+    parsed = execution_result_from_mapping(mapping)
+    assert execution_result_to_mapping(parsed) == mapping
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {},
+        {
+            "status": "passed",
+            "passed_tests": 1,
+            "total_tests": 1,
+            "pass_rate": 1.0,
+            "runtime_ms": 1.0,
+            "test_results": [],
+            "extra": 1,
+        },
+        {
+            "status": "passed",
+            "passed_tests": True,
+            "total_tests": 1,
+            "pass_rate": 1.0,
+            "runtime_ms": 1.0,
+            "test_results": [],
+        },
+        {
+            "status": "passed",
+            "passed_tests": 1,
+            "total_tests": 1,
+            "pass_rate": 1.0,
+            "runtime_ms": 1.0,
+            "test_results": [{"status": "passed", "passed": True, "runtime_ms": 1.0, "stdout": ""}],
+        },
+    ],
+)
+def test_execution_result_from_mapping_rejects_missing_unknown_and_wrong_typed_fields(mapping: object) -> None:
+    with pytest.raises(ExecutionContractError):
+        execution_result_from_mapping(mapping)
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {
+            "status": "unknown",
+            "passed_tests": 0,
+            "total_tests": 0,
+            "pass_rate": 0.0,
+            "runtime_ms": 0.0,
+            "test_results": [],
+        },
+        {
+            "status": "passed",
+            "passed_tests": 0,
+            "total_tests": 1,
+            "pass_rate": 0.0,
+            "runtime_ms": 0.0,
+            "test_results": [],
+        },
+    ],
+)
+def test_execution_result_from_mapping_rejects_invalid_status_and_result_invariants(mapping: object) -> None:
+    with pytest.raises(ExecutionContractError):
+        execution_result_from_mapping(mapping)
+
+
+def test_execution_result_from_mapping_returns_independent_test_result_list() -> None:
+    mapping = execution_result_to_mapping(_execution_result())
+    parsed = execution_result_from_mapping(mapping)
+    raw_items = cast(list[dict[str, object]], mapping["test_results"])
+    raw_items.clear()
+    assert len(parsed.test_results) == 1
+
+
+def test_execution_result_from_mapping_error_does_not_echo_sentinel() -> None:
+    sentinel = "PRIVATE_MAPPING_SENTINEL"
+    mapping = {
+        "status": sentinel,
+        "passed_tests": 0,
+        "total_tests": 0,
+        "pass_rate": 0.0,
+        "runtime_ms": 0.0,
+        "test_results": [],
+    }
+    with pytest.raises(ExecutionContractError) as exc_info:
+        execution_result_from_mapping(mapping)
+    assert sentinel not in str(exc_info.value)
 
 
 def test_mock_implementation_is_assignable_to_code_executor() -> None:

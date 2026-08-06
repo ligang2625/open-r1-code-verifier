@@ -18,6 +18,8 @@ HarnessOutcome: TypeAlias = Literal[
     "harness_error",
 ]
 
+PYTHON_HARNESS_PROTOCOL_VERSION = "trusted-parent-v1"
+
 _ALLOWED_OUTCOMES = frozenset(
     {"passed", "wrong_answer", "syntax_error", "runtime_error", "output_limit", "harness_error"}
 )

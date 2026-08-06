@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import secrets
@@ -16,6 +17,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, OpenerDirector, ProxyHandler, Request, build_opener
 
 from code_verifier.config import ConfigError, load_yaml_mapping
+from code_verifier.execution import harness as harness_module
 from code_verifier.execution.base import (
     ExecutionContractError,
     ExecutionResult,
@@ -38,6 +40,7 @@ _CONFIG_FIELDS = frozenset(
         "stop_on_first_failure",
     }
 )
+PISTON_EXECUTOR_IMPLEMENTATION_VERSION = "piston-executor-v1"
 
 
 class PistonTransportError(RuntimeError):
@@ -205,6 +208,25 @@ def load_piston_executor_config(path: Path) -> PistonExecutorConfig:
     if set(loaded) != {"piston"}:
         raise ConfigError("Execution config must contain exactly the piston field")
     return piston_executor_config_from_mapping(loaded["piston"])
+
+
+def piston_executor_version(config: PistonExecutorConfig) -> str:
+    """Return a deterministic version string for all result-affecting Piston semantics."""
+    if not isinstance(config, PistonExecutorConfig):
+        raise ExecutionContractError("config must be a PistonExecutorConfig")
+    payload = {
+        "implementation_version": PISTON_EXECUTOR_IMPLEMENTATION_VERSION,
+        "harness_protocol_version": harness_module.PYTHON_HARNESS_PROTOCOL_VERSION,
+        "base_url": config.base_url,
+        "language": config.language,
+        "version": config.version,
+        "request_timeout_margin_seconds_hex": config.request_timeout_margin_seconds.hex(),
+        "max_response_bytes": config.max_response_bytes,
+        "max_output_bytes": config.max_output_bytes,
+        "stop_on_first_failure": config.stop_on_first_failure,
+    }
+    encoded = json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"piston:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _validate_base_url(value: str) -> str:

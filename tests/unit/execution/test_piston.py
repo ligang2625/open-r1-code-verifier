@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import math
+from dataclasses import replace
 from email.message import Message
 from pathlib import Path
 from typing import Any, cast
@@ -20,7 +21,9 @@ from code_verifier.execution import (
     ExecutionStatus,
     PistonExecutor,
     execution_result_to_mapping,
+    piston_executor_version,
 )
+from code_verifier.execution import harness as harness_module
 from code_verifier.execution import piston as piston_module
 from code_verifier.execution.piston import (
     PistonTransportError,
@@ -40,6 +43,45 @@ def _valid_mapping() -> dict[str, object]:
         "max_output_bytes": 4096,
         "stop_on_first_failure": False,
     }
+
+
+def test_piston_executor_version_is_stable_and_well_formed() -> None:
+    config = piston_executor_config_from_mapping(_valid_mapping())
+    first = piston_executor_version(config)
+    second = piston_executor_version(config)
+    assert first == second
+    assert first.startswith("piston:")
+    digest = first.removeprefix("piston:")
+    assert len(digest) == 64
+    assert digest == digest.lower()
+    assert all(character in "0123456789abcdef" for character in digest)
+
+
+def test_piston_executor_version_changes_with_every_piston_config_field() -> None:
+    config = piston_executor_config_from_mapping(_valid_mapping())
+    baseline = piston_executor_version(config)
+    variants = [
+        replace(config, base_url="http://localhost:2000"),
+        replace(config, language="python-alt"),
+        replace(config, version="3.11.0"),
+        replace(config, request_timeout_margin_seconds=3.0),
+        replace(config, max_response_bytes=config.max_response_bytes + 1),
+        replace(config, max_output_bytes=config.max_output_bytes + 1),
+        replace(config, stop_on_first_failure=True),
+    ]
+    assert all(piston_executor_version(variant) != baseline for variant in variants)
+
+
+def test_piston_executor_version_changes_with_harness_and_implementation_protocol_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = piston_executor_config_from_mapping(_valid_mapping())
+    baseline = piston_executor_version(config)
+    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v2")
+    assert piston_executor_version(config) != baseline
+    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v1")
+    monkeypatch.setattr(piston_module, "PISTON_EXECUTOR_IMPLEMENTATION_VERSION", "piston-executor-v2")
+    assert piston_executor_version(config) != baseline
 
 
 class _FakeResponse:
