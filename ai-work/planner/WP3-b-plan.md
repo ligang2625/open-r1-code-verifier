@@ -87,7 +87,7 @@
 
 ### 3.2 Piston API 与部署依据
 
-本计划以 2026-08-05 核对的官方 `engineer-man/piston` README/API 合同为实现依据：
+本计划以 2026-08-06 核对的官方 `engineer-man/piston` README/API 合同为实现依据：
 
 - runtime 列表：`GET /api/v2/runtimes`；
 - 执行：`POST /api/v2/execute`；
@@ -106,6 +106,7 @@
 - 本地 Piston 必须使用独立 sandbox job、非 root runtime、禁用网络和清理临时目录。
 - 配置不得包含密钥；异常和日志不得回显 code、input、expected 或完整 Piston body。
 - 新模块必须包含 `from __future__ import annotations`、完整类型标注、简洁 docstring、明确错误处理和单元测试。
+- 虚拟环境与 Python 包统一通过 `uv` 和仓库现有 Makefile 管理；不得在计划实现中引入裸 `pip install` 流程。
 - 保持 Ruff 双引号、119 列和 strict mypy。
 - 所有真实安全测试必须在 Piston sandbox 内执行；测试代码即使恶意也不得在宿主 Python 进程中运行。
 
