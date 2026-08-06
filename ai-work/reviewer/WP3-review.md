@@ -253,3 +253,18 @@ timeout=3600.0001 / 1e308 / max finite float
 - R1 的 P0 阻断问题和 P1 主要问题均已完整修复；计划验收项、静态检查、默认回归、真实 Piston 安全验收和额外对抗性探针均通过。
 - 本结论仅表示 **WP3-b 本地 Piston 单请求执行与安全限制通过**；批量并发、缓存、执行 CLI 和 WP3 整体验收仍属于 WP3-c。
 - **合并被主仓库状态阻塞**：`main` 当前存在已跟踪的未提交修改 `AGENTS.md`、`skills/next-wp-planner/SKILL.md`。按照 reviewer skill，不 stash、不覆盖、不强行合并；本轮不更新 `proceedings.md`。
+
+## 11. 审查通过后的处理状态
+
+- 主仓库原有的两处已跟踪修改已独立保留为提交 `cadcc3f`（`chore: update agent planning guidance`），未被覆盖。
+- 主仓库未跟踪的 `ai-work/planner/WP3-b-plan.md` 与分支版本存在两处文档差异（核对日期与 `uv` 约束）；合并尝试前暂时移除同路径阻塞，失败后已恢复原草稿内容。
+- 尝试执行：
+
+  ```text
+  git merge --no-ff feat/wp3 -m "feat: complete WP3-b local Piston execution"
+  ```
+
+- Git 在 `ai-work/reviewer/WP3-review.md` 产生内容冲突，合并未生成提交。
+- 已执行 `git merge --abort`，主仓库不处于冲突或合并中状态。
+- 按 reviewer skill 的失败处理规则，未手工选择冲突一侧、未使用 `--force` / `--no-verify`、未更新 `proceedings.md`、未清理 worktree。
+- **当前状态**：WP3-b 代码审查结论仍为“通过”，但审查通过后的合并处理因报告文件冲突尚未完成，需要人工明确冲突保留策略后重新执行合并。
