@@ -245,3 +245,157 @@ BatchExecutionResult runtime_ms=10**1000
 - 但 P1–P4 均属于计划明确安全/合同边界：基础设施错误可被 cache 复用、非法训练缓存策略产生执行副作用、UTF-8 非法字符串造成模式依赖错误和裸异常、batch mapping 泄漏 `OverflowError`。按照 reviewer 判定规则，存在主要问题且最终验收项未通过，不能合并或登记 WP3 完成。
 - executor 应修复全部主要问题并增加相应单元/CLI/SQLite 回归测试，再重新运行 `make lint`、`make test`、`make test-piston`、CLI smoke 和本报告中的对抗性探针后申请复审。
 - 本轮不合并 `feat/wp3c`，不更新 `proceedings.md`，不将 WP3 整体标记为完成。
+
+---
+
+# WP3-c 独立复审报告 R2
+
+- **复审日期**：2026-08-06
+- **修复报告**：`ai-work/executor/WP3-executor.md`“代码修复报告（WP3-c R1）”
+- **复审基线提交**：`2857f1a372706b3e53736becb480b84f418bb520`
+- **修复提交**：`de52d06`、`c2360ec`、`7ac5266`、`35f7525`、`dce13b0`
+- **复审方式**：逐条复核 R1 P1–P4、源码与新增测试检查、静态检查、默认回归、真实 Piston 总验收、CLI smoke，以及相邻公共 mapping/cache-key 合同探针
+
+## 8. R1 问题逐条核验
+
+| R1 问题 | 严重级别 | 状态 | 证据 |
+|---|---|---|---|
+| P1：cache get 可复用 `SANDBOX_ERROR` | 主要 | **已修复** | `cache.py:236-274` 在反序列化和公共结果校验后拒绝 sandbox result；`batch.py:443-455` 在通用 cache Protocol 边界先调用 `_copy_execution_result()`，再拒绝 sandbox hit。独立 custom-cache 探针得到 `BatchExecutionError: execution cache returned a sandbox error`，factory 调用数为 0；SQLite 注入回归通过。 |
+| P2：非法 training-cache policy 失败前访问 Piston 并创建 cache | 主要 | **已修复** | `batch.py:304-317` 新增共享 `validate_batch_cache_policy()`；`cli.py:246-271` 在 Piston constructor、runtime probe 和 SQLite open 之前调用。独立探针结果：`exit 2`、`seen=[]`、cache/output 均不存在。 |
+| P3：UTF-8 不可编码字符串导致模式依赖错误与裸异常 | 主要 | **已修复** | `base.py:81-108,111-160` 对 code/function/tests/stdout/stderr 做 UTF-8 校验；`batch.py:126-133,191-214` 校验 request/problem ID 并在任何 cache/factory 前复制请求；`cache.py:77-83,131-143,236-295` 和 `piston.py:121-124` 防御性归一编码错误。三种 cache mode 的 lone-surrogate 请求均得到脱敏 `ExecutionContractError`，cache/factory 调用数均为 0。 |
+| P4：batch runtime 极大整数泄漏 `OverflowError` | 主要 | **已修复** | `batch.py:260-267` 捕获 float conversion overflow，并统一抛 `ExecutionContractError`。`runtime_ms=10**1000` 独立探针返回 `ExecutionContractError: runtime_ms must be a finite non-negative number`；最大有限 float 回归通过。 |
+
+R1 的四个主要问题均已完整处置，新增测试断言与修复目标一致，未发现通过削弱原计划预期来迁就实现的情况。
+
+## 9. 回归与原计划验收复核
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| cache sandbox failure 不写入、不读取、不复用 | 通过 | SQLite 与 custom cache 两层均 fail-closed；定向测试与独立探针通过。 |
+| training cache 默认禁用且非法策略零执行副作用 | 通过 | CLI 和 BatchExecutor 共用 policy validator；Piston/cache/factory 零调用。 |
+| UTF-8 请求、结果、cache 和 transport 边界稳定 | 通过 | 36 项联合定向测试通过；三种 cache mode 行为一致。 |
+| batch 并发、顺序、独立 executor、cache 模式 | 通过 | 既有 unit/integration 回归全绿。 |
+| WP3-b 安全边界无回归 | 通过 | 真实 Piston 总验收中 WP3-b 7 项全部通过。 |
+| CLI help、artifact、顺序和脱敏 | 通过 | `execute-batch` smoke exit 0；summary 为 4；results 4 行，2 passed / 1 wrong / 1 runtime，顺序正确且未包含请求 payload。 |
+| `third_party/open-r1/**` 未修改 | 通过 | 固定 commit 仍为 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。 |
+| 公共 batch/cache mapping 与 key 边界全部稳定归一 | **未通过** | 发现两个新增主要问题 N1、N2，详见下一节。 |
+
+## 10. 新问题清单
+
+### N1 — 主要：`batch_execution_result_to_mapping()` 在验证 items 之前访问容器和元素，泄漏内置异常
+
+- **位置**：`src/code_verifier/execution/batch.py:234-276`，重点是 `256-259`。
+- **现象**：函数先执行 `len(result.items)` 和 `sum(item.cache_hit for item in result.items)`，随后才通过 `batch_execution_item_to_mapping()` 验证每个 item。
+- **独立探针**：
+
+  ```text
+  BatchExecutionResult(total_requests=1, items=[object()])
+  → AttributeError: 'object' object has no attribute 'cache_hit'
+
+  BatchExecutionResult(items=None)
+  → TypeError: object of type 'NoneType' has no len()
+  ```
+
+- **依据**：该函数是公开 JSON-safe serialization boundary；R1 P4 已确认畸形 batch result 必须稳定归一为 `ExecutionContractError`，不得泄漏 Python 内置异常。计划步骤 3 也要求固定 mapping 合同与严格结构化结果。
+- **影响**：外部调用方、cache/文件反序列化层或后续 verifier 编排传入畸形 batch result 时，无法只捕获公开合同异常，可能产生未处理 traceback。
+- **建议**：先明确验证 `items` 为 list；逐项调用 `batch_execution_item_to_mapping()` 得到已验证 mappings，再计算 cache-hit 数并组装输出。所有畸形容器/元素应统一抛脱敏 `ExecutionContractError`。新增 `None`、非 list、非 item 元素和错误 item 字段回归测试。
+
+### N2 — 主要：cache-key 公共边界未完整验证，合法整数 timeout 和畸形 key 可泄漏异常或形成无效 digest
+
+- **位置**：
+  - `src/code_verifier/execution/cache.py:87-113`：builder 在 `validate_execution_request()` 接受 timeout 后直接调用 `timeout_seconds.hex()`；
+  - `src/code_verifier/execution/cache.py:116-143`：`_cache_key_mapping()` 未验证 key 各字段类型/格式；
+  - `src/code_verifier/execution/cache.py:236-295`：SQLite get/put 依赖该未验证 mapping。
+- **独立证据 1**：整数 timeout 是 `validate_execution_request()` 接受的有限正数，且 Python typing 允许 int 传给 float 参数，但 builder 结果为：
+
+  ```text
+  request-accepted
+  AttributeError: 'int' object has no attribute 'hex'
+  ```
+
+- **独立证据 2**：对公开 `ExecutionCacheKey` 使用 `replace(key, test_layer="visible")`：
+
+  ```text
+  execution_cache_key_digest(...)
+  → AttributeError: 'str' object has no attribute 'value'
+
+  SQLiteExecutionCache.get(...)
+  → AttributeError: 'str' object has no attribute 'value'
+  ```
+
+  同时，`memory_limit_mb=True` 或任意 `timeout_seconds_hex="bad"` 会被直接序列化并生成 digest，而不是 fail-closed。
+- **依据**：计划步骤 2 要求稳定、完整且安全相关字段精确的 cache key；横切规则要求严格拒绝 bool-as-int 和宽松类型；cache corruption/invalid state 必须归一为 `ExecutionCacheError`，不得产生内置异常或无效缓存身份。
+- **影响**：公开 cache-key API 对类型正确的整数 timeout 不可用；手工构造或外部恢复的畸形 key 可能中断 cache，或生成不符合计划语义的持久 entry，削弱 cache identity 可信性。
+- **建议**：新增单一 `_validate_execution_cache_key()`，精确验证 hash 格式、非空 UTF-8 文本、枚举、timeout hex 可解析且有限正、memory 正整数非 bool；在 mapping/digest/get/put 全部调用。builder 对已接受的数值应使用 `float(timeout_seconds).hex()`，或在公共请求合同中一致地拒绝 int，但不得保留当前不一致行为。
+
+## 11. 独立测试结果 R2
+
+### 11.1 原样 worktree 命令
+
+```text
+make lint
+→ 失败：.venv/bin/python 不存在，Error 127
+
+make test
+→ 失败：.venv/bin/python 不存在，Error 127
+```
+
+### 11.2 使用主仓库固定 VENV 验证当前 worktree 源码
+
+```text
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ 47 files already formatted
+→ strict Mypy: no issues found in 47 source files
+
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 422 passed, 3 skipped
+```
+
+三个 skip 均为默认模式下未显式启用的真实 Piston tests。
+
+### 11.3 真实 Piston 总验收
+
+```text
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 9 passed, 2 deselected, 0 failed, 0 skipped
+```
+
+### 11.4 R1 定向联合回归
+
+```text
+pytest test_cache.py test_batch.py test_base.py test_piston.py test_cli.py \
+  -k "structurally_valid_cached_sandbox_error or returned_by_custom_cache \
+      or rejects_training_cache_before or custom_cache or non_utf8 or lone_surrogate \
+      or invalid_runtime_without_builtin_overflow or maximum_finite_float_runtime"
+→ 36 passed, 188 deselected
+```
+
+### 11.5 CLI smoke
+
+```text
+code-verifier --help
+→ exit 0，列出 execute-batch
+
+code-verifier execute-batch --help
+→ exit 0，列出全部 batch/cache/common 参数
+
+execute-batch fixture smoke
+→ exit 0
+→ executed 4 requests (cache_hits=0)
+→ summary total_requests=4
+→ results.jsonl 4 行，顺序与 fixture 一致
+→ 2 passed / 1 wrong_answer / 1 runtime_error
+```
+
+Smoke 输出已删除，worktree 未保留运行产物。
+
+## 12. R2 结论
+
+- **复审结论：需修改**。
+- R1 P1–P4 均已完整修复，常规回归、真实 Piston、CLI smoke 和定向对抗性测试全部通过。
+- 但新增 N1、N2 均属于公开 batch/cache 合同与 cache identity 的主要问题。按照复审判定规则，存在新增主要问题时不能给出“通过”。
+- executor 应修复 N1、N2，增加相应 malformed batch result、整数 timeout 和畸形 cache key 回归，并重新运行完整验收后申请 R3。
+- 本轮不合并 `feat/wp3c`，不更新 `proceedings.md`，不将 WP3 整体标记为完成。
