@@ -6,155 +6,123 @@
 - **目标阶段**：WP3-b（本地 Piston 单请求执行与安全限制）
 - **执行分支**：`feat/wp3`
 - **独立 worktree**：`.worktrees/wp3`
-- **执行状态**：部分完成，因本机未运行计划要求的回环 Piston 服务而在步骤 4 阻断；本子阶段未通过验收，WP3 整体仍为部分完成。
+- **执行状态**：本子阶段全部 5 个步骤已完成并通过验收；WP3 整体仍为部分完成，批量并发、缓存和执行 CLI 留给 WP3-c。
 
-## 1. 已完成并提交的计划步骤
+## 1. 已完成事项
 
 ### 步骤 1：严格本地 Piston 配置与有界 HTTP transport
 
-提交：`2d06916` — `feat: add bounded local piston transport`
-
-已完成：
-
-- 新增 `configs/execution/piston-local.yaml`，固定 `http://127.0.0.1:2000`、Python `3.10.0`、请求余量、响应上限、输出上限与停止策略。
-- 新增 `PistonExecutorConfig`、`PistonTransport`、`UrlLibPistonTransport`、配置加载与严格校验。
-- `base_url` 仅允许 `localhost`、`127.0.0.1`、`::1`，仅允许 HTTP，不允许 userinfo、非根 path、query 或 fragment。
-- urllib transport 禁用代理和 redirect，限制 response bytes，只接受 JSON content type，并将 HTTP、连接、编码和 JSON 错误归一为不包含 response body 的固定错误。
-- 新增配置和 transport 单元测试。
-
-实际验证：
-
-```text
-make lint
-→ Ruff check、Ruff format check、strict Mypy 全部通过
-
-PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_piston.py -k "config or transport"
-→ 9 passed
-```
+- 新增 `configs/execution/piston-local.yaml`。
+- 新增 `PistonExecutorConfig`、`PistonTransport`、`UrlLibPistonTransport`、`PistonTransportError`。
+- 配置只允许 `http` 和 `localhost`、`127.0.0.1`、`::1`；拒绝 userinfo、非根 path、query、fragment、runtime selector、未知字段和非法资源上限。
+- urllib transport 禁用系统代理和 HTTP redirect，只接受 JSON content type，限制 response bytes，并把 HTTP、连接、编码和 JSON 错误转换为固定脱敏错误。
 
 ### 步骤 2：可信 Python 函数测试 harness
 
-提交：`bb82e5e` — `feat: add trusted python test harness`
-
-已完成：
-
 - 新增 `PythonTestProgram`、`HarnessReport`、`build_python_test_program()`、`parse_harness_report()`。
-- 文件顺序固定为可信 `main.py`、原样 `candidate.py`；候选代码不拼接、不格式化。
-- input、expected 和函数名仅经 stdin JSON 传入。
-- 实现 list 位置参数、dict 关键字参数、标量单参数调用约定。
-- 实现类型敏感递归比较、JSON 可序列化检查、stdout/stderr UTF-8 字节上限。
-- 最终结果采用随机 marker 和严格 JSON schema；只接受最后一条非空 marker 行，并拒绝重复 key、未知字段、非有限 runtime 和 spoof。
-- harness 不输出 actual、expected、输入内容或 traceback。
+- 文件顺序固定为可信 `main.py` 和原样 `candidate.py`；候选代码不拼接、不格式化。
+- 测试 input、expected、函数名、marker 和输出上限仅通过 stdin JSON 传入。
+- 实现 list 位置参数、dict 关键字参数和标量单参数调用约定。
+- 实现类型敏感递归比较、JSON 可序列化检查、UTF-8 字节输出上限、随机 marker、最终行解析和严格 report schema。
+- 结果不输出 actual、expected、输入内容或 traceback。
 
-实际验证：
+### 步骤 3：Piston 响应解析与单请求执行器
 
-```text
-make lint
-→ Ruff check、Ruff format check、strict Mypy 全部通过
+- 新增严格 Piston stage parser 和有限 `ExecutionStatus` 映射。
+- 新增 `PistonExecutor`，其 `execute()` 签名与现有 `CodeExecutor` Protocol 一致。
+- `validate_runtime()` 要求精确 Python/version，并拒绝缺失、重复或 malformed runtime 记录。
+- 每个测试创建独立 Piston job，发送完整 wall-time、CPU-time、内存和输出限制。
+- 实现 harness、timeout、output、internal error、signal、非零退出和 OOM 状态映射。
+- 实现配置化 `stop_on_first_failure`；syntax、timeout、memory、output 和 sandbox failure 始终停止。
+- 空测试不访问服务；整体状态、计数、通过率和序列化均通过 WP3-a 公共合同校验。
+- 对外导出 `PistonExecutor`、`PistonExecutorConfig`、`PistonTransportError` 和 `load_piston_executor_config`。
 
-PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_harness.py
-→ 23 passed
+### 步骤 4：真实 Piston 集成与安全验收
+
+- 新增 `piston` pytest marker 和 `make test-piston`。
+- 默认 `make test` 对真实 Piston 模块执行 module-level skip，不连接服务。
+- 显式运行时，缺少配置、runtime 或服务直接失败，不降级为 skip。
+- 真实探针覆盖：
+  - 正确、错误答案、语法错误、运行错误；
+  - 无限循环 timeout；
+  - memory limit；
+  - stdout/stderr output limit；
+  - outbound network blocked；
+  - runtime user 非 root；
+  - `/etc` 写入失败；
+  - 宿主 sentinel 不可读且内容/mtime 不变；
+  - 跨 job `/tmp` 清理；
+  - PID bomb 被限制；
+  - 每个恶意探针后服务健康 smoke。
+
+### 步骤 5：运维文档、公开示例与范围说明
+
+- 新增 `docs/piston-local.md`，记录回环部署、安全边界、固定 source reference、image digest、runtime、健康检查、真实验收和停止/清理命令。
+- README 增加 Piston Python API 示例、显式真实测试命令和 WP3-c 未完成范围。
+- AGENTS 增加 harness/Piston 模块、测试、配置、文档和安全合并规则。
+- 文档明确禁止公共 Piston endpoint、API token、LAN/公网暴露和宿主直接执行模型代码。
+
+## 2. 真实 Piston 部署记录
+
+本次验收使用仓库外部的本地服务：
+
+| 项目 | 实际值 |
+|---|---|
+| 容器名 | `piston_wp3b` |
+| 端口绑定 | `127.0.0.1:2000 -> 2000/tcp` |
+| privileged | `true` |
+| Piston source reference | `de2b365ac759670a3a0d13ea208a0869a92c7e64` |
+| Piston image | `ghcr.io/engineer-man/piston@sha256:2f66b7456189c4d713aa986d98eccd0b6ee16d26c7ec5f21b30e942756fd127a` |
+| Piston API package version | `3.1.1` |
+| Python runtime | `3.10.0` |
+| Docker Engine | `29.6.2` |
+| Docker Compose | `5.3.1` |
+| cgroup | v2 |
+
+镜像内不包含 `.git` 元数据，因此 source reference 与运行镜像 digest 分别记录；实际安全验收对应上述精确 image digest。
+
+Piston 不是仓库 submodule，未将其源码、runtime package 或容器数据写入项目仓库。
+
+## 3. 真实环境暴露并修复的问题
+
+### 3.1 Runtime record 可省略 `runtime` 字段
+
+实际 `/api/v2/runtimes` 返回：
+
+```json
+{
+  "language": "python",
+  "version": "3.10.0",
+  "aliases": ["py", "py3", "python3", "python3.10"]
+}
 ```
 
-### 步骤 3：Piston 响应解析与 `PistonExecutor`
+Piston 内部 route 对未定义的 `runtime` 值不会序列化该字段。原实现错误地要求四字段对象，导致真实服务被判为 malformed。
 
-提交：`9fda0d5` — `feat: add single-request piston executor`
+修复后严格接受：
 
-已完成：
+- `language/version/aliases`；或
+- `language/version/aliases/runtime`，其中 `runtime` 必须为字符串。
 
-- 新增严格 Piston stage parser 和确定性状态映射。
-- 新增 `PistonExecutor`，`execute()` 签名与现有 `CodeExecutor` Protocol 一致。
-- `validate_runtime()` 要求 runtime 列表中恰好存在一个精确 Python/version 记录。
-- 每个测试构造独立 Piston job，并发送完整 compile/run 时间、CPU、内存和输出边界。
-- 实现 harness 状态、Piston `TO`、`OL`、`EL`、`XX`、signal、非零退出和 OOM heuristic 映射。
-- 实现配置化 `stop_on_first_failure`；syntax、timeout、memory、output、sandbox failure 始终停止。
-- 空测试不访问 transport；整体状态、通过数、总测试数和 pass rate 经过现有 execution contract 校验。
-- 对外导出 `PistonExecutor`、`PistonExecutorConfig`、`PistonTransportError`、`load_piston_executor_config`。
-- fake transport 单元测试覆盖 payload、runtime、状态映射、停止策略、顺序、序列化和敏感信息不回显。
+未知字段仍被拒绝。
 
-实际验证：
+### 3.2 Memory limit 以 `RE + code 137` 返回
+
+32 MiB memory probe 的实际 stage 元数据为：
 
 ```text
-make lint
-→ Ruff check、Ruff format check、strict Mypy 全部通过
-
-PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_piston.py
-→ 38 passed
+status=RE
+code=137
+signal=null
+memory=33552000
+message=Exited with error status 137
 ```
 
-## 2. 步骤 4 当前状态：代码已实现，但真实安全验收失败
+原 heuristic 只识别 `SG`、明确 memory message 或 `SIGKILL`。修复后增加确定性规则：`code == 137` 且 reported memory 达到配置上限 95% 时映射为 `MEMORY_LIMIT`。低于阈值的 code 137 或其他 `RE` 仍映射为 `RUNTIME_ERROR`。
 
-当前 worktree 中已实现、但因步骤验收未通过而**尚未提交**：
+## 4. 新增与修改文件
 
-- `tests/integration/test_wp3b_piston_execution.py`
-- `pyproject.toml`
-- `Makefile`
-
-实现内容：
-
-- 注册 `piston` pytest marker。
-- 新增 `make test-piston`，显式设置 `CODE_VERIFIER_RUN_PISTON=1` 和配置路径。
-- 默认测试未显式启用时在 module level 跳过真实 Piston 模块，不连接服务。
-- 显式运行时，缺少配置、runtime 或服务均失败，不降级为 skip。
-- 真实探针覆盖：正确、错误答案、语法错误、运行错误、无限循环、内存、stdout/stderr 输出上限、网络禁用、非 root、基础文件系统写保护、宿主 sentinel 不可见、跨 job `/tmp` 清理、PID bomb 和恶意探针后的服务健康检查。
-
-静态检查结果：
-
-```text
-make lint
-→ Ruff check passed
-→ 42 files already formatted
-→ strict Mypy: Success: no issues found in 42 source files
-```
-
-默认全量回归首次运行时，独立 worktree 尚未初始化既有 Open-R1 submodule，导致环境记录测试把当前分支提交误识别为 submodule commit：
-
-```text
-PYTHONPATH=src make test
-→ 323 passed, 1 skipped, 1 failed
-```
-
-未修改业务代码或测试预期。随后仅初始化仓库已有的只读 pinned submodule：
-
-```text
-git submodule update --init --recursive
-→ third_party/open-r1 checked out 1416fa0cf21595d2083b399a2a0bbddd7f6e9563
-
-PYTHONPATH=src make test
-→ 324 passed, 1 skipped
-```
-
-真实 Piston 验收实际运行结果：
-
-```text
-PYTHONPATH=src make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
-→ collected 6 items
-→ 6 errors
-```
-
-所有错误均发生在 module fixture 的 `PistonExecutor.validate_runtime()`：本机 `http://127.0.0.1:2000` 无可连接的 Piston 服务，统一返回：
-
-```text
-PistonTransportError: piston transport failed
-```
-
-这不是测试 skip，也未放宽断言。依据计划步骤 4 的通过标准和 executor skill 的失败处理纪律，步骤 4 未完成，相关改动未提交。
-
-## 3. 未执行的步骤
-
-### 步骤 5：运维文档、README、AGENTS 与阶段总验收
-
-未开始。原因是步骤 4 的真实 Piston 安全验收未通过，计划明确要求安全探针失败时不得继续 WP3-c，也不得将本阶段标记为完成。为避免文档错误声称 WP3-b 已实现，未修改：
-
-- `docs/piston-local.md`
-- `README.md`
-- `AGENTS.md`
-
-最终 runtime smoke、真实安全套件全绿和阶段总验收因此尚未完成。
-
-## 4. 文件变更汇总
-
-### 已提交新增
+### 新增
 
 - `ai-work/planner/WP3-b-plan.md`
 - `configs/execution/piston-local.yaml`
@@ -162,50 +130,114 @@ PistonTransportError: piston transport failed
 - `src/code_verifier/execution/piston.py`
 - `tests/unit/execution/test_harness.py`
 - `tests/unit/execution/test_piston.py`
+- `tests/integration/test_wp3b_piston_execution.py`
+- `docs/piston-local.md`
 
-### 已提交修改
+### 修改
 
 - `src/code_verifier/execution/__init__.py`
-
-### 已实现但未提交
-
-- `tests/integration/test_wp3b_piston_execution.py`
 - `pyproject.toml`
 - `Makefile`
+- `README.md`
+- `AGENTS.md`
 
-### 未修改
+### 明确未修改
 
-- `src/code_verifier/execution/base.py`
+- `src/code_verifier/execution/base.py` 的公共合同和签名
 - `src/code_verifier/execution/mock.py`
 - `src/code_verifier/cli.py`
 - `src/code_verifier/parsing/**`
 - `src/code_verifier/data/**`
 - `src/code_verifier/training/**`
-- `third_party/open-r1/**` 的源码和 pin
+- `third_party/open-r1/**`
 - `proceedings.md`
 
-## 5. 配置与依赖影响
+## 5. 分步提交
 
-- 新增本地 Piston YAML 配置。
-- 步骤 4 的未提交改动会新增 pytest marker 与 `make test-piston` 目标。
-- 未新增 Python 依赖；HTTP 仅使用标准库。
-- 未配置公共 Piston endpoint、API token 或任意远程 URL。
-- 未修改 `third_party/open-r1`；只在独立 worktree 中初始化既有 pinned submodule 检出。
+- `2d06916` — `feat: add bounded local piston transport`
+- `bb82e5e` — `feat: add trusted python test harness`
+- `9fda0d5` — `feat: add single-request piston executor`
+- `2850e0f` — `test: add real piston safety acceptance`
+- `4f69f4f` — `docs: document local piston operations`
 
-## 6. 环境说明与偏离
+`5022726` 是 Docker 尚未就绪时写入的临时阻断报告；本报告已在环境就绪和全部验收通过后将其状态更新为完成。
 
-- 复用主仓库已有 `.venv`，worktree 内的 `.venv` 仅为未跟踪符号链接，不提交。
-- 由于 editable install 指向主工作区，pytest 命令显式使用 `PYTHONPATH=src`，确保导入当前 `feat/wp3` worktree 的源码。
-- worktree 位于主仓库内 `.worktrees/wp3`，原因是当前工具工作区边界限制；它仍是独立 Git worktree 和 `feat/wp3` 分支，主工作区未直接修改。
-- 除工作区路径与验证命令中的 `PYTHONPATH` 外，无接口、状态映射、测试预期或安全范围偏离。
+## 6. 实际验证结果
 
-## 7. 阻断项与继续条件
+### 步骤专项测试
 
-继续执行前必须在专用本地环境启动仅绑定回环地址的自托管 Piston，并安装配置中精确 runtime `python 3.10.0`。随后需要：
+```text
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_piston.py -k "config or transport"
+→ 9 passed
 
-1. 重新运行 `PYTHONPATH=src make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`，要求 6 passed、0 failed、0 skipped；
-2. 若真实探针暴露实现问题，修复并重新运行 `make lint`、默认全量测试和真实 Piston 测试；
-3. 步骤 4 全部通过后提交其三个文件；
-4. 再执行步骤 5 文档、runtime smoke 和最终验收。
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_harness.py
+→ 23 passed
 
-在上述条件满足前，WP3-b 不得标记完成，也不得进入 WP3-c。
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_piston.py
+→ 38 passed
+```
+
+### 最终静态检查
+
+```text
+make lint
+→ Ruff check: All checks passed
+→ Ruff format: 42 files already formatted
+→ strict Mypy: Success, no issues found in 42 source files
+```
+
+### 默认全量回归
+
+```text
+PYTHONPATH=src make test
+→ 324 passed, 1 skipped
+```
+
+唯一 skip 是未显式设置 `CODE_VERIFIER_RUN_PISTON=1` 时的真实 Piston 模块，符合默认测试不连接服务的计划要求。
+
+### 真实 Piston 安全验收
+
+```text
+PYTHONPATH=src make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 6 passed, 0 failed, 0 skipped
+```
+
+### Runtime smoke
+
+```text
+PYTHONPATH=src .venv/bin/python -c "from pathlib import Path; from code_verifier.execution import PistonExecutor, load_piston_executor_config; executor = PistonExecutor(load_piston_executor_config(Path('configs/execution/piston-local.yaml'))); print(executor.validate_runtime())"
+→ 3.10.0
+```
+
+### 安全与范围检查
+
+- `third_party/open-r1` 无 diff。
+- 在 `src/code_verifier/execution/` 中搜索 `exec(`、`eval(`、`compile(`，均无匹配。
+- Piston 容器检查确认 `privileged=true`，但唯一发布地址是 `127.0.0.1:2000`。
+- 未新增 Python 依赖、远程账户、API token 或公共 endpoint。
+
+## 7. 配置与依赖影响
+
+- 新增 `configs/execution/piston-local.yaml`。
+- `pyproject.toml` 仅新增 `piston` pytest marker。
+- `Makefile` 仅新增 `PISTON_CONFIG` 和显式 `test-piston` 目标。
+- 未新增 Python package 依赖。
+- Piston image、runtime 和 Docker volume 均为仓库外部本地运行资产。
+
+## 8. 与计划的偏离
+
+- 计划默认建议在主仓库同级目录创建 worktree。受工具工作区边界限制，继续复用 `.worktrees/wp3`；它仍是独立 Git worktree 和 `feat/wp3` 分支。
+- worktree 复用主仓库 `.venv` 符号链接；由于 editable install 指向主工作区，pytest 和 smoke 命令显式使用 `PYTHONPATH=src`，确保导入当前 worktree 源码。
+- 真实 Piston 部署使用固定官方 image digest和独立 named volume，而不是把 Piston 源码或 compose 文件复制进仓库。另行浅克隆官方仓库只用于记录 source reference。
+- 状态映射根据真实 Piston `RE + code 137 + near-limit memory` 行为增加 OOM 规则；这是满足计划“真实内存状态必须精确通过”的必要兼容修复，未放宽测试预期。
+
+无接口签名、功能范围、安全探针或测试通过标准偏离。
+
+## 9. 已知限制与下一步
+
+- 候选模块和可信 harness 在同一 Piston job 的同一 Python interpreter 中运行；随机 marker、可信引用和严格 schema不是完整的高级解释器级防篡改证明。
+- 当前每测试一个独立 job，未实现批量请求、有限并发、cache key/cache store 或执行 CLI。
+- Piston API container 需要高权限，必须继续保持专用环境、固定 digest和回环绑定。
+- WP3-c 完成前，WP3 不得标记整体完成。
+
+下一步由 `wp-plan-reviewer` 独立审查代码、重新运行默认与真实 Piston测试，并重点检查 SSRF/redirect、marker、OOM mapping和安全探针。审查通过后才可合并和更新 `proceedings.md`。
