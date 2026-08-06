@@ -16,6 +16,7 @@ import pytest
 from code_verifier.config import ConfigError
 from code_verifier.execution import (
     CodeExecutor,
+    ExecutionContractError,
     ExecutionStatus,
     PistonExecutor,
     execution_result_to_mapping,
@@ -365,6 +366,35 @@ def test_execute_payload_contains_exact_files_stdin_and_resource_limits() -> Non
     assert payload["run_memory_limit"] == 32 * 1024 * 1024
     assert timeout_seconds == 3.25
     assert max_response_bytes == 131072
+
+
+@pytest.mark.parametrize("timeout_seconds", [3600.0001, 1e308, float.fromhex("0x1.fffffffffffffp+1023")])
+def test_execute_rejects_timeouts_above_supported_limit_without_overflow(timeout_seconds: float) -> None:
+    executor, transport = _executor([])
+    with pytest.raises(ExecutionContractError, match="supported Piston limit"):
+        executor.execute(
+            "def target(value):\n    return value\n",
+            "target",
+            [{"input": 1, "expected": 1}],
+            timeout_seconds,
+            32,
+        )
+    assert transport.execute_calls == []
+
+
+def test_execute_accepts_exact_timeout_limit() -> None:
+    executor, transport = _executor([_run_response()])
+    result = executor.execute(
+        "def target(value):\n    return value\n",
+        "target",
+        [{"input": 1, "expected": 1}],
+        3600.0,
+        32,
+    )
+    assert result.status is ExecutionStatus.PASSED
+    payload, timeout_seconds, _ = transport.execute_calls[0]
+    assert payload["run_timeout"] == 3_600_000
+    assert timeout_seconds == 3602.0
 
 
 @pytest.mark.parametrize(

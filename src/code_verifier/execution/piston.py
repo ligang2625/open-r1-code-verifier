@@ -418,9 +418,9 @@ class PistonExecutor:
     ) -> ExecutionResult:
         """Execute tests in request order using one isolated Piston job per test."""
         validate_execution_request(code, function_name, tests, timeout_seconds, memory_limit_mb)
-        timeout_ms = math.ceil(timeout_seconds * 1000.0)
-        if timeout_ms > 3_600_000:
+        if timeout_seconds > 3600.0:
             raise ExecutionContractError("timeout_seconds exceeds the supported Piston limit")
+        timeout_ms = math.ceil(timeout_seconds * 1000.0)
         memory_limit_bytes = memory_limit_mb * 1024 * 1024
         copied_tests = copy.deepcopy(tests)
         total_tests = len(copied_tests)
