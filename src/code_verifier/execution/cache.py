@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import re
 import sqlite3
 import stat
 from dataclasses import dataclass
@@ -36,6 +38,7 @@ _KEY_FIELDS = (
     "timeout_seconds_hex",
     "memory_limit_mb",
 )
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ExecutionCacheError(RuntimeError):
@@ -84,6 +87,41 @@ def _require_nonempty_string(value: object, *, field_name: str) -> str:
     return value
 
 
+def _validate_execution_cache_key(key: object) -> ExecutionCacheKey:
+    if not isinstance(key, ExecutionCacheKey):
+        raise ExecutionContractError("cache key must be an ExecutionCacheKey")
+    if not isinstance(key.code_hash, str) or _SHA256_PATTERN.fullmatch(key.code_hash) is None:
+        raise ExecutionContractError("cache key code_hash must be a lowercase SHA-256 digest")
+    problem_id = _require_nonempty_string(key.problem_id, field_name="cache key problem_id")
+    if not isinstance(key.test_layer, ExecutionTestLayer):
+        raise ExecutionContractError("cache key test_layer must be an ExecutionTestLayer")
+    if not isinstance(key.tests_hash, str) or _SHA256_PATTERN.fullmatch(key.tests_hash) is None:
+        raise ExecutionContractError("cache key tests_hash must be a lowercase SHA-256 digest")
+    executor_version = _require_nonempty_string(key.executor_version, field_name="cache key executor_version")
+    function_name = _require_nonempty_string(key.function_name, field_name="cache key function_name")
+    timeout_hex = _require_nonempty_string(key.timeout_seconds_hex, field_name="cache key timeout_seconds_hex")
+    if len(timeout_hex) > 64:
+        raise ExecutionContractError("cache key timeout_seconds_hex is invalid")
+    try:
+        timeout_seconds = float.fromhex(timeout_hex)
+    except (ValueError, OverflowError):
+        raise ExecutionContractError("cache key timeout_seconds_hex is invalid") from None
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0 or timeout_seconds.hex() != timeout_hex:
+        raise ExecutionContractError("cache key timeout_seconds_hex is invalid")
+    if isinstance(key.memory_limit_mb, bool) or not isinstance(key.memory_limit_mb, int) or key.memory_limit_mb <= 0:
+        raise ExecutionContractError("cache key memory_limit_mb must be a positive integer")
+    return ExecutionCacheKey(
+        code_hash=key.code_hash,
+        problem_id=problem_id,
+        test_layer=key.test_layer,
+        tests_hash=key.tests_hash,
+        executor_version=executor_version,
+        function_name=function_name,
+        timeout_seconds_hex=timeout_hex,
+        memory_limit_mb=key.memory_limit_mb,
+    )
+
+
 def build_execution_cache_key(
     *,
     code: str,
@@ -101,21 +139,21 @@ def build_execution_cache_key(
     executor_version = _require_nonempty_string(executor_version, field_name="executor_version")
     if not isinstance(test_layer, ExecutionTestLayer):
         raise ExecutionContractError("test_layer must be an ExecutionTestLayer")
-    return ExecutionCacheKey(
+    key = ExecutionCacheKey(
         code_hash=hashlib.sha256(code.encode("utf-8")).hexdigest(),
         problem_id=problem_id,
         test_layer=test_layer,
         tests_hash=stable_json_hash(tests),
         executor_version=executor_version,
         function_name=function_name,
-        timeout_seconds_hex=timeout_seconds.hex(),
+        timeout_seconds_hex=float(timeout_seconds).hex(),
         memory_limit_mb=memory_limit_mb,
     )
+    return _validate_execution_cache_key(key)
 
 
 def _cache_key_mapping(key: ExecutionCacheKey) -> dict[str, object]:
-    if not isinstance(key, ExecutionCacheKey):
-        raise ExecutionContractError("cache key must be an ExecutionCacheKey")
+    key = _validate_execution_cache_key(key)
     return {
         "code_hash": key.code_hash,
         "problem_id": key.problem_id,
@@ -236,9 +274,12 @@ class SQLiteExecutionCache:
     def get(self, key: ExecutionCacheKey) -> ExecutionResult | None:
         """Return one validated cached result or None for a true miss."""
         connection = self._require_connection()
-        key_mapping = _cache_key_mapping(key)
-        key_json = _canonical_json(key_mapping)
-        digest = execution_cache_key_digest(key)
+        try:
+            key_mapping = _cache_key_mapping(key)
+            key_json = _canonical_json(key_mapping)
+            digest = execution_cache_key_digest(key)
+        except ExecutionContractError:
+            raise ExecutionCacheError("execution cache key is invalid") from None
         try:
             row = connection.execute(
                 "SELECT key_json, result_json FROM entries WHERE key_digest = ?",
@@ -277,14 +318,18 @@ class SQLiteExecutionCache:
         """Atomically insert or replace one validated non-sandbox result."""
         connection = self._require_connection()
         try:
+            key_json = _canonical_json(_cache_key_mapping(key))
+            digest = execution_cache_key_digest(key)
+        except ExecutionContractError:
+            raise ExecutionCacheError("execution cache key is invalid") from None
+        try:
             validate_execution_result(result)
             if result.status is ExecutionStatus.SANDBOX_ERROR:
                 raise ExecutionCacheError("sandbox errors must not be cached")
-            key_json = _canonical_json(_cache_key_mapping(key))
             result_json = _canonical_json(execution_result_to_mapping(result))
             connection.execute(
                 "INSERT OR REPLACE INTO entries(key_digest, key_json, result_json) VALUES (?, ?, ?)",
-                (execution_cache_key_digest(key), key_json, result_json),
+                (digest, key_json, result_json),
             )
             connection.commit()
         except ExecutionCacheError:

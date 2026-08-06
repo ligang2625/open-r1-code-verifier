@@ -8,11 +8,13 @@ import sqlite3
 import stat
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from code_verifier.execution import (
     ExecutionCacheError,
+    ExecutionCacheKey,
     ExecutionContractError,
     ExecutionResult,
     ExecutionStatus,
@@ -70,6 +72,12 @@ def test_cache_key_contains_all_spec_required_fields() -> None:
     assert len(execution_cache_key_digest(key)) == 64
 
 
+def test_cache_key_builder_accepts_integer_timeout_consistently() -> None:
+    key = _key(timeout_seconds=1)
+    assert key.timeout_seconds_hex == (1.0).hex()
+    assert len(execution_cache_key_digest(key)) == 64
+
+
 def test_cache_key_changes_for_code_problem_layer_tests_and_executor_version() -> None:
     baseline = _key()
     variants = [
@@ -117,8 +125,51 @@ def test_cache_key_rejects_non_utf8_request_fields(overrides: dict[str, object])
 
 
 def test_cache_key_digest_rejects_non_utf8_manual_key() -> None:
-    with pytest.raises(ExecutionCacheError, match="serialization failed"):
+    with pytest.raises(ExecutionContractError, match="invalid UTF-8 text"):
         execution_cache_key_digest(replace(_key(), problem_id="\ud800"))
+
+
+@pytest.mark.parametrize(
+    "invalid_key",
+    [
+        replace(_key(), code_hash="A" * 64),
+        replace(_key(), code_hash="a" * 63),
+        replace(_key(), problem_id=""),
+        replace(_key(), test_layer=cast(ExecutionTestLayer, "visible")),
+        replace(_key(), tests_hash="g" * 64),
+        replace(_key(), executor_version=""),
+        replace(_key(), function_name=""),
+        replace(_key(), timeout_seconds_hex="bad"),
+        replace(_key(), timeout_seconds_hex="inf"),
+        replace(_key(), timeout_seconds_hex=(0.0).hex()),
+        replace(_key(), timeout_seconds_hex="0x1p+0"),
+        replace(_key(), memory_limit_mb=True),
+        replace(_key(), memory_limit_mb=0),
+    ],
+)
+def test_cache_key_digest_rejects_malformed_public_keys(invalid_key: ExecutionCacheKey) -> None:
+    with pytest.raises(ExecutionContractError):
+        execution_cache_key_digest(invalid_key)
+
+
+@pytest.mark.parametrize(
+    "invalid_key",
+    [
+        replace(_key(), test_layer=cast(ExecutionTestLayer, "visible")),
+        replace(_key(), timeout_seconds_hex="bad"),
+        replace(_key(), memory_limit_mb=True),
+    ],
+)
+def test_sqlite_cache_normalizes_malformed_keys_to_cache_errors(
+    tmp_path: Path,
+    invalid_key: ExecutionCacheKey,
+) -> None:
+    with SQLiteExecutionCache(tmp_path / "cache.sqlite3") as cache:
+        with pytest.raises(ExecutionCacheError, match="key is invalid"):
+            cache.get(invalid_key)
+        with pytest.raises(ExecutionCacheError, match="key is invalid"):
+            cache.put(invalid_key, _result())
+        assert cache.get(_key()) is None
 
 
 def test_sqlite_cache_miss_put_hit_round_trip(tmp_path: Path) -> None:
