@@ -548,3 +548,142 @@ Smoke 输出已删除，未提交运行产物。
 - 未修改审查报告或 `proceedings.md`。
 - 未执行 push 或 merge。
 - 下一步由 `wp-plan-reviewer` 独立复审本轮修复；复审通过后才可合并并登记 WP3 整体完成。
+
+---
+
+# 代码修复报告（WP3-c R2）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP3-review.md`
+- 审查轮次：WP3-c R2
+- 复审结论：需修改
+- 修复范围：R2 新增的两个主要问题 N1、N2
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp3c` / `.worktrees/wp3c`
+
+本轮继续复用 WP3-c 独立 worktree。首次执行 N2 时 CodexPro 连接中断，保留的未提交改动在本次恢复后逐项核验、补齐、测试并提交；未修改主分支工作区。
+
+## 2. N1：batch mapping 在访问 items 前完成结构校验
+
+修复提交：
+
+```text
+afae99e  fix: validate batch mapping items first
+```
+
+修复内容：
+
+- `batch_execution_result_to_mapping()` 明确要求 `items` 为 list。
+- 每个元素先调用 `batch_execution_item_to_mapping()`，完成类型、request/problem ID、test layer、cache-hit bool 和嵌套 execution result 合同校验。
+- 只使用已验证的 item mappings 计算 cache-hit 数并组装输出。
+- `items=None`、tuple、普通 object、非法 test layer 和非 bool cache-hit 均统一抛脱敏 `ExecutionContractError`，不再泄漏 `TypeError` 或 `AttributeError`。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_batch.py \
+  -k "invalid_items or invalid_item_fields or result_mapping"
+→ 12 passed, 29 deselected
+```
+
+## 3. N2：完整验证 cache key 并统一 SQLite 错误合同
+
+修复提交：
+
+```text
+43fb74c  fix: validate execution cache keys
+```
+
+修复内容：
+
+- 新增统一 `_validate_execution_cache_key()`，验证：
+  - code/tests hash 为 64 位小写 SHA-256；
+  - problem ID、executor version、function name 和 timeout hex 为非空、UTF-8 可编码文本；
+  - test layer 为 `ExecutionTestLayer`；
+  - timeout hex 可解析、canonical、有限且大于 0；
+  - memory limit 为正整数且拒绝 bool-as-int。
+- `build_execution_cache_key()` 使用 `float(timeout_seconds).hex()`，使公共 request 合同接受的正整数 timeout 与浮点 timeout 行为一致。
+- `_cache_key_mapping()` 与 `execution_cache_key_digest()` 统一调用 key validator，畸形公开 key 抛 `ExecutionContractError`，不生成无效 digest。
+- `SQLiteExecutionCache.get()` / `put()` 将畸形 key 统一归一为 `ExecutionCacheError("execution cache key is invalid")`，不泄漏属性、解析或类型异常。
+- 新增整数 timeout、hash 格式、空/非 UTF-8 文本、错误枚举、非法/non-canonical timeout hex、bool/非正 memory limit，以及 SQLite get/put 错误归一回归。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_cache.py \
+  -k "cache_key or malformed_keys"
+→ 25 passed, 10 deselected
+
+pytest tests/unit/execution/test_cache.py
+→ 35 passed
+```
+
+## 4. R2 问题联合复测
+
+```text
+pytest tests/unit/execution/test_batch.py tests/unit/execution/test_cache.py \
+  -k "invalid_items or invalid_item_fields or cache_key_builder_accepts_integer_timeout \
+      or malformed_public_keys or normalizes_malformed_keys"
+→ 22 passed, 54 deselected
+```
+
+核验结论：
+
+- `items=None` 和普通 object 不再泄漏内置异常；
+- 合法整数 timeout 可稳定生成 canonical cache key；
+- 手工构造的错误 enum、bad timeout hex 和 bool memory 无法生成 digest；
+- SQLite get/put 对畸形 key 均使用固定 cache infrastructure error。
+
+## 5. 最终总体验收
+
+### 静态检查
+
+```text
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ Ruff format: 47 files already formatted
+→ strict Mypy: no issues found in 47 source files
+```
+
+### 默认全量回归
+
+```text
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 444 passed, 3 skipped
+```
+
+三个 skip 均为默认模式下未显式启用的真实 Piston tests。
+
+### 真实 Piston 总验收
+
+```text
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 9 passed, 2 deselected, 0 failed, 0 skipped
+```
+
+### 实际 CLI smoke
+
+```text
+code-verifier execute-batch \
+  --config configs/execution/batch-local.yaml \
+  --requests tests/fixtures/wp3c/batch_requests.jsonl \
+  --workload-mode evaluation \
+  --output-dir outputs/wp3c-smoke
+→ exit 0
+→ executed 4 requests (cache_hits=0)
+→ summary=4 order-and-redaction-ok
+```
+
+Smoke 输出已删除，未提交运行产物。
+
+## 6. 修复完成状态
+
+- R2 N1、N2 均已修复并有相应边界回归。
+- 无未处理问题或异议项。
+- 未修改 reviewer 报告、`proceedings.md` 或 `third_party/open-r1/**`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 执行 WP3-c R3 独立复审。
