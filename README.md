@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, and the WP3-a execution contract/mock foundation are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the WP3-a execution contract/mock foundation, and the WP3-b loopback-only single-request Piston executor are implemented.
 
-Real untrusted-code execution, reward computation, training, and model evaluation are not implemented yet. The WP3-a mock is only a test double and does not provide sandboxing or execute supplied code.
+WP3 remains partially complete: batch concurrency, caching, and the execution debugging CLI are reserved for WP3-c. Reward computation, training, and model evaluation are also not implemented. `MockExecutor` remains a non-executing test double; real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -32,6 +32,14 @@ make lint
 make test
 .venv/bin/python -m code_verifier.cli --help
 ```
+
+Default `make test` does not contact Piston. Run the real local-sandbox acceptance suite explicitly with:
+
+```bash
+make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
+```
+
+The command requires a self-hosted Piston service bound only to loopback with the exact configured Python runtime. See [`docs/piston-local.md`](docs/piston-local.md).
 
 Record repository, submodule, Python, and dependency versions with:
 
@@ -171,11 +179,45 @@ result = executor.execute(
 )
 ```
 
-Piston or Docker execution, network and filesystem isolation, process/resource limits, output limits, and the real WP3 security acceptance tests remain unimplemented. Do not use `MockExecutor` as evidence that untrusted code can be run safely.
+Do not use `MockExecutor` as evidence that untrusted code can be run safely.
+
+## WP3-b local Piston executor
+
+WP3-b adds a synchronous `PistonExecutor` that accepts the same `CodeExecutor` request shape and sends each test to a separate job on a self-hosted loopback Piston service. The host process never imports, compiles, evaluates, or executes candidate code.
+
+```python
+import json
+from pathlib import Path
+
+from code_verifier.execution import (
+    PistonExecutor,
+    execution_result_to_mapping,
+    load_piston_executor_config,
+)
+
+config = load_piston_executor_config(Path("configs/execution/piston-local.yaml"))
+executor = PistonExecutor(config)
+assert executor.validate_runtime() == config.version
+
+result = executor.execute(
+    code="def solve(value):\n    return value + 1\n",
+    function_name="solve",
+    tests=[{"input": 1, "expected": 2}],
+    timeout_seconds=1.0,
+    memory_limit_mb=64,
+)
+print(json.dumps(execution_result_to_mapping(result), allow_nan=False))
+```
+
+Configuration rejects non-loopback URLs, redirects, proxies, runtime selectors, unknown fields, and unbounded responses. The real acceptance suite verifies result mapping, time, memory and output limits, disabled networking, non-root execution, filesystem isolation, host-file invisibility, per-job cleanup, PID containment, and service recovery.
+
+Do not configure a public Piston endpoint or place API credentials in project configuration. Deployment, runtime installation, fixed image metadata, health checks, and shutdown instructions are in [`docs/piston-local.md`](docs/piston-local.md).
 
 ## Current limitations
 
 WP1 normalization uses deterministic Unicode and whitespace normalization plus SHA-256 hashing. It detects exact normalized prompt/signature, reference-solution, test-set, and matching-signature test-case overlap, but does not claim semantic or AST-level equivalence. The committed fixture is for structural and pipeline validation; its reference solutions are not executed by WP1 and are not evidence of model quality.
+
+WP3-b performs one Piston job per test and does not yet provide WP3-c batch requests, bounded concurrency, caching, or an execution CLI. The trusted harness and candidate share one Python interpreter inside a sandbox job; the randomized marker and strict schema reduce ordinary spoofing but are not a complete defense against advanced interpreter-level tampering.
 
 Minimal Open-R1 adapter usage remains:
 
