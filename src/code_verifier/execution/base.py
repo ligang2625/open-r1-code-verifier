@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import keyword
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol
@@ -77,12 +78,34 @@ def _is_finite_number(value: object) -> bool:
         return False
 
 
+def _validate_utf8_text(value: str, *, field_path: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ExecutionContractError(f"{field_path} contains invalid UTF-8 text") from None
+
+
+def _validate_utf8_json_value(value: object, *, field_path: str) -> None:
+    if isinstance(value, str):
+        _validate_utf8_text(value, field_path=field_path)
+        return
+    if isinstance(value, tuple):
+        for item in value:
+            _validate_utf8_json_value(item, field_path=field_path)
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_utf8_text(key, field_path=f"{field_path} object key")
+            _validate_utf8_json_value(item, field_path=field_path)
+
+
 def _validate_request_json_value(value: object, *, field_path: str) -> None:
     """Validate one request value while keeping user-controlled paths out of errors."""
     try:
-        validate_json_value(value, field_path=field_path)
+        validated = validate_json_value(value, field_path=field_path)
     except (RecursionError, SchemaError):
         raise ExecutionContractError(f"{field_path} contains an invalid JSON value") from None
+    _validate_utf8_json_value(validated, field_path=field_path)
 
 
 def validate_execution_request(
@@ -95,12 +118,11 @@ def validate_execution_request(
     """Validate one executor request without executing or transforming code."""
     if not isinstance(code, str) or not code.strip():
         raise ExecutionContractError("code must be a non-empty string")
-    if (
-        not isinstance(function_name, str)
-        or not function_name
-        or not function_name.isidentifier()
-        or keyword.iskeyword(function_name)
-    ):
+    _validate_utf8_text(code, field_path="code")
+    if not isinstance(function_name, str):
+        raise ExecutionContractError("function_name must be a non-keyword Python identifier")
+    _validate_utf8_text(function_name, field_path="function_name")
+    if not function_name or not function_name.isidentifier() or keyword.iskeyword(function_name):
         raise ExecutionContractError("function_name must be a non-keyword Python identifier")
     if not isinstance(tests, list):
         raise ExecutionContractError("tests must be a list")
@@ -132,8 +154,10 @@ def validate_test_case_result(result: TestCaseResult) -> None:
         raise ExecutionContractError("test result runtime_ms must be a finite non-negative number")
     if not isinstance(result.stdout, str):
         raise ExecutionContractError("test result stdout must be a string")
+    _validate_utf8_text(result.stdout, field_path="test result stdout")
     if not isinstance(result.stderr, str):
         raise ExecutionContractError("test result stderr must be a string")
+    _validate_utf8_text(result.stderr, field_path="test result stderr")
     if result.passed is not (result.status is ExecutionStatus.PASSED):
         raise ExecutionContractError("test result passed must match whether status is passed")
 
@@ -201,3 +225,70 @@ def execution_result_to_mapping(result: ExecutionResult) -> dict[str, object]:
             for test_result in result.test_results
         ],
     }
+
+
+def execution_result_from_mapping(value: object) -> ExecutionResult:
+    """Parse one exact JSON-safe mapping and return a validated ExecutionResult."""
+    top_fields = {"status", "passed_tests", "total_tests", "pass_rate", "runtime_ms", "test_results"}
+    test_fields = {"status", "passed", "runtime_ms", "stdout", "stderr"}
+    try:
+        if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+            raise ExecutionContractError("execution result mapping must be an object")
+        mapping = value
+        if set(mapping) != top_fields:
+            raise ExecutionContractError("execution result mapping fields are invalid")
+        raw_test_results = mapping["test_results"]
+        if not isinstance(raw_test_results, list):
+            raise ExecutionContractError("execution result test_results must be a list")
+
+        test_results: list[TestCaseResult] = []
+        for raw_item in raw_test_results:
+            if not isinstance(raw_item, dict) or not all(isinstance(key, str) for key in raw_item):
+                raise ExecutionContractError("execution test result mapping must be an object")
+            if set(raw_item) != test_fields:
+                raise ExecutionContractError("execution test result mapping fields are invalid")
+            raw_item_status = raw_item["status"]
+            if not isinstance(raw_item_status, str):
+                raise ExecutionContractError("execution test result status is invalid")
+            try:
+                item_status = ExecutionStatus(raw_item_status)
+            except ValueError:
+                raise ExecutionContractError("execution test result status is invalid") from None
+            item = TestCaseResult(
+                status=item_status,
+                passed=raw_item["passed"],
+                runtime_ms=raw_item["runtime_ms"],
+                stdout=raw_item["stdout"],
+                stderr=raw_item["stderr"],
+            )
+            validate_test_case_result(item)
+            test_results.append(item)
+
+        raw_status = mapping["status"]
+        if not isinstance(raw_status, str):
+            raise ExecutionContractError("execution result status is invalid")
+        try:
+            status = ExecutionStatus(raw_status)
+        except ValueError:
+            raise ExecutionContractError("execution result status is invalid") from None
+        result = ExecutionResult(
+            status=status,
+            passed_tests=mapping["passed_tests"],
+            total_tests=mapping["total_tests"],
+            pass_rate=mapping["pass_rate"],
+            runtime_ms=mapping["runtime_ms"],
+            test_results=list(test_results),
+        )
+        validate_execution_result(result)
+        return ExecutionResult(
+            status=result.status,
+            passed_tests=result.passed_tests,
+            total_tests=result.total_tests,
+            pass_rate=result.pass_rate,
+            runtime_ms=result.runtime_ms,
+            test_results=list(result.test_results),
+        )
+    except ExecutionContractError:
+        raise
+    except Exception:
+        raise ExecutionContractError("execution result mapping is invalid") from None

@@ -26,7 +26,9 @@ test:
 
 test-piston:
 	CODE_VERIFIER_RUN_PISTON=1 CODE_VERIFIER_PISTON_CONFIG=$(PISTON_CONFIG) \
-	$(PYTHON) -m pytest -m piston tests/integration/test_wp3b_piston_execution.py -ra
+	$(PYTHON) -m pytest -m piston \
+	  tests/integration/test_wp3b_piston_execution.py \
+	  tests/integration/test_wp3c_batch_execution.py -ra
 
 record-environment:
 	$(PYTHON) -m code_verifier.cli record-environment --output environment.json

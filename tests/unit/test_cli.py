@@ -5,14 +5,29 @@ from __future__ import annotations
 import json
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from code_verifier import cli as cli_module
 from code_verifier.cli import build_parser, main
+from code_verifier.config import ConfigError
 from code_verifier.data.leakage_checks import TrainingArtifactKind
 from code_verifier.data.prepare import DataPreparationConfig, DataPreparationError, PreparationSummary
 from code_verifier.data.split_tests import TestSplitConfig as SplitConfig
+from code_verifier.execution import (
+    BatchExecutionError,
+    BatchExecutionItemResult,
+    BatchExecutionResult,
+    BatchExecutorConfig,
+    ExecutionCacheMode,
+    ExecutionResult,
+    ExecutionStatus,
+    ExecutionTestLayer,
+    ExecutionWorkloadMode,
+    PistonExecutor,
+)
+from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 
 
 def test_help_lists_environment_command() -> None:
@@ -314,3 +329,409 @@ def test_wp1_command_defaults_remain_compatible_after_common_argument_refactor()
     with pytest.raises(SystemExit) as error:
         parser.parse_args(["prepare-data", "--config", "config.yaml"])
     assert error.value.code == 2
+
+
+def _cli_execution_result(status: ExecutionStatus = ExecutionStatus.PASSED) -> ExecutionResult:
+    passed = status is ExecutionStatus.PASSED
+    return ExecutionResult(
+        status=status,
+        passed_tests=1 if passed else 0,
+        total_tests=1,
+        pass_rate=1.0 if passed else 0.0,
+        runtime_ms=1.0,
+        test_results=[
+            ExecutionTestCaseResult(
+                status=status,
+                passed=passed,
+                runtime_ms=1.0,
+                stdout="",
+                stderr="batch executor failed" if status is ExecutionStatus.SANDBOX_ERROR else "",
+            )
+        ],
+    )
+
+
+def _cli_batch_result(statuses: list[ExecutionStatus]) -> BatchExecutionResult:
+    items = [
+        BatchExecutionItemResult(
+            request_id=f"request-{index}",
+            problem_id=f"problem-{index}",
+            test_layer=ExecutionTestLayer.VISIBLE,
+            cache_hit=False,
+            result=_cli_execution_result(status),
+        )
+        for index, status in enumerate(statuses)
+    ]
+    return BatchExecutionResult(
+        executor_version="executor-v1",
+        max_concurrency=2,
+        cache_mode=ExecutionCacheMode.DISABLED,
+        workload_mode=ExecutionWorkloadMode.EVALUATION,
+        total_requests=len(items),
+        cache_hits=0,
+        runtime_ms=2.0,
+        items=items,
+    )
+
+
+def test_execute_batch_help_includes_common_and_batch_arguments(capsys: Any) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(["execute-batch", "--help"])
+    assert error.value.code == 0
+    help_text = capsys.readouterr().out
+    for option in (
+        "--help",
+        "--config",
+        "--seed",
+        "--output-dir",
+        "--log-level",
+        "--requests",
+        "--workload-mode",
+        "--max-concurrency",
+        "--cache-mode",
+        "--cache-path",
+    ):
+        assert option in help_text
+
+
+def test_load_batch_requests_rejects_empty_blank_duplicate_key_and_invalid_record(tmp_path: Path) -> None:
+    cases = [
+        "",
+        "\n",
+        '{"request_id":"a","request_id":"b"}\n',
+        '{"request_id":"a"}\n',
+    ]
+    for index, contents in enumerate(cases):
+        path = tmp_path / f"invalid-{index}.jsonl"
+        path.write_text(contents, encoding="utf-8")
+        with pytest.raises(BatchExecutionError):
+            cli_module._load_batch_requests(path)
+
+
+def test_load_batch_requests_rejects_escaped_lone_surrogate_as_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "requests.jsonl"
+    path.write_bytes(
+        b'{"request_id":"request-1","problem_id":"problem-1","test_layer":"visible",'
+        b'"code":"\\ud800","function_name":"target",'
+        b'"tests":[{"input":1,"expected":2}],"timeout_seconds":1.0,"memory_limit_mb":64}\n'
+    )
+    with pytest.raises(BatchExecutionError, match="line 1 is invalid"):
+        cli_module._load_batch_requests(path)
+
+
+def test_load_batch_requests_error_does_not_echo_code_or_test_sentinel(tmp_path: Path) -> None:
+    sentinel = "PRIVATE_BATCH_INPUT_SENTINEL"
+    path = tmp_path / "requests.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "request_id": "request-1",
+                "problem_id": "problem-1",
+                "test_layer": "visible",
+                "code": sentinel,
+                "function_name": "target",
+                "tests": [{"input": sentinel}],
+                "timeout_seconds": 1.0,
+                "memory_limit_mb": 64,
+            },
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(BatchExecutionError) as exc_info:
+        cli_module._load_batch_requests(path)
+    assert sentinel not in str(exc_info.value)
+    assert "line 1" in str(exc_info.value)
+
+
+def test_execute_batch_rejects_cache_path_mode_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    requests = Path("tests/fixtures/wp3c/batch_requests.jsonl")
+    output = tmp_path / "output"
+    assert (
+        main(
+            [
+                "execute-batch",
+                "--config",
+                "configs/execution/batch-local.yaml",
+                "--requests",
+                str(requests),
+                "--output-dir",
+                str(output),
+                "--cache-path",
+                str(tmp_path / "cache.sqlite3"),
+            ]
+        )
+        == 2
+    )
+    assert "cache path is not allowed" in capsys.readouterr().err
+    assert not output.exists()
+
+    monkeypatch.setattr(PistonExecutor, "validate_runtime", lambda self: "3.10.0")
+    assert (
+        main(
+            [
+                "execute-batch",
+                "--config",
+                "configs/execution/batch-local.yaml",
+                "--requests",
+                str(requests),
+                "--output-dir",
+                str(output),
+                "--cache-mode",
+                "read_only",
+            ]
+        )
+        == 2
+    )
+    assert "cache path is required" in capsys.readouterr().err
+
+
+def test_execute_batch_rejects_training_cache_before_piston_or_cache_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    seen: list[str] = []
+
+    class UnexpectedPistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+            seen.append("piston")
+
+    class UnexpectedCache:
+        def __init__(self, path: Path) -> None:
+            del path
+            seen.append("cache")
+
+    class UnexpectedBatchExecutor:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            seen.append("batch")
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", UnexpectedPistonExecutor)
+    monkeypatch.setattr(cli_module, "SQLiteExecutionCache", UnexpectedCache)
+    monkeypatch.setattr(cli_module, "BatchExecutor", UnexpectedBatchExecutor)
+    output = tmp_path / "output"
+    cache_path = tmp_path / "cache.sqlite3"
+    assert (
+        main(
+            [
+                "execute-batch",
+                "--config",
+                "configs/execution/batch-local.yaml",
+                "--requests",
+                "tests/fixtures/wp3c/batch_requests.jsonl",
+                "--output-dir",
+                str(output),
+                "--workload-mode",
+                "training",
+                "--cache-mode",
+                "read_only",
+                "--cache-path",
+                str(cache_path),
+            ]
+        )
+        == 2
+    )
+    assert seen == []
+    assert not cache_path.exists()
+    assert not output.exists()
+    assert "training cache requires explicit opt-in" in capsys.readouterr().err
+
+
+def test_execute_batch_applies_concurrency_and_cache_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            configs = cast(list[object], seen.setdefault("piston_configs", []))
+            configs.append(config)
+
+        def validate_runtime(self) -> str:
+            seen["validated"] = True
+            return "3.10.0"
+
+    class FakeCache:
+        def __init__(self, path: Path) -> None:
+            seen["cache_path"] = path
+
+        def close(self) -> None:
+            seen["cache_closed"] = True
+
+    class FakeBatchExecutor:
+        def __init__(self, factory: object, *, executor_version: str, config: object, cache: object) -> None:
+            del factory
+            seen["executor_version"] = executor_version
+            seen["batch_config"] = config
+            seen["cache"] = cache
+
+        def execute_batch(self, requests: object, *, workload_mode: object) -> BatchExecutionResult:
+            seen["requests"] = requests
+            seen["workload_mode"] = workload_mode
+            return _cli_batch_result([ExecutionStatus.PASSED])
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "SQLiteExecutionCache", FakeCache)
+    monkeypatch.setattr(cli_module, "BatchExecutor", FakeBatchExecutor)
+    monkeypatch.setattr(cli_module, "piston_executor_version", lambda config: "executor-v1")
+    output = tmp_path / "output"
+    cache = tmp_path / "cache.sqlite3"
+    assert (
+        main(
+            [
+                "execute-batch",
+                "--config",
+                "configs/execution/batch-local.yaml",
+                "--requests",
+                "tests/fixtures/wp3c/batch_requests.jsonl",
+                "--output-dir",
+                str(output),
+                "--max-concurrency",
+                "7",
+                "--cache-mode",
+                "read_write",
+                "--cache-path",
+                str(cache),
+                "--workload-mode",
+                "evaluation",
+            ]
+        )
+        == 0
+    )
+    batch_config = cast(BatchExecutorConfig, seen["batch_config"])
+    assert batch_config.max_concurrency == 7
+    assert batch_config.cache_mode is ExecutionCacheMode.READ_WRITE
+    assert seen["workload_mode"] is ExecutionWorkloadMode.EVALUATION
+    assert seen["cache_path"] == cache
+    assert seen["cache_closed"] is True
+
+
+def test_execute_batch_writes_exact_results_and_summary_artifacts(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    result = _cli_batch_result([ExecutionStatus.PASSED, ExecutionStatus.WRONG_ANSWER])
+    cli_module._write_batch_outputs(result, output)
+    assert sorted(path.name for path in output.iterdir()) == ["results.jsonl", "summary.json"]
+    lines = output.joinpath("results.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert [json.loads(line)["request_id"] for line in lines] == ["request-0", "request-1"]
+    summary = json.loads(output.joinpath("summary.json").read_text(encoding="utf-8"))
+    assert summary["total_requests"] == 2
+    assert summary["status_counts"]["passed"] == 1
+    assert summary["status_counts"]["wrong_answer"] == 1
+    assert summary["results_file"] == "results.jsonl"
+
+
+def test_execute_batch_outputs_omit_code_input_and_expected(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    cli_module._write_batch_outputs(_cli_batch_result([ExecutionStatus.PASSED]), output)
+    encoded = output.joinpath("results.jsonl").read_text(encoding="utf-8")
+    for forbidden in ("code", "tests", "input", "expected"):
+        assert f'"{forbidden}"' not in encoded
+
+
+def test_execute_batch_returns_zero_for_model_failures_one_for_sandbox_error_two_for_infrastructure_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        def validate_runtime(self) -> str:
+            return "3.10.0"
+
+    results = [
+        _cli_batch_result([ExecutionStatus.WRONG_ANSWER]),
+        _cli_batch_result([ExecutionStatus.SANDBOX_ERROR]),
+    ]
+
+    class FakeBatchExecutor:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def execute_batch(self, requests: object, *, workload_mode: object) -> BatchExecutionResult:
+            del requests, workload_mode
+            return results.pop(0)
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "BatchExecutor", FakeBatchExecutor)
+    monkeypatch.setattr(cli_module, "piston_executor_version", lambda config: "executor-v1")
+    base = [
+        "execute-batch",
+        "--config",
+        "configs/execution/batch-local.yaml",
+        "--requests",
+        "tests/fixtures/wp3c/batch_requests.jsonl",
+    ]
+    assert main([*base, "--output-dir", str(tmp_path / "model")]) == 0
+    assert main([*base, "--output-dir", str(tmp_path / "sandbox")]) == 1
+
+    def fail_config(path: Path) -> object:
+        del path
+        raise ConfigError("fixed")
+
+    monkeypatch.setattr(cli_module, "load_batch_execution_config", fail_config)
+    assert main([*base, "--output-dir", str(tmp_path / "infra")]) == 2
+
+
+def test_execute_batch_refuses_any_existing_output_directory(tmp_path: Path) -> None:
+    output = tmp_path / "existing"
+    output.mkdir()
+    with pytest.raises(BatchExecutionError, match="already exist"):
+        cli_module._write_batch_outputs(_cli_batch_result([ExecutionStatus.PASSED]), output)
+
+
+def test_execute_batch_rejects_cache_path_inside_output_directory(tmp_path: Path, capsys: Any) -> None:
+    output = tmp_path / "output"
+    assert (
+        main(
+            [
+                "execute-batch",
+                "--config",
+                "configs/execution/batch-local.yaml",
+                "--requests",
+                "tests/fixtures/wp3c/batch_requests.jsonl",
+                "--output-dir",
+                str(output),
+                "--cache-mode",
+                "read_write",
+                "--cache-path",
+                str(output / "cache.sqlite3"),
+            ]
+        )
+        == 2
+    )
+    assert "must not be inside" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_execute_batch_partial_write_failure_leaves_no_final_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    original_write_text = Path.write_text
+
+    def fail_summary(
+        path: Path,
+        data: str,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> int:
+        if path.name == "summary.json":
+            raise OSError("fixed write failure")
+        return original_write_text(path, data, encoding=encoding, errors=errors, newline=newline)
+
+    monkeypatch.setattr(Path, "write_text", fail_summary)
+    with pytest.raises(OSError, match="fixed write failure"):
+        cli_module._write_batch_outputs(_cli_batch_result([ExecutionStatus.PASSED]), output)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".output.*"))

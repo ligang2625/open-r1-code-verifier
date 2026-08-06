@@ -1,371 +1,689 @@
-# WP3-b 执行报告
+# WP3-c Executor 执行报告
 
-## 基于 plan 的执行结果
+- **依据计划**：`ai-work/planner/WP3-c-plan.md`
+- **目标阶段**：WP3：安全执行器（子阶段 c：批量并发、可选缓存、执行 CLI 与 WP3 收口）
+- **执行分支**：`feat/wp3c`
+- **独立 worktree**：`.worktrees/wp3c`
+- **执行状态**：计划 6 个步骤已全部实现并通过计划要求的静态、默认、真实 Piston 与 CLI smoke 验收。WP3 代码交付已完整实现；仍需 `wp-plan-reviewer` 独立复审、合并并更新 `proceedings.md` 后，才可在主分支正式登记 WP3 完成。
 
-- **执行计划**：`ai-work/planner/WP3-b-plan.md`
-- **目标阶段**：WP3-b（本地 Piston 单请求执行与安全限制）
-- **执行分支**：`feat/wp3`
-- **独立 worktree**：`.worktrees/wp3`
-- **执行状态**：本子阶段全部 5 个步骤已完成并通过验收；WP3 整体仍为部分完成，批量并发、缓存和执行 CLI 留给 WP3-c。
+> 本文件此前对应 `WP3-b-plan.md`。当前 plan 已切换为 `WP3-c-plan.md`，因此按照 executor skill 的阶段重置规则清空并重写。本报告未修改 reviewer 报告或 `proceedings.md`。
 
-## 1. 已完成事项
+## 1. 分步交付与提交
 
-### 步骤 1：严格本地 Piston 配置与有界 HTTP transport
+### 步骤 1：ExecutionResult 反序列化与确定性 executor version
 
-- 新增 `configs/execution/piston-local.yaml`。
-- 新增 `PistonExecutorConfig`、`PistonTransport`、`UrlLibPistonTransport`、`PistonTransportError`。
-- 配置只允许 `http` 和 `localhost`、`127.0.0.1`、`::1`；拒绝 userinfo、非根 path、query、fragment、runtime selector、未知字段和非法资源上限。
-- urllib transport 禁用系统代理和 HTTP redirect，只接受 JSON content type，限制 response bytes，并把 HTTP、连接、编码和 JSON 错误转换为固定脱敏错误。
-
-### 步骤 2：可信 Python 函数测试 harness
-
-- 新增 `PythonTestProgram`、`HarnessReport`、`build_python_test_program()`、`parse_harness_report()`。
-- 文件顺序固定为可信 `main.py` 和原样 `candidate.py`；候选代码不拼接、不格式化。
-- 测试 input、expected、函数名、marker 和输出上限仅通过 stdin JSON 传入。
-- 实现 list 位置参数、dict 关键字参数和标量单参数调用约定。
-- 实现类型敏感递归比较、JSON 可序列化检查、UTF-8 字节输出上限、随机 marker、最终行解析和严格 report schema。
-- 结果不输出 actual、expected、输入内容或 traceback。
-
-### 步骤 3：Piston 响应解析与单请求执行器
-
-- 新增严格 Piston stage parser 和有限 `ExecutionStatus` 映射。
-- 新增 `PistonExecutor`，其 `execute()` 签名与现有 `CodeExecutor` Protocol 一致。
-- `validate_runtime()` 要求精确 Python/version，并拒绝缺失、重复或 malformed runtime 记录。
-- 每个测试创建独立 Piston job，发送完整 wall-time、CPU-time、内存和输出限制。
-- 实现 harness、timeout、output、internal error、signal、非零退出和 OOM 状态映射。
-- 实现配置化 `stop_on_first_failure`；syntax、timeout、memory、output 和 sandbox failure 始终停止。
-- 空测试不访问服务；整体状态、计数、通过率和序列化均通过 WP3-a 公共合同校验。
-- 对外导出 `PistonExecutor`、`PistonExecutorConfig`、`PistonTransportError` 和 `load_piston_executor_config`。
-
-### 步骤 4：真实 Piston 集成与安全验收
-
-- 新增 `piston` pytest marker 和 `make test-piston`。
-- 默认 `make test` 对真实 Piston 模块执行 module-level skip，不连接服务。
-- 显式运行时，缺少配置、runtime 或服务直接失败，不降级为 skip。
-- 真实探针覆盖：
-  - 正确、错误答案、语法错误、运行错误；
-  - 无限循环 timeout；
-  - memory limit；
-  - stdout/stderr output limit；
-  - outbound network blocked；
-  - runtime user 非 root；
-  - `/etc` 写入失败；
-  - 宿主 sentinel 不可读且内容/mtime 不变；
-  - 跨 job `/tmp` 清理；
-  - PID bomb 被限制；
-  - 每个恶意探针后服务健康 smoke。
-
-### 步骤 5：运维文档、公开示例与范围说明
-
-- 新增 `docs/piston-local.md`，记录回环部署、安全边界、固定 source reference、image digest、runtime、健康检查、真实验收和停止/清理命令。
-- README 增加 Piston Python API 示例、显式真实测试命令和 WP3-c 未完成范围。
-- AGENTS 增加 harness/Piston 模块、测试、配置、文档和安全合并规则。
-- 文档明确禁止公共 Piston endpoint、API token、LAN/公网暴露和宿主直接执行模型代码。
-
-## 2. 真实 Piston 部署记录
-
-本次验收使用仓库外部的本地服务：
-
-| 项目 | 实际值 |
-|---|---|
-| 容器名 | `piston_wp3b` |
-| 端口绑定 | `127.0.0.1:2000 -> 2000/tcp` |
-| privileged | `true` |
-| Piston source reference | `de2b365ac759670a3a0d13ea208a0869a92c7e64` |
-| Piston image | `ghcr.io/engineer-man/piston@sha256:2f66b7456189c4d713aa986d98eccd0b6ee16d26c7ec5f21b30e942756fd127a` |
-| Piston API package version | `3.1.1` |
-| Python runtime | `3.10.0` |
-| Docker Engine | `29.6.2` |
-| Docker Compose | `5.3.1` |
-| cgroup | v2 |
-
-镜像内不包含 `.git` 元数据，因此 source reference 与运行镜像 digest 分别记录；实际安全验收对应上述精确 image digest。
-
-Piston 不是仓库 submodule，未将其源码、runtime package 或容器数据写入项目仓库。
-
-## 3. 真实环境暴露并修复的问题
-
-### 3.1 Runtime record 可省略 `runtime` 字段
-
-实际 `/api/v2/runtimes` 返回：
-
-```json
-{
-  "language": "python",
-  "version": "3.10.0",
-  "aliases": ["py", "py3", "python3", "python3.10"]
-}
-```
-
-Piston 内部 route 对未定义的 `runtime` 值不会序列化该字段。原实现错误地要求四字段对象，导致真实服务被判为 malformed。
-
-修复后严格接受：
-
-- `language/version/aliases`；或
-- `language/version/aliases/runtime`，其中 `runtime` 必须为字符串。
-
-未知字段仍被拒绝。
-
-### 3.2 Memory limit 以 `RE + code 137` 返回
-
-32 MiB memory probe 的实际 stage 元数据为：
+提交：
 
 ```text
-status=RE
-code=137
-signal=null
-memory=33552000
-message=Exited with error status 137
+b1d87d7  feat: add execution result parsing and versioning
 ```
 
-原 heuristic 只识别 `SG`、明确 memory message 或 `SIGKILL`。修复后增加确定性规则：`code == 137` 且 reported memory 达到配置上限 95% 时映射为 `MEMORY_LIMIT`。低于阈值的 code 137 或其他 `RE` 仍映射为 `RUNTIME_ERROR`。
+完成内容：
 
-## 4. 新增与修改文件
+- 新增 `execution_result_from_mapping()`：
+  - 要求顶层与 per-test 字段精确匹配；
+  - 严格恢复 `ExecutionStatus`；
+  - 调用既有 result contract 校验所有计数、状态、pass rate、runtime 和 test-result invariants；
+  - 返回独立 `test_results` list；
+  - malformed mapping 统一为脱敏 `ExecutionContractError`。
+- 新增版本常量：
+  - `PYTHON_HARNESS_PROTOCOL_VERSION = "trusted-parent-v1"`；
+  - `PISTON_EXECUTOR_IMPLEMENTATION_VERSION = "piston-executor-v1"`。
+- 新增 `piston_executor_version()`：
+  - 对 implementation、harness protocol 和全部 Piston config 字段构造 canonical JSON；
+  - float 使用 `.hex()`；
+  - 返回 `piston:<64 lowercase hex>`。
+- 更新 execution 公共导出。
 
-### 新增
-
-- `ai-work/planner/WP3-b-plan.md`
-- `configs/execution/piston-local.yaml`
-- `src/code_verifier/execution/harness.py`
-- `src/code_verifier/execution/piston.py`
-- `tests/unit/execution/test_harness.py`
-- `tests/unit/execution/test_piston.py`
-- `tests/integration/test_wp3b_piston_execution.py`
-- `docs/piston-local.md`
-
-### 修改
-
-- `src/code_verifier/execution/__init__.py`
-- `pyproject.toml`
-- `Makefile`
-- `README.md`
-- `AGENTS.md`
-
-### 明确未修改
-
-- `src/code_verifier/execution/base.py` 的公共合同和签名
-- `src/code_verifier/execution/mock.py`
-- `src/code_verifier/cli.py`
-- `src/code_verifier/parsing/**`
-- `src/code_verifier/data/**`
-- `src/code_verifier/training/**`
-- `third_party/open-r1/**`
-- `proceedings.md`
-
-## 5. 分步提交
-
-- `2d06916` — `feat: add bounded local piston transport`
-- `bb82e5e` — `feat: add trusted python test harness`
-- `9fda0d5` — `feat: add single-request piston executor`
-- `2850e0f` — `test: add real piston safety acceptance`
-- `4f69f4f` — `docs: document local piston operations`
-
-`5022726` 是 Docker 尚未就绪时写入的临时阻断报告；本报告已在环境就绪和全部验收通过后将其状态更新为完成。
-
-## 6. 实际验证结果
-
-### 步骤专项测试
-
-```text
-PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_piston.py -k "config or transport"
-→ 9 passed
-
-PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_harness.py
-→ 23 passed
-
-PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_piston.py
-→ 38 passed
-```
-
-### 最终静态检查
-
-```text
-make lint
-→ Ruff check: All checks passed
-→ Ruff format: 42 files already formatted
-→ strict Mypy: Success, no issues found in 42 source files
-```
-
-### 默认全量回归
-
-```text
-PYTHONPATH=src make test
-→ 324 passed, 1 skipped
-```
-
-唯一 skip 是未显式设置 `CODE_VERIFIER_RUN_PISTON=1` 时的真实 Piston 模块，符合默认测试不连接服务的计划要求。
-
-### 真实 Piston 安全验收
-
-```text
-PYTHONPATH=src make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
-→ 6 passed, 0 failed, 0 skipped
-```
-
-### Runtime smoke
-
-```text
-PYTHONPATH=src .venv/bin/python -c "from pathlib import Path; from code_verifier.execution import PistonExecutor, load_piston_executor_config; executor = PistonExecutor(load_piston_executor_config(Path('configs/execution/piston-local.yaml'))); print(executor.validate_runtime())"
-→ 3.10.0
-```
-
-### 安全与范围检查
-
-- `third_party/open-r1` 无 diff。
-- 在 `src/code_verifier/execution/` 中搜索 `exec(`、`eval(`、`compile(`，均无匹配。
-- Piston 容器检查确认 `privileged=true`，但唯一发布地址是 `127.0.0.1:2000`。
-- 未新增 Python 依赖、远程账户、API token 或公共 endpoint。
-
-## 7. 配置与依赖影响
-
-- 新增 `configs/execution/piston-local.yaml`。
-- `pyproject.toml` 仅新增 `piston` pytest marker。
-- `Makefile` 仅新增 `PISTON_CONFIG` 和显式 `test-piston` 目标。
-- 未新增 Python package 依赖。
-- Piston image、runtime 和 Docker volume 均为仓库外部本地运行资产。
-
-## 8. 与计划的偏离
-
-- 计划默认建议在主仓库同级目录创建 worktree。受工具工作区边界限制，继续复用 `.worktrees/wp3`；它仍是独立 Git worktree 和 `feat/wp3` 分支。
-- worktree 复用主仓库 `.venv` 符号链接；由于 editable install 指向主工作区，pytest 和 smoke 命令显式使用 `PYTHONPATH=src`，确保导入当前 worktree 源码。
-- 真实 Piston 部署使用固定官方 image digest和独立 named volume，而不是把 Piston 源码或 compose 文件复制进仓库。另行浅克隆官方仓库只用于记录 source reference。
-- 状态映射根据真实 Piston `RE + code 137 + near-limit memory` 行为增加 OOM 规则；这是满足计划“真实内存状态必须精确通过”的必要兼容修复，未放宽测试预期。
-
-无接口签名、功能范围、安全探针或测试通过标准偏离。
-
-## 9. 已知限制与下一步
-
-- 候选模块和可信 harness 在同一 Piston job 的同一 Python interpreter 中运行；随机 marker、可信引用和严格 schema不是完整的高级解释器级防篡改证明。
-- 当前每测试一个独立 job，未实现批量请求、有限并发、cache key/cache store 或执行 CLI。
-- Piston API container 需要高权限，必须继续保持专用环境、固定 digest和回环绑定。
-- WP3-c 完成前，WP3 不得标记整体完成。
-
-下一步由 `wp-plan-reviewer` 独立审查代码、重新运行默认与真实 Piston测试，并重点检查 SSRF/redirect、marker、OOM mapping和安全探针。审查通过后才可合并和更新 `proceedings.md`。
-
----
-
-# 代码修复报告（WP3-b R1）
-
-## 1. 修复依据
-
-- 审查报告：`ai-work/reviewer/WP3-review.md`
-- 审查轮次：WP3-b R1
-- 修复范围：全部 P0 阻断问题与 P1 主要问题
-- 未处理项：无
-- 异议项：无
-
-## 2. P0：隔离候选执行与最终判定
-
-审查证明候选与可信 harness 共享解释器时，可修改 `__main__._strict_equal` 或 `__main__.json.dumps`，把错误答案伪造为 `PASSED`。原报告第 9 节中“同一解释器是已知 MVP 限制”的描述已被本修复取代，不再作为可接受风险保留。
-
-修复提交：
-
-```text
-74031ca  fix: isolate candidate verdict execution
-```
-
-核心改动：
-
-- `main.py` 现在是可信父进程，独占：
-  - `expected`；
-  - 类型敏感 comparator；
-  - 最终随机 marker；
-  - 最终 report JSON 与 stdout 写入。
-- 候选代码在新的隔离 Python 子解释器中执行；子进程仅收到 `function_name` 和 `input`，不接收 `expected` 或最终 marker。
-- 父进程读取完整原始 stdin 后关闭 fd 0，并通过 Linux `PR_SET_DUMPABLE=0` 禁止候选子进程读取父进程内存。
-- 子进程只能通过独立 pipe 返回一个不可信的 claimed actual JSON；父进程严格解析后自行比较，绝不接受子进程提供的 `outcome`。
-- 候选 stdout/stderr 由父进程使用 nonblocking selector 独立 drain，按 UTF-8 byte limit 截断和判定；候选无法通过替换 Python stream 或截断文件绕过限制。
-- 子进程协议设置独立 8 MiB 上限；超限或 malformed 协议映射为 `harness_error`，不能形成通过结果。
-- 子进程被 signal 或非零退出终止时，父进程传播退出状态，使 Piston 的 timeout、memory 和 signal 状态仍可按原映射工作。
-- 候选修改自身 `__main__`、JSON 模块、`_emit`、`sys.__stdout__` 或扫描自身 stack frames 均只能影响候选进程，不能改写父进程 verdict。
-
-新增回归：
-
-- `tests/unit/execution/test_harness.py`
-  - 5 个固定审计候选覆盖 `_strict_equal`、`json.dumps`、`_emit`、`sys.__stdout__` 和 stack-frame 探测；全部必须为 `wrong_answer`。
-- `tests/integration/test_wp3b_piston_execution.py`
-  - 在真实 Piston 中执行同样 5 个攻击；每个结果必须精确为 `WRONG_ANSWER`，随后健康 smoke 必须通过。
-- `README.md`、`docs/piston-local.md`、`AGENTS.md`
-  - 更新为可信父进程 / 不可信子进程架构，并将该边界写入后续修改和合并规则。
-
-## 3. P1：超大 timeout 稳定归一为合同错误
-
-审查发现 `timeout_seconds=1e308` 会在乘以 1000 后变为 infinity，随后 `math.ceil()` 抛出裸 `OverflowError`。
-
-修复提交：
-
-```text
-8ecfc42  fix: reject oversized piston timeouts safely
-```
-
-修复内容：
-
-- 在毫秒换算前先检查 `timeout_seconds > 3600.0`。
-- 所有超过支持上限的有限值统一抛出：
-
-```text
-ExecutionContractError: timeout_seconds exceeds the supported Piston limit
-```
-
-- 新增回归覆盖：
-  - `3600.0001`；
-  - `1e308`；
-  - 最大有限 IEEE-754 float；
-  - 精确边界 `3600.0` 仍生成 `3_600_000` ms payload。
-- 被拒绝请求不调用 transport。
-
-## 4. 实际复测结果
-
-### 受影响专项测试
+专项验证：
 
 ```text
 PYTHONPATH=src .venv/bin/python -m pytest \
-  tests/unit/execution/test_harness.py \
-  tests/unit/execution/test_piston.py
-→ 70 passed
+  tests/unit/execution/test_base.py \
+  tests/unit/execution/test_piston.py \
+  -k "from_mapping or executor_version"
+→ 12 passed, 116 deselected
 ```
+
+### 步骤 2：安全 SQLite execution cache
+
+提交：
+
+```text
+a9eb780  feat: add secure execution cache
+```
+
+新增：
+
+- `src/code_verifier/execution/cache.py`
+- `tests/unit/execution/test_cache.py`
+
+实现：
+
+- `ExecutionTestLayer`、`ExecutionCacheKey`、`ExecutionCache` Protocol、`ExecutionCacheError`。
+- cache key 包含：
+  - exact code SHA-256；
+  - problem ID；
+  - visible/train-hidden/eval-hidden layer；
+  - order-sensitive canonical tests hash；
+  - deterministic executor version；
+  - function name；
+  - timeout float hex；
+  - memory limit。
+- versioned SQLite schema，仅保存 key hashes/metadata 与 validated result JSON；不保存 raw code/tests。
+- 新文件以 `0600` 创建；拒绝 symlink、非 regular file 和已有宽权限文件。
+- schema/version/key/result 损坏均明确失败，不解释为 cache miss。
+- `SANDBOX_ERROR` 禁止写入 cache。
+- context manager、commit/rollback、idempotent close。
+
+专项验证：
+
+```text
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_cache.py
+→ 12 passed
+```
+
+### 步骤 3：有界 batch 并发与 cache policy
+
+提交：
+
+```text
+a879931  feat: add bounded batch execution
+```
+
+新增：
+
+- `configs/execution/batch-local.yaml`
+- `src/code_verifier/execution/batch.py`
+- `tests/unit/execution/test_batch.py`
+
+实现：
+
+- `BatchExecutorConfig`、`BatchExecutionConfig`、request/item/result dataclasses。
+- `ExecutionCacheMode`：`disabled`、`read_only`、`read_write`。
+- `ExecutionWorkloadMode`：`evaluation`、`training`。
+- strict request/config mapping 与 JSON-safe result mapping。
+- `max_concurrency` 范围固定为 1–64。
+- 所有 request 与重复 request ID 在 cache/factory/thread side effect 前完整校验。
+- cache get/put 均在主线程；worker 不共享 SQLite connection。
+- 每个 cache miss 调用 factory 创建独立 executor。
+- futures 可乱序完成，但结果按原输入索引回填。
+- worker 普通异常转换为脱敏 `SANDBOX_ERROR`；cache infrastructure error 不转换为模型结果。
+- disabled/read-only/read-write 行为完整实现。
+- training cache 默认拒绝，只有显式 `allow_training_cache=true` 才允许。
+- batch runtime 使用 wall-clock，而不是 per-item runtime 求和。
+
+专项验证：
+
+```text
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/execution/test_batch.py
+→ 16 passed
+```
+
+### 步骤 4：execute-batch CLI 与原子脱敏 artifacts
+
+提交：
+
+```text
+cb14d15  feat: add batch execution cli
+```
+
+新增/修改：
+
+- `src/code_verifier/cli.py`
+- `tests/unit/test_cli.py`
+- `tests/fixtures/wp3c/batch_requests.jsonl`
+
+实现：
+
+- 新命令 `execute-batch`，保留公共 `--config/--seed/--output-dir/--log-level`，增加：
+  - `--requests`；
+  - `--workload-mode`；
+  - `--max-concurrency`；
+  - `--cache-mode`；
+  - `--cache-path`。
+- strict UTF-8 JSONL：至少一行、禁止 blank line、递归 duplicate-key-safe parse、固定 line-number 错误，不回显原行。
+- YAML batch config 可由 CLI override，但仍执行范围校验。
+- disabled cache 禁止 path；enabled cache 要求 path；cache path 禁止位于 output directory 内。
+- 执行前只做一次 Piston runtime validation，并计算 deterministic executor version。
+- `output_dir` 必须不存在；同父目录 temporary directory 完整写入后原子 rename。
+- artifacts：
+  - `results.jsonl`：输入顺序、仅 item metadata + result；
+  - `summary.json`：version、modes、concurrency、total、cache hits、status counts、runtime、results basename。
+- artifacts 不包含 code/tests/input/expected/full cache key。
+- exit 0：模型 passed/wrong/syntax/runtime/resource 等结构化结果；exit 1：至少一个 `SANDBOX_ERROR`；exit 2：config/input/cache/runtime/I/O infrastructure failure。
+- fixture 固定 4 条，覆盖三个 test layer、2 correct、1 wrong、1 runtime，不使用真实隐藏实验数据。
+
+专项验证：
+
+```text
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_cli.py \
+  -k "execute_batch or load_batch"
+→ 11 passed, 21 deselected
+
+PYTHONPATH=src .venv/bin/python -m code_verifier.cli execute-batch --help
+→ exit 0，全部参数存在
+```
+
+### 步骤 5：Mock 与真实 Piston batch/cache 集成验收
+
+提交：
+
+```text
+56cb12a  test: add batch and cache integration acceptance
+```
+
+新增/修改：
+
+- `tests/integration/test_wp3c_batch_execution.py`
+- `Makefile`
+
+默认集成覆盖：
+
+- fixed fake executor 的输入顺序、并发 peak、first-run miss/second-run hit；
+- SQLite cache round trip；
+- CLI → real BatchExecutor → artifacts 闭环；
+- artifacts 不包含 fixture code/tests。
+
+真实 Piston 覆盖：
+
+- correct、wrong answer、runtime error、timeout；
+- 多个请求在 `max_concurrency > 1` 配置下完成；
+- read-write 首轮 `cache_hits=0`；
+- 同 cache read-only 第二轮所有非-sandbox item 完整命中，result mappings 与首轮一致；
+- artificial transport failure 得到 `SANDBOX_ERROR` 且不写 cache；
+- 同 key 恢复真实 Piston 后重新执行并通过；
+- 再次 read-only 时命中恢复后的 valid entry；
+- batch 与 failure 后 WP3-b health smoke 通过。
+
+`make test-piston` 现同时运行 WP3-b 与 WP3-c piston-marked tests。
+
+### 步骤 6：文档与 WP3 最终收口
+
+提交：
+
+```text
+35cda12  docs: document complete wp3 execution workflow
+```
+
+更新：
+
+- `README.md`
+  - 状态更新为 WP3 execution layer 实现完成；
+  - 明确 WP4 rewards/verifier、training、evaluation 未实现；
+  - 增加 Batch API、SQLite cache、evaluation/training policy 示例；
+  - 增加 execute-batch CLI 与 artifact layout；
+  - 记录 cache key 不存 raw code/tests，但 result stdout/stderr 仍属敏感 artifact；
+  - 当前性能边界为单机线程池、本地 SQLite、每测试一个 Piston job。
+- `AGENTS.md`
+  - 增加 cache/batch 模块、config、unit/integration tests；
+  - 当前范围更新为 WP0–WP3；
+  - 增加 version invalidation、cache key 完整性、training cache 和真实 batch 验收规则；
+  - 明确未经后续 plan 不实现 WP4。
+- `docs/piston-local.md`
+  - 增加 batch worker capacity 操作说明，从 concurrency=1 逐步提高；
+  - 增加 cache 0600、敏感性、备份/删除、schema/version/corruption fail-closed 说明；
+  - 明确 cache 不替代 sandbox。
+
+## 2. 最终实际验收结果
 
 ### 静态检查
 
 ```text
 make lint
 → Ruff check: All checks passed
-→ Ruff format: 42 files already formatted
-→ strict Mypy: Success, no issues found in 42 source files
+→ Ruff format: 47 files already formatted
+→ strict Mypy: Success, no issues found in 47 source files
+```
+
+### 默认全量测试
+
+```text
+PYTHONPATH=src make test
+→ 386 passed, 3 skipped
+```
+
+三个 skip 均为未显式启用的真实 Piston tests：WP3-b module-level 1 项，以及 WP3-c 两项 piston-marked tests。默认测试未连接 Piston，符合计划。
+
+### 显式真实 Piston 总验收
+
+```text
+PYTHONPATH=src make test-piston \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 9 passed, 2 deselected, 0 failed, 0 skipped
+```
+
+两项 deselected 是 WP3-c 文件中的默认 fake/CLI integration tests，不带 `piston` marker；全部 9 个真实选中测试通过。
+
+### CLI help
+
+```text
+PYTHONPATH=src .venv/bin/code-verifier --help
+→ exit 0，列出 execute-batch
+
+PYTHONPATH=src .venv/bin/code-verifier execute-batch --help
+→ exit 0，列出全部 batch/cache/common 参数
+```
+
+### 真实 execute-batch smoke
+
+```text
+rm -rf outputs/wp3c-smoke
+
+PYTHONPATH=src .venv/bin/code-verifier execute-batch \
+  --config configs/execution/batch-local.yaml \
+  --requests tests/fixtures/wp3c/batch_requests.jsonl \
+  --workload-mode evaluation \
+  --output-dir outputs/wp3c-smoke \
+  --log-level INFO
+→ exit 0
+→ executed 4 requests (cache_hits=0)
+```
+
+Summary 验证：
+
+```text
+summary.json total_requests
+→ 4
+```
+
+额外实际探针：
+
+```text
+results.jsonl lines == 4
+request_id order == fixture request_id order
+fixture code/tests not present in results.jsonl
+→ order-and-redaction-ok
+```
+
+验收后已删除 `outputs/wp3c-smoke`，未提交运行产物。
+
+## 3. 配置、依赖与安全影响
+
+- 新增 `configs/execution/batch-local.yaml`。
+- 未新增 Python package 依赖；batch、cache、CLI 均使用标准库。
+- SQLite cache 为可选本地 artifact；默认 YAML cache mode 为 `disabled`。
+- cache file 只在显式启用时创建，权限为 0600。
+- 未配置公共 Piston endpoint、token 或远程账户。
+- 未修改 `third_party/open-r1/**`；最终 diff 为空。
+- 未修改 `src/code_verifier/execution/base.py` 的公开 `CodeExecutor.execute()` 签名。
+- 未修改 `MockExecutor` 非执行语义。
+- 未修改 reviewer 文件或 `proceedings.md`。
+
+## 4. 环境与计划偏离
+
+- 受工具工作区边界限制，worktree 位于主仓库内部 `.worktrees/wp3c`，但仍为独立 `feat/wp3c` 分支，所有实现与提交均在该 worktree 完成。
+- worktree 临时复用主工作区 `.venv` 符号链接；由于 editable install 指向主工作区，pytest/CLI 命令显式使用 `PYTHONPATH=src`，确保加载当前 worktree 源码。该链接不提交。
+- 第一次 `git submodule update --init --recursive` 因远程操作超时；随后使用主工作区已有固定 checkout 作为本地 `--reference` 完成只读 submodule 初始化，仍检出仓库既有 pin，未修改 submodule 内容或 pin。
+- 计划示例使用 `.venv/bin/...`；本报告命令增加 `PYTHONPATH=src` 仅用于 worktree editable-install 路径隔离，不改变功能或验收标准。
+- 无接口、cache key 字段、并发上限、测试预期、安全边界或阶段范围偏离。
+
+## 5. 已知限制
+
+- BatchExecutor 是单机标准库线程池，不是 distributed scheduler。
+- SQLite cache 是单进程主线程读写设计；不承诺跨主机共享或高写并发。
+- 每个 request 内仍保持每测试一个独立 Piston job，吞吐受本地 Piston/Docker/cgroup capacity 限制。
+- Cache result 可能包含 bounded candidate stdout/stderr，必须作为敏感 artifact 管理。
+- Training cache 即使显式允许，也需要实验层记录 resolved policy；WP3 不实现 reward 或 training orchestration。
+- WP4 parser/executor verifier 编排与 visible/hidden reward 不在本计划范围。
+
+## 6. Reviewer 下一轮重点
+
+独立复审应至少重新验证：
+
+1. 全量 request validation 在 cache/factory/thread side effect 前完成；
+2. worker concurrency 上限、独立 executor 与输入顺序回填；
+3. cache key 逐字段完整性和 deterministic version invalidation；
+4. training cache guard；
+5. SQLite symlink/0600/schema/version/corruption fail-closed 行为；
+6. CLI strict JSONL、错误脱敏、output atomicity 和 exit 0/1/2；
+7. `SANDBOX_ERROR` 不缓存；
+8. WP3-b trusted-parent/Piston/network/filesystem/PID/resource 边界无回归；
+9. 默认 `make test` 与显式 `make test-piston` 的 skip/selection 行为；
+10. `third_party/open-r1` 无修改。
+
+审查通过后，由 reviewer 合并 `feat/wp3c`，向 `proceedings.md` 追加 WP3-c 记录并将 WP3 整体登记为完成。Executor 不执行 push、merge 或 proceedings 更新。
+
+---
+
+# 代码修复报告（WP3-c R1）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP3-review.md`
+- 审查轮次：WP3-c R1
+- 审查结论：不通过
+- 修复范围：审查报告列出的全部 4 个主要问题 P1–P4
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp3c` / `.worktrees/wp3c`
+
+本轮只修改 WP3-c execution/cache/batch/CLI 合同与对应测试；未修改 reviewer 报告、`proceedings.md`、WP4 reward/training 代码或 `third_party/open-r1/**`。
+
+## 2. P1：拒绝读取和复用 cached `SANDBOX_ERROR`
+
+修复提交：
+
+```text
+de52d06  fix: reject cached sandbox failures
+c2360ec  fix: validate cached results before status checks
+```
+
+修复内容：
+
+- `SQLiteExecutionCache.get()` 在反序列化并校验结果后，若 status 为 `SANDBOX_ERROR`，抛出固定 `ExecutionCacheError`，不返回 cache hit。
+- `BatchExecutor` 在通用 `ExecutionCache` Protocol 边界增加第二层防御；先完整验证 cache 返回类型/合同，再检查 status。自定义 cache 返回非法对象或 `SANDBOX_ERROR` 时均抛 `BatchExecutionError`，不执行 factory、不解释为 miss、不复用结果，也不泄漏内置 `AttributeError`。
+- 新增 SQLite 注入结构合法 sandbox result 的回归。
+- 新增 custom in-memory cache 返回 sandbox result 的回归，并断言 factory 零调用。
+- 新增 custom cache 返回非法对象的回归，确认先走公开合同校验，不泄漏 `AttributeError`。
+
+专项验证：
+
+```text
+pytest ... -k sandbox_error
+→ 4 passed, 26 deselected
+
+pytest tests/unit/execution/test_batch.py -k custom_cache
+→ 2 passed, 34 deselected
+```
+
+## 3. P2：非法 training-cache policy 在所有执行副作用前失败
+
+修复提交：
+
+```text
+7ac5266  fix: prevalidate training cache policy
+```
+
+修复内容：
+
+- 新增并公开 `validate_batch_cache_policy()`，统一校验 workload mode、cache mode 和 `allow_training_cache`。
+- `BatchExecutor.execute_batch()` 与 CLI `_execute_batch()` 复用同一 validator，避免策略规则漂移。
+- CLI 在创建 `PistonExecutor`、调用 runtime network probe、打开 SQLite cache 或构造 `BatchExecutor` 前完成 policy 校验。
+- 新增 CLI 回归：非法 training + enabled cache + no opt-in 返回 exit 2，Piston/cache/batch constructor 调用计数均为 0，cache path 和 output directory 均不存在。
+- 原有 override 成功测试改为合法 evaluation workload；非法 training policy 由独立失败测试覆盖。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_batch.py tests/unit/test_cli.py -k training_cache
+→ 2 passed, 48 deselected
+```
+
+## 4. P3：统一拒绝 UTF-8 不可编码文本并稳定归一边界异常
+
+修复提交：
+
+```text
+35f7525  fix: reject non-utf8 execution data
+```
+
+修复内容：
+
+- `validate_execution_request()`：
+  - 校验 code 和 function name 可编码为 UTF-8；
+  - 对 tests 中字符串、嵌套列表、对象 key/value 递归检查 UTF-8；
+  - lone surrogate 统一抛脱敏 `ExecutionContractError`。
+- `validate_test_case_result()` 校验 stdout/stderr UTF-8，可阻止非法 result 进入 mapping、cache 或 CLI artifact。
+- batch/cache 的 request ID、problem ID 和 cache metadata string boundary 增加 UTF-8 检查。
+- cache canonical JSON 在返回前强制 UTF-8 encode 验证；digest、SQLite read/write 对 Unicode 编码异常归一为 `ExecutionCacheError`。
+- Piston transport request body encoding 捕获 `UnicodeEncodeError` 并归一为 `PistonTransportError("invalid piston request")`。
+- strict JSONL 中 escaped lone surrogate 在 request boundary 被固定 line-number 错误拒绝。
+- 新增覆盖：
+  - code、function name、request ID、problem ID；
+  - test input/expected、object key；
+  - 三种 cache mode 的零 cache/factory 副作用；
+  - manual cache key、cached stdout；
+  - transport payload；
+  - escaped lone-surrogate JSONL。
+
+专项验证：
+
+```text
+pytest ... -k "utf8 or non_utf8 or lone_surrogate"
+→ 26 passed, 191 deselected
+
+受影响模块全量：
+→ 217 passed
+```
+
+## 5. P4：batch runtime overflow 归一为公开合同错误
+
+修复提交：
+
+```text
+dce13b0  fix: normalize batch runtime overflow
+```
+
+修复内容：
+
+- `batch_execution_result_to_mapping()` 在 `float(runtime_ms)` 周围捕获 `OverflowError`，统一抛 `ExecutionContractError("runtime_ms must be a finite non-negative number")`。
+- 新增超大整数、NaN、Inf、负数、bool 回归。
+- 新增最大有限 IEEE-754 float 正常序列化回归。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_batch.py -k result_mapping
+→ 7 passed, 28 deselected
+```
+
+## 6. R1 对抗性问题联合复测
+
+```text
+pytest test_cache.py test_batch.py test_base.py test_piston.py test_cli.py \
+  -k "structurally_valid_cached_sandbox_error or returned_by_custom_cache \
+      or rejects_training_cache_before or custom_cache or non_utf8 or lone_surrogate \
+      or invalid_runtime_without_builtin_overflow or maximum_finite_float_runtime"
+→ 36 passed, 188 deselected
+```
+
+核验结论：
+
+- structurally valid cached sandbox result 被拒绝；
+- custom cache sandbox hit 被拒绝且 factory 零调用；
+- invalid training cache policy 不访问 Piston、不创建 cache；
+- lone surrogate 在所有公共入口得到稳定脱敏错误；
+- batch huge integer runtime 不再泄漏内置 `OverflowError`。
+
+## 7. 最终总体验收
+
+### 静态检查
+
+```text
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ Ruff format: 47 files already formatted
+→ strict Mypy: no issues found in 47 source files
 ```
 
 ### 默认全量回归
 
 ```text
-PYTHONPATH=src make test
-→ 333 passed, 1 skipped
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 422 passed, 3 skipped
 ```
 
-唯一 skip 是未显式启用的真实 Piston 模块，符合默认测试不连接服务的既有要求。
+三个 skip 均为默认模式下未显式启用的真实 Piston tests，未连接服务。
 
-### 真实 Piston 与对抗性验收
+### 真实 Piston 总验收
 
 ```text
 PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
   PISTON_CONFIG=configs/execution/piston-local.yaml
-→ 7 passed, 0 failed, 0 skipped
+→ 9 passed, 2 deselected, 0 failed, 0 skipped
 ```
 
-真实套件继续精确通过正确、错误、语法、运行、timeout、memory、stdout/stderr output、网络、非 root、基础文件写、宿主隔离、跨 job 清理和 PID containment，并新增 5 类 verdict tampering 探针。
+WP3-b 安全套件与 WP3-c batch/cache 真实测试全部通过。
 
-### Runtime smoke
+### 实际 CLI smoke
 
 ```text
-PYTHONPATH=src .venv/bin/python -c "... executor.validate_runtime() ..."
-→ 3.10.0
+code-verifier execute-batch \
+  --config configs/execution/batch-local.yaml \
+  --requests tests/fixtures/wp3c/batch_requests.jsonl \
+  --workload-mode evaluation \
+  --output-dir outputs/wp3c-smoke
+→ exit 0
+→ executed 4 requests (cache_hits=0)
 ```
 
-## 5. 范围与安全核对
+Artifact 复核：
 
-- 未修改 `ai-work/reviewer/WP3-review.md`。
-- 未修改 `proceedings.md`。
-- `third_party/open-r1` 无 diff。
-- 未新增 Python package 依赖、公共 Piston endpoint、token 或远程账户。
-- 宿主 `src/code_verifier/execution/` 仍无 `exec(`、`eval(` 或 `compile(` 调用。
-- 新增的 `subprocess.Popen` 仅存在于发送到 Piston 的可信 runner 源码中，用于 sandbox job 内的候选进程隔离；宿主进程不运行候选代码。
-- WP3-b 修复已完成，但仍需 reviewer 独立复审；WP3 整体继续保持部分完成。
+```text
+summary total_requests = 4
+results.jsonl lines = 4
+request_id order matches fixture
+fixture code/tests absent from results.jsonl
+→ summary=4 order-and-redaction-ok
+```
+
+Smoke 输出已删除，未提交运行产物。
+
+## 8. 修复完成状态
+
+- R1 P1–P4 全部修复并有对应回归测试。
+- 无未处理问题或异议项。
+- 未修改审查报告或 `proceedings.md`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 独立复审本轮修复；复审通过后才可合并并登记 WP3 整体完成。
+
+---
+
+# 代码修复报告（WP3-c R2）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP3-review.md`
+- 审查轮次：WP3-c R2
+- 复审结论：需修改
+- 修复范围：R2 新增的两个主要问题 N1、N2
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp3c` / `.worktrees/wp3c`
+
+本轮继续复用 WP3-c 独立 worktree。首次执行 N2 时 CodexPro 连接中断，保留的未提交改动在本次恢复后逐项核验、补齐、测试并提交；未修改主分支工作区。
+
+## 2. N1：batch mapping 在访问 items 前完成结构校验
+
+修复提交：
+
+```text
+afae99e  fix: validate batch mapping items first
+```
+
+修复内容：
+
+- `batch_execution_result_to_mapping()` 明确要求 `items` 为 list。
+- 每个元素先调用 `batch_execution_item_to_mapping()`，完成类型、request/problem ID、test layer、cache-hit bool 和嵌套 execution result 合同校验。
+- 只使用已验证的 item mappings 计算 cache-hit 数并组装输出。
+- `items=None`、tuple、普通 object、非法 test layer 和非 bool cache-hit 均统一抛脱敏 `ExecutionContractError`，不再泄漏 `TypeError` 或 `AttributeError`。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_batch.py \
+  -k "invalid_items or invalid_item_fields or result_mapping"
+→ 12 passed, 29 deselected
+```
+
+## 3. N2：完整验证 cache key 并统一 SQLite 错误合同
+
+修复提交：
+
+```text
+43fb74c  fix: validate execution cache keys
+```
+
+修复内容：
+
+- 新增统一 `_validate_execution_cache_key()`，验证：
+  - code/tests hash 为 64 位小写 SHA-256；
+  - problem ID、executor version、function name 和 timeout hex 为非空、UTF-8 可编码文本；
+  - test layer 为 `ExecutionTestLayer`；
+  - timeout hex 可解析、canonical、有限且大于 0；
+  - memory limit 为正整数且拒绝 bool-as-int。
+- `build_execution_cache_key()` 使用 `float(timeout_seconds).hex()`，使公共 request 合同接受的正整数 timeout 与浮点 timeout 行为一致。
+- `_cache_key_mapping()` 与 `execution_cache_key_digest()` 统一调用 key validator，畸形公开 key 抛 `ExecutionContractError`，不生成无效 digest。
+- `SQLiteExecutionCache.get()` / `put()` 将畸形 key 统一归一为 `ExecutionCacheError("execution cache key is invalid")`，不泄漏属性、解析或类型异常。
+- 新增整数 timeout、hash 格式、空/非 UTF-8 文本、错误枚举、非法/non-canonical timeout hex、bool/非正 memory limit，以及 SQLite get/put 错误归一回归。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_cache.py \
+  -k "cache_key or malformed_keys"
+→ 25 passed, 10 deselected
+
+pytest tests/unit/execution/test_cache.py
+→ 35 passed
+```
+
+## 4. R2 问题联合复测
+
+```text
+pytest tests/unit/execution/test_batch.py tests/unit/execution/test_cache.py \
+  -k "invalid_items or invalid_item_fields or cache_key_builder_accepts_integer_timeout \
+      or malformed_public_keys or normalizes_malformed_keys"
+→ 22 passed, 54 deselected
+```
+
+核验结论：
+
+- `items=None` 和普通 object 不再泄漏内置异常；
+- 合法整数 timeout 可稳定生成 canonical cache key；
+- 手工构造的错误 enum、bad timeout hex 和 bool memory 无法生成 digest；
+- SQLite get/put 对畸形 key 均使用固定 cache infrastructure error。
+
+## 5. 最终总体验收
+
+### 静态检查
+
+```text
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ Ruff format: 47 files already formatted
+→ strict Mypy: no issues found in 47 source files
+```
+
+### 默认全量回归
+
+```text
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 444 passed, 3 skipped
+```
+
+三个 skip 均为默认模式下未显式启用的真实 Piston tests。
+
+### 真实 Piston 总验收
+
+```text
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 9 passed, 2 deselected, 0 failed, 0 skipped
+```
+
+### 实际 CLI smoke
+
+```text
+code-verifier execute-batch \
+  --config configs/execution/batch-local.yaml \
+  --requests tests/fixtures/wp3c/batch_requests.jsonl \
+  --workload-mode evaluation \
+  --output-dir outputs/wp3c-smoke
+→ exit 0
+→ executed 4 requests (cache_hits=0)
+→ summary=4 order-and-redaction-ok
+```
+
+Smoke 输出已删除，未提交运行产物。
+
+## 6. 修复完成状态
+
+- R2 N1、N2 均已修复并有相应边界回归。
+- 无未处理问题或异议项。
+- 未修改 reviewer 报告、`proceedings.md` 或 `third_party/open-r1/**`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 执行 WP3-c R3 独立复审。
