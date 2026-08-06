@@ -9,9 +9,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import cast
 
@@ -19,6 +21,7 @@ from code_verifier import __version__
 from code_verifier.config import ConfigError
 from code_verifier.data.adapters import InputAdapterError
 from code_verifier.data.deduplicate import DuplicateDataError
+from code_verifier.data.json_strict import StrictJsonError, loads_strict
 from code_verifier.data.leakage_checks import LeakageError
 from code_verifier.data.prepare import (
     DataPreparationError,
@@ -29,6 +32,26 @@ from code_verifier.data.prepare import (
 )
 from code_verifier.data.schema import SchemaError
 from code_verifier.environment import write_environment_record
+from code_verifier.execution import (
+    BatchExecutionConfig,
+    BatchExecutionError,
+    BatchExecutionRequest,
+    BatchExecutionResult,
+    BatchExecutor,
+    BatchExecutorConfig,
+    ExecutionCacheError,
+    ExecutionCacheMode,
+    ExecutionContractError,
+    ExecutionStatus,
+    ExecutionWorkloadMode,
+    PistonExecutor,
+    PistonTransportError,
+    SQLiteExecutionCache,
+    batch_execution_item_to_mapping,
+    batch_execution_request_from_mapping,
+    load_batch_execution_config,
+    piston_executor_version,
+)
 from code_verifier.parsing import extract_python_code
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -39,6 +62,15 @@ DATA_ERRORS = (
     DuplicateDataError,
     LeakageError,
     DataPreparationError,
+)
+EXECUTION_ERRORS = (
+    ExecutionContractError,
+    BatchExecutionError,
+    ExecutionCacheError,
+    PistonTransportError,
+    StrictJsonError,
+    OSError,
+    UnicodeError,
 )
 
 
@@ -53,7 +85,7 @@ def _add_common_arguments(
         "--config",
         type=Path,
         required=config_required,
-        help="YAML config path; required by prepare-data and otherwise unused",
+        help="YAML config path; required by commands that execute configured workflows",
     )
     parser.add_argument("--seed", type=int, default=42, help="deterministic seed (default: 42)")
     parser.add_argument(
@@ -134,8 +166,127 @@ def _parse_code(args: argparse.Namespace) -> int:
     return 0 if result.success else 1
 
 
+def _load_batch_requests(path: Path) -> list[BatchExecutionRequest]:
+    """Read strict UTF-8 JSONL requests and reject blank, duplicate-key, or malformed records."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines:
+        raise BatchExecutionError("batch request JSONL must contain at least one record")
+    requests: list[BatchExecutionRequest] = []
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            raise BatchExecutionError(f"batch request JSONL line {line_number} must not be blank")
+        try:
+            value = loads_strict(line)
+            request = batch_execution_request_from_mapping(value)
+        except (StrictJsonError, ExecutionContractError):
+            raise BatchExecutionError(f"batch request JSONL line {line_number} is invalid") from None
+        requests.append(request)
+    return requests
+
+
+def _write_batch_outputs(result: BatchExecutionResult, output_dir: Path) -> None:
+    """Atomically write results.jsonl and summary.json without request payloads."""
+    if output_dir.exists():
+        raise BatchExecutionError("output directory must not already exist")
+    parent = output_dir.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=parent))
+    try:
+        item_mappings = [batch_execution_item_to_mapping(item) for item in result.items]
+        results_text = "".join(
+            f"{json.dumps(item, ensure_ascii=False, sort_keys=True, allow_nan=False)}\n" for item in item_mappings
+        )
+        (temporary / "results.jsonl").write_text(results_text, encoding="utf-8")
+        status_counts = {status.value: 0 for status in ExecutionStatus}
+        for item in result.items:
+            status_counts[item.result.status.value] += 1
+        summary: dict[str, object] = {
+            "executor_version": result.executor_version,
+            "workload_mode": result.workload_mode.value,
+            "cache_mode": result.cache_mode.value,
+            "max_concurrency": result.max_concurrency,
+            "total_requests": result.total_requests,
+            "cache_hits": result.cache_hits,
+            "status_counts": status_counts,
+            "runtime_ms": result.runtime_ms,
+            "results_file": "results.jsonl",
+        }
+        (temporary / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        temporary.rename(output_dir)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
+def _resolve_batch_options(
+    args: argparse.Namespace,
+    config: BatchExecutionConfig,
+) -> tuple[BatchExecutorConfig, ExecutionWorkloadMode]:
+    max_concurrency = config.batch.max_concurrency if args.max_concurrency is None else int(args.max_concurrency)
+    if not 1 <= max_concurrency <= 64:
+        raise ConfigError("max_concurrency must be an integer between 1 and 64")
+    cache_mode = config.batch.cache_mode
+    if args.cache_mode is not None:
+        try:
+            cache_mode = ExecutionCacheMode(str(args.cache_mode))
+        except ValueError:
+            raise ConfigError("cache_mode must be disabled, read_only, or read_write") from None
+    try:
+        workload_mode = ExecutionWorkloadMode(str(args.workload_mode))
+    except ValueError:
+        raise ConfigError("workload_mode must be evaluation or training") from None
+    return replace(config.batch, max_concurrency=max_concurrency, cache_mode=cache_mode), workload_mode
+
+
+def _execute_batch(args: argparse.Namespace) -> int:
+    """Run configured local Piston batch execution and emit non-sensitive artifacts."""
+    config = load_batch_execution_config(Path(str(args.config)))
+    batch_config, workload_mode = _resolve_batch_options(args, config)
+    requests = _load_batch_requests(Path(str(args.requests)))
+    output_dir = Path(str(args.output_dir))
+    if output_dir.exists():
+        raise BatchExecutionError("output directory must not already exist")
+
+    cache_path = None if args.cache_path is None else Path(str(args.cache_path))
+    if batch_config.cache_mode is ExecutionCacheMode.DISABLED:
+        if cache_path is not None:
+            raise BatchExecutionError("cache path is not allowed when cache mode is disabled")
+    elif cache_path is None:
+        raise BatchExecutionError("cache path is required when cache mode is enabled")
+    if cache_path is not None:
+        resolved_output = output_dir.resolve(strict=False)
+        resolved_cache = cache_path.resolve(strict=False)
+        if resolved_cache == resolved_output or resolved_output in resolved_cache.parents:
+            raise BatchExecutionError("cache path must not be inside the output directory")
+
+    probe = PistonExecutor(config.piston)
+    probe.validate_runtime()
+    executor_version = piston_executor_version(config.piston)
+    cache = None if cache_path is None else SQLiteExecutionCache(cache_path)
+    try:
+        executor = BatchExecutor(
+            lambda: PistonExecutor(config.piston),
+            executor_version=executor_version,
+            config=batch_config,
+            cache=cache,
+        )
+        result = executor.execute_batch(requests, workload_mode=workload_mode)
+    finally:
+        if cache is not None:
+            cache.close()
+    _write_batch_outputs(result, output_dir)
+    print(f"executed {result.total_requests} requests (cache_hits={result.cache_hits})")
+    print(f"results={output_dir / 'results.jsonl'}")
+    print(f"summary={output_dir / 'summary.json'}")
+    return 1 if any(item.result.status is ExecutionStatus.SANDBOX_ERROR for item in result.items) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0-WP2 commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP3 commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -187,6 +338,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_arguments(parse_parser)
     parse_parser.set_defaults(handler=_parse_code)
+
+    execute_parser = subparsers.add_parser(
+        "execute-batch",
+        help="execute strict JSONL requests with bounded local Piston concurrency",
+    )
+    execute_parser.add_argument("--requests", type=Path, required=True, help="strict UTF-8 JSONL request path")
+    execute_parser.add_argument(
+        "--workload-mode",
+        choices=[mode.value for mode in ExecutionWorkloadMode],
+        default=ExecutionWorkloadMode.EVALUATION.value,
+        help="execution workload mode (default: evaluation)",
+    )
+    execute_parser.add_argument("--max-concurrency", type=int, default=None, help="optional YAML concurrency override")
+    execute_parser.add_argument(
+        "--cache-mode",
+        choices=[mode.value for mode in ExecutionCacheMode],
+        default=None,
+        help="optional YAML cache policy override",
+    )
+    execute_parser.add_argument(
+        "--cache-path",
+        type=Path,
+        default=None,
+        help="SQLite cache path for enabled cache modes",
+    )
+    _add_common_arguments(execute_parser, config_required=True)
+    execute_parser.set_defaults(handler=_execute_batch)
     return parser
 
 
@@ -208,7 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return handler(args)
-    except DATA_ERRORS as error:
+    except DATA_ERRORS + EXECUTION_ERRORS as error:
         print(f"error: {' '.join(str(error).splitlines())}", file=sys.stderr)
         return 2
 
