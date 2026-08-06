@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, and the complete WP3 execution layer are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the complete WP3 execution layer, and the WP4-a unified verification layer are implemented.
 
-WP3 now includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 reward/verifier orchestration, training, and model evaluation are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4-a adds structured verification results and completion → parser → executor orchestration. WP4-b Public/Hidden rewards, training, and model evaluation are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -280,6 +280,30 @@ outputs/wp3c-batch/
 ```
 
 `results.jsonl` contains ordered structured results without code or tests. `summary.json` records counts, cache hits, concurrency, executor version, workload/cache mode, and wall-clock runtime.
+
+## WP4-a unified verification
+
+`verify_completion()` accepts exactly one caller-selected test list, validates its shape and resource limits, extracts code through the WP2 parser, and delegates execution through the supplied `CodeExecutor`. It does not receive a complete problem record or a test-layer selector, so it cannot choose visible, train-hidden, or eval-hidden tests on its own.
+
+```python
+from code_verifier.verification import verification_result_to_mapping, verify_completion
+
+result = verify_completion(
+    completion="""```python
+def solve(value):
+    return value + 1
+```""",
+    tests=[{"input": 1, "expected": 2}],
+    function_name="solve",
+    metadata={"time_limit_seconds": 1.0, "memory_limit_mb": 64},
+    executor=executor,
+)
+summary = verification_result_to_mapping(result)
+```
+
+Input validation is fail-closed: an empty test list is a `VerificationContractError`, and malformed function names, tests, or resource limits fail before parser or executor side effects. A parse failure returns structured `PARSE_ERROR` data and never calls the executor. Candidate code is still executed only by the configured `CodeExecutor`; the verifier contains no host execution path.
+
+The sanitized summary records status, parse/execution flags, pass counts, pass rate, parser taxonomy, failure counts, and an optional validated execution result. It does not contain the completion, extracted code, selected tests, function name, or metadata. WP4-a does not compute reward values and does not implement Public/Hidden reward wrappers or training commands; those remain WP4-b work.
 
 ## Current limitations
 
