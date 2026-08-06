@@ -343,3 +343,208 @@ fixture code/tests not present in results.jsonl
 10. `third_party/open-r1` 无修改。
 
 审查通过后，由 reviewer 合并 `feat/wp3c`，向 `proceedings.md` 追加 WP3-c 记录并将 WP3 整体登记为完成。Executor 不执行 push、merge 或 proceedings 更新。
+
+---
+
+# 代码修复报告（WP3-c R1）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP3-review.md`
+- 审查轮次：WP3-c R1
+- 审查结论：不通过
+- 修复范围：审查报告列出的全部 4 个主要问题 P1–P4
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp3c` / `.worktrees/wp3c`
+
+本轮只修改 WP3-c execution/cache/batch/CLI 合同与对应测试；未修改 reviewer 报告、`proceedings.md`、WP4 reward/training 代码或 `third_party/open-r1/**`。
+
+## 2. P1：拒绝读取和复用 cached `SANDBOX_ERROR`
+
+修复提交：
+
+```text
+de52d06  fix: reject cached sandbox failures
+c2360ec  fix: validate cached results before status checks
+```
+
+修复内容：
+
+- `SQLiteExecutionCache.get()` 在反序列化并校验结果后，若 status 为 `SANDBOX_ERROR`，抛出固定 `ExecutionCacheError`，不返回 cache hit。
+- `BatchExecutor` 在通用 `ExecutionCache` Protocol 边界增加第二层防御；先完整验证 cache 返回类型/合同，再检查 status。自定义 cache 返回非法对象或 `SANDBOX_ERROR` 时均抛 `BatchExecutionError`，不执行 factory、不解释为 miss、不复用结果，也不泄漏内置 `AttributeError`。
+- 新增 SQLite 注入结构合法 sandbox result 的回归。
+- 新增 custom in-memory cache 返回 sandbox result 的回归，并断言 factory 零调用。
+- 新增 custom cache 返回非法对象的回归，确认先走公开合同校验，不泄漏 `AttributeError`。
+
+专项验证：
+
+```text
+pytest ... -k sandbox_error
+→ 4 passed, 26 deselected
+
+pytest tests/unit/execution/test_batch.py -k custom_cache
+→ 2 passed, 34 deselected
+```
+
+## 3. P2：非法 training-cache policy 在所有执行副作用前失败
+
+修复提交：
+
+```text
+7ac5266  fix: prevalidate training cache policy
+```
+
+修复内容：
+
+- 新增并公开 `validate_batch_cache_policy()`，统一校验 workload mode、cache mode 和 `allow_training_cache`。
+- `BatchExecutor.execute_batch()` 与 CLI `_execute_batch()` 复用同一 validator，避免策略规则漂移。
+- CLI 在创建 `PistonExecutor`、调用 runtime network probe、打开 SQLite cache 或构造 `BatchExecutor` 前完成 policy 校验。
+- 新增 CLI 回归：非法 training + enabled cache + no opt-in 返回 exit 2，Piston/cache/batch constructor 调用计数均为 0，cache path 和 output directory 均不存在。
+- 原有 override 成功测试改为合法 evaluation workload；非法 training policy 由独立失败测试覆盖。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_batch.py tests/unit/test_cli.py -k training_cache
+→ 2 passed, 48 deselected
+```
+
+## 4. P3：统一拒绝 UTF-8 不可编码文本并稳定归一边界异常
+
+修复提交：
+
+```text
+35f7525  fix: reject non-utf8 execution data
+```
+
+修复内容：
+
+- `validate_execution_request()`：
+  - 校验 code 和 function name 可编码为 UTF-8；
+  - 对 tests 中字符串、嵌套列表、对象 key/value 递归检查 UTF-8；
+  - lone surrogate 统一抛脱敏 `ExecutionContractError`。
+- `validate_test_case_result()` 校验 stdout/stderr UTF-8，可阻止非法 result 进入 mapping、cache 或 CLI artifact。
+- batch/cache 的 request ID、problem ID 和 cache metadata string boundary 增加 UTF-8 检查。
+- cache canonical JSON 在返回前强制 UTF-8 encode 验证；digest、SQLite read/write 对 Unicode 编码异常归一为 `ExecutionCacheError`。
+- Piston transport request body encoding 捕获 `UnicodeEncodeError` 并归一为 `PistonTransportError("invalid piston request")`。
+- strict JSONL 中 escaped lone surrogate 在 request boundary 被固定 line-number 错误拒绝。
+- 新增覆盖：
+  - code、function name、request ID、problem ID；
+  - test input/expected、object key；
+  - 三种 cache mode 的零 cache/factory 副作用；
+  - manual cache key、cached stdout；
+  - transport payload；
+  - escaped lone-surrogate JSONL。
+
+专项验证：
+
+```text
+pytest ... -k "utf8 or non_utf8 or lone_surrogate"
+→ 26 passed, 191 deselected
+
+受影响模块全量：
+→ 217 passed
+```
+
+## 5. P4：batch runtime overflow 归一为公开合同错误
+
+修复提交：
+
+```text
+dce13b0  fix: normalize batch runtime overflow
+```
+
+修复内容：
+
+- `batch_execution_result_to_mapping()` 在 `float(runtime_ms)` 周围捕获 `OverflowError`，统一抛 `ExecutionContractError("runtime_ms must be a finite non-negative number")`。
+- 新增超大整数、NaN、Inf、负数、bool 回归。
+- 新增最大有限 IEEE-754 float 正常序列化回归。
+
+专项验证：
+
+```text
+pytest tests/unit/execution/test_batch.py -k result_mapping
+→ 7 passed, 28 deselected
+```
+
+## 6. R1 对抗性问题联合复测
+
+```text
+pytest test_cache.py test_batch.py test_base.py test_piston.py test_cli.py \
+  -k "structurally_valid_cached_sandbox_error or returned_by_custom_cache \
+      or rejects_training_cache_before or custom_cache or non_utf8 or lone_surrogate \
+      or invalid_runtime_without_builtin_overflow or maximum_finite_float_runtime"
+→ 36 passed, 188 deselected
+```
+
+核验结论：
+
+- structurally valid cached sandbox result 被拒绝；
+- custom cache sandbox hit 被拒绝且 factory 零调用；
+- invalid training cache policy 不访问 Piston、不创建 cache；
+- lone surrogate 在所有公共入口得到稳定脱敏错误；
+- batch huge integer runtime 不再泄漏内置 `OverflowError`。
+
+## 7. 最终总体验收
+
+### 静态检查
+
+```text
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ Ruff format: 47 files already formatted
+→ strict Mypy: no issues found in 47 source files
+```
+
+### 默认全量回归
+
+```text
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 422 passed, 3 skipped
+```
+
+三个 skip 均为默认模式下未显式启用的真实 Piston tests，未连接服务。
+
+### 真实 Piston 总验收
+
+```text
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 9 passed, 2 deselected, 0 failed, 0 skipped
+```
+
+WP3-b 安全套件与 WP3-c batch/cache 真实测试全部通过。
+
+### 实际 CLI smoke
+
+```text
+code-verifier execute-batch \
+  --config configs/execution/batch-local.yaml \
+  --requests tests/fixtures/wp3c/batch_requests.jsonl \
+  --workload-mode evaluation \
+  --output-dir outputs/wp3c-smoke
+→ exit 0
+→ executed 4 requests (cache_hits=0)
+```
+
+Artifact 复核：
+
+```text
+summary total_requests = 4
+results.jsonl lines = 4
+request_id order matches fixture
+fixture code/tests absent from results.jsonl
+→ summary=4 order-and-redaction-ok
+```
+
+Smoke 输出已删除，未提交运行产物。
+
+## 8. 修复完成状态
+
+- R1 P1–P4 全部修复并有对应回归测试。
+- 无未处理问题或异议项。
+- 未修改审查报告或 `proceedings.md`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 独立复审本轮修复；复审通过后才可合并并登记 WP3 整体完成。
