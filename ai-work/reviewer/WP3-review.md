@@ -506,3 +506,15 @@ Smoke 输出已删除，worktree 未保留运行产物。
 - 计划六个实施步骤、静态检查、444 项默认回归、真实 Piston 总验收、CLI smoke 和额外边界探针全部通过。
 - 未发现新增阻断、主要或次要问题；WP3-c 及 WP3 整体验收通过。
 - 审查报告提交后进入 reviewer 最终处理：核对 worktree/main 状态，执行 `--no-ff` 合并，整合 WP3 proceedings，并记录最终合并提交。
+
+## 17. 最终合并与完成状态
+
+- 阶段审查提交：`07cfff3`（`docs: add WP3-c review round r3`）。
+- 主分支原有未跟踪 `ai-work/planner/WP3-c-plan.md` 与阶段分支内容完全一致；为避免同路径未跟踪文件阻塞合并，原样提交为 `cdec437`（`docs: add WP3-c implementation plan`）。
+- 合并提交：`020af935db0b483d4bf76b03963b842f7ddce4c6`。
+- 合并消息：`feat: complete WP3 batch execution and cache`。
+- 合并方式：`git merge --no-ff feat/wp3c`；合并成功且未产生冲突。
+- 合并后的 `main` 独立复验：`make lint` 通过；`make test` 为 444 passed、3 skipped；`make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` 为 9 passed、0 failed、0 skipped。
+- 合并后的 CLI 验收：`code-verifier --help` 与 `execute-batch --help` 返回 0；fixture smoke 处理 4 条请求，summary 为 4，结果顺序和脱敏要求通过。
+- `proceedings.md` 已将 WP3-a、WP3-b 与 WP3-c 整合为一条 `WP3：安全执行器` 完成记录。
+- 未执行 push；阶段分支按项目约定保留。

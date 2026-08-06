@@ -129,68 +129,54 @@ WP0 已完成以下工作：
 
 ---
 
-## WP3-a：安全执行器基础合同与 Mock 基线
-
-- **完成日期**：2026-08-05
-- **阶段状态**：子阶段已完成；WP3 整体仍为部分完成
-- **验收结论**：通过（依据 `ai-work/reviewer/WP3-review.md` R2）
-- **执行计划**：`ai-work/planner/WP3-a-plan.md`
-- **实施范围**：完成 Execution Layer 的公共合同、严格校验、JSON 序列化和非执行 Mock；未实现真实沙箱、资源限制、批量并发、缓存或完整 WP3 安全验收。
-
-### 本阶段完成的功能
-
-- 实现规格 §8.3 的 `ExecutionStatus`、`TestCaseResult`、`ExecutionResult` 与 `CodeExecutor` Protocol。
-- 实现执行请求、逐测试结果和聚合结果的严格合同校验，统一结构化异常并避免回显隐藏测试内容。
-- 实现稳定 JSON mapping 与 FIFO `MockExecutor`，支持调用记录、防御性复制和 parser → Mock 集成测试，且不执行模型代码。
-
-### 相关文件
-
-- 新增：`src/code_verifier/execution/{__init__,base,mock}.py`、`tests/unit/execution/*`、`tests/integration/test_wp3a_mock_execution.py`
-- 修改：`README.md`、`AGENTS.md`
-- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
-
-### 配置影响
-
-- 未修改 `pyproject.toml`、Makefile、YAML 配置或依赖版本。
-
-### 验收结论
-
-- 独立 worktree 静态检查、专项测试 86 项与全量回归 263 项通过。
-- 合并后的 `main` 通过原样 `make lint` 与 `make test`（263 passed）。
-- 循环 JSON、超大整数及隐藏测试 sentinel 探针均符合稳定、无泄漏的 `ExecutionContractError` 合同。
-- 合并提交：`f77c4a2ad511120cfa8112182a8cb828a53db55f`。
-
----
-
-## WP3-b：本地 Piston 单请求执行与安全限制
+## WP3：安全执行器
 
 - **完成日期**：2026-08-06
-- **阶段状态**：子阶段已完成；WP3 整体仍为部分完成
-- **验收结论**：通过（依据 `ai-work/reviewer/WP3-review.md` R2）
-- **执行计划**：`ai-work/planner/WP3-b-plan.md`
-- **实施范围**：完成本地 Piston 单请求真实沙箱、资源限制与安全验收；批量并发、缓存、执行 CLI 和 WP3 整体验收留待 WP3-c。
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP3-review.md` R3）
+- **执行计划**：`ai-work/planner/WP3-a-plan.md`、`ai-work/planner/WP3-b-plan.md`、`ai-work/planner/WP3-c-plan.md`
+- **实施范围**：完成 Execution Layer 的公共合同、非执行 Mock、本地 Piston 安全执行、资源限制、批量并发、可选 SQLite 缓存和执行 CLI；未实现 WP4 verifier/reward、训练或评测编排。
 
-### 本阶段完成的功能
+### 本 WP 完成的功能
 
-- 实现严格的 loopback-only Piston 配置和无代理、无重定向、有界响应的标准库 HTTP transport。
-- 实现可信父进程与不可信候选子进程隔离的 Python harness；父进程独占 expected、比较逻辑、随机 marker 和最终结果生成。
-- 实现 `PistonExecutor` 单测试独立 job、精确 runtime 校验、资源限制、停止策略、结构化状态映射与脱敏错误处理。
-- 建立真实 Piston 安全套件，覆盖 verdict 篡改、超时、内存、输出、网络、非 root、文件系统、宿主隔离、跨 job 清理和 PID containment。
+- 建立 `CodeExecutor`、结构化执行结果、严格请求/结果校验和稳定 JSON mapping，并提供 FIFO、非执行的 `MockExecutor`。
+- 实现 loopback-only `PistonExecutor` 与可信父进程/不可信候选子进程 harness，覆盖 timeout、memory、output、network、filesystem、PID、非 root、清理和结果防伪安全边界。
+- 实现配置化有限并发 batch 编排，按输入顺序返回结果，每个 cache miss 使用独立 executor，并对 worker、cache 和训练缓存策略采用脱敏、fail-closed 错误处理。
+- 实现包含 code/tests hash、problem/test layer、executor version、function、timeout 和 memory 的稳定 cache key，以及 0600、拒绝 symlink、版本化、损坏即失败的 SQLite cache。
+- 新增 `execute-batch` CLI，支持严格 UTF-8 JSONL、配置/CLI override、原子脱敏 artifact 和退出码 0/1/2。
 
-### 相关文件
+### 子阶段
 
-- 新增：`src/code_verifier/execution/{harness,piston}.py`、`configs/execution/piston-local.yaml`、`docs/piston-local.md`、`tests/unit/execution/{test_harness,test_piston}.py`、`tests/integration/test_wp3b_piston_execution.py`
-- 修改：`src/code_verifier/execution/__init__.py`、`Makefile`、`pyproject.toml`、`README.md`、`AGENTS.md`
+#### 子阶段 WP3-a：公共合同与 Mock
+
+- 完成功能：公共执行接口、严格合同校验、JSON mapping、调用记录与非执行 Mock。
+- 相关文件：`src/code_verifier/execution/{__init__,base,mock}.py`、`tests/unit/execution/*`、`tests/integration/test_wp3a_mock_execution.py`。
+
+#### 子阶段 WP3-b：本地 Piston 单请求执行与安全限制
+
+- 完成功能：可信 harness、单测试 Piston job、资源/隔离限制、结构化状态映射和真实安全验收。
+- 相关文件：`src/code_verifier/execution/{harness,piston}.py`、`configs/execution/piston-local.yaml`、`docs/piston-local.md`、`tests/integration/test_wp3b_piston_execution.py`。
+
+#### 子阶段 WP3-c：批量并发、缓存与执行 CLI
+
+- 完成功能：有限并发 batch、稳定 cache identity、安全 SQLite cache、training cache guard、`execute-batch` CLI 和 WP3 整体收口。
+- 相关文件：`src/code_verifier/execution/{batch,cache}.py`、`configs/execution/batch-local.yaml`、`tests/unit/execution/{test_batch,test_cache}.py`、`tests/integration/test_wp3c_batch_execution.py`、`tests/fixtures/wp3c/batch_requests.jsonl`。
+
+### 相关文件（汇总）
+
+- 新增：`src/code_verifier/execution/{base,mock,harness,piston,batch,cache}.py`、`configs/execution/{piston-local,batch-local}.yaml`、`docs/piston-local.md`、执行层单元与集成测试。
+- 修改：`src/code_verifier/execution/__init__.py`、`src/code_verifier/cli.py`、`Makefile`、`pyproject.toml`、`README.md`、`AGENTS.md`。
 - 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
 
 ### 配置影响
 
-- 新增 `configs/execution/piston-local.yaml`；`pyproject.toml` 仅新增 `piston` pytest marker；Makefile 新增 `PISTON_CONFIG` 与 `test-piston` 目标；未新增 Python package 依赖。
+- 新增本地 Piston 与 batch execution YAML；Makefile 增加并扩展 `test-piston`；`pyproject.toml` 仅增加 `piston` pytest marker；未新增 Python package 依赖。
 
 ### 验收结论
 
 - 合并后的 `main` 通过 `make lint`。
-- `make test`：333 passed，1 个真实 Piston 模块按设计默认 skipped。
-- `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`：7 passed，0 failed，0 skipped。
-- 候选 verdict 篡改与父进程 `/proc` 访问探针被阻止，极大 timeout 稳定归一为 `ExecutionContractError`。
-- 合并提交：`7bfc95f9b95073886a8f138fe2fcef1d9e3cc129`（`feat: complete WP3-b local Piston execution`）。
+- `make test`：444 passed，3 个真实 Piston tests 按设计默认 skipped。
+- `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`：9 passed，0 failed，0 skipped。
+- `code-verifier` 与 `execute-batch --help` 返回 0；真实 CLI smoke 处理 4 条请求并输出 2 passed / 1 wrong answer / 1 runtime error，顺序与脱敏要求通过。
+- WP3 §20 的 Protocol、Mock、Piston、资源限制、批量执行与测试交付全部完成；正确、超时、网络、文件越权、输出限制、宿主隔离和结果序列化验收全部通过。
+- 最终合并提交：`020af935db0b483d4bf76b03963b842f7ddce4c6`（`feat: complete WP3 batch execution and cache`）。
