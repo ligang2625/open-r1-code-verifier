@@ -432,6 +432,8 @@ class BatchExecutor:
                 key = _cache_key(request, self._executor_version)
                 cached = self._cache.get(key)
                 if cached is not None:
+                    if cached.status is ExecutionStatus.SANDBOX_ERROR:
+                        raise BatchExecutionError("execution cache returned a sandbox error")
                     try:
                         copied_result = _copy_execution_result(cached)
                     except ExecutionContractError:

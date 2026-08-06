@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import stat
@@ -18,6 +19,7 @@ from code_verifier.execution import (
     SQLiteExecutionCache,
     build_execution_cache_key,
     execution_cache_key_digest,
+    execution_result_to_mapping,
 )
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 
@@ -119,6 +121,25 @@ def test_sqlite_cache_rejects_sandbox_error_result(tmp_path: Path) -> None:
         pytest.raises(ExecutionCacheError, match="must not be cached"),
     ):
         cache.put(_key(), _result(ExecutionStatus.SANDBOX_ERROR))
+
+
+def test_sqlite_cache_rejects_structurally_valid_cached_sandbox_error(tmp_path: Path) -> None:
+    path = tmp_path / "cache.sqlite3"
+    key = _key()
+    with SQLiteExecutionCache(path) as cache:
+        cache.put(key, _result())
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "UPDATE entries SET result_json = ?",
+        (json.dumps(execution_result_to_mapping(_result(ExecutionStatus.SANDBOX_ERROR))),),
+    )
+    connection.commit()
+    connection.close()
+    with (
+        SQLiteExecutionCache(path) as cache,
+        pytest.raises(ExecutionCacheError, match="contains a sandbox error"),
+    ):
+        cache.get(key)
 
 
 def test_sqlite_cache_rejects_symlink_and_insecure_permissions(tmp_path: Path) -> None:

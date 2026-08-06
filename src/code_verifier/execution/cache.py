@@ -252,6 +252,8 @@ class SQLiteExecutionCache:
                 raise ExecutionCacheError("execution cache key is corrupted")
             parsed_result = loads_strict(stored_result_json)
             result = execution_result_from_mapping(parsed_result)
+            if result.status is ExecutionStatus.SANDBOX_ERROR:
+                raise ExecutionCacheError("execution cache contains a sandbox error")
             return ExecutionResult(
                 status=result.status,
                 passed_tests=result.passed_tests,
