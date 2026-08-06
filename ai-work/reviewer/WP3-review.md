@@ -517,4 +517,6 @@ Smoke 输出已删除，worktree 未保留运行产物。
 - 合并后的 `main` 独立复验：`make lint` 通过；`make test` 为 444 passed、3 skipped；`make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` 为 9 passed、0 failed、0 skipped。
 - 合并后的 CLI 验收：`code-verifier --help` 与 `execute-batch --help` 返回 0；fixture smoke 处理 4 条请求，summary 为 4，结果顺序和脱敏要求通过。
 - `proceedings.md` 已将 WP3-a、WP3-b 与 WP3-c 整合为一条 `WP3：安全执行器` 完成记录。
+- 清理阶段 worktree 时，`git worktree remove .worktrees/wp3c` 在 submodule deinit 前后均被 Git 拒绝，错误为 `fatal: working trees containing submodules cannot be moved or removed`。
+- 已执行非强制 `git -C .worktrees/wp3c submodule deinit --all`；未使用 `git worktree remove --force`。因此 `.worktrees/wp3c` 暂时保留，但不影响 WP3-c 合并、验收和 WP3 完成记录。
 - 未执行 push；阶段分支按项目约定保留。
