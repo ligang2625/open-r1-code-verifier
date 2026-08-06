@@ -143,8 +143,12 @@ make test
    ```
 
    产生合并提交；消息可用 Conventional Commits 或任务指定消息。
-5. **写入简洁 proceedings 记录**：合并完成后，在 `proceedings.md` 末尾追加当前阶段完成记录，**内容保持简洁**：只写本阶段完成的功能概述与相关文件（新增/修改清单）、验收结论；**不写入中间多次 review 与 execution 的细节**（那些细节在 `ai-work/` 报告文件中）。
-6. **提交**：提交 proceedings 记录（`docs: record WP{n} completion in proceedings`），并将合并提交 hash 与提交信息记录到审查报告的结论节。
+5. **写入简洁 proceedings 记录**：合并完成后，在 `proceedings.md` 末尾追加当前阶段完成记录，**内容保持简洁**：只写本阶段完成的功能概述与相关文件（新增/修改清单）、验收结论；**不写入中间多次 review 与 execution 的细节**（那些细节在 `ai-work/` 报告文件中）。未拆分的 WP 使用 `## WP{n}：<名称>`；拆分的子阶段使用 `## WP{n}-<后缀>：<名称>`。
+6. **WP 整合（仅当本 WP 被拆分为多个子阶段，且本轮是其最后一个子阶段）**：
+   - 检查 `ai-work/planner/` 下同前缀 `WP{n}-*` 的全部计划文件，并核对 `proceedings.md` 中每个子阶段是否都已有对应记录；
+   - 若全部子阶段已完成，把该 WP 的所有子阶段记录整合为**一条** `## WP{n}：<WP 名称>` 记录：头部为 WP 级元信息与实施范围，主体为整合后的完成功能与相关文件（汇总），各子阶段以小节保留（如 `### 子阶段 WP{n}-a`）；删除独立的子阶段小节，内容仍保持简洁，不含 review/execution 细节；
+   - 未拆分（单一计划）的 WP 跳过整合，其阶段记录即为最终 WP 记录。
+7. **提交**：提交 proceedings 记录（普通场景 `docs: record WP{n} completion in proceedings`；整合场景 `docs: consolidate WP{n} sub-stages in proceedings`），并将合并提交 hash 与提交信息记录到审查报告的结论节。
 7. **清理**：合并成功后 `git worktree remove ../open-r1-code-verifier-wp{n}`；分支默认保留（如需删除按项目约定执行）。
 8. **失败处理**：冲突、hook 拒绝或暂存异常时不强行绕过（不用 `--no-verify`、`--force` 等），停下报告。
 9. **不自动 push**：push 仅在任务或人工明确要求时执行。
@@ -166,5 +170,6 @@ make test
 - [ ] 审查结果已提交到独立分支；结论为“通过”才合并回主分支，不通过 / 需修改时未合并；
 - [ ] 合并前 worktree 与主仓库均无意外未提交改动；合并仅含本 WP 分支内容；
 - [ ] 最终审查方已写入简洁 proceedings 记录（仅功能概述与相关文件，无中间 review/execution 细节）并提交；
+- [ ] 本 WP 拆分为多子阶段时：各子阶段先分节记录；整个 WP 最后一个子阶段通过后，已整合为一条 WP 记录（子阶段保留为小节）；未拆分时跳过整合；
 - [ ] 合并使用 `--no-ff` 且消息符合 Conventional Commits，合并 hash 已记录到审查报告；
 - [ ] 未自动 push。
