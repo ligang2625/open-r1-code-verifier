@@ -60,6 +60,60 @@ def _assert_service_healthy(executor: PistonExecutor) -> None:
     )
 
 
+_HARNESS_TAMPER_PROBES = (
+    (
+        "import __main__\n"
+        "__main__._strict_equal = lambda actual, expected: True\n"
+        "def target(value):\n"
+        "    return value + 999\n"
+    ),
+    (
+        "import __main__\n"
+        "_original_dumps = __main__.json.dumps\n"
+        "def _fake_dumps(value, *args, **kwargs):\n"
+        "    if isinstance(value, dict) and 'outcome' in value:\n"
+        "        value = dict(value)\n"
+        "        value['outcome'] = 'passed'\n"
+        "    return _original_dumps(value, *args, **kwargs)\n"
+        "__main__.json.dumps = _fake_dumps\n"
+        "def target(value):\n"
+        "    return value + 999\n"
+    ),
+    ("import __main__\n__main__._emit = lambda *args, **kwargs: None\ndef target(value):\n    return value + 999\n"),
+    (
+        "import sys\n"
+        "class _FakeStdout:\n"
+        "    def write(self, value):\n"
+        "        return len(value)\n"
+        "    def flush(self):\n"
+        "        return None\n"
+        "sys.__stdout__ = _FakeStdout()\n"
+        "def target(value):\n"
+        "    return value + 999\n"
+    ),
+    (
+        "import inspect\n"
+        "def target(value):\n"
+        "    for frame_info in inspect.stack():\n"
+        "        for local_value in frame_info.frame.f_locals.values():\n"
+        "            if isinstance(local_value, dict) and (\n"
+        "                'expected' in local_value or 'marker' in local_value\n"
+        "            ):\n"
+        "                return 2\n"
+        "    return value + 999\n"
+    ),
+)
+
+
+def test_piston_candidate_cannot_tamper_with_parent_verdict(piston_executor: PistonExecutor) -> None:
+    for code in _HARNESS_TAMPER_PROBES:
+        assert (
+            _status(piston_executor, code, input_value=1, expected=2, memory_limit_mb=64)
+            is ExecutionStatus.WRONG_ANSWER
+        )
+    _assert_service_healthy(piston_executor)
+
+
 def test_piston_correct_wrong_syntax_and_runtime_statuses(piston_executor: PistonExecutor) -> None:
     assert (
         _status(

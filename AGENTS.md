@@ -99,5 +99,6 @@ Run `make lint` before committing — it runs all three checks.
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
 - **Current scope**: WP0, WP1 Data Layer, WP2 Parsing Layer, WP3-a contracts/mock, and WP3-b loopback-only single-request Piston execution are implemented. WP3 remains partial: do not add batch concurrency, caching, or the execution CLI without the WP3-c plan. Do not add WP4 rewards, training, or evaluation without a later WP plan.
 - `MockExecutor` never executes code. Real candidate code may only be sent to the strict local `PistonExecutor`; do not add host `exec`, `eval`, `compile`, or unrestricted subprocess execution paths.
-- Real Piston tests must be explicitly enabled. Any failed or skipped network, user, filesystem, host-isolation, cleanup, PID, timeout, memory, or output probe blocks merge.
+- Preserve the in-sandbox process boundary: the trusted parent alone owns expected values, comparison, and the final marker; the candidate child may receive only the function name and input, and its result must remain an untrusted claimed return value.
+- Real Piston tests must be explicitly enabled. Any failed or skipped verdict-tampering, network, user, filesystem, host-isolation, cleanup, PID, timeout, memory, or output probe blocks merge.
 - When adding new modules, update `pyproject.toml` `tool.mypy.files` if needed.

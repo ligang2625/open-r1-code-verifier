@@ -125,4 +125,6 @@ docker volume rm piston_wp3b
 
 ## Known MVP limitation
 
-The trusted Python harness and candidate module execute in the same Python interpreter inside one Piston job. The runner preserves trusted references, uses a randomized result marker, validates a strict result schema, and treats a missing or malformed marker as a sandbox error. These controls reduce ordinary spoofing and tampering, but they are not a complete defense against advanced interpreter-level attacks inside the same job. A later design may move verification into a separate process or worker boundary.
+Each test still uses one Piston job, but the trusted verifier and candidate no longer share a Python interpreter. The trusted parent closes the original stdin, disables process dumping, retains the expected value and final marker, and launches a child interpreter that receives only the function name and input. Candidate stdout/stderr are drained and bounded by the parent, and the child result channel is parsed only as an untrusted claimed return value before parent-side comparison.
+
+This closes ordinary `__main__`, JSON serializer, output-stream, and stack-frame verdict tampering. It still relies on the Linux process boundary and Piston sandbox rather than a separately deployed verifier service. Any future change that exposes expected values or the final marker to the child, reuses one interpreter, or accepts a child-supplied outcome must be treated as a security regression.

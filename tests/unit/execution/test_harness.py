@@ -124,6 +124,62 @@ def test_harness_rejects_non_json_actual_as_wrong_answer(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     "code",
     [
+        (
+            "import __main__\n"
+            "__main__._strict_equal = lambda actual, expected: True\n"
+            "def target(value):\n"
+            "    return value + 999\n"
+        ),
+        (
+            "import __main__\n"
+            "_original_dumps = __main__.json.dumps\n"
+            "def _fake_dumps(value, *args, **kwargs):\n"
+            "    if isinstance(value, dict) and 'outcome' in value:\n"
+            "        value = dict(value)\n"
+            "        value['outcome'] = 'passed'\n"
+            "    return _original_dumps(value, *args, **kwargs)\n"
+            "__main__.json.dumps = _fake_dumps\n"
+            "def target(value):\n"
+            "    return value + 999\n"
+        ),
+        (
+            "import __main__\n"
+            "__main__._emit = lambda *args, **kwargs: None\n"
+            "def target(value):\n"
+            "    return value + 999\n"
+        ),
+        (
+            "import sys\n"
+            "class _FakeStdout:\n"
+            "    def write(self, value):\n"
+            "        return len(value)\n"
+            "    def flush(self):\n"
+            "        return None\n"
+            "sys.__stdout__ = _FakeStdout()\n"
+            "def target(value):\n"
+            "    return value + 999\n"
+        ),
+        (
+            "import inspect\n"
+            "def target(value):\n"
+            "    for frame_info in inspect.stack():\n"
+            "        for local_value in frame_info.frame.f_locals.values():\n"
+            "            if isinstance(local_value, dict) and (\n"
+            "                'expected' in local_value or 'marker' in local_value\n"
+            "            ):\n"
+            "                return 2\n"
+            "    return value + 999\n"
+        ),
+    ],
+)
+def test_candidate_cannot_tamper_with_parent_verdict(tmp_path: Path, code: str) -> None:
+    report = _run_program(tmp_path, _program(code, 1, 2))
+    assert report.outcome == "wrong_answer"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
         "def target(value):\n    print('x' * 300)\n    return value\n",
         "import sys\ndef target(value):\n    print('x' * 300, file=sys.stderr)\n    return value\n",
     ],

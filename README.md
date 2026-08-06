@@ -217,7 +217,7 @@ Do not configure a public Piston endpoint or place API credentials in project co
 
 WP1 normalization uses deterministic Unicode and whitespace normalization plus SHA-256 hashing. It detects exact normalized prompt/signature, reference-solution, test-set, and matching-signature test-case overlap, but does not claim semantic or AST-level equivalence. The committed fixture is for structural and pipeline validation; its reference solutions are not executed by WP1 and are not evidence of model quality.
 
-WP3-b performs one Piston job per test and does not yet provide WP3-c batch requests, bounded concurrency, caching, or an execution CLI. The trusted harness and candidate share one Python interpreter inside a sandbox job; the randomized marker and strict schema reduce ordinary spoofing but are not a complete defense against advanced interpreter-level tampering.
+WP3-b performs one Piston job per test and does not yet provide WP3-c batch requests, bounded concurrency, caching, or an execution CLI. Inside each job, a trusted parent process retains the expected value, comparator, and final marker while an isolated child interpreter receives only the function name and input. The child result channel is treated as an untrusted claimed return value and is compared only by the parent. This prevents candidate changes to `__main__`, JSON helpers, output streams, or child stack frames from rewriting the final verdict, while still relying on the Piston/Linux process and sandbox boundary rather than a separate verifier service.
 
 Minimal Open-R1 adapter usage remains:
 

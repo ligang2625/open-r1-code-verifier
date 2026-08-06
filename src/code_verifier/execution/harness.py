@@ -171,41 +171,117 @@ def _reject_json_constant(value: str) -> object:
 
 _TRUSTED_RUNNER_SOURCE = r"""from __future__ import annotations
 
-import contextlib
+import ctypes
 import importlib.util
 import json
-import math
+import os
+import selectors
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+_CHILD_RESULT_LIMIT_BYTES = 8 * 1024 * 1024
+_READ_CHUNK_BYTES = 8192
+_PR_SET_DUMPABLE = 4
 
-class _OutputLimit(Exception):
-    pass
+_CHILD_RUNNER_SOURCE = r'''from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
 
 
-class _BoundedWriter:
-    def __init__(self, max_bytes: int) -> None:
-        self._max_bytes = max_bytes
-        self._parts: list[str] = []
-        self._used_bytes = 0
+def _load_candidate() -> Any:
+    spec = importlib.util.spec_from_file_location("candidate", Path("candidate.py"))
+    if spec is None or spec.loader is None:
+        raise RuntimeError("candidate module unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    def write(self, value: str) -> int:
-        if not isinstance(value, str):
-            raise TypeError("text output required")
-        encoded_size = len(value.encode("utf-8"))
-        if self._used_bytes + encoded_size > self._max_bytes:
-            raise _OutputLimit
-        self._parts.append(value)
-        self._used_bytes += encoded_size
-        return len(value)
 
-    def flush(self) -> None:
-        return None
+def _main() -> None:
+    result_fd = int(sys.argv[1])
+    trusted_json_loads = json.loads
+    trusted_json_dumps = json.dumps
+    trusted_os_write = os.write
 
-    def getvalue(self) -> str:
-        return "".join(self._parts)
+    def write_packet(packet: object) -> None:
+        encoded = trusted_json_dumps(
+            packet,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        offset = 0
+        while offset < len(encoded):
+            written = trusted_os_write(result_fd, encoded[offset:])
+            if written <= 0:
+                raise RuntimeError("candidate result pipe closed")
+            offset += written
+
+    try:
+        raw_payload = sys.stdin.buffer.read()
+    finally:
+        try:
+            sys.stdin.close()
+        except BaseException:
+            pass
+        try:
+            os.close(0)
+        except OSError:
+            pass
+
+    try:
+        payload = trusted_json_loads(raw_payload)
+        raw_payload = b""
+        if not isinstance(payload, dict) or set(payload) != {"function_name", "input"}:
+            raise ValueError("invalid candidate payload")
+        function_name = payload["function_name"]
+        if not isinstance(function_name, str) or not function_name.isidentifier():
+            raise ValueError("invalid function name")
+    except BaseException:
+        write_packet({"kind": "runtime_error"})
+        return
+
+    try:
+        module = _load_candidate()
+    except SyntaxError:
+        write_packet({"kind": "syntax_error"})
+        return
+    except BaseException:
+        write_packet({"kind": "runtime_error"})
+        return
+
+    try:
+        target = getattr(module, function_name)
+        if not callable(target):
+            raise TypeError("target is not callable")
+        input_value = payload["input"]
+        if isinstance(input_value, list):
+            actual = target(*input_value)
+        elif isinstance(input_value, dict):
+            actual = target(**input_value)
+        else:
+            actual = target(input_value)
+    except BaseException:
+        write_packet({"kind": "runtime_error"})
+        return
+
+    try:
+        write_packet({"kind": "returned", "actual": actual})
+    except (TypeError, ValueError, RecursionError):
+        write_packet({"kind": "non_json"})
+
+
+if __name__ == "__main__":
+    _main()
+'''
 
 
 def _strict_equal(actual: Any, expected: Any) -> bool:
@@ -218,21 +294,184 @@ def _strict_equal(actual: Any, expected: Any) -> bool:
     return bool(actual == expected)
 
 
-def _json_serializable(value: Any) -> bool:
+def _object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _parse_child_result(encoded: bytes) -> dict[str, object] | None:
     try:
-        json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"))
-    except (TypeError, ValueError, RecursionError):
-        return False
-    return True
+        value = json.loads(
+            encoded.decode("utf-8"),
+            object_pairs_hook=_object_without_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        return None
+    result = value
+    kind = result.get("kind")
+    if kind == "returned":
+        return result if set(result) == {"kind", "actual"} else None
+    if kind in {"non_json", "syntax_error", "runtime_error"}:
+        return result if set(result) == {"kind"} else None
+    return None
 
 
-def _load_candidate() -> Any:
-    spec = importlib.util.spec_from_file_location("candidate", Path("candidate.py"))
-    if spec is None or spec.loader is None:
-        raise RuntimeError("candidate module unavailable")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _append_bounded(buffer: bytearray, chunk: bytes, limit: int) -> bool:
+    remaining = max(0, limit + 1 - len(buffer))
+    if remaining:
+        buffer.extend(chunk[:remaining])
+    return len(buffer) > limit or len(chunk) > remaining
+
+
+def _drain_ready(
+    selector: selectors.BaseSelector,
+    buffers: dict[str, bytearray],
+    limits: dict[str, int],
+    exceeded: dict[str, bool],
+    *,
+    timeout: float,
+) -> bool:
+    events = selector.select(timeout)
+    for key, _ in events:
+        stream = key.fileobj
+        name = key.data
+        try:
+            chunk = os.read(stream.fileno(), _READ_CHUNK_BYTES)
+        except BlockingIOError:
+            continue
+        if not chunk:
+            selector.unregister(stream)
+            stream.close()
+            continue
+        if _append_bounded(buffers[name], chunk, limits[name]):
+            exceeded[name] = True
+    return bool(events)
+
+
+def _bounded_text(value: bytes, limit: int) -> str:
+    text = value[:limit].decode("utf-8", errors="replace")
+    while len(text.encode("utf-8")) > limit:
+        text = text[:-1]
+    return text
+
+
+def _disable_process_dumping() -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+    prctl.restype = ctypes.c_int
+    if prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "unable to protect trusted harness memory")
+
+
+def _propagate_child_failure(return_code: int) -> None:
+    if return_code < 0:
+        os.kill(os.getpid(), -return_code)
+        os._exit(128 - return_code)
+    os._exit(min(return_code, 255))
+
+
+def _run_candidate(function_name: str, input_value: object, max_output_bytes: int) -> tuple[str, object, str, str]:
+    child_payload = json.dumps(
+        {"function_name": function_name, "input": input_value},
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    result_read_fd, result_write_fd = os.pipe()
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _CHILD_RUNNER_SOURCE, str(result_write_fd)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(result_write_fd,),
+            close_fds=True,
+            cwd=".",
+            env={},
+            bufsize=0,
+            start_new_session=True,
+        )
+    finally:
+        os.close(result_write_fd)
+        if process is None:
+            os.close(result_read_fd)
+
+    if process is None or process.stdin is None or process.stdout is None or process.stderr is None:
+        raise RuntimeError("candidate process unavailable")
+
+    try:
+        process.stdin.write(child_payload)
+        process.stdin.close()
+    except BrokenPipeError:
+        process.stdin.close()
+
+    result_stream = os.fdopen(result_read_fd, "rb", buffering=0)
+    streams = {
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+        "result": result_stream,
+    }
+    selector = selectors.DefaultSelector()
+    for name, stream in streams.items():
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ, name)
+
+    buffers = {name: bytearray() for name in streams}
+    limits = {
+        "stdout": max_output_bytes,
+        "stderr": max_output_bytes,
+        "result": _CHILD_RESULT_LIMIT_BYTES,
+    }
+    exceeded = {name: False for name in streams}
+    killed_for_limit = False
+    try:
+        while True:
+            _drain_ready(selector, buffers, limits, exceeded, timeout=0.01)
+            if (exceeded["stdout"] or exceeded["stderr"] or exceeded["result"]) and process.poll() is None:
+                process.kill()
+                killed_for_limit = True
+            return_code = process.poll()
+            if return_code is None:
+                continue
+            for _ in range(8):
+                if not _drain_ready(selector, buffers, limits, exceeded, timeout=0.0):
+                    break
+            break
+    finally:
+        for key in list(selector.get_map().values()):
+            stream = key.fileobj
+            selector.unregister(stream)
+            stream.close()
+        selector.close()
+
+    return_code = process.wait()
+    captured_stdout = _bounded_text(bytes(buffers["stdout"]), max_output_bytes)
+    captured_stderr = _bounded_text(bytes(buffers["stderr"]), max_output_bytes)
+    if exceeded["stdout"] or exceeded["stderr"]:
+        return "output_limit", None, captured_stdout, captured_stderr
+    if exceeded["result"] or killed_for_limit:
+        return "harness_error", None, captured_stdout, captured_stderr
+    if return_code != 0:
+        _propagate_child_failure(return_code)
+
+    child_result = _parse_child_result(bytes(buffers["result"]))
+    if child_result is None:
+        return "harness_error", None, captured_stdout, captured_stderr
+    kind = child_result["kind"]
+    return str(kind), child_result.get("actual"), captured_stdout, captured_stderr
 
 
 def _emit(marker: str, outcome: str, runtime_ms: float, stdout: str, stderr: str) -> None:
@@ -242,21 +481,29 @@ def _emit(marker: str, outcome: str, runtime_ms: float, stdout: str, stderr: str
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    sys.__stdout__.write(f"__CODE_VERIFIER_RESULT__:{marker}:{report}\n")
-    sys.__stdout__.flush()
+    os.write(1, f"__CODE_VERIFIER_RESULT__:{marker}:{report}\n".encode("utf-8"))
 
 
 def _main() -> None:
     trusted_json_loads = json.loads
     trusted_perf_counter = time.perf_counter
     trusted_emit = _emit
-    stdout_writer: _BoundedWriter | None = None
-    stderr_writer: _BoundedWriter | None = None
     start = trusted_perf_counter()
     marker = "invalid"
     outcome = "harness_error"
+    captured_stdout = ""
+    captured_stderr = ""
     try:
-        payload = trusted_json_loads(sys.stdin.read())
+        raw_payload = sys.stdin.read()
+        try:
+            sys.stdin.close()
+        finally:
+            try:
+                os.close(0)
+            except OSError:
+                pass
+        payload = trusted_json_loads(raw_payload)
+        raw_payload = ""
         if not isinstance(payload, dict) or set(payload) != {
             "function_name", "input", "expected", "marker", "max_output_bytes"
         }:
@@ -270,43 +517,24 @@ def _main() -> None:
             raise ValueError("invalid marker")
         if isinstance(max_output_bytes, bool) or not isinstance(max_output_bytes, int) or max_output_bytes <= 0:
             raise ValueError("invalid output limit")
-        stdout_writer = _BoundedWriter(max_output_bytes)
-        stderr_writer = _BoundedWriter(max_output_bytes)
-        try:
-            with contextlib.redirect_stdout(stdout_writer), contextlib.redirect_stderr(stderr_writer):
-                module = _load_candidate()
-                target = getattr(module, function_name)
-                if not callable(target):
-                    raise TypeError("target is not callable")
-                input_value = payload["input"]
-                if isinstance(input_value, list):
-                    actual = target(*input_value)
-                elif isinstance(input_value, dict):
-                    actual = target(**input_value)
-                else:
-                    actual = target(input_value)
-            if not _json_serializable(actual):
-                outcome = "wrong_answer"
-            elif _strict_equal(actual, payload["expected"]):
-                outcome = "passed"
-            else:
-                outcome = "wrong_answer"
-        except SyntaxError:
-            outcome = "syntax_error"
-        except _OutputLimit:
-            outcome = "output_limit"
-        except BaseException:
-            outcome = "runtime_error"
+        _disable_process_dumping()
+        kind, actual, captured_stdout, captured_stderr = _run_candidate(
+            function_name,
+            payload["input"],
+            max_output_bytes,
+        )
+        if kind == "returned":
+            outcome = "passed" if _strict_equal(actual, payload["expected"]) else "wrong_answer"
+        elif kind == "non_json":
+            outcome = "wrong_answer"
+        elif kind in {"syntax_error", "runtime_error", "output_limit", "harness_error"}:
+            outcome = kind
+        else:
+            outcome = "harness_error"
     except BaseException:
         outcome = "harness_error"
     runtime_ms = max(0.0, (trusted_perf_counter() - start) * 1000.0)
-    trusted_emit(
-        marker,
-        outcome,
-        runtime_ms,
-        "" if stdout_writer is None else stdout_writer.getvalue(),
-        "" if stderr_writer is None else stderr_writer.getvalue(),
-    )
+    trusted_emit(marker, outcome, runtime_ms, captured_stdout, captured_stderr)
 
 
 if __name__ == "__main__":
