@@ -241,3 +241,131 @@ PYTHONPATH=src .venv/bin/python -c "from pathlib import Path; from code_verifier
 - WP3-c 完成前，WP3 不得标记整体完成。
 
 下一步由 `wp-plan-reviewer` 独立审查代码、重新运行默认与真实 Piston测试，并重点检查 SSRF/redirect、marker、OOM mapping和安全探针。审查通过后才可合并和更新 `proceedings.md`。
+
+---
+
+# 代码修复报告（WP3-b R1）
+
+## 1. 修复依据
+
+- 审查报告：`ai-work/reviewer/WP3-review.md`
+- 审查轮次：WP3-b R1
+- 修复范围：全部 P0 阻断问题与 P1 主要问题
+- 未处理项：无
+- 异议项：无
+
+## 2. P0：隔离候选执行与最终判定
+
+审查证明候选与可信 harness 共享解释器时，可修改 `__main__._strict_equal` 或 `__main__.json.dumps`，把错误答案伪造为 `PASSED`。原报告第 9 节中“同一解释器是已知 MVP 限制”的描述已被本修复取代，不再作为可接受风险保留。
+
+修复提交：
+
+```text
+74031ca  fix: isolate candidate verdict execution
+```
+
+核心改动：
+
+- `main.py` 现在是可信父进程，独占：
+  - `expected`；
+  - 类型敏感 comparator；
+  - 最终随机 marker；
+  - 最终 report JSON 与 stdout 写入。
+- 候选代码在新的隔离 Python 子解释器中执行；子进程仅收到 `function_name` 和 `input`，不接收 `expected` 或最终 marker。
+- 父进程读取完整原始 stdin 后关闭 fd 0，并通过 Linux `PR_SET_DUMPABLE=0` 禁止候选子进程读取父进程内存。
+- 子进程只能通过独立 pipe 返回一个不可信的 claimed actual JSON；父进程严格解析后自行比较，绝不接受子进程提供的 `outcome`。
+- 候选 stdout/stderr 由父进程使用 nonblocking selector 独立 drain，按 UTF-8 byte limit 截断和判定；候选无法通过替换 Python stream 或截断文件绕过限制。
+- 子进程协议设置独立 8 MiB 上限；超限或 malformed 协议映射为 `harness_error`，不能形成通过结果。
+- 子进程被 signal 或非零退出终止时，父进程传播退出状态，使 Piston 的 timeout、memory 和 signal 状态仍可按原映射工作。
+- 候选修改自身 `__main__`、JSON 模块、`_emit`、`sys.__stdout__` 或扫描自身 stack frames 均只能影响候选进程，不能改写父进程 verdict。
+
+新增回归：
+
+- `tests/unit/execution/test_harness.py`
+  - 5 个固定审计候选覆盖 `_strict_equal`、`json.dumps`、`_emit`、`sys.__stdout__` 和 stack-frame 探测；全部必须为 `wrong_answer`。
+- `tests/integration/test_wp3b_piston_execution.py`
+  - 在真实 Piston 中执行同样 5 个攻击；每个结果必须精确为 `WRONG_ANSWER`，随后健康 smoke 必须通过。
+- `README.md`、`docs/piston-local.md`、`AGENTS.md`
+  - 更新为可信父进程 / 不可信子进程架构，并将该边界写入后续修改和合并规则。
+
+## 3. P1：超大 timeout 稳定归一为合同错误
+
+审查发现 `timeout_seconds=1e308` 会在乘以 1000 后变为 infinity，随后 `math.ceil()` 抛出裸 `OverflowError`。
+
+修复提交：
+
+```text
+8ecfc42  fix: reject oversized piston timeouts safely
+```
+
+修复内容：
+
+- 在毫秒换算前先检查 `timeout_seconds > 3600.0`。
+- 所有超过支持上限的有限值统一抛出：
+
+```text
+ExecutionContractError: timeout_seconds exceeds the supported Piston limit
+```
+
+- 新增回归覆盖：
+  - `3600.0001`；
+  - `1e308`；
+  - 最大有限 IEEE-754 float；
+  - 精确边界 `3600.0` 仍生成 `3_600_000` ms payload。
+- 被拒绝请求不调用 transport。
+
+## 4. 实际复测结果
+
+### 受影响专项测试
+
+```text
+PYTHONPATH=src .venv/bin/python -m pytest \
+  tests/unit/execution/test_harness.py \
+  tests/unit/execution/test_piston.py
+→ 70 passed
+```
+
+### 静态检查
+
+```text
+make lint
+→ Ruff check: All checks passed
+→ Ruff format: 42 files already formatted
+→ strict Mypy: Success, no issues found in 42 source files
+```
+
+### 默认全量回归
+
+```text
+PYTHONPATH=src make test
+→ 333 passed, 1 skipped
+```
+
+唯一 skip 是未显式启用的真实 Piston 模块，符合默认测试不连接服务的既有要求。
+
+### 真实 Piston 与对抗性验收
+
+```text
+PYTHONPATH=src make test-piston \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 7 passed, 0 failed, 0 skipped
+```
+
+真实套件继续精确通过正确、错误、语法、运行、timeout、memory、stdout/stderr output、网络、非 root、基础文件写、宿主隔离、跨 job 清理和 PID containment，并新增 5 类 verdict tampering 探针。
+
+### Runtime smoke
+
+```text
+PYTHONPATH=src .venv/bin/python -c "... executor.validate_runtime() ..."
+→ 3.10.0
+```
+
+## 5. 范围与安全核对
+
+- 未修改 `ai-work/reviewer/WP3-review.md`。
+- 未修改 `proceedings.md`。
+- `third_party/open-r1` 无 diff。
+- 未新增 Python package 依赖、公共 Piston endpoint、token 或远程账户。
+- 宿主 `src/code_verifier/execution/` 仍无 `exec(`、`eval(` 或 `compile(` 调用。
+- 新增的 `subprocess.Popen` 仅存在于发送到 Piston 的可信 runner 源码中，用于 sandbox job 内的候选进程隔离；宿主进程不运行候选代码。
+- WP3-b 修复已完成，但仍需 reviewer 独立复审；WP3 整体继续保持部分完成。
