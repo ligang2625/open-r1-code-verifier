@@ -268,3 +268,13 @@ timeout=3600.0001 / 1e308 / max finite float
 - 已执行 `git merge --abort`，主仓库不处于冲突或合并中状态。
 - 按 reviewer skill 的失败处理规则，未手工选择冲突一侧、未使用 `--force` / `--no-verify`、未更新 `proceedings.md`、未清理 worktree。
 - **当前状态**：WP3-b 代码审查结论仍为“通过”，但审查通过后的合并处理因报告文件冲突尚未完成，需要人工明确冲突保留策略后重新执行合并。
+
+## 12. 最终合并与完成状态
+
+- 主分支和阶段 worktree 均确认干净后，先按阶段重置规则对齐 `WP3-review.md`，并保留主分支 `WP3-b-plan.md` 中更新后的核对日期与 `uv` 约束。
+- 合并提交：`7bfc95f9b95073886a8f138fe2fcef1d9e3cc129`。
+- 合并消息：`feat: complete WP3-b local Piston execution`。
+- 合并方式：`git merge --no-ff feat/wp3`；本次合并成功且未产生冲突。
+- 合并后的 `main` 独立复验：`make lint` 通过；`make test` 为 333 passed、1 skipped；`make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` 为 7 passed、0 failed、0 skipped。
+- `proceedings.md` 已追加简洁的 WP3-b 子阶段完成记录。WP3-c 尚未完成，因此未执行 WP3 子阶段整合，WP3 整体继续标记为部分完成。
+- 未执行 push；分支按项目约定默认保留。

@@ -159,3 +159,38 @@ WP0 已完成以下工作：
 - 合并后的 `main` 通过原样 `make lint` 与 `make test`（263 passed）。
 - 循环 JSON、超大整数及隐藏测试 sentinel 探针均符合稳定、无泄漏的 `ExecutionContractError` 合同。
 - 合并提交：`f77c4a2ad511120cfa8112182a8cb828a53db55f`。
+
+---
+
+## WP3-b：本地 Piston 单请求执行与安全限制
+
+- **完成日期**：2026-08-06
+- **阶段状态**：子阶段已完成；WP3 整体仍为部分完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP3-review.md` R2）
+- **执行计划**：`ai-work/planner/WP3-b-plan.md`
+- **实施范围**：完成本地 Piston 单请求真实沙箱、资源限制与安全验收；批量并发、缓存、执行 CLI 和 WP3 整体验收留待 WP3-c。
+
+### 本阶段完成的功能
+
+- 实现严格的 loopback-only Piston 配置和无代理、无重定向、有界响应的标准库 HTTP transport。
+- 实现可信父进程与不可信候选子进程隔离的 Python harness；父进程独占 expected、比较逻辑、随机 marker 和最终结果生成。
+- 实现 `PistonExecutor` 单测试独立 job、精确 runtime 校验、资源限制、停止策略、结构化状态映射与脱敏错误处理。
+- 建立真实 Piston 安全套件，覆盖 verdict 篡改、超时、内存、输出、网络、非 root、文件系统、宿主隔离、跨 job 清理和 PID containment。
+
+### 相关文件
+
+- 新增：`src/code_verifier/execution/{harness,piston}.py`、`configs/execution/piston-local.yaml`、`docs/piston-local.md`、`tests/unit/execution/{test_harness,test_piston}.py`、`tests/integration/test_wp3b_piston_execution.py`
+- 修改：`src/code_verifier/execution/__init__.py`、`Makefile`、`pyproject.toml`、`README.md`、`AGENTS.md`
+- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+### 配置影响
+
+- 新增 `configs/execution/piston-local.yaml`；`pyproject.toml` 仅新增 `piston` pytest marker；Makefile 新增 `PISTON_CONFIG` 与 `test-piston` 目标；未新增 Python package 依赖。
+
+### 验收结论
+
+- 合并后的 `main` 通过 `make lint`。
+- `make test`：333 passed，1 个真实 Piston 模块按设计默认 skipped。
+- `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`：7 passed，0 failed，0 skipped。
+- 候选 verdict 篡改与父进程 `/proc` 访问探针被阻止，极大 timeout 稳定归一为 `ExecutionContractError`。
+- 合并提交：`7bfc95f9b95073886a8f138fe2fcef1d9e3cc129`（`feat: complete WP3-b local Piston execution`）。
