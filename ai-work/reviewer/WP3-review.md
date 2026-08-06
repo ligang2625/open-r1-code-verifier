@@ -164,3 +164,92 @@ timeout_seconds=3600.0001
 - 常规功能、loopback transport、资源限制和现有真实安全探针均通过，但 P0 证明候选代码可以在真实 Piston 中伪造 `PASSED`，直接破坏 verifier/reward 的可信性；P1 说明公共异常合同仍有未处理边界。
 - executor 必须修复 P0、P1，增加对应单元与真实 Piston 回归测试，并重新运行 `make lint`、`make test`、`make test-piston` 和对抗性探针后申请复审。
 - 本轮禁止合并 `feat/wp3`，不更新 `proceedings.md`，不把 WP3-b 或 WP3 标记为完成。
+
+---
+
+# WP3-b 独立复审报告 R2
+
+- **复审日期**：2026-08-06
+- **修复报告**：`ai-work/executor/WP3-executor.md`“代码修复报告（WP3-b R1）”
+- **修复提交**：`74031ca`、`8ecfc42`
+- **复审方式**：逐条核验 P0/P1、源码与测试检查、静态检查、默认回归、真实 Piston 验收，以及额外父进程隔离和合同边界探针
+
+## 7. 上轮问题核验
+
+| 上轮问题 | 严重级别 | 状态 | 证据 |
+|---|---|---|---|
+| P0：候选可篡改同解释器 harness 并伪造 `PASSED` | 阻断 | **已修复** | `src/code_verifier/execution/harness.py:189-284,385-474,487-537`：可信父进程保留 expected、marker、comparator 和最终 report；候选在 `-I -S` 子进程中运行，仅接收 function name/input，并通过有界 pipe 返回不可信 actual。父进程在 spawn 前关闭 stdin 并执行 `PR_SET_DUMPABLE=0`。原 `_strict_equal` / `json.dumps` 攻击均返回 `WRONG_ANSWER`。 |
+| P1：极大有限 timeout 泄漏裸 `OverflowError` | 主要 | **已修复** | `src/code_verifier/execution/piston.py:420-423` 在毫秒换算前检查 `timeout_seconds > 3600.0`。`3600.0001`、`1e308` 和最大有限 float 均稳定抛出 `ExecutionContractError`；精确边界 `3600.0` 仍被接受。 |
+
+## 8. 回归与新增安全检查
+
+- 候选子进程不接收 expected 或最终 marker；父进程不接受候选提供的 outcome，只解析有限 schema 的 actual 后自行比较。
+- 子进程 stdout、stderr 和 result pipe 均由父进程 nonblocking drain，并分别受输出上限与 8 MiB 协议上限约束。
+- 候选直接写 fd 1 的内容被捕获为普通 stdout；错误实际值仍得到 `WRONG_ANSWER`，不能形成外层 marker spoof。
+- 候选尝试访问 `/proc/<parent>/mem` 和 `/proc/<parent>/fd` 均被拒绝，独立探针返回预期的 `blocked`。
+- 子进程 signal/非零退出由父进程传播，既有 timeout、memory、PID 和 runtime 状态映射未被削弱。
+- `subprocess.Popen` 仅位于发送到 Piston 的可信 runner 源字符串内；宿主 Python 进程仍不执行候选代码。
+- 未发现新增阻断、主要或次要问题。
+- `third_party/open-r1` 固定 commit 仍为 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+## 9. 独立测试结果
+
+```text
+make lint
+→ 当前 worktree 无 .venv/bin/python，Error 127
+
+make test
+→ 当前 worktree 无 .venv/bin/python，Error 127
+
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check passed
+→ 42 files already formatted
+→ strict Mypy: no issues found in 42 source files
+
+PYTHONPATH=src /home/dzy/open-r1-code-verifier/.venv/bin/python -m pytest \
+  tests/unit/execution/test_harness.py tests/unit/execution/test_piston.py
+→ 70 passed
+
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 333 passed, 1 skipped
+
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 7 passed, 0 failed, 0 skipped
+
+runtime smoke
+→ 3.10.0
+```
+
+额外对抗性与边界探针：
+
+```text
+replace __main__._strict_equal; actual=1000, expected=2
+→ wrong_answer
+
+replace __main__.json.dumps; actual=1000, expected=2
+→ wrong_answer
+
+direct os.write(1, b"FAKE"); actual=1000, expected=2
+→ wrong_answer，captured stdout='FAKE'
+
+open /proc/<parent>/mem
+→ blocked
+
+list /proc/<parent>/fd
+→ blocked
+
+timeout=3600.0
+→ accepted
+
+timeout=3600.0001 / 1e308 / max finite float
+→ ExecutionContractError: timeout_seconds exceeds the supported Piston limit
+```
+
+## 10. R2 结论
+
+- **审查结论：通过**。
+- R1 的 P0 阻断问题和 P1 主要问题均已完整修复；计划验收项、静态检查、默认回归、真实 Piston 安全验收和额外对抗性探针均通过。
+- 本结论仅表示 **WP3-b 本地 Piston 单请求执行与安全限制通过**；批量并发、缓存、执行 CLI 和 WP3 整体验收仍属于 WP3-c。
+- **合并被主仓库状态阻塞**：`main` 当前存在已跟踪的未提交修改 `AGENTS.md`、`skills/next-wp-planner/SKILL.md`。按照 reviewer skill，不 stash、不覆盖、不强行合并；本轮不更新 `proceedings.md`。
