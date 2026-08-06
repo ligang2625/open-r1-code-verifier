@@ -399,3 +399,110 @@ Smoke 输出已删除，worktree 未保留运行产物。
 - 但新增 N1、N2 均属于公开 batch/cache 合同与 cache identity 的主要问题。按照复审判定规则，存在新增主要问题时不能给出“通过”。
 - executor 应修复 N1、N2，增加相应 malformed batch result、整数 timeout 和畸形 cache key 回归，并重新运行完整验收后申请 R3。
 - 本轮不合并 `feat/wp3c`，不更新 `proceedings.md`，不将 WP3 整体标记为完成。
+
+---
+
+# WP3-c 独立复审报告 R3
+
+- **复审日期**：2026-08-06
+- **修复报告**：`ai-work/executor/WP3-executor.md`“代码修复报告（WP3-c R2）”
+- **复审基线提交**：`ee62df1ff96e37da501d24328f5534422de6c539`
+- **修复提交**：`afae99e`、`43fb74c`
+- **复审方式**：逐条核验 R2 N1/N2、源码与新增测试检查、独立边界探针、静态检查、默认全量回归、真实 Piston 总验收和 CLI smoke
+
+## 13. R2 问题逐条核验
+
+| R2 问题 | 严重级别 | 状态 | 证据 |
+|---|---|---|---|
+| N1：batch result mapping 在验证 items 前泄漏内置异常 | 主要 | **已修复** | `src/code_verifier/execution/batch.py:234-280` 先要求 `items` 为 list，再逐项调用 `batch_execution_item_to_mapping()`，只使用已验证 mapping 计算 cache-hit 数。独立探针对 `None`、tuple、普通 object 和非法 item 字段均得到 `ExecutionContractError`。 |
+| N2：cache-key 边界未完整验证，整数 timeout 与畸形 key 行为不稳定 | 主要 | **已修复** | `src/code_verifier/execution/cache.py:90-181` 新增统一 key validator；builder 使用 `float(timeout_seconds).hex()`；digest 在访问字段前验证 enum、hash、UTF-8、canonical timeout hex 和 memory；SQLite get/put 将畸形 key 归一为固定 `ExecutionCacheError`。整数 timeout 探针成功生成 canonical key，三类畸形 key 均按公开合同失败。 |
+
+R2 的两个主要问题均已完整处置。新增测试直接覆盖原始失败输入及相邻非法字段，未通过修改预期削弱计划要求。
+
+## 14. 计划完成度与最终验收复核
+
+| 项目 | R3 状态 | 证据 |
+|---|---|---|
+| 步骤 1：ExecutionResult mapping 与 executor version | 通过 | 既有实现和全量测试无回归。 |
+| 步骤 2：稳定 cache key 与安全 SQLite cache | 通过 | 必需字段完整、整数/浮点 timeout 一致、畸形 key fail-closed、sandbox error 不写入或复用。 |
+| 步骤 3：有限并发 batch 与公开 mapping | 通过 | 并发、顺序、独立 executor、三种 cache mode、training guard 和畸形 result mapping 全部通过。 |
+| 步骤 4：`execute-batch` CLI 与原子脱敏输出 | 通过 | help 和真实 smoke exit 0；4 条结果顺序正确，artifact 不包含 code/tests。 |
+| 步骤 5：Mock 与真实 Piston 集成 | 通过 | 显式 Piston 总验收 9 passed、0 failed、0 skipped。 |
+| 步骤 6：文档与 WP3 收口 | 通过 | README、AGENTS 与 Piston 文档保持单机边界、缓存敏感性和 WP4 范围说明。 |
+| 上游与范围 | 通过 | `third_party/open-r1` 固定 commit 为 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`，未发现 WP4 越界实现。 |
+
+## 15. 独立测试结果 R3
+
+### 15.1 原样 worktree 命令
+
+```text
+make lint
+→ 失败：.venv/bin/python 不存在，Error 127
+
+make test
+→ 失败：.venv/bin/python 不存在，Error 127
+```
+
+### 15.2 使用主仓库固定 VENV 验证当前 worktree 源码
+
+```text
+make lint VENV=/home/dzy/open-r1-code-verifier/.venv
+→ Ruff check: All checks passed
+→ Ruff format: 47 files already formatted
+→ strict Mypy: no issues found in 47 source files
+
+PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv
+→ 444 passed, 3 skipped
+```
+
+三个 skip 均为默认模式下未显式启用的真实 Piston tests。
+
+### 15.3 R2 定向回归与独立探针
+
+```text
+pytest test_batch.py test_cache.py -k <R2 边界集合>
+→ 22 passed, 54 deselected
+
+build_execution_cache_key(timeout_seconds=1)
+→ canonical timeout hex 0x1.0000000000000p+0
+→ digest 正常生成
+
+malformed cache keys: invalid test_layer / bad timeout hex / bool memory
+→ digest: ExecutionContractError
+→ SQLite get/put: ExecutionCacheError: execution cache key is invalid
+
+batch items: None / tuple / object / invalid fields
+→ ExecutionContractError，未泄漏 TypeError 或 AttributeError
+```
+
+### 15.4 真实 Piston 与 CLI
+
+```text
+PYTHONPATH=src make test-piston \
+  VENV=/home/dzy/open-r1-code-verifier/.venv \
+  PISTON_CONFIG=configs/execution/piston-local.yaml
+→ 9 passed, 2 deselected, 0 failed, 0 skipped
+
+code-verifier --help
+→ exit 0
+
+code-verifier execute-batch --help
+→ exit 0
+
+execute-batch fixture smoke
+→ exit 0
+→ executed 4 requests (cache_hits=0)
+→ summary total_requests=4
+→ results.jsonl 4 行，顺序正确
+→ 2 passed / 1 wrong_answer / 1 runtime_error
+```
+
+Smoke 输出已删除，worktree 未保留运行产物。
+
+## 16. R3 结论
+
+- **复审结论：通过**。
+- R2 N1、N2 均已修复；此前 R1 P1–P4 继续保持修复状态。
+- 计划六个实施步骤、静态检查、444 项默认回归、真实 Piston 总验收、CLI smoke 和额外边界探针全部通过。
+- 未发现新增阻断、主要或次要问题；WP3-c 及 WP3 整体验收通过。
+- 审查报告提交后进入 reviewer 最终处理：核对 worktree/main 状态，执行 `--no-ff` 合并，整合 WP3 proceedings，并记录最终合并提交。
