@@ -20,21 +20,26 @@ open-r1-code-verifier/
 │       │   ├── base.py               # WP3-a contracts, validation, JSON mapping
 │       │   ├── mock.py               # WP3-a non-executing FIFO test double
 │       │   ├── harness.py            # WP3-b trusted in-sandbox Python harness
-│       │   └── piston.py             # WP3-b loopback-only single-request executor
+│       │   ├── piston.py             # WP3-b loopback-only single-request executor
+│       │   ├── cache.py              # WP3-c versioned private SQLite result cache
+│       │   └── batch.py              # WP3-c bounded concurrency and cache policy
 │       └── training/
 │           └── open_r1_adapter.py    # Open-R1 integration boundary
 ├── tests/
 │   ├── integration/
 │   │   ├── test_wp1_data_pipeline.py
 │   │   ├── test_wp3a_mock_execution.py
-│   │   └── test_wp3b_piston_execution.py
+│   │   ├── test_wp3b_piston_execution.py
+│   │   └── test_wp3c_batch_execution.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
 │       │   ├── test_base.py
 │       │   ├── test_mock.py
 │       │   ├── test_harness.py
-│       │   └── test_piston.py
+│       │   ├── test_piston.py
+│       │   ├── test_cache.py
+│       │   └── test_batch.py
 │       ├── parsing/
 │       │   └── test_code_extractor.py
 │       ├── test_cli.py
@@ -42,7 +47,9 @@ open-r1-code-verifier/
 │       ├── test_environment.py
 │       └── test_open_r1_adapter.py
 ├── configs/
-│   └── execution/piston-local.yaml    # WP3-b strict loopback Piston config
+│   └── execution/
+│       ├── piston-local.yaml          # WP3-b strict loopback Piston config
+│       └── batch-local.yaml           # WP3-c bounded batch/cache config
 ├── docs/
 │   └── piston-local.md                # Local Piston deployment and safety runbook
 ├── third_party/
@@ -82,7 +89,7 @@ Run `make lint` before committing — it runs all three checks.
 - **Framework**: pytest (configured in pyproject.toml with `-ra` addopts)
 - **Test location**: unit tests in `tests/unit/`; end-to-end WP tests in `tests/integration/`
 - **Run tests**: `make test` or `.venv/bin/python -m pytest`
-- **Real sandbox tests**: run `make test-piston` explicitly; any failure or skip blocks WP3-b acceptance and merge
+- **Real sandbox tests**: run `make test-piston` explicitly; any failure or skip blocks WP3 acceptance and merge
 - **Coverage**: Not yet configured
 
 ## Commit & Pull Request Guidelines
@@ -91,15 +98,17 @@ Run `make lint` before committing — it runs all three checks.
 - **Branch naming**: Feature branches from `main` (e.g., `feat/environment-recording`)
 - **PR requirements**: 
   - All `make lint` and `make test` checks must pass
-  - WP3-b changes also require `make test-piston` with 0 failed and 0 skipped
+  - WP3 execution, batch, or cache changes also require `make test-piston` with 0 failed and 0 skipped
   - Link related issues in PR description
   - Keep changes minimal and focused on the stated goal
 
 ## Agent-Specific Instructions
 
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
-- **Current scope**: WP0, WP1 Data Layer, WP2 Parsing Layer, WP3-a contracts/mock, and WP3-b loopback-only single-request Piston execution are implemented. WP3 remains partial: do not add batch concurrency, caching, or the execution CLI without the WP3-c plan. Do not add WP4 rewards, training, or evaluation without a later WP plan.
+- **Current scope**: WP0–WP3 are implemented, including execution contracts/mock, loopback Piston, bounded batch concurrency, versioned SQLite caching, and the execution CLI. Do not add WP4 reward/verifier orchestration, training, or evaluation without a later WP plan.
 - `MockExecutor` never executes code. Real candidate code may only be sent to the strict local `PistonExecutor`; do not add host `exec`, `eval`, `compile`, or unrestricted subprocess execution paths.
 - Preserve the in-sandbox process boundary: the trusted parent alone owns expected values, comparison, and the final marker; the candidate child may receive only the function name and input, and its result must remain an untrusted claimed return value.
-- Real Piston tests must be explicitly enabled. Any failed or skipped verdict-tampering, network, user, filesystem, host-isolation, cleanup, PID, timeout, memory, or output probe blocks merge.
+- Preserve cache invalidation: any result-affecting executor, harness, comparison, mapping, or stopping-policy change must increment its version constant. Never remove code hash, problem ID, test layer, tests hash, executor version, function name, timeout, or memory from the cache key.
+- Training cache remains disabled unless an experiment explicitly opts in and records the resolved policy. Cache files are sensitive artifacts because results may contain bounded stdout/stderr.
+- Real Piston tests must be explicitly enabled. Any failed or skipped verdict-tampering, batch/cache, network, user, filesystem, host-isolation, cleanup, PID, timeout, memory, or output probe blocks merge.
 - When adding new modules, update `pyproject.toml` `tool.mypy.files` if needed.

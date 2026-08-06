@@ -4,7 +4,7 @@ Piston is an external local service. It is not a Git submodule or vendored depen
 
 ## Validated baseline
 
-The WP3-b acceptance suite was validated with the following environment:
+The WP3 single-request and batch acceptance suites were validated with the following environment:
 
 | Component | Validated value |
 |---|---|
@@ -98,9 +98,32 @@ Default `make test` does not contact Piston. The real sandbox suite must be enab
 make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
 ```
 
-The real suite verifies correct, wrong-answer, syntax-error, runtime-error, timeout, memory-limit, and output-limit outcomes. It also probes disabled outbound networking, non-root execution, protected base filesystem writes, host-file invisibility, per-job temporary-state cleanup, PID containment, and service recovery after malicious workloads.
+The real suite verifies correct, wrong-answer, syntax-error, runtime-error, timeout, memory-limit, and output-limit outcomes. It also probes disabled outbound networking, non-root execution, protected base filesystem writes, host-file invisibility, per-job temporary-state cleanup, PID containment, batch ordering, cache reuse, non-caching of sandbox failures, and service recovery after malicious workloads.
 
-A failed or skipped real test means WP3-b is not accepted. Do not weaken assertions, switch to host execution, or continue to WP3-c until the sandbox behavior is understood and corrected.
+A failed or skipped real test means WP3 is not accepted. Do not weaken assertions, switch to host execution, or bypass the sandbox/cache contracts until the behavior is understood and corrected.
+
+## Batch concurrency operations
+
+`max_concurrency` controls how many independent Piston executors can submit work at once. Each request can create multiple Piston jobs because every test remains isolated, so increasing the batch worker count increases pressure on Piston, Docker, cgroups, memory, file descriptors, and host scheduling.
+
+Start with `max_concurrency: 1`, run the real acceptance suite and a representative workload, then increase gradually. After each change, check Piston logs, host resource pressure, timeout frequency, memory-limit behavior, and service recovery. Never remove the configured upper bound or share one `PistonExecutor`/transport instance across worker threads.
+
+The local implementation is a bounded single-machine thread pool. It is not a distributed scheduler and does not imply linear speedup.
+
+## Execution cache operations
+
+The optional SQLite cache is independent of Piston and never replaces sandbox execution. It stores only cache-key hashes/metadata and validated execution results; raw candidate code and tests are not stored. Results may contain bounded model stdout/stderr, so the file must remain a sensitive experiment artifact.
+
+Operational rules:
+
+- the cache file is created with mode `0600`; refuse wider permissions rather than silently correcting an existing insecure file;
+- keep the cache outside atomic CLI output directories;
+- back up or delete the entire SQLite file only while no CodeVerifier process is using it;
+- do not commit cache files to Git or copy them into shared locations without equivalent access controls;
+- schema mismatch, version mismatch, malformed rows, symlinks, and corruption are hard failures;
+- on a hard cache failure, stop the run and repair, archive, or delete the cache; do not reinterpret corruption as a miss or fall back to unbounded/host execution;
+- executor, harness, comparator, status-mapping, stop-policy, runtime, or result-affecting config changes must invalidate old entries through the deterministic executor version;
+- training workloads keep caching disabled unless the experiment explicitly opts in and records the resolved policy.
 
 ## Stop and remove the service
 

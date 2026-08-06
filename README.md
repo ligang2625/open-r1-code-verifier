@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the WP3-a execution contract/mock foundation, and the WP3-b loopback-only single-request Piston executor are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, and the complete WP3 execution layer are implemented.
 
-WP3 remains partially complete: batch concurrency, caching, and the execution debugging CLI are reserved for WP3-c. Reward computation, training, and model evaluation are also not implemented. `MockExecutor` remains a non-executing test double; real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 now includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 reward/verifier orchestration, training, and model evaluation are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -213,11 +213,79 @@ Configuration rejects non-loopback URLs, redirects, proxies, runtime selectors, 
 
 Do not configure a public Piston endpoint or place API credentials in project configuration. Deployment, runtime installation, fixed image metadata, health checks, and shutdown instructions are in [`docs/piston-local.md`](docs/piston-local.md).
 
+## WP3-c batch execution and cache
+
+`BatchExecutor` validates every request before cache or worker side effects, creates an independent executor for each cache miss, caps concurrency at 64, and restores input order after futures complete. Evaluation workloads may use an optional versioned SQLite cache; training workloads reject cache use unless `allow_training_cache` is explicitly enabled and recorded.
+
+```python
+from pathlib import Path
+
+from code_verifier.execution import (
+    BatchExecutionRequest,
+    BatchExecutor,
+    BatchExecutorConfig,
+    ExecutionCacheMode,
+    ExecutionTestLayer,
+    PistonExecutor,
+    SQLiteExecutionCache,
+    load_batch_execution_config,
+    piston_executor_version,
+)
+
+config = load_batch_execution_config(Path("configs/execution/batch-local.yaml"))
+request = BatchExecutionRequest(
+    request_id="example-1",
+    problem_id="problem-1",
+    test_layer=ExecutionTestLayer.VISIBLE,
+    code="def solve(value):\n    return value + 1\n",
+    function_name="solve",
+    tests=[{"input": 1, "expected": 2}],
+    timeout_seconds=1.0,
+    memory_limit_mb=64,
+)
+
+with SQLiteExecutionCache(Path("outputs/execution-cache.sqlite3")) as cache:
+    batch = BatchExecutor(
+        lambda: PistonExecutor(config.piston),
+        executor_version=piston_executor_version(config.piston),
+        config=BatchExecutorConfig(
+            max_concurrency=4,
+            cache_mode=ExecutionCacheMode.READ_WRITE,
+            allow_training_cache=False,
+        ),
+        cache=cache,
+    )
+    result = batch.execute_batch([request])
+```
+
+The cache key stores hashes and execution metadata, not raw code or tests. Cached results can still contain bounded model stdout/stderr, so the SQLite file is created with user-only permissions and must be managed as a sensitive experiment artifact. Cache corruption or schema/version mismatch is a hard infrastructure error, not a cache miss.
+
+Run the committed batch fixture through the CLI:
+
+```bash
+.venv/bin/code-verifier execute-batch \
+  --config configs/execution/batch-local.yaml \
+  --requests tests/fixtures/wp3c/batch_requests.jsonl \
+  --workload-mode evaluation \
+  --output-dir outputs/wp3c-batch \
+  --log-level INFO
+```
+
+The output directory is published atomically and contains only:
+
+```text
+outputs/wp3c-batch/
+├── results.jsonl
+└── summary.json
+```
+
+`results.jsonl` contains ordered structured results without code or tests. `summary.json` records counts, cache hits, concurrency, executor version, workload/cache mode, and wall-clock runtime.
+
 ## Current limitations
 
 WP1 normalization uses deterministic Unicode and whitespace normalization plus SHA-256 hashing. It detects exact normalized prompt/signature, reference-solution, test-set, and matching-signature test-case overlap, but does not claim semantic or AST-level equivalence. The committed fixture is for structural and pipeline validation; its reference solutions are not executed by WP1 and are not evidence of model quality.
 
-WP3-b performs one Piston job per test and does not yet provide WP3-c batch requests, bounded concurrency, caching, or an execution CLI. Inside each job, a trusted parent process retains the expected value, comparator, and final marker while an isolated child interpreter receives only the function name and input. The child result channel is treated as an untrusted claimed return value and is compared only by the parent. This prevents candidate changes to `__main__`, JSON helpers, output streams, or child stack frames from rewriting the final verdict, while still relying on the Piston/Linux process and sandbox boundary rather than a separate verifier service.
+WP3 remains a single-machine design: one bounded local thread pool, one local SQLite cache, and one Piston job per test. It does not claim distributed execution, shared network storage, or cluster-scale throughput. Inside each job, a trusted parent process retains the expected value, comparator, and final marker while an isolated child interpreter receives only the function name and input. The child result channel is treated as an untrusted claimed return value and is compared only by the parent. This still relies on the Piston/Linux process and sandbox boundary rather than a separately deployed verifier service.
 
 Minimal Open-R1 adapter usage remains:
 
