@@ -309,6 +309,45 @@ def test_sandbox_error_and_executor_exception_receive_no_positive_executable_or_
     assert exception_records[0]["executable_reward"] == 0.0
 
 
+def test_nested_sandbox_failure_overrides_earlier_model_failure_for_reward() -> None:
+    reward, record, _ = _compute_one(
+        _execution_result(
+            status=ExecutionStatus.WRONG_ANSWER,
+            total_tests=3,
+            returned_statuses=[
+                ExecutionStatus.WRONG_ANSWER,
+                ExecutionStatus.PASSED,
+                ExecutionStatus.SANDBOX_ERROR,
+            ],
+        )
+    )
+    assert reward == 0.0
+    assert record["status"] == ExecutionStatus.WRONG_ANSWER.value
+    assert record["infrastructure_failure"] is True
+    assert record["passed_tests"] == 1
+    assert record["test_reward"] == 0.0
+    assert record["executable_reward"] == 0.0
+    assert record["timeout_penalty"] == 0.0
+    assert record["failure_counts"] == {"sandbox_error": 1, "wrong_answer": 1}
+
+
+def test_nested_timeout_applies_penalty_when_earlier_model_failure_is_top_level() -> None:
+    reward, record, _ = _compute_one(
+        _execution_result(
+            status=ExecutionStatus.WRONG_ANSWER,
+            total_tests=2,
+            returned_statuses=[ExecutionStatus.WRONG_ANSWER, ExecutionStatus.TIMEOUT],
+        )
+    )
+    assert reward == pytest.approx(-0.1)
+    assert record["status"] == ExecutionStatus.WRONG_ANSWER.value
+    assert record["infrastructure_failure"] is False
+    assert record["test_reward"] == 0.0
+    assert record["executable_reward"] == 0.1
+    assert record["timeout_penalty"] == -0.2
+    assert record["failure_counts"] == {"timeout": 1, "wrong_answer": 1}
+
+
 def test_all_reward_numbers_are_finite_and_component_total_matches_sum() -> None:
     reward, record, _ = _compute_one(
         _execution_result(

@@ -9,8 +9,16 @@ from typing import Any
 
 import pytest
 
-from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
-from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
+from code_verifier.execution import (
+    ExecutionResult,
+    ExecutionStatus,
+    MockExecutor,
+    PistonExecutor,
+    PistonExecutorConfig,
+)
+from code_verifier.execution import (
+    TestCaseResult as ExecutionTestCaseResult,
+)
 from code_verifier.rewards import (
     RewardContractError,
     compute_code_rewards,
@@ -97,6 +105,64 @@ class _RaisingExecutor:
         memory_limit_mb: int,
     ) -> ExecutionResult:
         raise RuntimeError("EXECUTOR_EXCEPTION_SECRET")
+
+
+class _SequencePistonTransport:
+    def __init__(self, responses: list[object]) -> None:
+        self._responses = list(responses)
+        self.execute_calls = 0
+
+    def list_runtimes(self, *, timeout_seconds: float, max_response_bytes: int) -> object:
+        return [{"language": "python", "version": "3.10.0", "aliases": ["py3"], "runtime": "python"}]
+
+    def execute_request(
+        self,
+        payload: dict[str, object],
+        *,
+        timeout_seconds: float,
+        max_response_bytes: int,
+    ) -> object:
+        response = self._responses[self.execute_calls]
+        self.execute_calls += 1
+        return response
+
+
+def _piston_response(*, outcome: str = "passed", status: str | None = None, code: int | None = 0) -> dict[str, object]:
+    marker = "fixedmarker123"
+    report = json.dumps(
+        {"outcome": outcome, "runtime_ms": 1.0, "stdout": "", "stderr": ""},
+        separators=(",", ":"),
+    )
+    stdout = f"__CODE_VERIFIER_RESULT__:{marker}:{report}\n" if status is None else ""
+    return {
+        "language": "python",
+        "version": "3.10.0",
+        "run": {
+            "stdout": stdout,
+            "stderr": "",
+            "code": code,
+            "signal": None,
+            "message": None,
+            "status": status,
+            "cpu_time": 1.0,
+            "wall_time": 2.0,
+            "memory": 1024,
+        },
+    }
+
+
+def _piston_executor(responses: list[object]) -> tuple[PistonExecutor, _SequencePistonTransport]:
+    transport = _SequencePistonTransport(responses)
+    config = PistonExecutorConfig(
+        base_url="http://127.0.0.1:2000",
+        language="python",
+        version="3.10.0",
+        request_timeout_margin_seconds=2.0,
+        max_response_bytes=131072,
+        max_output_bytes=65536,
+        stop_on_first_failure=False,
+    )
+    return PistonExecutor(config, transport=transport, marker_factory=lambda: "fixedmarker123"), transport
 
 
 def test_wp4b_public_reward_chat_completion_visible_test_pipeline() -> None:
@@ -223,6 +289,59 @@ def test_wp4b_reward_failure_statuses_and_component_records_match_spec() -> None
     )
     assert exception_rewards == [0.0]
     assert exception_records[0]["status"] == "sandbox_error"
+
+
+def test_wp4b_piston_nested_sandbox_failure_clears_positive_reward() -> None:
+    executor, transport = _piston_executor(
+        [
+            _piston_response(outcome="wrong_answer"),
+            _piston_response(outcome="passed"),
+            _piston_response(status="XX", code=None),
+        ]
+    )
+    rewards, records = compute_code_rewards(
+        [_completion()],
+        [_simple_tests(1, 2, 3)],
+        ["solve"],
+        [_metadata()],
+        executor,
+        "public",
+    )
+
+    assert rewards == [0.0]
+    assert transport.execute_calls == 3
+    assert records[0]["status"] == "wrong_answer"
+    assert records[0]["passed_tests"] == 1
+    assert records[0]["failure_counts"] == {"sandbox_error": 1, "wrong_answer": 1}
+    assert records[0]["infrastructure_failure"] is True
+    assert records[0]["test_reward"] == 0.0
+    assert records[0]["executable_reward"] == 0.0
+
+
+def test_wp4b_piston_nested_timeout_applies_timeout_penalty() -> None:
+    executor, transport = _piston_executor(
+        [
+            _piston_response(outcome="wrong_answer"),
+            _piston_response(status="TO", code=None),
+        ]
+    )
+    rewards, records = compute_code_rewards(
+        [_completion()],
+        [_simple_tests(1, 2)],
+        ["solve"],
+        [_metadata()],
+        executor,
+        "hidden",
+    )
+
+    assert rewards == pytest.approx([-0.1])
+    assert transport.execute_calls == 2
+    assert records[0]["status"] == "wrong_answer"
+    assert records[0]["failure_counts"] == {"timeout": 1, "wrong_answer": 1}
+    assert records[0]["infrastructure_failure"] is False
+    assert records[0]["test_reward"] == 0.0
+    assert records[0]["executable_reward"] == 0.1
+    assert records[0]["timeout_penalty"] == -0.2
 
 
 def test_wp4b_training_reward_paths_reject_eval_hidden_before_execution() -> None:

@@ -112,9 +112,13 @@ def _reward_components_from_verification(
     if mode not in {"public", "hidden"}:
         raise RewardContractError("reward mode must be public or hidden")
 
-    test_reward = 0.0 if result.infrastructure_failure else float(result.pass_rate)
-    executable_reward = 0.1 if result.parsed and result.executed and not result.infrastructure_failure else 0.0
-    timeout_penalty = -0.2 if result.status is ExecutionStatus.TIMEOUT else 0.0
+    failure_counts = {key: count for key, count in result.failure_counts}
+    infrastructure_failure = result.infrastructure_failure or ExecutionStatus.SANDBOX_ERROR.value in failure_counts
+    timed_out = result.status is ExecutionStatus.TIMEOUT or ExecutionStatus.TIMEOUT.value in failure_counts
+
+    test_reward = 0.0 if infrastructure_failure else float(result.pass_rate)
+    executable_reward = 0.1 if result.parsed and result.executed and not infrastructure_failure else 0.0
+    timeout_penalty = -0.2 if timed_out and not infrastructure_failure else 0.0
     invalid_format_penalty = -0.1 if result.status is ExecutionStatus.PARSE_ERROR else 0.0
     total_reward = test_reward + executable_reward + timeout_penalty + invalid_format_penalty
     record: dict[str, object] = {
@@ -127,11 +131,11 @@ def _reward_components_from_verification(
         "status": result.status.value,
         "parsed": result.parsed,
         "executed": result.executed,
-        "infrastructure_failure": result.infrastructure_failure,
+        "infrastructure_failure": infrastructure_failure,
         "passed_tests": result.passed_tests,
         "total_tests": result.total_tests,
         "parse_error_type": result.parse_error_type,
-        "failure_counts": {key: count for key, count in result.failure_counts},
+        "failure_counts": failure_counts,
     }
     _validate_component_record(record)
     return record
