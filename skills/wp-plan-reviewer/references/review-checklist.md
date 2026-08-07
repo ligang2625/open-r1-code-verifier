@@ -89,6 +89,7 @@
 ## 1. 审查范围与方法
 
 - 计划文件：`ai-work/planner/WP{n}-plan.md`
+- 分支：`feat/wp{n}` 或 `feat/wp{n}-{sub}`（计划元信息）
 - executor 报告：<位置>
 - 审查方式：代码阅读 + 独立运行命令
 

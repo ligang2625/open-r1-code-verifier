@@ -1,6 +1,6 @@
 ---
 name: wp-plan-executor
-description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-work/planner/WP1-plan.md），在独立的 git worktree 与分支中按计划逐步完成代码实现、单元测试与验证，每完成一个任务即提交到当前独立分支；也可接收 wp-plan-reviewer 的审查报告，根据审查结果修复缺陷并重新验证。执行结果与修复报告写入 ai-work/executor/WP{n}-executor.md（同一阶段同一文件）。当用户要求“执行某个 WP 计划”、“按 plan 文件写代码并跑测试”、“根据审查报告修复代码”时使用。面向独立于 Codex 的外部执行 agent：只依赖文件读写与基础 shell（仓库自带的 make / pytest / CLI 与 git），不使用 Codex 工具、MCP 或其它 skill。
+description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-work/planner/WP1-plan.md），在 planner 创建的独立分支与 worktree 中按计划逐步完成代码实现、单元测试与验证，每完成一个任务即提交到当前阶段分支（绝不在 main 上修改）；也可接收 wp-plan-reviewer 的审查报告，根据审查结果修复缺陷并重新验证。执行结果与修复报告写入 ai-work/executor/WP{n}-executor.md（同一阶段同一文件）。当用户要求“执行某个 WP 计划”、“按 plan 文件写代码并跑测试”、“根据审查报告修复代码”时使用。
 ---
 
 # WP Plan Executor
@@ -16,10 +16,9 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 
 执行 agent 的边界：
 
-- 只有文件读写与基础 shell 能力（可运行仓库自带的 `make`、pytest、CLI 命令）。不使用 Codex 工具、MCP、其它 skill，也不创建或委派其它 agent。
 - 严格按计划/审查结果执行，不擅自扩大或修改范围；发现问题先停下报告，不静默改计划。
 - 每完成一个计划步骤（任务）即在**独立分支**上提交一次（见“阶段工作区与提交”）；绝不提交到主分支；不自动 push。
-- 本阶段所有改动都在独立 worktree 中完成，不直接修改主仓库工作区。
+- 本阶段所有改动都在 planner 创建的独立 worktree/分支中完成；**不得在主分支（main）内做任何修改或提交**。
 - 绝不修改 `third_party/open-r1/`；所有 Open-R1 访问经 `code_verifier.training.open_r1_adapter`。
 - 不修改审查报告文件（`ai-work/reviewer/WP{n}-review.md`）——它归审查方所有。
 - 不写入 `proceedings.md`——阶段完成记录由最终审查方在审查通过并合并后统一写入。
@@ -44,17 +43,11 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 
 ## 阶段工作区与提交
 
-1. **创建/复用独立 worktree**（首次任务时）：在主仓库根目录运行 `git worktree list` 检查；若本 WP 尚无 worktree，则创建：
-
-   ```bash
-   git worktree add ../open-r1-code-verifier-wp{n} -b feat/wp{n}
-   ```
-
-   分支名为 `feat/wp{n}`（可加简短描述后缀）；worktree 路径默认为主仓库同级目录，可随任务指定调整。已存在同名 worktree 或分支则复用，不重复创建。
-2. **放置计划文件**：若计划文件不在 worktree 中，将其放入 worktree 的 `ai-work/planner/` 目录（从主仓库工作区或任务指定位置获取），随首个任务一起提交。
-3. **工作目录切换**：创建后，本阶段所有代码、测试、配置、报告文件等操作与命令都在该 worktree 目录中执行。
-4. **每任务提交**：每完成一个计划步骤并通过该步骤验证后立即提交：先 `git status` 确认只含本步骤文件，显式 `git add` 本步骤涉及路径（**不用 `git add -A`**），提交消息用 Conventional Commits（如 `feat: add data schema and validation`），提交到当前独立分支。
-5. **报告随提交**：阶段报告文件 `ai-work/executor/WP{n}-executor.md` 随对应实现/修复提交一起（或单独一条 docs 提交）进入独立分支。
+1. **确认阶段工作区**：本阶段工作目录为 planner 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）。若未指定，运行 `git worktree list` 定位该分支对应的 worktree；找不到则停止并报告——分支与 worktree 由 planner 创建，executor 不自行创建。
+2. **分支校验（必须，任务开始与每次提交前）**：运行 `git branch --show-current`，必须等于计划元信息记录的分支名（如 `feat/wp3-c`）；若当前在 `main` 或其它分支，先 `git switch <分支名>`；校验不通过时禁止任何修改与提交。
+3. **禁止在主分支修改**：所有代码、测试、配置、报告文件的写入与提交都必须在分支上进行；绝不在 main 上修改或提交。
+4. **每任务提交**：每完成一个计划步骤并通过该步骤验证后立即提交：先 `git status` 确认只含本步骤文件，显式 `git add` 本步骤涉及路径（**不用 `git add -A`**），提交消息用 Conventional Commits（如 `feat: add data schema and validation`），提交到当前阶段分支。
+5. **报告随提交**：阶段报告文件 `ai-work/executor/WP{n}-executor.md` 随对应实现/修复提交一起（或单独一条 docs 提交）进入分支。
 6. **提交失败处理**：hook 拒绝、冲突或误暂存时停下报告，不使用 `--no-verify`、`--force` 等绕过手段。
 7. 不自动 push；合并回主分支由 wp-plan-reviewer 在审查通过后执行。
 
@@ -111,7 +104,8 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 
 - [ ] 只实现了计划/审查范围内内容，无越界改动；
 - [ ] 计划每个实现步骤都有对应代码与测试；
-- [ ] 阶段改动均在独立 worktree 中完成，主仓库工作区未被直接修改；
+- [ ] 任务开始与每次提交前均确认当前分支为 planner 创建的分支（`feat/wp{n}` 或 `feat/wp{n}-{sub}`）；
+- [ ] 未在主分支（main）上做任何修改或提交；
 - [ ] 未修改测试预期来迁就实现；
 - [ ] 遇到计划/规格冲突时停止并报告，而非静默偏离；
 - [ ] `make lint` 与 `make test` 实际运行且全绿（或如实记录失败）；

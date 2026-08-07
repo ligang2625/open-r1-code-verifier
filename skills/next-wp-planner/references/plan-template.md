@@ -2,6 +2,7 @@
 
 > 使用说明：本模板用于产出下一个 WP 的实施计划。把 `{n}` 替换为实际 WP 编号，把 `[方括号]` 占位内容替换为实际内容，最后删除本说明。
 > 消费约束：本计划面向的执行 agent 只有文件读写与基础 shell（可运行仓库自带的 `make`、pytest、CLI），没有 Codex 工具 / MCP / 其它 skill。计划中不得出现这些依赖，也不得包含创建执行 agent 的步骤。
+> 分支约定：planner 为本阶段创建分支与 worktree（`.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，分支 `feat/wp{n}` 或 `feat/wp{n}-{sub}`），executor 只在该分支上工作，不在 main 上修改。
 
 # WP{n} 实施计划（[WP 名称，来自规格 §20]）
 
@@ -12,6 +13,8 @@
 | 目标 WP | WP{n}：[名称] |
 | 规格依据 | `PROJECT_SPEC_Open-R1_CodeVerifier.md` §20 WP{n} |
 | 前置 WP | WP{n-1}（proceedings.md 状态：已完成） |
+| 分支 | `feat/wp{n}`（未拆分）或 `feat/wp{n}-{sub}`（拆分子阶段，planner 创建） |
+| worktree | `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}` |
 | 计划文件 | `ai-work/planner/WP{n}-plan.md` |
 | 面向的执行 agent | 仅文件读写 + 基础 shell；无 Codex 工具 / MCP / 其它 skill |
 
