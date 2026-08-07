@@ -5,7 +5,7 @@ DEV_PACKAGES := mypy==1.15.0 pytest==8.3.5 ruff==0.9.10 types-PyYAML==6.0.12.202
 DATA_PACKAGES := PyYAML==6.0.2 datasets==3.2.0
 PISTON_CONFIG ?= configs/execution/piston-local.yaml
 
-.PHONY: install install-full lint test test-piston record-environment
+.PHONY: install install-full lint test test-piston test-gpu record-environment
 
 install:
 	$(UV) venv --allow-existing $(VENV)
@@ -29,6 +29,10 @@ test-piston:
 	$(PYTHON) -m pytest -m piston \
 	  tests/integration/test_wp3b_piston_execution.py \
 	  tests/integration/test_wp3c_batch_execution.py -ra
+
+test-gpu:
+	$(PYTHON) -m pytest -m gpu \
+	  tests/integration/test_wp5a_gpu_smoke.py -ra
 
 record-environment:
 	$(PYTHON) -m code_verifier.cli record-environment --output environment.json

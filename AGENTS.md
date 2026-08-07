@@ -43,7 +43,8 @@ open-r1-code-verifier/
 │   │   ├── test_wp3c_batch_execution.py
 │   │   ├── test_wp4a_verifier_pipeline.py
 │   │   ├── test_wp4b_reward_pipeline.py
-│   │   └── test_wp5a_evaluation_pipeline.py
+│   │   ├── test_wp5a_evaluation_pipeline.py
+│   │   └── test_wp5a_gpu_smoke.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
@@ -93,10 +94,11 @@ Source code lives in `src/code_verifier/`. The `third_party/open-r1/` submodule 
 | Command | Description |
 |---------|-------------|
 | `make install` | Creates `.venv`, installs project + pinned Open-R1 in editable mode, adds dev tools |
-| `make install-full` | Full sync with Open-R1/Transformers dependencies required for real WP5 generation and later training |
+| `make install-full` | Full sync with Open-R1/Transformers dependencies required for real WP5 generation and later training; on the GPU development machine this installs the CUDA-capable torch wheel |
 | `make lint` | Runs ruff check, ruff format --check, and mypy on src/ and tests/ |
-| `make test` | Runs default pytest suite; real Piston tests are skipped without explicit enablement |
+| `make test` | Runs default pytest suite; GPU-required tests auto-run when a CUDA-capable GPU is detected and auto-skip with an explicit reason on CPU-only machines; real Piston tests are skipped without explicit enablement |
 | `make test-piston` | Runs the real loopback Piston safety acceptance suite; requires local service/runtime |
+| `make test-gpu` | Runs only the CUDA generation smoke tests; auto-skips with an explicit reason on machines without a CUDA-capable GPU |
 | `make record-environment` | Records repo/submodule/Python/dependency versions to environment.json |
 | `.venv/bin/code-verifier --help` | Shows CLI help |
 | `.venv/bin/code-verifier evaluate --help` | Shows WP5-a deterministic evaluation options |
@@ -117,6 +119,7 @@ Run `make lint` before committing — it runs all three checks.
 - **Test location**: unit tests in `tests/unit/`; end-to-end WP tests in `tests/integration/`
 - **Run tests**: `make test` or `.venv/bin/python -m pytest`
 - **Real sandbox tests**: run `make test-piston` explicitly; any failure or skip blocks WP3 acceptance and merge
+- **GPU tests**: auto-detected — on a CUDA machine `make test` runs the full suite including the GPU smoke tests; on a CPU-only machine GPU-required tests are skipped with an explicit reason and only CPU tests run. `make test-gpu` targets the GPU smoke subset; any failure on the GPU machine blocks GPU acceptance work
 - **Coverage**: Not yet configured
 
 ## Commit & Pull Request Guidelines
@@ -132,13 +135,14 @@ Run `make lint` before committing — it runs all three checks.
 ## Agent-Specific Instructions
 
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
+- **Target hardware split**: development, builds, and smoke tests run on a GTX 1660 Ti (6GB VRAM) machine; SFT/GRPO training runs on a 24GB GPU (e.g. RTX 4090) machine. Never start training on the 1660 Ti.
 - **Current scope**: WP0–WP4 and WP5-a are implemented. WP5-a covers deterministic frozen generation, per-problem three-layer evaluation, strict run artifacts, and exact-prefix resume. WP5-b metrics/bootstrap/formal Base acceptance and later training integration are not implemented. Do not add later-WP functionality without the corresponding plan.
 - The WP4-a verifier accepts exactly one caller-selected non-empty test list, never a complete problem or test-layer selector. It must use `extract_python_code()` for parsing and `CodeExecutor` for execution, and sanitized mappings must not store completion, code, tests, function name, or metadata.
 - WP4 reward code must flow through `verify_completion()` and therefore through the configured `CodeExecutor`; reward modules must not parse or execute candidate code independently.
 - Public and Hidden reward wrappers must share `rewards/common.py`. Public may score only `visible_tests`; Hidden may score only `train_hidden_tests`; `eval_hidden_tests` must never enter either training reward path.
 - Reward component records must remain finite, JSON-safe, and free of completion, code, tests, function name, metadata, stdout/stderr, and nested execution results. Do not add WP7 trainer adapters, reward registry changes, GRPO configuration, or persistent experiment logging inside WP4.
 - WP5-a evaluation prompts may contain only the problem statement, function signature, and visible examples. Never place `train_hidden_tests`, `eval_hidden_tests`, reference solutions, or SFT responses into generation prompts.
-- WP5-a generation must remain frozen deterministic pass@1. Evaluation must not modify checkpoints, invoke training rewards, or add SFT/GRPO behavior. Real Transformers generation requires the full dependency environment; default tests must remain model/GPU independent.
+- WP5-a generation must remain frozen deterministic pass@1. Evaluation must not modify checkpoints, invoke training rewards, or add SFT/GRPO behavior. Real Transformers generation requires the full dependency environment; default tests must remain model/GPU independent. Real CUDA generation smoke tests auto-run in the default suite only when a CUDA-capable GPU with the full inference dependencies is detected; on CPU-only machines they are skipped with an explicit reason telling the user a GPU is required.
 - WP5-a must verify the same completion in visible → train-hidden → eval-hidden order through `verify_completion()`. The top-level evaluation `execution_status` is the eval-hidden status; test payloads must never be serialized into evaluation rows or run metadata.
 - Evaluation resume is exact-prefix only. Keep run/config/model/checkpoint/seed/dataset/prompt/repository/submodule/dependency/hardware identity checks fail-closed, and never regenerate already completed rows after a valid resume.
 - Only `samples/results.jsonl` may persist evaluation completion text or extracted code. `run.json`, `environment.json`, `resolved_config.yaml`, `metrics.jsonl`, `stdout.log`, and `stderr.log` must remain free of completion/code/test payloads.

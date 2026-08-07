@@ -25,6 +25,8 @@ make install
 
 The command intentionally skips Open-R1's large training dependency tree. `make install` is sufficient for the CPU-only unit/default test suite, but real WP5-a Transformers generation requires `make install-full`. Neither installation command updates the pinned Open-R1 commit.
 
+Development and smoke tests move to a machine with a single NVIDIA GeForce GTX 1660 Ti (6GB VRAM); SFT/GRPO training still runs on the 24GB GPU (e.g. RTX 4090) machine per the project spec. On the 1660 Ti machine, run `make install-full` to install the full inference stack (Linux default PyPI torch wheels bundle a CUDA 12.x runtime compatible with Turing/sm_75), then regenerate `environment.json` with `record-environment` to confirm `cuda_version` / `gpu_name` / `gpu_count` are recorded. The CPU-only workflow (`make install` + `make test`) remains valid on machines without a GPU.
+
 ## Quality checks
 
 ```bash
@@ -40,6 +42,14 @@ make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
 ```
 
 The command requires a self-hosted Piston service bound only to loopback with the exact configured Python runtime. See [`docs/piston-local.md`](docs/piston-local.md).
+
+GPU-required tests are detected automatically: on a machine with a CUDA-capable GPU and the full inference dependencies (`make install-full`), `make test` runs the complete suite including the CUDA generation smoke tests. On a machine without a GPU, those tests are skipped with an explicit message telling you they require a GPU, and only the CPU suite runs. To run just the GPU smoke subset:
+
+```bash
+make test-gpu
+```
+
+`make test-gpu` is also auto-detecting: it runs on a CUDA-capable machine and skips with the same explicit reason on a machine without a GPU. Use `CODE_VERIFIER_GPU_MODEL=<model-id>` to override the smoke model (default `Qwen/Qwen2.5-Coder-0.5B-Instruct`).
 
 Record repository/submodule commits, Python/platform, tracked dependency versions, dependency-lock identity, and optional CUDA/GPU identity with:
 
@@ -359,6 +369,8 @@ make install-full
   --seed 42 \
   --output-dir outputs
 ```
+
+`configs/eval/pass1.yaml` sets `device: auto`; on the 1660 Ti development machine the frozen generator runs on CUDA when torch reports it available, and the run's `environment.json` records the CUDA/GPU identity so resume fails closed on hardware drift.
 
 `configs/eval/pass1.yaml` currently uses `model_revision: null` for local/debug workflows. That is not sufficient for the formal Base experiment: WP5-b must pin the exact model revision before reporting Base metrics. WP5-a does not implement aggregate pass@1 metrics, bootstrap confidence intervals, or the formal Base result.
 

@@ -6,6 +6,7 @@
 > 主要开发方式：Codex 负责代码实现；项目负责人负责 Code Review、实验决策与结果分析  
 > 上游项目：`huggingface/open-r1`  
 > 核心技术栈：Python、PyTorch、Transformers、TRL、PEFT、Datasets、Open-R1、Docker/Piston、Weights & Biases 或本地日志
+> 开发/冒烟测试硬件：单张 NVIDIA GeForce GTX 1660 Ti（6GB VRAM，Turing/sm_75）；训练硬件：单张 24GB GPU（如 RTX 4090）
 
 ---
 
@@ -277,11 +278,13 @@ models:
 
 - SFT：LoRA；
 - GRPO：从同一个 SFT checkpoint 分叉；
-- 默认单张 24GB GPU；
+- 训练硬件：默认单张 24GB GPU（如 RTX 4090）；
 - 优先 bf16；硬件不支持时使用 fp16；
 - 开启 gradient checkpointing；
 - 主实验不使用量化权重训练，除非 24GB 显存无法运行；
-- 若必须使用 QLoRA，C 和 D 必须保持完全相同的量化与 LoRA 配置。
+- 若必须使用 QLoRA，C 和 D 必须保持完全相同的量化与 LoRA 配置；
+- 开发与冒烟测试硬件：单张 NVIDIA GeForce GTX 1660 Ti（6GB VRAM，Turing/sm_75）。项目从无 GPU 机器迁移后，日常开发、构建和 smoke test 在该机器上进行；1660 Ti 不承担 SFT/GRPO 训练，训练仍在 24GB GPU（4090）机器上执行；
+- 6GB 冒烟约束：smoke 生成/评测默认使用 fp16（Turing 不支持 bf16）与 0.5B debug 模型；冒烟测试 OOM 时降低 batch 或序列长度，不修改训练配置。
 
 ## 5.3 上游依赖
 
@@ -1461,6 +1464,8 @@ gpu_hours
 status
 ```
 
+CUDA/GPU identity 由 `record-environment` 自动采集：无 torch 或无可用 CUDA 时 `cuda_version=null`、`gpu_name=null`、`gpu_count=0`；CUDA 可用时记录 torch 的 CUDA 版本、首个 GPU 名称与设备数量。迁移到 GTX 1660 Ti 开发机后应重新生成 `environment.json`；训练在 24GB GPU 机器上进行时，该机器同样各自记录自身硬件 identity。
+
 ## 18.2 文件布局
 
 ```text
@@ -1551,7 +1556,7 @@ outputs/{stage}/{run_id}/
 
 1. 20 道题的数据准备；
 2. 真实沙箱执行；
-3. 小模型生成；
+3. 小模型生成（GPU 可用时在 CUDA 上执行，见 §19.3 与 `make test-gpu`）；
 4. reward 函数批量调用；
 5. 1–2 step SFT；
 6. 1–2 step GRPO；
@@ -1569,6 +1574,8 @@ CI 不运行 GPU 训练，但应运行：
 - mock executor 集成测试；
 - 数据泄漏检查；
 - 最小 CLI 测试。
+
+GPU 生成冒烟自动检测 CUDA：目标开发机（GTX 1660 Ti）上 `make test` 直接运行完整套件（含 GPU 冒烟）；无 GPU 机器上 GPU 冒烟自动跳过并明确提示这些测试需要 GPU，仅运行 CPU 测试。CI 不运行真实 GPU 冒烟；训练仍在 24GB GPU（如 RTX 4090）机器上进行。
 
 ---
 
@@ -2063,6 +2070,8 @@ python -m code_verifier.cli --help
 5. 增加 gradient accumulation；
 6. 使用更小 debug 模型；
 7. 最后才考虑 QLoRA。
+
+开发/冒烟机（1660 Ti，6GB）仅运行 0.5B 模型 fp16 冒烟，不执行训练；冒烟 OOM 时缩小 `max_new_tokens` 或 batch，不改变训练配置。
 
 ## Risk 5：Hidden-RLVR 没有优于 Public-RLVR
 

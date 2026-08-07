@@ -33,7 +33,10 @@ open-r1 = { path = "third_party/open-r1", editable = true }
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
-markers = ["piston: requires an explicitly enabled self-hosted loopback Piston service"]
+markers = [
+    "piston: requires an explicitly enabled self-hosted loopback Piston service",
+    "gpu: requires a CUDA-capable GPU; auto-skipped with an explicit reason on CPU-only machines",
+]
 
 [tool.mypy]
 python_version = "3.10"

@@ -267,3 +267,37 @@ WP0 已完成以下工作：
 - `code_verifier.cli --help` 与 `code_verifier.cli evaluate --help` 均返回 0。
 - no-torch、no-CUDA、CUDA-available 三类环境 identity 边界验证通过；Step 5 三个公开函数签名与计划一致。
 - WP5-a 合并提交：`7e5f5dfe68c998336fa4b7122731fb72af3670a9`（`feat: complete WP5-a deterministic evaluation`）。
+
+---
+
+## 环境与硬件迁移准备：GPU 开发/冒烟机适配
+
+- **完成日期**：2026-08-07
+- **阶段状态**：迁移准备（非 Work Package 阶段）
+- **验收结论**：通过（CPU 机器上 lint 与默认测试全绿；真实 CUDA 冒烟需在迁移后的 1660 Ti 开发机上执行）
+- **实施范围**：仅修改项目描述、构建与测试入口，为开发/冒烟迁移到 GTX 1660 Ti 机器做准备；未新增 WP 功能；SFT/GRPO 训练硬件维持 spec 原定 24GB GPU（如 RTX 4090）。
+
+### 1. 本阶段完成事项
+
+1. 规格说明明确硬件分工：开发、构建与 smoke test 在单张 GTX 1660 Ti（6GB VRAM，Turing/sm_75）机器上进行；SFT/GRPO 训练仍在 24GB GPU（如 RTX 4090）机器上执行。1660 Ti 冒烟使用 fp16（Turing 不支持 bf16）与 0.5B debug 模型，不执行训练。
+2. 默认测试套件自动适配 CPU/GPU：无 GPU 机器只运行 CPU 测试，GPU 必需测试自动跳过并明确提示需要 GPU；有 CUDA 的机器（1660 Ti 开发机）`make test` 自动运行完整套件（含 GPU 冒烟）；`make test-gpu` 用于单独运行 GPU 冒烟子集。
+3. README/AGENTS 增加硬件分工、GPU 机器安装（`make install-full`）、`record-environment` 记录 CUDA/GPU identity 与 `make test-gpu` 说明。
+4. 新增自动检测的 GPU 冒烟测试（`tests/integration/test_wp5a_gpu_smoke.py`，`pytest.mark.gpu`）：无 CUDA 机器自动跳过并输出明确提示（需要 GPU 与 `make install-full`），GPU 机器上自动运行；验证环境 identity 记录 CUDA/GPU，并以 `device: cuda` 跑一次冻结 pass@1 小模型生成。
+5. Makefile 新增 `test-gpu`；`pyproject.toml` 注册 `gpu` marker。
+
+### 2. 相关文件
+
+- 修改：`PROJECT_SPEC_Open-R1_CodeVerifier.md`、`README.md`、`AGENTS.md`、`Makefile`、`pyproject.toml`、`proceedings.md`
+- 新增：`tests/integration/test_wp5a_gpu_smoke.py`
+- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+### 3. 配置影响
+
+- `pyproject.toml` 仅新增 `gpu` pytest marker；Makefile 仅新增 `test-gpu` target；未修改依赖版本或实验配置。
+
+### 4. 验收结论
+
+- `make lint` 全绿。
+- `make test`：592 passed，5 skipped（3 个 Piston 显式跳过 + 2 个 GPU 用例自动跳过，均明确提示需要 GPU）。
+- 当前机器无 CUDA：`make test-gpu` 报告 2 skipped（自动跳过并提示需要 GPU），退出码 0，符合设计。
+- 迁移后的 1660 Ti 开发机需执行：`make install-full` → `record-environment`（确认 `cuda_version`/`gpu_name`/`gpu_count`）→ `make test-piston`（若继续使用本地 Piston）→ `make test`（GPU 冒烟自动包含，0 failed、0 skipped），也可单独运行 `make test-gpu`。训练阶段回到 24GB GPU（如 RTX 4090）机器进行。
