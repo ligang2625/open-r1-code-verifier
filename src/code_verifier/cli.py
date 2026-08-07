@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import shutil
 import sys
 import tempfile
@@ -32,6 +33,8 @@ from code_verifier.data.prepare import (
 )
 from code_verifier.data.schema import SchemaError
 from code_verifier.environment import write_environment_record
+from code_verifier.evaluation.evaluate import EvaluationError, load_evaluation_config, run_pass1_evaluation
+from code_verifier.evaluation.generate import GenerationError, TransformersCompletionGenerator
 from code_verifier.execution import (
     BatchExecutionConfig,
     BatchExecutionError,
@@ -50,6 +53,7 @@ from code_verifier.execution import (
     batch_execution_item_to_mapping,
     batch_execution_request_from_mapping,
     load_batch_execution_config,
+    load_piston_executor_config,
     piston_executor_version,
     validate_batch_cache_policy,
 )
@@ -73,6 +77,7 @@ EXECUTION_ERRORS = (
     OSError,
     UnicodeError,
 )
+EVALUATION_ERRORS = (EvaluationError, GenerationError)
 
 
 def _add_common_arguments(
@@ -80,8 +85,9 @@ def _add_common_arguments(
     *,
     config_required: bool = False,
     output_dir_default: Path | None = None,
+    output_dir_required: bool | None = None,
 ) -> None:
-    """Add the common project options while allowing command-specific output defaults."""
+    """Add common project options while allowing independent config/output requirements."""
     parser.add_argument(
         "--config",
         type=Path,
@@ -89,11 +95,12 @@ def _add_common_arguments(
         help="YAML config path; required by commands that execute configured workflows",
     )
     parser.add_argument("--seed", type=int, default=42, help="deterministic seed (default: 42)")
+    resolved_output_required = config_required if output_dir_required is None else output_dir_required
     parser.add_argument(
         "--output-dir",
         type=Path,
-        required=config_required,
-        default=None if config_required else output_dir_default,
+        required=resolved_output_required,
+        default=None if resolved_output_required else output_dir_default,
         help="command output root; accepted by read-only commands for CLI consistency",
     )
     parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
@@ -287,8 +294,51 @@ def _execute_batch(args: argparse.Namespace) -> int:
     return 1 if any(item.result.status is ExecutionStatus.SANDBOX_ERROR for item in result.items) else 0
 
 
+def _safe_run_name(value: str) -> str:
+    if not value.strip() or not re.fullmatch(r"[A-Za-z0-9._-]+", value) or ".." in value:
+        raise argparse.ArgumentTypeError(
+            "run name must use only A-Z, a-z, 0-9, dot, underscore, or hyphen and must not contain '..'"
+        )
+    return value
+
+
+def _nonempty_model_id(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("model id must be a non-empty string")
+    return value
+
+
+def _evaluate(args: argparse.Namespace) -> int:
+    """Run one deterministic, resumable pass@1 evaluation."""
+    config = load_evaluation_config(Path(str(args.config)))
+    piston_config = load_piston_executor_config(config.piston_config)
+    executor = PistonExecutor(piston_config)
+    executor.validate_runtime()
+    generator = TransformersCompletionGenerator.from_pretrained(
+        str(args.model_id),
+        model_revision=config.model_revision,
+        device=config.device,
+        config=config.generation,
+    )
+    summary = run_pass1_evaluation(
+        config=config,
+        model_id=str(args.model_id),
+        generator=generator,
+        executor=executor,
+        run_id=str(args.run_name),
+        output_root=Path(str(args.output_dir)),
+        seed=int(args.seed),
+    )
+    print(
+        f"evaluated {summary.total_problems} problems "
+        f"(resumed={summary.completed_before_run}, generated={summary.generated_this_run})"
+    )
+    print(f"results={summary.results_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0-WP3 commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP5 commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -367,6 +417,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_arguments(execute_parser, config_required=True)
     execute_parser.set_defaults(handler=_execute_batch)
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="run deterministic resumable pass@1 model evaluation",
+    )
+    evaluate_parser.add_argument("--model-id", type=_nonempty_model_id, required=True, help="model or checkpoint id")
+    evaluate_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="safe evaluation run id")
+    _add_common_arguments(
+        evaluate_parser,
+        config_required=True,
+        output_dir_default=Path("outputs"),
+        output_dir_required=False,
+    )
+    evaluate_parser.set_defaults(handler=_evaluate)
     return parser
 
 
@@ -388,7 +452,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return handler(args)
-    except DATA_ERRORS + EXECUTION_ERRORS as error:
+    except DATA_ERRORS + EXECUTION_ERRORS + EVALUATION_ERRORS as error:
         print(f"error: {' '.join(str(error).splitlines())}", file=sys.stderr)
         return 2
 
