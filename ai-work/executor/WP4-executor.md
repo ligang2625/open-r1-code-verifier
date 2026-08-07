@@ -815,3 +815,220 @@ make test VENV=../../.venv
 - 未修改审查报告、`proceedings.md` 或 `third_party/open-r1/**`。
 - 未执行 push 或 merge。
 - 下一步由 `wp-plan-reviewer` 对 WP4-b 执行下一轮独立复审；只有复审通过后才可合并并登记 WP4 整体完成。
+
+---
+
+# 代码修复报告（WP4-b R2）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP4-review.md`
+- 审查轮次：WP4-b R2
+- 审查结论：需修改
+- 修复范围：主要问题 M3
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp4-b` / `.worktrees/wp4-b`
+
+本轮只处理 reviewer 新发现的 Piston 多失败聚合下 nested sandbox/timeout Reward 语义，不修改 Piston/Verification 公共签名，不修改 reviewer 报告、`proceedings.md`、配置、依赖或 `third_party/open-r1/**`。
+
+## 2. M3：识别 nested terminal failures
+
+修复提交：
+
+```text
+6c8f94b  fix: honor nested terminal reward failures
+```
+
+修复内容：
+
+- `src/code_verifier/rewards/common.py` 在生成 reward components 时读取已由 verifier 提供的 `failure_counts`，识别 top-level status 被早先普通模型失败遮蔽的 nested terminal failure。
+- 若 `failure_counts` 含 `sandbox_error`，Reward 将该结果按 infrastructure failure 处理：`test_reward=0.0`、`executable_reward=0.0`，且不自造额外 penalty，因此总 reward 为 `0.0`。
+- 若 `failure_counts` 含 `timeout` 且不存在 infrastructure failure，则按 timeout 处理并应用 `-0.2` penalty；普通可执行分量仍按既有规则为 `0.1`。
+- component record 的 `infrastructure_failure` 反映 Reward 层最终采用的 infrastructure 语义，`failure_counts` 保持 payload-free。
+- 新增 unit 回归覆盖 `WRONG_ANSWER → PASSED → SANDBOX_ERROR` 与 `WRONG_ANSWER → TIMEOUT`。
+- 新增使用项目真实 `PistonExecutor` + 测试 transport 的 integration 回归，验证默认 `stop_on_first_failure=False` 下上述两条多失败聚合路径。
+
+## 3. R2 修复验证
+
+### 受影响专项测试
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/rewards/test_common.py \
+  tests/integration/test_wp4b_reward_pipeline.py
+→ 41 passed
+```
+
+### 静态检查
+
+```text
+make VENV=../../.venv lint
+→ Ruff check: All checks passed
+→ Ruff format: 63 files already formatted
+→ strict Mypy: Success, no issues found in 63 source files
+```
+
+### 默认全量 CPU 回归
+
+```text
+make test VENV=../../.venv
+→ 536 passed, 3 skipped
+```
+
+三个 skip 均为既有真实 Piston tests；本轮未新增 skip 或 xfail。
+
+### WP4 联合定向验收
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/verification \
+  tests/unit/rewards \
+  tests/integration/test_wp4a_verifier_pipeline.py \
+  tests/integration/test_wp4b_reward_pipeline.py
+→ 92 passed, 0 failed, 0 skipped
+```
+
+### CLI 边界
+
+```text
+../../.venv/bin/python -m code_verifier.cli --help
+→ exit 0
+→ commands: record-environment, prepare-data, check-data, parse-code, execute-batch
+```
+
+未新增 verifier、reward、training 或 evaluation CLI 子命令。
+
+## 4. 修复完成状态
+
+- WP4-b R2 M3 已修复，并覆盖 reviewer 指定的 `wrong→sandbox` 与 `wrong→timeout` 两条真实 Piston 聚合路径。
+- nested sandbox 不再获得 test/executable 正分；nested timeout 会应用既定 `-0.2` penalty。
+- R1 M1/M2 修复保持有效，无回归。
+- `make lint`、`make test`、WP4 联合定向测试和 CLI 均实际运行通过。
+- 无未处理问题、异议项或无法复现项。
+- 未修改审查报告、`proceedings.md` 或 `third_party/open-r1/**`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 对 WP4-b 执行下一轮独立复审；只有复审通过后才可合并并登记 WP4 整体完成。
+
+---
+
+# 代码修复报告（WP4-b R2）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP4-review.md`
+- 审查轮次：WP4-b R2
+- 审查结论：需修改
+- 修复范围：主要问题 M3
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp4-b` / `.worktrees/wp4-b`
+
+R2 指出：`PistonExecutor(stop_on_first_failure=false)` 的 top-level status 取首个非 PASSED，因此真实多失败序列中的后续 `SANDBOX_ERROR` 或 `TIMEOUT` 可能只存在于 `VerificationResult.failure_counts`，Reward 若只看 top-level status 会错误计分。
+
+本轮遵守 `WP4-b-plan.md` §4.3 的阶段边界，没有修改 `src/code_verifier/execution/**` 或 `src/code_verifier/verification/**`；按 reviewer 给出的“Verification/Reward 边界”修复方向，仅在 Reward Layer 解释现有 `failure_counts` 终止状态证据，并补真实 `PistonExecutor + fake transport` 的 Reward 集成回归。
+
+## 2. M3：识别 nested sandbox / timeout 终止状态
+
+修复提交：
+
+```text
+6c8f94b  fix: honor nested terminal reward failures
+```
+
+修复内容：
+
+- `_reward_components_from_verification()` 先把已验证的 `result.failure_counts` 转成局部 mapping。
+- effective infrastructure failure 现在满足任一条件即为真：
+  - `result.infrastructure_failure is True`；
+  - `failure_counts` 中包含 `sandbox_error`。
+- effective timeout 现在满足任一条件即为真：
+  - top-level `result.status is TIMEOUT`；
+  - `failure_counts` 中包含 `timeout`。
+- 发现 nested sandbox 时：
+  - `test_reward=0.0`；
+  - `executable_reward=0.0`；
+  - 不自造 infrastructure penalty；
+  - component record 的 `infrastructure_failure=True`，同时保留原 top-level `status` 和完整 `failure_counts` 供下游诊断。
+- 发现 nested timeout 且不存在 infrastructure failure 时，应用既有 `-0.2` timeout penalty；其它公式分量保持规格定义。
+- 若同一合法结果同时含 infrastructure failure 与 timeout 证据，infrastructure failure 的“总 reward 不自造负 penalty”规则优先，不叠加 timeout penalty。
+
+## 3. 新增回归
+
+### Reward unit
+
+新增两条结构化回归：
+
+- `WRONG_ANSWER → PASSED → SANDBOX_ERROR`：top-level 仍为 `wrong_answer`，但 Reward 识别 nested sandbox，最终 reward `0.0`，component `infrastructure_failure=True`。
+- `WRONG_ANSWER → TIMEOUT`：top-level 仍为 `wrong_answer`，Reward 从 `failure_counts` 识别 timeout，应用 `-0.2` penalty，最终 reward `-0.1`。
+
+### 真实 Piston 聚合路径集成
+
+`tests/integration/test_wp4b_reward_pipeline.py` 新增 CPU-only fake transport，通过项目自身 `PistonExecutor` 的真实聚合逻辑进入 `verify_completion() → compute_code_rewards()`：
+
+- `wrong_answer → passed → Piston XX/sandbox`：实际保留 top-level `wrong_answer` 与 `pass_rate=1/3`，Reward 最终清零为 `0.0`。
+- `wrong_answer → Piston TO/timeout`：实际保留 top-level `wrong_answer`，Reward 最终应用 timeout penalty，得到 `-0.1`。
+
+这些测试不依赖外部 Piston 服务，也没有修改 WP3 execution 实现或其测试预期。
+
+## 4. R2 修复验证
+
+### 受影响专项测试
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/rewards/test_common.py \
+  tests/integration/test_wp4b_reward_pipeline.py
+→ 41 passed
+```
+
+### 静态检查
+
+首次 `make VENV=../../.venv lint` 仅发现新增 integration import 的 Ruff I001/E501 格式问题；按 Ruff 建议调整 import 后重新运行：
+
+```text
+make VENV=../../.venv lint
+→ Ruff check: All checks passed
+→ Ruff format: 63 files already formatted
+→ strict Mypy: Success, no issues found in 63 source files
+```
+
+### 默认全量 CPU 回归
+
+```text
+make test VENV=../../.venv
+→ 536 passed, 3 skipped
+```
+
+三个 skip 均为既有真实 Piston tests；本轮未新增 skip 或 xfail。
+
+### WP4 联合定向验收
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/verification \
+  tests/unit/rewards \
+  tests/integration/test_wp4a_verifier_pipeline.py \
+  tests/integration/test_wp4b_reward_pipeline.py
+→ 92 passed, 0 failed, 0 skipped
+```
+
+### CLI 边界
+
+```text
+../../.venv/bin/python -m code_verifier.cli --help
+→ exit 0
+→ commands: record-environment, prepare-data, check-data, parse-code, execute-batch
+```
+
+未新增 verifier、reward、training 或 evaluation CLI 子命令。
+
+## 5. 修复完成状态
+
+- WP4-b R2 M3 已修复，并有 Reward unit 与真实 Piston 聚合集成回归。
+- nested sandbox 不再因较早普通失败的 top-level status 而获得测试通过率或 executable 正分。
+- nested timeout 不再因较早普通失败的 top-level status 而漏掉 timeout penalty。
+- R1 的 M1/M2 行为继续由全量与联合定向测试覆盖，无回归。
+- 未修改 execution/verification/parser/data/training、配置、依赖、审查报告、`proceedings.md` 或 `third_party/open-r1/**`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 对 WP4-b 执行 R3 独立复审；只有复审通过后才可合并并登记 WP4 整体完成。
