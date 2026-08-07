@@ -112,7 +112,7 @@ def _reward_components_from_verification(
     if mode not in {"public", "hidden"}:
         raise RewardContractError("reward mode must be public or hidden")
 
-    test_reward = float(result.pass_rate)
+    test_reward = 0.0 if result.infrastructure_failure else float(result.pass_rate)
     executable_reward = 0.1 if result.parsed and result.executed and not result.infrastructure_failure else 0.0
     timeout_penalty = -0.2 if result.status is ExecutionStatus.TIMEOUT else 0.0
     invalid_format_penalty = -0.1 if result.status is ExecutionStatus.PARSE_ERROR else 0.0
@@ -205,6 +205,7 @@ def compute_code_rewards(
         raise RewardContractError("reward mode must be public or hidden")
     batch_size = _validate_batch_alignment(completions, tests_batch, function_names, metadata_batch)
     completion_texts = _completion_texts(completions)
+    validated_executor = _require_executor(executor)
     if batch_size == 0:
         return [], []
 
@@ -220,7 +221,7 @@ def compute_code_rewards(
                 cast(Sequence[Mapping[str, object]], test_values[index]),
                 cast(str, function_values[index]),
                 cast(Mapping[str, object], metadata_values[index]),
-                executor,
+                validated_executor,
             )
         except VerificationContractError:
             raise RewardContractError("reward item violates verification input contract") from None

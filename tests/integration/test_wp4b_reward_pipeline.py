@@ -154,7 +154,7 @@ def test_wp4b_reward_failure_statuses_and_component_records_match_spec() -> None
         _simple_tests(3, 4),
         _simple_tests(5, 6),
         _simple_tests(7),
-        _simple_tests(8),
+        _simple_tests(8, 9),
     ]
     executor = MockExecutor(
         [
@@ -175,8 +175,8 @@ def test_wp4b_reward_failure_statuses_and_component_records_match_spec() -> None
             ),
             _execution_result(
                 status=ExecutionStatus.SANDBOX_ERROR,
-                total_tests=1,
-                returned_statuses=[ExecutionStatus.SANDBOX_ERROR],
+                total_tests=2,
+                returned_statuses=[ExecutionStatus.PASSED, ExecutionStatus.SANDBOX_ERROR],
             ),
         ]
     )
@@ -208,6 +208,9 @@ def test_wp4b_reward_failure_statuses_and_component_records_match_spec() -> None
     assert records[2]["timeout_penalty"] == -0.2
     assert records[3]["invalid_format_penalty"] == -0.1
     assert records[4]["infrastructure_failure"] is True
+    assert records[4]["passed_tests"] == 1
+    assert records[4]["test_reward"] == 0.0
+    assert records[4]["executable_reward"] == 0.0
     assert len(executor.calls) == 4
 
     exception_rewards, exception_records = compute_code_rewards(

@@ -287,8 +287,8 @@ def test_sandbox_error_and_executor_exception_receive_no_positive_executable_or_
     sandbox_reward, sandbox_record, _ = _compute_one(
         _execution_result(
             status=ExecutionStatus.SANDBOX_ERROR,
-            total_tests=1,
-            returned_statuses=[ExecutionStatus.SANDBOX_ERROR],
+            total_tests=2,
+            returned_statuses=[ExecutionStatus.PASSED, ExecutionStatus.SANDBOX_ERROR],
         )
     )
     exception_rewards, exception_records = compute_code_rewards(
@@ -301,6 +301,9 @@ def test_sandbox_error_and_executor_exception_receive_no_positive_executable_or_
     )
     assert sandbox_reward == 0.0
     assert sandbox_record["infrastructure_failure"] is True
+    assert sandbox_record["passed_tests"] == 1
+    assert sandbox_record["test_reward"] == 0.0
+    assert sandbox_record["executable_reward"] == 0.0
     assert exception_rewards == [0.0]
     assert exception_records[0]["status"] == ExecutionStatus.SANDBOX_ERROR.value
     assert exception_records[0]["executable_reward"] == 0.0
@@ -373,6 +376,24 @@ def test_invalid_mode_fails_before_verifier_or_executor_calls(monkeypatch: pytes
         compute_code_rewards([_completion()], [_tests()], ["solve"], [_metadata()], executor, "invalid")
     assert calls == 0
     assert executor.calls == ()
+
+
+@pytest.mark.parametrize("batch_size", [0, 1])
+def test_compute_rejects_invalid_executor_for_empty_and_nonempty_batches(batch_size: int) -> None:
+    completions = [_completion()] * batch_size
+    tests_batch = [_tests()] * batch_size
+    function_names = ["solve"] * batch_size
+    metadata_batch = [_metadata()] * batch_size
+
+    with pytest.raises(RewardContractError, match="executor must provide a callable execute method"):
+        compute_code_rewards(
+            completions,
+            tests_batch,
+            function_names,
+            metadata_batch,
+            object(),  # type: ignore[arg-type]
+            "public",
+        )
 
 
 def test_verification_input_contract_error_becomes_sanitized_reward_contract_error() -> None:
