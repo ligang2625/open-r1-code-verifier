@@ -95,3 +95,65 @@
 - 理由：静态检查、全量测试、WP4 定向测试、CLI 和测试层隔离均通过，但 M1 会让真实可发生的 infrastructure failure 获得正 reward，直接违反 WP4 reward 验收；M2 会把公开 common-core 的 executor 配置错误静默伪装成 sandbox `0.0`，违反配置错误 fail-closed 合同。两项均为主要问题。
 - 本轮禁止合并 `feat/wp4-b`，不更新 `proceedings.md`，不将 WP4 整体标记完成，不清理 worktree/分支，不 push。
 - 后续复审必须逐条核验 M1、M2，并完整重跑 lint、全量测试、WP4 联合定向测试、CLI 以及上述两个边界探针。
+
+## R2：修复后复审
+
+### 1. 复审范围与方法
+
+- 复审基准：R1 主要问题 M1、M2，以及 WP4 最终验收中的 infrastructure failure / timeout 失败状态语义。
+- 修复声明来源：`ai-work/executor/WP4-executor.md` 的“代码修复报告（WP4-b R1）”；修复提交 `8125115 fix: enforce reward failure contracts`，报告提交 `07b8a1b docs: record wp4 reward fixes`。
+- 独立方法：阅读修复代码与新增测试，重跑 lint、全量测试、WP4 Verification + Reward 联合定向测试与 CLI；重新执行 R1 两个边界探针，并使用项目自己的 `PistonExecutor` 测试 transport 验证多失败状态聚合。
+- 审查纪律：未修改 `src/`、`tests/` 或 `third_party/open-r1/`；本轮只追加审查报告。
+
+### 2. 上轮问题核验
+
+| 上轮问题 | 严重级别 | R2 状态 | 证据 |
+|---|---|---|---|
+| M1：top-level `SANDBOX_ERROR` 在已有 passed tests 时仍得到正 test reward | 主要 | **已修复** | `src/code_verifier/rewards/common.py:115-119` 现对 `result.infrastructure_failure` 将 `test_reward` 固定为 `0.0`；`tests/unit/rewards/test_common.py:286-309` 与 `tests/integration/test_wp4b_reward_pipeline.py:176-210` 已改为 passed→sandbox 场景。独立复现原 M1 得到 reward `[0.0]`。 |
+| M2：公开 `compute_code_rewards()` 未校验 executor | 主要 | **已修复** | `common.py:203-210` 在空 batch 早返回前调用 `_require_executor()` 并使用 validated executor；新增 direct-core 空/非空 batch 回归。独立传 `executor=object()` 现抛 `RewardContractError("executor must provide a callable execute method")`。 |
+
+### 3. 回归与计划完成度复核
+
+| 项目 | R2 状态 | 证据 |
+|---|---|---|
+| R1 步骤 1 executor guard 缺口 | 已完成 | public common core 自身现在 fail-fast，wrapper 与 direct-core 语义一致。 |
+| R1 步骤 2 top-level infrastructure failure reward | 已完成 | `infrastructure_failure=True` 时 test/executable reward 均为 0，无新增 penalty。 |
+| R1 步骤 5 sandbox 回归测试缺口 | 已完成 | unit + integration 均覆盖 `PASSED → SANDBOX_ERROR`。 |
+| 修复范围 | 通过 | `54212d6..HEAD` 仅修改 `common.py`、两项 Reward 测试及 executor 修复报告，无越界生产代码。 |
+| 静态检查 / 全量 / WP4 定向 / CLI | 通过 | 独立命令全部通过，见第 5 节。 |
+| WP4 最终失败状态语义 | **未通过** | 新发现 M3：真实 Piston 多失败序列可让后续 sandbox/timeout 被早先普通失败的 top-level status 掩盖，Reward 仍把该结果当普通模型失败计分。 |
+
+### 4. 新问题
+
+| 严重级别 | 位置 | 问题 | 依据 | 建议 |
+|---|---|---|---|---|
+| **主要（M3）** | `src/code_verifier/execution/piston.py:461-488`；`src/code_verifier/verification/verifier.py:183-205`；`src/code_verifier/rewards/common.py:115-119` | Piston 在 `stop_on_first_failure=false` 时会继续执行普通 `WRONG_ANSWER/RUNTIME_ERROR`，但最终 top-level status 固定取“第一个非 PASSED”；后续 `SANDBOX_ERROR` 或 `TIMEOUT` 虽记录在 `test_results` / `failure_counts`，却不会成为 top-level status。Verification 的 `infrastructure_failure` 只看 top-level `SANDBOX_ERROR`，Reward 的 infrastructure/timeout 逻辑又只看 `infrastructure_failure` / top-level `TIMEOUT`。因此真实可达的 `WRONG_ANSWER → PASSED → SANDBOX_ERROR` 被计为普通可执行结果，得到 `0.433333...` 正 reward；`WRONG_ANSWER → TIMEOUT` 得到 `0.1`，漏掉 `-0.2` timeout penalty。 | spec §8.4 要求“记录沙箱错误，不将其误判为模型错误”；§10.1 要求奖励异常不能静默变成高分；§10.6 要求 executor infrastructure error 不当成正确答案、timeout 有惩罚。默认 `configs/execution/piston-local.yaml` 为 `stop_on_first_failure: false`。独立使用项目 `PistonExecutor` 的测试 transport 实证得到：`status=wrong_answer, failure_counts={'sandbox_error':1,'wrong_answer':1}` → reward `0.433333...`；`failure_counts={'timeout':1,'wrong_answer':1}` → reward `0.1`。 | 在不破坏 WP4-a 公共签名的前提下统一“终止/基础设施状态”语义。优先修复 Verification/Reward 边界，使 nested `sandbox_error` 必须按 infrastructure failure 处理并清零正分，nested timeout 必须应用 timeout penalty；或调整 ExecutionResult 聚合规则，使资源/基础设施终止状态具有高于普通模型失败的 top-level 优先级。无论选哪一层，需补真实 Piston 聚合回归与 Reward 集成回归，覆盖 `wrong→sandbox`、`wrong→timeout`。 |
+
+### 5. 独立测试与边界探针
+
+- `make VENV=../../.venv lint` → Ruff check passed；63 files already formatted；strict mypy success。
+- `make VENV=../../.venv test` → `532 passed, 3 skipped`；3 个 skip 仍为既有真实 Piston tests。
+- `../../.venv/bin/python -m pytest tests/unit/verification tests/unit/rewards tests/integration/test_wp4a_verifier_pipeline.py tests/integration/test_wp4b_reward_pipeline.py` → `88 passed, 0 failed, 0 skipped`。
+- `../../.venv/bin/python -m code_verifier.cli --help` → exit 0；仍仅有既有 5 个命令。
+- 原 M1 探针：`SANDBOX_ERROR + passed_tests=1/2` → reward `[0.0]`，确认修复。
+- 原 M2 探针：direct-core `executor=object()` → 脱敏 `RewardContractError`，确认修复。
+- M3 Piston 实证：用项目 `PistonExecutor` + 测试 transport 产生 `wrong_answer → passed → sandbox_error`，执行结果 top-level 为 `wrong_answer`、`pass_rate=1/3`；经完整 Reward 路径得到 `test_reward=1/3`、`executable_reward=0.1`、total `0.433333...`，同时 component `failure_counts` 已明确含 `sandbox_error: 1`。
+- M3 timeout 实证：`wrong_answer → timeout` 聚合为 top-level `wrong_answer`；Reward 返回 `0.1`，`timeout_penalty=0.0`，而 `failure_counts` 含 `timeout: 1`。
+
+### 6. Executor 修复报告声明核验
+
+- “M1 已修复”：**核实通过**。
+- “M2 已修复”：**核实通过**。
+- “受影响专项测试 37 passed”：本轮未单独依赖该声明；完整 WP4 定向套件独立得到 88 passed。
+- “`make lint` 全绿”：**核实通过**。
+- “`make test` 532 passed / 3 skipped”：**核实通过**。
+- “WP4 联合定向 88 passed”：**核实通过**。
+- “WP4-b 已满足最终失败合同”：**无法认定**；M3 表明现有测试未覆盖 Piston 多失败聚合后 nested sandbox/timeout 的 Reward 解释。
+
+### 7. R2 结论
+
+- **结论：需修改**。
+- R1 的 M1、M2 已完整修复，修复未引入 lint/test 回归或越界改动。
+- 但新增主要问题 M3 直接影响 WP4 §10 reward 失败状态和 §20 整体验收：真实 Piston 路径可把 infrastructure/timeout 终止状态掩盖为早先普通失败，从而产生不应有的正 reward 或漏掉 timeout penalty。存在主要问题时不得判定通过。
+- 本轮不合并 `feat/wp4-b`，不更新/整合 `proceedings.md`，不将 WP4 标记完成，不清理阶段 worktree/分支，不 push。
+- 下一轮复审需重点验证 M3 的 `wrong→sandbox` 与 `wrong→timeout` 两条真实 Piston 聚合路径，并再次完整运行 lint、全量测试、WP4 定向测试和 CLI。
