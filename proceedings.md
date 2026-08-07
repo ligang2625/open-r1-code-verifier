@@ -183,35 +183,48 @@ WP0 已完成以下工作：
 
 ---
 
-## WP4-a：统一验证器与结构化验证结果
+## WP4：Verifier 与 Reward
 
-- **完成日期**：2026-08-06
+- **完成日期**：2026-08-07
 - **阶段状态**：已完成
-- **验收结论**：通过（依据 `ai-work/reviewer/WP4-review.md` R2）
-- **执行计划**：`ai-work/planner/WP4-a-plan.md`
-- **实施范围**：完成 WP4 的 Verification Layer 子阶段；Reward Layer 的 Public/Hidden reward、分量日志与训练接入留待 WP4-b。
+- **验收结论**：通过（依据 `ai-work/reviewer/WP4-review.md` 最终 R3）
+- **执行计划**：`ai-work/planner/WP4-a-plan.md`、`ai-work/planner/WP4-b-plan.md`
+- **实施范围**：完成统一 Verification Layer、Reward common、Public/Hidden reward、测试层隔离与结构化 reward component records。
 
-### 本阶段完成的功能
+### 本 WP 完成的功能
 
-- 新增统一 `verify_completion()`，固定经现有 parser 提取代码并经调用方提供的 `CodeExecutor` 执行，只接受一个已选定测试列表，不自行访问其它测试层。
-- 新增严格的 `VerificationResult` 合同与 JSON-safe mapping，汇总通过率、失败状态、解析/执行标志和基础设施失败，并对畸形 executor 结果 fail-closed。
-- 固化 `PARSE_ERROR` 为 parser-only taxonomy；executor 返回顶层或逐测试 `PARSE_ERROR` 时统一转为脱敏 `SANDBOX_ERROR`，避免后续 reward 误判。
-- 新增 Verification 单元测试与 Mock 集成测试，覆盖 0 测试、顺序、提前停止、parse/timeout/sandbox、异常与状态守恒。
+- 新增统一 `verify_completion()` 与严格 `VerificationResult` 合同，固定 parser → executor 验证路径并对 parser/executor 异常执行 fail-closed 状态归一化。
+- 新增共享 `compute_code_rewards()`，Public reward 仅使用 `visible_tests`，Hidden reward 仅使用 `train_hidden_tests`，已知 eval-hidden 字段无法进入训练 reward 路径。
+- 固定 reward 公式与 component record；支持 raw/Open-R1 chat completion、严格 batch 对齐、有限值校验和 JSON-safe/payload-free 分量记录。
+- 正确处理 parser failure、timeout 与 sandbox/infrastructure failure，包括 Piston 多失败聚合下的 nested timeout/sandbox：基础设施失败不获得正 reward，timeout penalty 不被早先普通失败掩盖。
 
-### 相关文件
+### 子阶段
 
-- 新增：`src/code_verifier/verification/{__init__,result_types,verifier}.py`、`tests/unit/verification/*`、`tests/integration/test_wp4a_verifier_pipeline.py`。
+#### 子阶段 WP4-a：统一验证器与结构化验证结果
+
+- 完成功能：Verification Layer、结构化结果、parser-only `PARSE_ERROR` taxonomy 与 Mock 集成回归。
+- 相关文件：`src/code_verifier/verification/{__init__,result_types,verifier}.py`、`tests/unit/verification/*`、`tests/integration/test_wp4a_verifier_pipeline.py`。
+
+#### 子阶段 WP4-b：Reward Layer 与测试层隔离
+
+- 完成功能：Reward common、Public/Hidden wrappers、component records、测试源隔离及 Piston 聚合失败语义回归。
+- 相关文件：`src/code_verifier/rewards/{__init__,common,public_reward,hidden_reward}.py`、`tests/unit/rewards/*`、`tests/integration/test_wp4b_reward_pipeline.py`。
+
+### 相关文件（汇总）
+
+- 新增：`src/code_verifier/verification/**`、`src/code_verifier/rewards/**`、`tests/unit/verification/**`、`tests/unit/rewards/**`、`tests/integration/test_wp4a_verifier_pipeline.py`、`tests/integration/test_wp4b_reward_pipeline.py`。
 - 修改：`README.md`、`AGENTS.md`。
 - 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
 
 ### 配置影响
 
-- 未修改 YAML、Makefile、`pyproject.toml`、CLI 参数或 Python package 依赖；未修改 execution/parser/data/training 配置与版本常量。
+- 未新增或修改 YAML、Makefile、`pyproject.toml`、CLI 参数或 Python package 依赖；未加入 WP5+ evaluation/training/GRPO 功能。
 
 ### 验收结论
 
-- 阶段 worktree 与合并后的 main 均通过 lint/type/format 检查。
-- `make test`：481 passed，3 个真实 Piston tests 按既有设计默认 skipped。
-- Verification 定向测试：37 passed，0 failed，0 skipped；原 M1 边界复现已正确失败关闭为 `SANDBOX_ERROR`。
-- 最终合并提交：`5e6f590caa31631c046d3107f1d1edcf1d623c66`（`feat: complete WP4-a unified verifier`）。
-- WP4-b 尚未完成，因此当前仅登记 WP4-a 子阶段完成，不将 WP4 整体标记为完成。
+- 合并后的 main 通过 `make lint`；Ruff check/format 与 strict mypy 全绿。
+- `make test`：536 passed，3 个既有真实 Piston tests 按设计默认 skipped。
+- WP4 Verification + Reward 联合定向测试：92 passed，0 failed，0 skipped。
+- Public/Hidden 测试源隔离、batch 数量对齐、有限 reward、payload-free component records、parse/timeout/sandbox 失败状态均通过独立审查。
+- WP4-a 合并提交：`5e6f590caa31631c046d3107f1d1edcf1d623c66`（`feat: complete WP4-a unified verifier`）。
+- WP4 最终合并提交：`588e78e`（`feat: complete WP4 verifier and rewards`）。

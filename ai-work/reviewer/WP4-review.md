@@ -206,4 +206,6 @@
 - **结论：通过**。
 - R1 M1/M2 与 R2 M3 均已完整处置；无新增阻断或主要问题，WP4-b 计划最终验收项全部满足。
 - 按 `wp-plan-reviewer` 流程，本轮审查提交后可合并 `feat/wp4-b` 回 main，并因 WP4-a/WP4-b 均已完成，将 proceedings 中 WP4 子阶段记录整合为一条 WP4 整体完成记录。
-- 最终合并 hash、合并后 main 验收结果与 proceedings 提交将在合并完成后补记。
+- 最终合并提交：`588e78e`（`feat: complete WP4 verifier and rewards`）。
+- 合并后 main 再次通过 `make lint`、`make test`（`536 passed, 3 skipped`）以及 WP4 联合定向测试（`92 passed, 0 failed, 0 skipped`）。
+- WP4-a/WP4-b 均已完成，proceedings 按最终子阶段规则整合为一条 WP4 整体完成记录。
