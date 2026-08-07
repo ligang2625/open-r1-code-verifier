@@ -157,3 +157,53 @@
 - 但新增主要问题 M3 直接影响 WP4 §10 reward 失败状态和 §20 整体验收：真实 Piston 路径可把 infrastructure/timeout 终止状态掩盖为早先普通失败，从而产生不应有的正 reward 或漏掉 timeout penalty。存在主要问题时不得判定通过。
 - 本轮不合并 `feat/wp4-b`，不更新/整合 `proceedings.md`，不将 WP4 标记完成，不清理阶段 worktree/分支，不 push。
 - 下一轮复审需重点验证 M3 的 `wrong→sandbox` 与 `wrong→timeout` 两条真实 Piston 聚合路径，并再次完整运行 lint、全量测试、WP4 定向测试和 CLI。
+
+## R3：M3 修复后复审
+
+### 1. 复审范围与修复基线
+
+- 复审基准：R2 新增主要问题 M3，以及 R1 已关闭的 M1/M2 回归。
+- 修复声明：`ai-work/executor/WP4-executor.md` 的“代码修复报告（WP4-b R2）”；实现提交 `6c8f94b fix: honor nested terminal reward failures`，修复报告提交 `7a2f293`、`89d4892`。
+- 修复范围核查：`85d8d51..HEAD` 仅修改 `src/code_verifier/rewards/common.py`、Reward unit/integration tests 与 executor 报告；未修改 execution、verification、parser、data、training、配置、依赖、CLI、`third_party/open-r1/**` 或 `proceedings.md`。
+
+### 2. 上轮问题核验
+
+| 上轮问题 | 严重级别 | R3 状态 | 证据 |
+|---|---|---|---|
+| M3：较早普通失败掩盖后续 nested sandbox/timeout，导致 infrastructure 正 reward 或漏 timeout penalty | 主要 | **已修复** | `src/code_verifier/rewards/common.py:115-138` 从已验证 `failure_counts` 计算 effective infrastructure/timeout：nested `sandbox_error` 会清零 test/executable 正分并令 component `infrastructure_failure=True`；nested `timeout` 会应用 `-0.2` penalty。unit 回归见 `tests/unit/rewards/test_common.py:312-348`；CPU-only 真实 `PistonExecutor + fake transport` 集成回归覆盖同两条路径。独立 Piston 探针得到 sandbox total `0.0`、timeout total `-0.1`。 |
+| R1 M1：top-level sandbox 已部分通过时仍有正 test reward | 主要 | **保持修复** | 独立原 M1 探针仍得到 reward `[0.0]`。 |
+| R1 M2：公开 core 无效 executor 被吞成 sandbox reward | 主要 | **保持修复** | direct-core `executor=object()` 仍在执行前抛脱敏 `RewardContractError`。 |
+
+### 3. WP4 最终验收复核
+
+- WP4-a Verification 全部回归通过，无语义回退。
+- Reward common、Public/Hidden wrappers、§10.5 参数顺序与返回形态均保持稳定。
+- Public 仅使用 `visible_tests`；Hidden 仅使用 `train_hidden_tests`；eval-hidden guard 与 source isolation 回归继续通过。
+- batch mismatch 在执行前失败；reward/component record 与 completion 数量严格对齐；所有 reward/component 数值有限。
+- parser failure、top-level/nested timeout、top-level/nested sandbox/infrastructure failure 均符合最终 reward 语义；infrastructure failure 不获得正 reward，timeout penalty 不再被早先普通失败掩盖。
+- component records 继续 JSON-safe、payload-free，不含 completion/code/tests/metadata/stdout/stderr/`execution_result`。
+- 未发现新的阻断、主要或次要问题；未发现测试预期迁就实现或阶段越界改动。
+
+### 4. 独立测试与边界探针
+
+- `make VENV=../../.venv lint` → Ruff check passed；63 files already formatted；strict mypy success。
+- `make VENV=../../.venv test` → `536 passed, 3 skipped`；3 个 skip 均为既有真实 Piston tests，无新增 skip/xfail。
+- `../../.venv/bin/python -m pytest tests/unit/verification tests/unit/rewards tests/integration/test_wp4a_verifier_pipeline.py tests/integration/test_wp4b_reward_pipeline.py` → `92 passed, 0 failed, 0 skipped`。
+- `../../.venv/bin/python -m code_verifier.cli --help` → exit 0；命令集合仍为 `record-environment`、`prepare-data`、`check-data`、`parse-code`、`execute-batch`。
+- M3 sandbox 实证：项目自身 `PistonExecutor(stop_on_first_failure=false)` 产生 `wrong_answer → passed → sandbox_error`，top-level 仍为 `wrong_answer`；Reward 现返回 total `0.0`、`infrastructure_failure=True`。
+- M3 timeout 实证：`wrong_answer → timeout` top-level 仍为 `wrong_answer`；Reward 现返回 total `-0.1`，其中 `executable_reward=0.1`、`timeout_penalty=-0.2`。
+- M1/M2 原探针再次通过，无回归。
+
+### 5. Executor 修复报告声明核验
+
+- M3 已修复：**核实通过**。
+- 真实 Piston 聚合回归已加入：**核实通过**。
+- `make lint`、`make test`、WP4 联合定向测试与 CLI 声明：**独立重跑均核实通过**。
+- 无 execution/verification 等越界修改：**核实通过**。
+
+### 6. R3 结论
+
+- **结论：通过**。
+- R1 M1/M2 与 R2 M3 均已完整处置；无新增阻断或主要问题，WP4-b 计划最终验收项全部满足。
+- 按 `wp-plan-reviewer` 流程，本轮审查提交后可合并 `feat/wp4-b` 回 main，并因 WP4-a/WP4-b 均已完成，将 proceedings 中 WP4 子阶段记录整合为一条 WP4 整体完成记录。
+- 最终合并 hash、合并后 main 验收结果与 proceedings 提交将在合并完成后补记。
