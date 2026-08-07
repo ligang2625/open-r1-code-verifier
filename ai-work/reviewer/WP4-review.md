@@ -131,3 +131,5 @@
 - **结论：通过**。
 - R1 的主要问题 M1 与次要问题 m1 均已完整处置；无新增阻断或主要问题，计划内验收项全部通过。
 - 按 `wp-plan-reviewer` 流程，本轮审查提交后可将 `feat/wp4` 合并回 main，并只登记 **WP4-a 子阶段完成**；WP4-b reward 仍未实现，不得将 WP4 整体标记为完成。
+- 最终合并提交：`5e6f590caa31631c046d3107f1d1edcf1d623c66`（`feat: complete WP4-a unified verifier`）。
+- 合并后 main 再次通过 `make lint` 与 `make test`（`481 passed, 3 skipped`）。

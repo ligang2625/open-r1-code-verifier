@@ -180,3 +180,38 @@ WP0 已完成以下工作：
 - `code-verifier` 与 `execute-batch --help` 返回 0；真实 CLI smoke 处理 4 条请求并输出 2 passed / 1 wrong answer / 1 runtime error，顺序与脱敏要求通过。
 - WP3 §20 的 Protocol、Mock、Piston、资源限制、批量执行与测试交付全部完成；正确、超时、网络、文件越权、输出限制、宿主隔离和结果序列化验收全部通过。
 - 最终合并提交：`020af935db0b483d4bf76b03963b842f7ddce4c6`（`feat: complete WP3 batch execution and cache`）。
+
+---
+
+## WP4-a：统一验证器与结构化验证结果
+
+- **完成日期**：2026-08-06
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP4-review.md` R2）
+- **执行计划**：`ai-work/planner/WP4-a-plan.md`
+- **实施范围**：完成 WP4 的 Verification Layer 子阶段；Reward Layer 的 Public/Hidden reward、分量日志与训练接入留待 WP4-b。
+
+### 本阶段完成的功能
+
+- 新增统一 `verify_completion()`，固定经现有 parser 提取代码并经调用方提供的 `CodeExecutor` 执行，只接受一个已选定测试列表，不自行访问其它测试层。
+- 新增严格的 `VerificationResult` 合同与 JSON-safe mapping，汇总通过率、失败状态、解析/执行标志和基础设施失败，并对畸形 executor 结果 fail-closed。
+- 固化 `PARSE_ERROR` 为 parser-only taxonomy；executor 返回顶层或逐测试 `PARSE_ERROR` 时统一转为脱敏 `SANDBOX_ERROR`，避免后续 reward 误判。
+- 新增 Verification 单元测试与 Mock 集成测试，覆盖 0 测试、顺序、提前停止、parse/timeout/sandbox、异常与状态守恒。
+
+### 相关文件
+
+- 新增：`src/code_verifier/verification/{__init__,result_types,verifier}.py`、`tests/unit/verification/*`、`tests/integration/test_wp4a_verifier_pipeline.py`。
+- 修改：`README.md`、`AGENTS.md`。
+- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+### 配置影响
+
+- 未修改 YAML、Makefile、`pyproject.toml`、CLI 参数或 Python package 依赖；未修改 execution/parser/data/training 配置与版本常量。
+
+### 验收结论
+
+- 阶段 worktree 与合并后的 main 均通过 lint/type/format 检查。
+- `make test`：481 passed，3 个真实 Piston tests 按既有设计默认 skipped。
+- Verification 定向测试：37 passed，0 failed，0 skipped；原 M1 边界复现已正确失败关闭为 `SANDBOX_ERROR`。
+- 最终合并提交：`5e6f590caa31631c046d3107f1d1edcf1d623c66`（`feat: complete WP4-a unified verifier`）。
+- WP4-b 尚未完成，因此当前仅登记 WP4-a 子阶段完成，不将 WP4 整体标记为完成。
