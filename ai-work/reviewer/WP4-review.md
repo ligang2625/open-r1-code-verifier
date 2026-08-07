@@ -85,3 +85,49 @@
 - 本轮未合并 `feat/wp4`，未更新 `proceedings.md`，未清理 worktree，未 push。
 - 后续复审必须逐条核验 M1 与 m1，完整重跑 lint、全量测试、Verification 定向测试及 CLI。
 - 另需在最终通过并合并前处理主工作区的未跟踪 `ai-work/planner/WP4-a-plan.md`；该路径与分支新增文件重叠，即使内容相同，也可能阻止 merge 覆盖未跟踪文件。
+
+## R2：修复后复审
+
+### 1. 复审范围与方法
+
+- 复审基准：R1 问题 M1、m1，以及 R1 中标记为“部分完成 / 未完全通过”的计划与验收项。
+- 修复声明来源：`ai-work/executor/WP4-executor.md` 的“代码修复报告（WP4-a R1）”。
+- 独立方法：代码阅读、回归测试、原 M1 一次性复现命令、CLI 验证，以及修复提交范围核查。
+
+### 2. 上轮问题核验
+
+| 上轮问题 | 严重级别 | 状态 | 证据 |
+|---|---|---|---|
+| M1：executor 可注入 `PARSE_ERROR`，产生 `parsed=True/executed=True/status=parse_error` | 主要 | 已修复 | `src/code_verifier/verification/result_types.py:131-148` 强制 parsed result 不得为 `PARSE_ERROR`，且 executed result 的顶层/逐测试状态不得含 `PARSE_ERROR`；`src/code_verifier/verification/verifier.py:232-251` 在 executor 接收边界拒绝同类状态并 fail-closed。新增测试见 `tests/unit/verification/test_result_types.py:238-254`、`tests/unit/verification/test_verifier.py:466-487`。独立复现原 M1 时现返回 `status=sandbox_error, parsed=True, executed=False, infrastructure_failure=True`。 |
+| m1：Verification 包缺少 future annotations | 次要 | 已修复 | `src/code_verifier/verification/__init__.py:1-5` 已在模块 docstring 后加入 `from __future__ import annotations`。 |
+
+### 3. 计划完成度与验收复核
+
+| R1 未通过项 | R2 状态 | 证据 |
+|---|---|---|
+| 步骤 1：结构化验证结果合同 | 已完成 | parse-error 跨字段合同现闭合；直接合同回归测试通过。 |
+| 步骤 3：统一验证器失败状态汇总 | 已完成 | parser-only taxonomy 恢复；executor-side `PARSE_ERROR` 统一转为 sanitized `SANDBOX_ERROR`。 |
+| 步骤 5：新模块横切规则 | 已完成 | `verification/__init__.py` 已符合 future annotations 要求。 |
+| parser 是唯一解析入口 / parse 状态语义 | 通过 | 原 M1 独立复现已无法产生 executed parse error；parser failure 仍保持 `parsed=False/executed=False/PARSE_ERROR`。 |
+| WP4-a 最终测试标准 | 通过 | lint、全量 CPU 回归、37 项 Verification 定向测试与 CLI 均独立通过。 |
+
+### 4. 新问题与范围检查
+
+- 未发现修复引入的新阻断、主要或次要问题。
+- 修复只涉及 Verification 结果合同、verifier、对应单元测试、包 future import 与 executor 修复报告。
+- 分支中额外存在若干 `docs: sync skills with main updates` 提交；逐文件内容哈希核对确认这些 skill 文件与当前 main 完全一致，因此不存在净越界内容变化。
+- `third_party/open-r1/**`、execution/parser/data/training、配置、依赖、CLI 定义和 `proceedings.md` 均未因本轮修复改变。
+
+### 5. 独立测试结果
+
+- `make VENV=../../.venv lint` → Ruff check passed；54 files already formatted；strict mypy success。
+- `make VENV=../../.venv test` → `481 passed, 3 skipped`；3 个 skip 均为既有真实 Piston 测试。
+- `../../.venv/bin/python -m pytest tests/unit/verification tests/integration/test_wp4a_verifier_pipeline.py` → `37 passed, 0 failed, 0 skipped`。
+- `../../.venv/bin/python -m code_verifier.cli --help` → exit 0；仍仅有 `record-environment`、`prepare-data`、`check-data`、`parse-code`、`execute-batch`。
+- 原 M1 一次性复现：executor 返回顶层/逐测试 `PARSE_ERROR` 后，验证结果为 sanitized `SANDBOX_ERROR`，`parsed=True`、`executed=False`、`pass_rate=0.0`、`execution_result=None`。
+
+### 6. 结论
+
+- **结论：通过**。
+- R1 的主要问题 M1 与次要问题 m1 均已完整处置；无新增阻断或主要问题，计划内验收项全部通过。
+- 按 `wp-plan-reviewer` 流程，本轮审查提交后可将 `feat/wp4` 合并回 main，并只登记 **WP4-a 子阶段完成**；WP4-b reward 仍未实现，不得将 WP4 整体标记为完成。
