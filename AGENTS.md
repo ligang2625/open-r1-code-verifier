@@ -30,6 +30,9 @@ open-r1-code-verifier/
 │       │   ├── common.py              # WP4-b shared reward core and component records
 │       │   ├── public_reward.py       # WP4-b visible-tests-only Public wrapper
 │       │   └── hidden_reward.py       # WP4-b train-hidden-only Hidden wrapper
+│       ├── evaluation/
+│       │   ├── generate.py            # WP5-a deterministic prompt/generation backend
+│       │   └── evaluate.py            # WP5-a records, three-layer evaluation, strict resume
 │       └── training/
 │           └── open_r1_adapter.py    # Open-R1 integration boundary
 ├── tests/
@@ -39,7 +42,8 @@ open-r1-code-verifier/
 │   │   ├── test_wp3b_piston_execution.py
 │   │   ├── test_wp3c_batch_execution.py
 │   │   ├── test_wp4a_verifier_pipeline.py
-│   │   └── test_wp4b_reward_pipeline.py
+│   │   ├── test_wp4b_reward_pipeline.py
+│   │   └── test_wp5a_evaluation_pipeline.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
@@ -58,14 +62,20 @@ open-r1-code-verifier/
 │       │   ├── test_common.py
 │       │   ├── test_public_reward.py
 │       │   └── test_hidden_reward.py
+│       ├── evaluation/
+│       │   ├── test_generate.py
+│       │   ├── test_evaluate.py
+│       │   └── test_runner_resume.py
 │       ├── test_cli.py
 │       ├── test_config.py
 │       ├── test_environment.py
 │       └── test_open_r1_adapter.py
 ├── configs/
-│   └── execution/
-│       ├── piston-local.yaml          # WP3-b strict loopback Piston config
-│       └── batch-local.yaml           # WP3-c bounded batch/cache config
+│   ├── execution/
+│   │   ├── piston-local.yaml          # WP3-b strict loopback Piston config
+│   │   └── batch-local.yaml           # WP3-c bounded batch/cache config
+│   └── eval/
+│       └── pass1.yaml                 # WP5-a deterministic pass@1 config
 ├── docs/
 │   └── piston-local.md                # Local Piston deployment and safety runbook
 ├── third_party/
@@ -83,12 +93,13 @@ Source code lives in `src/code_verifier/`. The `third_party/open-r1/` submodule 
 | Command | Description |
 |---------|-------------|
 | `make install` | Creates `.venv`, installs project + pinned Open-R1 in editable mode, adds dev tools |
-| `make install-full` | Full sync with all Open-R1 training dependencies |
+| `make install-full` | Full sync with Open-R1/Transformers dependencies required for real WP5 generation and later training |
 | `make lint` | Runs ruff check, ruff format --check, and mypy on src/ and tests/ |
 | `make test` | Runs default pytest suite; real Piston tests are skipped without explicit enablement |
 | `make test-piston` | Runs the real loopback Piston safety acceptance suite; requires local service/runtime |
 | `make record-environment` | Records repo/submodule/Python/dependency versions to environment.json |
 | `.venv/bin/code-verifier --help` | Shows CLI help |
+| `.venv/bin/code-verifier evaluate --help` | Shows WP5-a deterministic evaluation options |
 
 ## Coding Style & Naming Conventions
 
@@ -121,11 +132,17 @@ Run `make lint` before committing — it runs all three checks.
 ## Agent-Specific Instructions
 
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
-- **Current scope**: WP0–WP4 are implemented. WP5+ generation/evaluation and training integration are not implemented. Do not add later-WP functionality without the corresponding plan.
+- **Current scope**: WP0–WP4 and WP5-a are implemented. WP5-a covers deterministic frozen generation, per-problem three-layer evaluation, strict run artifacts, and exact-prefix resume. WP5-b metrics/bootstrap/formal Base acceptance and later training integration are not implemented. Do not add later-WP functionality without the corresponding plan.
 - The WP4-a verifier accepts exactly one caller-selected non-empty test list, never a complete problem or test-layer selector. It must use `extract_python_code()` for parsing and `CodeExecutor` for execution, and sanitized mappings must not store completion, code, tests, function name, or metadata.
 - WP4 reward code must flow through `verify_completion()` and therefore through the configured `CodeExecutor`; reward modules must not parse or execute candidate code independently.
 - Public and Hidden reward wrappers must share `rewards/common.py`. Public may score only `visible_tests`; Hidden may score only `train_hidden_tests`; `eval_hidden_tests` must never enter either training reward path.
 - Reward component records must remain finite, JSON-safe, and free of completion, code, tests, function name, metadata, stdout/stderr, and nested execution results. Do not add WP7 trainer adapters, reward registry changes, GRPO configuration, or persistent experiment logging inside WP4.
+- WP5-a evaluation prompts may contain only the problem statement, function signature, and visible examples. Never place `train_hidden_tests`, `eval_hidden_tests`, reference solutions, or SFT responses into generation prompts.
+- WP5-a generation must remain frozen deterministic pass@1. Evaluation must not modify checkpoints, invoke training rewards, or add SFT/GRPO behavior. Real Transformers generation requires the full dependency environment; default tests must remain model/GPU independent.
+- WP5-a must verify the same completion in visible → train-hidden → eval-hidden order through `verify_completion()`. The top-level evaluation `execution_status` is the eval-hidden status; test payloads must never be serialized into evaluation rows or run metadata.
+- Evaluation resume is exact-prefix only. Keep run/config/model/checkpoint/seed/dataset/prompt/repository/submodule/dependency/hardware identity checks fail-closed, and never regenerate already completed rows after a valid resume.
+- Only `samples/results.jsonl` may persist evaluation completion text or extracted code. `run.json`, `environment.json`, `resolved_config.yaml`, `metrics.jsonl`, `stdout.log`, and `stderr.log` must remain free of completion/code/test payloads.
+- `model_revision: null` is debug-only. Formal Base pinning, pass@1 aggregation, bootstrap confidence intervals, and Base acceptance belong to WP5-b; do not add `metrics.py` or `bootstrap.py` during WP5-a maintenance.
 - `MockExecutor` never executes code. Real candidate code may only be sent to the strict local `PistonExecutor`; do not add host `exec`, `eval`, `compile`, or unrestricted subprocess execution paths.
 - Preserve the in-sandbox process boundary: the trusted parent alone owns expected values, comparison, and the final marker; the candidate child may receive only the function name and input, and its result must remain an untrusted claimed return value.
 - Preserve cache invalidation: any result-affecting executor, harness, comparison, mapping, or stopping-policy change must increment its version constant. Never remove code hash, problem ID, test layer, tests hash, executor version, function name, timeout, or memory from the cache key.

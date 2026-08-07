@@ -15,6 +15,8 @@ from code_verifier.config import ConfigError
 from code_verifier.data.leakage_checks import TrainingArtifactKind
 from code_verifier.data.prepare import DataPreparationConfig, DataPreparationError, PreparationSummary
 from code_verifier.data.split_tests import TestSplitConfig as SplitConfig
+from code_verifier.evaluation.evaluate import EvaluationConfig, EvaluationError, EvaluationRunSummary
+from code_verifier.evaluation.generate import GenerationConfig
 from code_verifier.execution import (
     BatchExecutionError,
     BatchExecutionItemResult,
@@ -329,6 +331,147 @@ def test_wp1_command_defaults_remain_compatible_after_common_argument_refactor()
     with pytest.raises(SystemExit) as error:
         parser.parse_args(["prepare-data", "--config", "config.yaml"])
     assert error.value.code == 2
+
+
+def _evaluation_config(tmp_path: Path) -> EvaluationConfig:
+    return EvaluationConfig(
+        dataset_dir=tmp_path / "prepared",
+        split="test",
+        piston_config=tmp_path / "piston.yaml",
+        model_revision="revision-1",
+        checkpoint="base",
+        device="cpu",
+        generation=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=512),
+    )
+
+
+def test_evaluate_parser_requires_identity_and_defaults_output_root() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        ["evaluate", "--config", "eval.yaml", "--model-id", "example/model", "--run-name", "base-debug"]
+    )
+    assert args.output_dir == Path("outputs")
+    assert args.seed == 42
+    with pytest.raises(SystemExit) as missing_model:
+        parser.parse_args(["evaluate", "--config", "eval.yaml", "--run-name", "base-debug"])
+    assert missing_model.value.code == 2
+    with pytest.raises(SystemExit) as missing_run:
+        parser.parse_args(["evaluate", "--config", "eval.yaml", "--model-id", "example/model"])
+    assert missing_run.value.code == 2
+
+
+@pytest.mark.parametrize("run_name", ["../escape", "nested/run", "a..b", "   "])
+def test_evaluate_parser_rejects_unsafe_run_names(run_name: str) -> None:
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(
+            ["evaluate", "--config", "eval.yaml", "--model-id", "example/model", "--run-name", run_name]
+        )
+    assert error.value.code == 2
+
+
+def test_evaluate_handler_wires_runtime_generator_and_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    config = _evaluation_config(tmp_path)
+    seen: dict[str, object] = {}
+    fake_piston_config = object()
+    fake_generator = object()
+
+    class FakePistonExecutor:
+        def __init__(self, received: object) -> None:
+            seen["piston_config"] = received
+
+        def validate_runtime(self) -> str:
+            seen["runtime_validated"] = True
+            return "3.10.0"
+
+    class FakeGeneratorFactory:
+        @classmethod
+        def from_pretrained(
+            cls,
+            model_id: str,
+            *,
+            model_revision: str | None,
+            device: str,
+            config: GenerationConfig,
+        ) -> object:
+            seen["generator_args"] = (model_id, model_revision, device, config)
+            return fake_generator
+
+    def fake_run(**kwargs: object) -> EvaluationRunSummary:
+        seen["runner_kwargs"] = kwargs
+        return EvaluationRunSummary(
+            run_id="base-debug",
+            total_problems=4,
+            completed_before_run=1,
+            generated_this_run=3,
+            results_path=tmp_path / "outputs/evaluation/base-debug/samples/results.jsonl",
+        )
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: fake_piston_config)
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "TransformersCompletionGenerator", FakeGeneratorFactory)
+    monkeypatch.setattr(cli_module, "run_pass1_evaluation", fake_run)
+
+    output_root = tmp_path / "outputs"
+    assert (
+        main(
+            [
+                "evaluate",
+                "--config",
+                str(tmp_path / "eval.yaml"),
+                "--model-id",
+                "example/model",
+                "--run-name",
+                "base-debug",
+                "--output-dir",
+                str(output_root),
+                "--seed",
+                "17",
+            ]
+        )
+        == 0
+    )
+    assert seen["piston_config"] is fake_piston_config
+    assert seen["runtime_validated"] is True
+    assert seen["generator_args"] == ("example/model", "revision-1", "cpu", config.generation)
+    runner_kwargs = cast(dict[str, object], seen["runner_kwargs"])
+    assert runner_kwargs["config"] == config
+    assert runner_kwargs["model_id"] == "example/model"
+    assert runner_kwargs["generator"] is fake_generator
+    assert runner_kwargs["run_id"] == "base-debug"
+    assert runner_kwargs["output_root"] == output_root
+    assert runner_kwargs["seed"] == 17
+    output = capsys.readouterr().out
+    assert "evaluated 4 problems (resumed=1, generated=3)" in output
+
+
+def test_evaluate_error_returns_two_without_traceback(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "load_evaluation_config",
+        lambda path: (_ for _ in ()).throw(EvaluationError("evaluation config mismatch")),
+    )
+    assert (
+        main(
+            [
+                "evaluate",
+                "--config",
+                "eval.yaml",
+                "--model-id",
+                "example/model",
+                "--run-name",
+                "base-debug",
+            ]
+        )
+        == 2
+    )
+    output = capsys.readouterr()
+    assert "evaluation config mismatch" in output.err
+    assert "Traceback" not in output.err
 
 
 def _cli_execution_result(status: ExecutionStatus = ExecutionStatus.PASSED) -> ExecutionResult:

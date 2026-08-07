@@ -1,0 +1,11 @@
+dataset_dir: data/processed/wp1-smoke
+split: test
+piston_config: configs/execution/piston-local.yaml
+model_revision: null
+checkpoint: base
+device: auto
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 512

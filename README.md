@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the complete WP3 execution layer, and the complete WP4 verification/reward layer are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the complete WP3 execution layer, the complete WP4 verification/reward layer, and WP5-a deterministic per-problem evaluation are implemented.
 
-WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5+ generation/evaluation and training integration are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5-a adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict run artifacts, and exact-prefix resume through the `evaluate` CLI. WP5-b metrics/bootstrap/Base acceptance and later training integration are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -23,7 +23,7 @@ make install
 
 `make install` creates `.venv`, installs this project and the pinned Open-R1 checkout in editable mode, and installs the minimal WP1 data stack and development tools. The data dependencies are pinned to `PyYAML==6.0.2` and `datasets==3.2.0`; strict Mypy support also uses `types-PyYAML==6.0.12.20241230`.
 
-The command intentionally skips Open-R1's large training dependency tree. Use `make install-full` only when a later Work Package requires the complete training stack. Neither installation command updates the pinned Open-R1 commit.
+The command intentionally skips Open-R1's large training dependency tree. `make install` is sufficient for the CPU-only unit/default test suite, but real WP5-a Transformers generation requires `make install-full`. Neither installation command updates the pinned Open-R1 commit.
 
 ## Quality checks
 
@@ -41,7 +41,7 @@ make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
 
 The command requires a self-hosted Piston service bound only to loopback with the exact configured Python runtime. See [`docs/piston-local.md`](docs/piston-local.md).
 
-Record repository, submodule, Python, and dependency versions with:
+Record repository/submodule commits, Python/platform, tracked dependency versions, dependency-lock identity, and optional CUDA/GPU identity with:
 
 ```bash
 .venv/bin/python -m code_verifier.cli record-environment --output environment.json
@@ -343,6 +343,44 @@ The shared formula is `test_reward + executable_reward + timeout_penalty + inval
 Reward callback completion items may be raw strings or the currently pinned Open-R1 chat-style message sequence; for chat payloads, the final message's exact string `content` is sent to the existing verifier. The wrappers require a caller-bound `CodeExecutor`. They do not create executors, register themselves with Open-R1, persist reward logs, or add GRPO commands/configuration. Formal trainer/Open-R1 adapter integration and experiment logging remain WP7 work.
 
 Component records contain only mode, reward components, sanitized verification status/flags/counts, parser taxonomy, and failure counts. They do not contain completion text, extracted code, tests, function names, metadata, stdout/stderr, or nested execution results.
+
+## WP5-a deterministic pass@1 evaluation
+
+WP5-a evaluates a frozen model checkpoint one problem at a time using the fixed project prompt. The prompt contains only the problem statement, function signature, and visible examples. Generation is deterministic pass@1 (`do_sample: false`, `temperature: null`, `top_p: null`) and uses the tokenizer's configured chat template. Evaluation then sends the same parsed completion through the existing verifier three times, in visible → train-hidden → eval-hidden order. The top-level `execution_status` is always the eval-hidden status.
+
+Prepare a validated WP1 artifact first, start the loopback Piston service described in [`docs/piston-local.md`](docs/piston-local.md), and install the full inference dependencies before a real model run:
+
+```bash
+make install-full
+.venv/bin/code-verifier evaluate \
+  --config configs/eval/pass1.yaml \
+  --model-id <model-or-checkpoint-id> \
+  --run-name base-debug \
+  --seed 42 \
+  --output-dir outputs
+```
+
+`configs/eval/pass1.yaml` currently uses `model_revision: null` for local/debug workflows. That is not sufficient for the formal Base experiment: WP5-b must pin the exact model revision before reporting Base metrics. WP5-a does not implement aggregate pass@1 metrics, bootstrap confidence intervals, or the formal Base result.
+
+Each run is stored under `outputs/evaluation/<run-name>/`:
+
+```text
+outputs/evaluation/<run-name>/
+├── resolved_config.yaml
+├── environment.json
+├── run.json
+├── metrics.jsonl
+├── stdout.log
+├── stderr.log
+└── samples/
+    └── results.jsonl
+```
+
+Only `samples/results.jsonl` may persist completion text and extracted code. The manifest, environment record, progress metrics, and logs are payload-bounded and do not store tests, reference solutions, completion text, or extracted code. `results.jsonl` stores per-problem status/rate summaries for all three test layers, but never stores the test payloads themselves.
+
+Reusing the same run name performs strict prefix resume rather than overwrite or best-effort matching. Resume succeeds only when the resolved config, model/checkpoint identity, seed, dataset hash, prompt hashes/order, repository/submodule identity, dependency identity, and CUDA/GPU identity match the existing run. Already completed rows are not generated again. Corrupt, reordered, duplicated, non-finite, or identity-drifted rows cause a hard error.
+
+The evaluation path is read-only with respect to training: it does not modify the frozen checkpoint, invoke Public/Hidden training rewards, write eval-hidden tests into training artifacts, or add SFT/GRPO behavior. Those boundaries must remain intact when WP5-b adds aggregation and Base acceptance.
 
 ## Current limitations
 
