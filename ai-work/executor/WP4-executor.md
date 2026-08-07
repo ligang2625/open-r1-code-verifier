@@ -708,3 +708,110 @@ ln -s ../../.venv .venv
 - 未修改审查报告、`proceedings.md` 或 `third_party/open-r1/**`。
 - 未执行 push 或 merge。
 - 下一步由 `wp-plan-reviewer` 执行 WP4-a R2 独立复审；只有复审通过后才可合并并登记 WP4-a 子阶段完成。
+
+---
+
+# 代码修复报告（WP4-b R1）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP4-review.md`
+- 审查轮次：WP4-b R1
+- 审查结论：需修改
+- 修复范围：全部主要问题 M1、M2
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp4-b` / `.worktrees/wp4-b`
+
+本轮只修复 Reward Layer 被 reviewer 点名的两个合同缺陷及对应回归测试；未修改 reviewer 报告、`proceedings.md`、verification/execution/parser/data/training、配置、依赖或 `third_party/open-r1/**`。
+
+## 2. M1：infrastructure failure 的正 reward 归零
+
+修复提交：
+
+```text
+8125115  fix: enforce reward failure contracts
+```
+
+修复内容：
+
+- `src/code_verifier/rewards/common.py` 的 `_reward_components_from_verification()` 现在在 `result.infrastructure_failure=True` 时固定令 `test_reward=0.0`。
+- 既有 `executable_reward` 规则保持不变：infrastructure failure 时为 `0.0`；不新增任何 sandbox penalty，因此 `SANDBOX_ERROR` 的总 reward 固定为 `0.0`。
+- unit 回归改为合法的“前序一个测试 passed、下一测试 sandbox error”结构，明确断言 `passed_tests=1` 但 `test_reward=0.0`、`executable_reward=0.0`、总 reward `0.0`。
+- WP4-b integration 同样覆盖 passed→sandbox early-stop，避免只测试 `passed_tests=0` 的弱场景。
+
+## 3. M2：公开 common core 强制校验 executor 配置
+
+同一修复提交：
+
+```text
+8125115  fix: enforce reward failure contracts
+```
+
+修复内容：
+
+- `compute_code_rewards()` 在进入计分前调用 `_require_executor(executor)`，并把验证后的 executor 传给 `verify_completion()`。
+- direct-core 不再把 `executor=object()` 等配置错误交给 verifier fail-closed 成 `SANDBOX_ERROR`；现在直接抛出脱敏 `RewardContractError`。
+- executor guard 位于 empty-batch 早返回之前，因此空 batch 与非空 batch 都执行相同配置合同校验。
+- 新增参数化 unit 回归，分别覆盖 batch size 0 与 1 的无效 executor。
+
+## 4. R1 修复验证
+
+### 受影响专项测试
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/rewards/test_common.py \
+  tests/integration/test_wp4b_reward_pipeline.py
+→ 37 passed
+```
+
+### 静态检查
+
+```text
+make VENV=../../.venv lint
+→ Ruff check: All checks passed
+→ Ruff format: 63 files already formatted
+→ strict Mypy: Success, no issues found in 63 source files
+```
+
+### 默认全量 CPU 回归
+
+```text
+make test VENV=../../.venv
+→ 532 passed, 3 skipped
+```
+
+三个 skip 均为既有真实 Piston tests；本轮未新增 skip 或 xfail。
+
+### WP4 联合定向验收
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/verification \
+  tests/unit/rewards \
+  tests/integration/test_wp4a_verifier_pipeline.py \
+  tests/integration/test_wp4b_reward_pipeline.py
+→ 88 passed, 0 failed, 0 skipped
+```
+
+### CLI 边界
+
+```text
+../../.venv/bin/python -m code_verifier.cli --help
+→ exit 0
+→ commands: record-environment, prepare-data, check-data, parse-code, execute-batch
+```
+
+未新增 verifier、reward、training 或 evaluation CLI 子命令。
+
+## 5. 修复完成状态
+
+- WP4-b R1 M1、M2 均已修复并有 unit/integration 回归。
+- infrastructure failure 即使已有部分 passed tests，也不会获得 test/executable 正分。
+- direct `compute_code_rewards()` 的 executor 配置错误不会再伪装成 sandbox reward，空/非空 batch 均 fail-fast。
+- `make lint`、`make test`、WP4 联合定向测试与 CLI 边界均实际运行通过。
+- 无未处理问题、异议项或无法复现项。
+- 未修改审查报告、`proceedings.md` 或 `third_party/open-r1/**`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 对 WP4-b 执行下一轮独立复审；只有复审通过后才可合并并登记 WP4 整体完成。
