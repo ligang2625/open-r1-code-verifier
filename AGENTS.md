@@ -23,6 +23,9 @@ open-r1-code-verifier/
 │       │   ├── piston.py             # WP3-b loopback-only single-request executor
 │       │   ├── cache.py              # WP3-c versioned private SQLite result cache
 │       │   └── batch.py              # WP3-c bounded concurrency and cache policy
+│       ├── verification/
+│       │   ├── result_types.py        # WP4-a structured sanitized verifier results
+│       │   └── verifier.py            # WP4-a parser-to-executor orchestration
 │       └── training/
 │           └── open_r1_adapter.py    # Open-R1 integration boundary
 ├── tests/
@@ -30,7 +33,8 @@ open-r1-code-verifier/
 │   │   ├── test_wp1_data_pipeline.py
 │   │   ├── test_wp3a_mock_execution.py
 │   │   ├── test_wp3b_piston_execution.py
-│   │   └── test_wp3c_batch_execution.py
+│   │   ├── test_wp3c_batch_execution.py
+│   │   └── test_wp4a_verifier_pipeline.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
@@ -42,6 +46,9 @@ open-r1-code-verifier/
 │       │   └── test_batch.py
 │       ├── parsing/
 │       │   └── test_code_extractor.py
+│       ├── verification/
+│       │   ├── test_result_types.py
+│       │   └── test_verifier.py
 │       ├── test_cli.py
 │       ├── test_config.py
 │       ├── test_environment.py
@@ -105,7 +112,8 @@ Run `make lint` before committing — it runs all three checks.
 ## Agent-Specific Instructions
 
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
-- **Current scope**: WP0–WP3 are implemented, including execution contracts/mock, loopback Piston, bounded batch concurrency, versioned SQLite caching, and the execution CLI. Do not add WP4 reward/verifier orchestration, training, or evaluation without a later WP plan.
+- **Current scope**: WP0–WP3 are implemented, and WP4-a adds the unified verifier plus structured verification results. WP4-b reward functions, training, and evaluation are not implemented. Do not add them without a later WP plan.
+- The WP4-a verifier accepts exactly one caller-selected non-empty test list, never a complete problem or test-layer selector. It must use `extract_python_code()` for parsing and `CodeExecutor` for execution, and sanitized mappings must not store completion, code, tests, function name, or metadata.
 - `MockExecutor` never executes code. Real candidate code may only be sent to the strict local `PistonExecutor`; do not add host `exec`, `eval`, `compile`, or unrestricted subprocess execution paths.
 - Preserve the in-sandbox process boundary: the trusted parent alone owns expected values, comparison, and the final marker; the candidate child may receive only the function name and input, and its result must remain an untrusted claimed return value.
 - Preserve cache invalidation: any result-affecting executor, harness, comparison, mapping, or stopping-policy change must increment its version constant. Never remove code hash, problem ID, test layer, tests hash, executor version, function name, timeout, or memory from the cache key.
