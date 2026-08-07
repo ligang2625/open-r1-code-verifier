@@ -26,6 +26,10 @@ open-r1-code-verifier/
 │       ├── verification/
 │       │   ├── result_types.py        # WP4-a structured sanitized verifier results
 │       │   └── verifier.py            # WP4-a parser-to-executor orchestration
+│       ├── rewards/
+│       │   ├── common.py              # WP4-b shared reward core and component records
+│       │   ├── public_reward.py       # WP4-b visible-tests-only Public wrapper
+│       │   └── hidden_reward.py       # WP4-b train-hidden-only Hidden wrapper
 │       └── training/
 │           └── open_r1_adapter.py    # Open-R1 integration boundary
 ├── tests/
@@ -34,7 +38,8 @@ open-r1-code-verifier/
 │   │   ├── test_wp3a_mock_execution.py
 │   │   ├── test_wp3b_piston_execution.py
 │   │   ├── test_wp3c_batch_execution.py
-│   │   └── test_wp4a_verifier_pipeline.py
+│   │   ├── test_wp4a_verifier_pipeline.py
+│   │   └── test_wp4b_reward_pipeline.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
@@ -49,6 +54,10 @@ open-r1-code-verifier/
 │       ├── verification/
 │       │   ├── test_result_types.py
 │       │   └── test_verifier.py
+│       ├── rewards/
+│       │   ├── test_common.py
+│       │   ├── test_public_reward.py
+│       │   └── test_hidden_reward.py
 │       ├── test_cli.py
 │       ├── test_config.py
 │       ├── test_environment.py
@@ -112,8 +121,11 @@ Run `make lint` before committing — it runs all three checks.
 ## Agent-Specific Instructions
 
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
-- **Current scope**: WP0–WP3 are implemented, and WP4-a adds the unified verifier plus structured verification results. WP4-b reward functions, training, and evaluation are not implemented. Do not add them without a later WP plan.
+- **Current scope**: WP0–WP4 are implemented. WP5+ generation/evaluation and training integration are not implemented. Do not add later-WP functionality without the corresponding plan.
 - The WP4-a verifier accepts exactly one caller-selected non-empty test list, never a complete problem or test-layer selector. It must use `extract_python_code()` for parsing and `CodeExecutor` for execution, and sanitized mappings must not store completion, code, tests, function name, or metadata.
+- WP4 reward code must flow through `verify_completion()` and therefore through the configured `CodeExecutor`; reward modules must not parse or execute candidate code independently.
+- Public and Hidden reward wrappers must share `rewards/common.py`. Public may score only `visible_tests`; Hidden may score only `train_hidden_tests`; `eval_hidden_tests` must never enter either training reward path.
+- Reward component records must remain finite, JSON-safe, and free of completion, code, tests, function name, metadata, stdout/stderr, and nested execution results. Do not add WP7 trainer adapters, reward registry changes, GRPO configuration, or persistent experiment logging inside WP4.
 - `MockExecutor` never executes code. Real candidate code may only be sent to the strict local `PistonExecutor`; do not add host `exec`, `eval`, `compile`, or unrestricted subprocess execution paths.
 - Preserve the in-sandbox process boundary: the trusted parent alone owns expected values, comparison, and the final marker; the candidate child may receive only the function name and input, and its result must remain an untrusted claimed return value.
 - Preserve cache invalidation: any result-affecting executor, harness, comparison, mapping, or stopping-policy change must increment its version constant. Never remove code hash, problem ID, test layer, tests hash, executor version, function name, timeout, or memory from the cache key.
