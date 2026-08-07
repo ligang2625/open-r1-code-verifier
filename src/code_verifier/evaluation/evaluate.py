@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
 from code_verifier.config import load_yaml_mapping
-from code_verifier.evaluation.generate import GenerationConfig, GenerationError
-from code_verifier.execution.base import ExecutionStatus
+from code_verifier.data.schema import CodeProblem, problem_to_mapping, test_case_to_mapping
+from code_verifier.evaluation.generate import GenerationConfig, GenerationError, GenerationResult
+from code_verifier.execution.base import CodeExecutor, ExecutionStatus
+from code_verifier.parsing import extract_python_code
+from code_verifier.verification import VerificationContractError, verify_completion
 
 
 class EvaluationError(RuntimeError):
@@ -300,3 +305,142 @@ def evaluation_record_to_mapping(record: EvaluationRecord) -> dict[str, object]:
     if validated != record:
         raise EvaluationError("evaluation record contains values outside the serialized contract")
     return mapping
+
+
+def dataset_hash(problems: Sequence[CodeProblem]) -> str:
+    """Hash ordered canonical problem records, including all three test-layer identities."""
+    payload = json.dumps(
+        [problem_to_mapping(problem) for problem in problems],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def prompt_hash(prompt: str) -> str:
+    """Hash the exact UTF-8 prompt passed to a completion generator."""
+    if not isinstance(prompt, str):
+        raise EvaluationError("prompt must be a string")
+    try:
+        encoded = prompt.encode("utf-8")
+    except UnicodeEncodeError:
+        raise EvaluationError("prompt must contain valid UTF-8 text") from None
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def classify_evaluation_error(
+    *,
+    parse_error_type: str | None,
+    visible_pass_rate: float,
+    eval_hidden_pass_rate: float,
+    eval_hidden_status: ExecutionStatus,
+) -> str:
+    """Assign the stable coarse WP5-a automatic failure category."""
+    if parse_error_type is not None:
+        return f"parse_error:{parse_error_type}"
+    if eval_hidden_status is ExecutionStatus.SANDBOX_ERROR:
+        return "sandbox_failure"
+    if eval_hidden_status is ExecutionStatus.TIMEOUT:
+        return "timeout"
+    if eval_hidden_status in {
+        ExecutionStatus.RUNTIME_ERROR,
+        ExecutionStatus.MEMORY_LIMIT,
+        ExecutionStatus.OUTPUT_LIMIT,
+        ExecutionStatus.SYNTAX_ERROR,
+    }:
+        return "runtime_error"
+    if visible_pass_rate == 1.0 and eval_hidden_pass_rate < 1.0:
+        return "visible_only_success"
+    if visible_pass_rate - eval_hidden_pass_rate >= 0.5:
+        return "large_public_eval_gap"
+    if eval_hidden_status is ExecutionStatus.PASSED and eval_hidden_pass_rate == 1.0:
+        return "passed"
+    if eval_hidden_status is ExecutionStatus.WRONG_ANSWER or eval_hidden_pass_rate < 1.0:
+        return "wrong_answer"
+    return "other"
+
+
+def _verification_runtime_ms(result: object) -> float:
+    execution_result = getattr(result, "execution_result", None)
+    return 0.0 if execution_result is None else float(execution_result.runtime_ms)
+
+
+def evaluate_completion(
+    *,
+    run_id: str,
+    model_id: str,
+    checkpoint: str,
+    dataset_hash_value: str,
+    config_hash: str,
+    problem: CodeProblem,
+    prompt: str,
+    generation: GenerationResult,
+    executor: CodeExecutor,
+) -> EvaluationRecord:
+    """Verify one generated completion against each isolated test layer in fixed order."""
+    parse_result = extract_python_code(generation.completion, expected_function_name=problem.function_name)
+    metadata: dict[str, object] = {
+        "time_limit_seconds": problem.metadata.time_limit_seconds,
+        "memory_limit_mb": problem.metadata.memory_limit_mb,
+    }
+    visible_tests = [test_case_to_mapping(test_case) for test_case in problem.visible_tests]
+    train_hidden_tests = [test_case_to_mapping(test_case) for test_case in problem.train_hidden_tests]
+    eval_hidden_tests = [test_case_to_mapping(test_case) for test_case in problem.eval_hidden_tests]
+    try:
+        visible_result = verify_completion(
+            generation.completion, visible_tests, problem.function_name, metadata, executor
+        )
+        train_result = verify_completion(
+            generation.completion, train_hidden_tests, problem.function_name, metadata, executor
+        )
+        eval_result = verify_completion(
+            generation.completion, eval_hidden_tests, problem.function_name, metadata, executor
+        )
+    except VerificationContractError as error:
+        raise EvaluationError(f"verification contract failed: {type(error).__name__}") from None
+    runtime_ms = sum(_verification_runtime_ms(result) for result in (visible_result, train_result, eval_result))
+    category = classify_evaluation_error(
+        parse_error_type=parse_result.error_type,
+        visible_pass_rate=visible_result.pass_rate,
+        eval_hidden_pass_rate=eval_result.pass_rate,
+        eval_hidden_status=eval_result.status,
+    )
+    values: dict[str, object] = {
+        "run_id": run_id,
+        "model_id": model_id,
+        "checkpoint": checkpoint,
+        "dataset_hash": dataset_hash_value,
+        "config_hash": config_hash,
+        "problem_id": problem.problem_id,
+        "prompt_hash": prompt_hash(prompt),
+    }
+    values.update(
+        {
+            "completion": generation.completion,
+            "extracted_code": parse_result.code,
+            "parse_success": parse_result.success,
+            "target_function_found": parse_result.success,
+            "visible_pass_rate": visible_result.pass_rate,
+            "train_hidden_pass_rate": train_result.pass_rate,
+            "eval_hidden_pass_rate": eval_result.pass_rate,
+        }
+    )
+    values.update(
+        {
+            "execution_status": eval_result.status.value,
+            "visible_execution_status": visible_result.status.value,
+            "train_hidden_execution_status": train_result.status.value,
+            "eval_hidden_execution_status": eval_result.status.value,
+            "visible_failure_counts": dict(visible_result.failure_counts),
+            "train_hidden_failure_counts": dict(train_result.failure_counts),
+            "eval_hidden_failure_counts": dict(eval_result.failure_counts),
+        }
+    )
+    values["parse_error_type"] = parse_result.error_type
+    values["runtime_ms"] = runtime_ms
+    values["generation_latency_ms"] = generation.latency_ms
+    values["completion_tokens"] = generation.completion_tokens
+    values["error_category_auto"] = category
+    return evaluation_record_from_mapping(values)
