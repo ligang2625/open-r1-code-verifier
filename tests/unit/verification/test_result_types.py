@@ -235,6 +235,25 @@ def test_validation_rejects_parse_execution_and_infrastructure_invariant_mismatc
             validate_verification_result(result)
 
 
+def test_validation_rejects_parse_error_in_executed_summary_or_nested_execution_results() -> None:
+    top_level_parse_error = _execution_result(
+        status=ExecutionStatus.PARSE_ERROR,
+        passed_tests=0,
+        total_tests=1,
+        test_results=[_test_result(ExecutionStatus.PARSE_ERROR)],
+    )
+    nested_parse_error = _execution_result(
+        status=ExecutionStatus.WRONG_ANSWER,
+        passed_tests=0,
+        total_tests=1,
+        test_results=[_test_result(ExecutionStatus.PARSE_ERROR)],
+    )
+
+    for execution_result in (top_level_parse_error, nested_parse_error):
+        with pytest.raises(VerificationContractError, match="parse_error"):
+            validate_verification_result(_executed_verification(execution_result))
+
+
 def test_mapping_returns_independent_nested_containers() -> None:
     execution_result = _execution_result(
         status=ExecutionStatus.WRONG_ANSWER,

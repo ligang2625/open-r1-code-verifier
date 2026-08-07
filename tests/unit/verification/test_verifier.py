@@ -463,6 +463,30 @@ def test_malformed_execution_result_fails_closed_as_sandbox_failure() -> None:
     assert result.pass_rate == 0.0
 
 
+@pytest.mark.parametrize(
+    ("status", "returned_statuses"),
+    [
+        (ExecutionStatus.PARSE_ERROR, [ExecutionStatus.PARSE_ERROR]),
+        (ExecutionStatus.WRONG_ANSWER, [ExecutionStatus.PARSE_ERROR]),
+    ],
+)
+def test_executor_parse_error_status_fails_closed_as_sandbox_failure(
+    status: ExecutionStatus,
+    returned_statuses: list[ExecutionStatus],
+) -> None:
+    malformed = _execution_result(status=status, total_tests=1, returned_statuses=returned_statuses)
+
+    result = verify_completion(_COMPLETION, _tests(1), "solve", _METADATA, RecordingExecutor(malformed))
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert result.parsed is True
+    assert result.executed is False
+    assert result.infrastructure_failure is True
+    assert result.pass_rate == 0.0
+    assert result.failure_counts == (("sandbox_error", 1),)
+    assert result.execution_result is None
+
+
 def test_executor_total_test_mismatch_fails_closed_as_sandbox_failure() -> None:
     mismatched = _execution_result(
         status=ExecutionStatus.PASSED,

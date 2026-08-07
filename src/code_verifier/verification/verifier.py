@@ -238,6 +238,10 @@ def verify_completion(
             memory_limit_mb,
         )
         validate_execution_result(execution_result)
+        if execution_result.status is ExecutionStatus.PARSE_ERROR or any(
+            test_result.status is ExecutionStatus.PARSE_ERROR for test_result in execution_result.test_results
+        ):
+            raise VerificationContractError("executor result must not contain parse_error status")
         if execution_result.total_tests != len(normalized_tests):
             raise VerificationContractError("executor total_tests does not match the selected test layer")
     except Exception:

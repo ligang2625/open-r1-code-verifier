@@ -129,6 +129,8 @@ def validate_verification_result(result: VerificationResult) -> None:
         if passed_tests != 0 or pass_rate != 0.0:
             raise VerificationContractError("a parse failure must have zero passed tests and pass rate")
     else:
+        if result.status is ExecutionStatus.PARSE_ERROR:
+            raise VerificationContractError("parse_error status requires an unparsed result")
         if result.parse_error_type is not None:
             raise VerificationContractError("a parsed result must not include a parser error type")
 
@@ -140,6 +142,10 @@ def validate_verification_result(result: VerificationResult) -> None:
         except ExecutionContractError:
             raise VerificationContractError("execution_result is invalid") from None
         execution_result = result.execution_result
+        if execution_result.status is ExecutionStatus.PARSE_ERROR or any(
+            test_result.status is ExecutionStatus.PARSE_ERROR for test_result in execution_result.test_results
+        ):
+            raise VerificationContractError("execution_result must not contain parse_error status")
         if (
             result.status is not execution_result.status
             or passed_tests != execution_result.passed_tests
