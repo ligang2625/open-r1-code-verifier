@@ -16,6 +16,11 @@ def test_collect_environment_records_pinned_submodule() -> None:
 
     assert record["open_r1_commit"] == PINNED_OPEN_R1_COMMIT
     assert record["python_version"]
+    assert len(record["dependency_lock_hash"]) == 64
+    assert isinstance(record["gpu_count"], int)
+    assert record["gpu_count"] >= 0
+    assert record["gpu_name"] is None or record["gpu_name"]
+    assert record["cuda_version"] is None or record["cuda_version"]
 
 
 def test_write_environment_record_is_json(tmp_path: Path) -> None:
