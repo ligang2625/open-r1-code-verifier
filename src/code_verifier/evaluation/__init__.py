@@ -5,6 +5,7 @@ from code_verifier.evaluation.generate import (
     GenerationConfig,
     GenerationError,
     GenerationResult,
+    TransformersCompletionGenerator,
     build_evaluation_prompt,
     validate_generation_config,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "GenerationConfig",
     "GenerationError",
     "GenerationResult",
+    "TransformersCompletionGenerator",
     "build_evaluation_prompt",
     "validate_generation_config",
 ]
