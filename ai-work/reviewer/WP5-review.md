@@ -153,4 +153,5 @@
 - **结论：通过（WP5-a 子阶段）**。
 - R1 的 M1、M2、m3 均已完整处置，且无新增阻断或主要问题；WP5-a 计划内验收项在当前可用共享虚拟环境中全部通过。
 - 本结论只完成 **WP5-a**；WP5-b 的聚合指标、bootstrap、正式 Base 模型结果与 WP5 整体验收仍未实现，因此不得将 WP5 整体标记完成。
-- 按 `wp-plan-reviewer` 流程，本轮通过后继续执行：提交 R2 审查报告、合并 `feat/wp5-a` 回 main、写入并提交简洁的 WP5-a proceedings 子阶段记录，最后清理阶段 worktree/分支；不执行 push。
+- 按 `wp-plan-reviewer` 流程，本轮通过后已提交 R2 审查报告，并以 `--no-ff` 将 `feat/wp5-a` 合并回 main；合并提交：`7e5f5dfe68c998336fa4b7122731fb72af3670a9`（`feat: complete WP5-a deterministic evaluation`）。
+- 合并后继续在 main 写入并提交简洁的 WP5-a proceedings 子阶段记录，随后清理阶段 worktree/分支；不执行 push。

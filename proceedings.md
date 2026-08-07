@@ -228,3 +228,42 @@ WP0 已完成以下工作：
 - Public/Hidden 测试源隔离、batch 数量对齐、有限 reward、payload-free component records、parse/timeout/sandbox 失败状态均通过独立审查。
 - WP4-a 合并提交：`5e6f590caa31631c046d3107f1d1edcf1d623c66`（`feat: complete WP4-a unified verifier`）。
 - WP4 最终合并提交：`588e78e`（`feat: complete WP4 verifier and rewards`）。
+
+---
+
+## WP5-a：Deterministic Generation、逐题 Pass@1 与可恢复评测运行
+
+- **完成日期**：2026-08-07
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP5-review.md` R2）
+- **执行计划**：`ai-work/planner/WP5-a-plan.md`
+- **实施范围**：完成 WP5 的第一子阶段：确定性生成、三层逐题 Pass@1、严格 JSONL 结果、run identity 与 exact-prefix resume；未实现 WP5-b 的指标聚合、bootstrap、正式 Base 模型结果，也未实现 WP6+ 训练功能。
+
+### 本阶段完成的功能
+
+- 实现 evaluation generation contract 与 visible-only 固定 prompt，禁止 hidden/reference/SFT 内容进入模型输入；固定 `do_sample=false`、`temperature=null`、`top_p=null`、`max_new_tokens=512`。
+- 实现 frozen Transformers completion backend：lazy import、固定 model/revision、`trust_remote_code=False`、chat template、`eval()`/inference mode、固定 seed，仅解码新生成 token。
+- 实现严格 `EvaluationConfig` / `EvaluationRecord`，同一 completion 依次复用 `verify_completion()` 验证 visible、train-hidden、eval-hidden，并保存结构化状态、失败计数、时延与 token 统计。
+- 实现 `outputs/evaluation/{run_id}/` 标准 artifact、模型/数据/config/seed/environment identity、durable JSONL append 与 exact-prefix resume；identity 漂移、损坏、顺序/题目不匹配均 fail closed。
+- 新增 `evaluate` CLI，并通过现有 Piston executor 与 deterministic generator 执行评测；配置、模型和执行基础设施错误采用脱敏退出码 2。
+- 环境记录新增稳定 CUDA/GPU identity：无 torch 或 CUDA 不可用时记录 null/0，CUDA 可用时记录版本、首个 GPU 名称和数量。
+
+### 相关文件
+
+- 新增：`src/code_verifier/evaluation/{__init__,generate,evaluate}.py`、`configs/eval/pass1.yaml`、`tests/unit/evaluation/*`、`tests/integration/test_wp5a_evaluation_pipeline.py`、`ai-work/{planner,executor,reviewer}/WP5*`。
+- 修改：`src/code_verifier/cli.py`、`src/code_verifier/environment.py`、`tests/unit/test_cli.py`、`tests/unit/test_environment.py`、`README.md`、`AGENTS.md`。
+- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+### 配置影响
+
+- 新增 `configs/eval/pass1.yaml` 作为 WP5-a deterministic pass@1 评测配置。
+- 未修改 `pyproject.toml`、Makefile 或依赖版本；未新增 WP5-b metrics/bootstrap 配置。
+
+### 验收结论
+
+- `PYTHONPATH=src make VENV=../../.venv lint`：Ruff check、format check、strict Mypy 全部通过。
+- `PYTHONPATH=src make VENV=../../.venv test`：592 passed，3 个既有真实 Piston tests 按设计默认 skipped。
+- WP5-a 定向测试：51 passed，0 failed。
+- `code_verifier.cli --help` 与 `code_verifier.cli evaluate --help` 均返回 0。
+- no-torch、no-CUDA、CUDA-available 三类环境 identity 边界验证通过；Step 5 三个公开函数签名与计划一致。
+- WP5-a 合并提交：`7e5f5dfe68c998336fa4b7122731fb72af3670a9`（`feat: complete WP5-a deterministic evaluation`）。
