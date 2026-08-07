@@ -1,5 +1,7 @@
 """Public WP4-a verification contracts and orchestration."""
 
+from __future__ import annotations
+
 from code_verifier.verification.result_types import (
     FailureCounts,
     VerificationContractError,
