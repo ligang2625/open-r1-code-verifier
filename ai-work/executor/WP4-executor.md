@@ -291,3 +291,131 @@ uv pip install --python .venv/bin/python --no-deps --editable .
 10. rewards、CLI、配置、execution/parser、third-party 和 `proceedings.md` 无越界改动。
 
 Executor 未执行 push 或 merge。审查通过后由 `wp-plan-reviewer` 合并 `feat/wp4`，向 `proceedings.md` 追加 WP4-a 子阶段记录；不得将 WP4 整体标记为完成。
+
+---
+
+# 代码修复报告（WP4-a R1）
+
+## 1. 修复依据与范围
+
+- 审查报告：`ai-work/reviewer/WP4-review.md`
+- 审查轮次：WP4-a R1
+- 审查结论：需修改
+- 修复范围：全部主要/次要问题 M1、m1
+- 未处理项：无
+- 异议项：无
+- 修复分支 / worktree：`feat/wp4` / `.worktrees/wp4`
+
+本轮严格按 R1 问题清单修复 Verification Layer；未修改 reviewer 报告、`proceedings.md`、execution/parser/data/training、配置、依赖或 `third_party/open-r1/**`。
+
+## 2. M1：保留 PARSE_ERROR 作为 parser-only taxonomy
+
+修复提交：
+
+```text
+eb21727  fix: reserve parse errors for parser failures
+```
+
+修复内容：
+
+- `validate_verification_result()` 新增强约束：`status is ExecutionStatus.PARSE_ERROR` 只能出现在 `parsed=False` 的 parser failure 结果中；`parsed=True/status=PARSE_ERROR` 直接拒绝。
+- 对 `executed=True` 的嵌套 `ExecutionResult` 增加 Verification 层约束：顶层 status 或任一 `TestCaseResult.status` 为 `PARSE_ERROR` 均视为非法 executor result。
+- `verify_completion()` 在 executor 返回并通过既有 `validate_execution_result()` 后，额外拒绝顶层或逐测试 `PARSE_ERROR`；该异常仍位于 executor 接收边界的普通 `Exception` fail-closed 区域，因此统一转为 sanitized `SANDBOX_ERROR`。
+- executor 返回非法 parse taxonomy 后的结果固定保持：`parsed=True`、`executed=False`、`infrastructure_failure=True`、`pass_rate=0.0`、`execution_result=None`，所有测试计入 `sandbox_error`。
+- 新增直接合同回归，覆盖顶层 `PARSE_ERROR` 与 nested per-test `PARSE_ERROR`。
+- 新增 `verify_completion()` 回归，确认两种 executor-side parse status 都 fail-closed 为 sandbox failure，不再污染 parser taxonomy 或 WP4-b 的 invalid-format 判定语义。
+
+专项验证：
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/verification/test_result_types.py \
+  tests/unit/verification/test_verifier.py
+→ 34 passed
+
+make VENV=../../.venv lint
+→ Ruff check passed
+→ Ruff format check passed
+→ strict Mypy passed
+```
+
+## 3. m1：补齐 Verification 包 future annotations 规则
+
+修复提交：
+
+```text
+1daefd6  fix: align verification package annotations
+```
+
+修复内容：
+
+- 在 `src/code_verifier/verification/__init__.py` 模块 docstring 后新增 `from __future__ import annotations`。
+- 公共导出、运行时行为与 API 签名均未改变。
+
+专项验证：
+
+```text
+make VENV=../../.venv lint
+→ Ruff check passed
+→ Ruff format check passed
+→ strict Mypy passed
+```
+
+## 4. R1 最终总体验收
+
+### 静态检查
+
+```text
+make VENV=../../.venv lint
+→ Ruff check: All checks passed
+→ Ruff format: 54 files already formatted
+→ strict Mypy: Success, no issues found in 54 source files
+```
+
+### 默认全量 CPU 回归
+
+```text
+make VENV=../../.venv test
+→ 481 passed, 3 skipped
+```
+
+三个 skip 均为既有真实 Piston tests；本轮未新增 skip 或 xfail。
+
+### Verification 定向验收
+
+```text
+../../.venv/bin/python -m pytest \
+  tests/unit/verification \
+  tests/integration/test_wp4a_verifier_pipeline.py
+→ 37 passed, 0 failed, 0 skipped
+```
+
+相比 R1 审查前的 34 项，新增 3 个 M1 回归实例：一个直接结构化合同测试，以及顶层/逐测试 executor `PARSE_ERROR` 两个 verifier fail-closed 实例。
+
+### CLI 边界
+
+首次直接运行 `../../.venv/bin/code-verifier --help` 时，console-script shebang 仍指向 worktree 本地 `.venv/bin/python`，而该忽略链接此前不存在，因此命令未启动。恢复 reviewer 已使用的本地忽略链接：
+
+```text
+ln -s ../../.venv .venv
+```
+
+随后实际运行：
+
+```text
+.venv/bin/code-verifier --help
+→ exit 0
+→ commands: record-environment, prepare-data, check-data, parse-code, execute-batch
+```
+
+未新增 verifier、reward、training 或 evaluation CLI 子命令；`.venv` 链接不属于跟踪文件。
+
+## 5. 修复完成状态
+
+- R1 M1、m1 均已修复并有对应验证。
+- `PARSE_ERROR` 在 Verification Layer 中现在严格等价于 parser failure；executor 无法通过顶层或逐测试状态注入该 taxonomy。
+- executor-side 非法 `PARSE_ERROR` 统一失败关闭为 sanitized `SANDBOX_ERROR`。
+- 无未处理问题、异议项或无法复现项。
+- 未修改审查报告、`proceedings.md` 或 `third_party/open-r1/**`。
+- 未执行 push 或 merge。
+- 下一步由 `wp-plan-reviewer` 执行 WP4-a R2 独立复审；只有复审通过后才可合并并登记 WP4-a 子阶段完成。
