@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the complete WP3 execution layer, and the WP4-a unified verification layer are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the complete WP3 execution layer, and the complete WP4 verification/reward layer are implemented.
 
-WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4-a adds structured verification results and completion → parser → executor orchestration. WP4-b Public/Hidden rewards, training, and model evaluation are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5+ generation/evaluation and training integration are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -303,7 +303,46 @@ summary = verification_result_to_mapping(result)
 
 Input validation is fail-closed: an empty test list is a `VerificationContractError`, and malformed function names, tests, or resource limits fail before parser or executor side effects. A parse failure returns structured `PARSE_ERROR` data and never calls the executor. Candidate code is still executed only by the configured `CodeExecutor`; the verifier contains no host execution path.
 
-The sanitized summary records status, parse/execution flags, pass counts, pass rate, parser taxonomy, failure counts, and an optional validated execution result. It does not contain the completion, extracted code, selected tests, function name, or metadata. WP4-a does not compute reward values and does not implement Public/Hidden reward wrappers or training commands; those remain WP4-b work.
+The sanitized summary records status, parse/execution flags, pass counts, pass rate, parser taxonomy, failure counts, and an optional validated execution result. It does not contain the completion, extracted code, selected tests, function name, or metadata. Reward calculation remains outside the Verification Layer.
+
+## WP4-b reward layer
+
+`code_verifier.rewards` exposes the shared `compute_code_rewards()` core plus the specification-level `public_code_reward()` and `hidden_code_reward()` wrappers. Public scoring receives `visible_tests` as its only test source. Hidden scoring receives `train_hidden_tests` as its only scoring source and may ignore a separately supplied `visible_tests` dataset column. Public rejects both `train_hidden_tests` and `eval_hidden_tests` in callback kwargs; Hidden rejects `eval_hidden_tests`. Neither training reward path may use eval-hidden tests.
+
+```python
+from code_verifier.rewards import compute_code_rewards, hidden_code_reward, public_code_reward
+
+public_rewards = public_code_reward(
+    completions,
+    visible_tests,
+    function_names,
+    metadata_batch,
+    executor=executor,
+)
+hidden_rewards = hidden_code_reward(
+    completions,
+    train_hidden_tests,
+    function_names,
+    metadata_batch,
+    executor=executor,
+    visible_tests=visible_tests,
+)
+
+rewards, component_records = compute_code_rewards(
+    completions,
+    visible_tests,
+    function_names,
+    metadata_batch,
+    executor,
+    mode="public",
+)
+```
+
+The shared formula is `test_reward + executable_reward + timeout_penalty + invalid_format_penalty`: the selected-test pass rate is the main component, parsed/executed non-infrastructure results receive `+0.1`, timeout receives `-0.2`, and parser invalid-format/missing-target failures receive `-0.1`. Infrastructure sandbox failures do not receive the executable bonus. The core rejects batch-length mismatches instead of silently truncating them and returns exactly one finite reward and one sanitized component record per completion.
+
+Reward callback completion items may be raw strings or the currently pinned Open-R1 chat-style message sequence; for chat payloads, the final message's exact string `content` is sent to the existing verifier. The wrappers require a caller-bound `CodeExecutor`. They do not create executors, register themselves with Open-R1, persist reward logs, or add GRPO commands/configuration. Formal trainer/Open-R1 adapter integration and experiment logging remain WP7 work.
+
+Component records contain only mode, reward components, sanitized verification status/flags/counts, parser taxonomy, and failure counts. They do not contain completion text, extracted code, tests, function names, metadata, stdout/stderr, or nested execution results.
 
 ## Current limitations
 
