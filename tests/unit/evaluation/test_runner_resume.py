@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 import code_verifier.evaluation.evaluate as evaluation_module
 from code_verifier.data.schema import CodeProblem, ProblemMetadata
@@ -103,7 +104,7 @@ def test_interrupted_run_resumes_exact_prefix_without_regeneration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     problems = [_problem("p1", "ONE"), _problem("p2", "TWO")]
-    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda dataset_dir, split: problems)
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
     config = _config(tmp_path)
     output_root = tmp_path / "outputs"
 
@@ -157,7 +158,7 @@ def test_interrupted_run_resumes_exact_prefix_without_regeneration(
 
 def test_resume_rejects_model_identity_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     problems = [_problem("p1", "ONE")]
-    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda dataset_dir, split: problems)
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
     config = _config(tmp_path)
     output_root = tmp_path / "outputs"
     run_pass1_evaluation(
@@ -184,7 +185,7 @@ def test_resume_rejects_model_identity_drift(tmp_path: Path, monkeypatch: pytest
 
 def test_resume_rejects_corrupt_or_prompt_drifted_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     problems = [_problem("p1", "ONE")]
-    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda dataset_dir, split: problems)
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
     config = _config(tmp_path)
     output_root = tmp_path / "outputs"
     summary = run_pass1_evaluation(
@@ -228,7 +229,7 @@ def test_non_result_artifacts_do_not_persist_completion_or_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     problems = [_problem("p1", "ONE")]
-    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda dataset_dir, split: problems)
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
     config = _config(tmp_path)
     summary = run_pass1_evaluation(
         config=config,
@@ -240,6 +241,10 @@ def test_non_result_artifacts_do_not_persist_completion_or_code(
         seed=42,
     )
     run_dir = summary.results_path.parents[1]
+    resolved = yaml.safe_load((run_dir / "resolved_config.yaml").read_text(encoding="utf-8"))
+    assert resolved["run_id"] == "payload-test"
+    assert resolved["model_id"] == "example/model"
+    assert resolved["seed"] == 42
     for path in (
         run_dir / "resolved_config.yaml",
         run_dir / "environment.json",
@@ -254,7 +259,7 @@ def test_non_result_artifacts_do_not_persist_completion_or_code(
 
 def test_resume_rejects_checkpoint_seed_or_dataset_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     original_problems = [_problem("p1", "ONE")]
-    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda dataset_dir, split: original_problems)
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: original_problems)
     config = _config(tmp_path)
     output_root = tmp_path / "outputs"
     run_pass1_evaluation(
@@ -289,7 +294,7 @@ def test_resume_rejects_checkpoint_seed_or_dataset_drift(tmp_path: Path, monkeyp
         )
 
     changed_problems = [_problem("p1", "CHANGED")]
-    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda dataset_dir, split: changed_problems)
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: changed_problems)
     with pytest.raises(EvaluationError):
         run_pass1_evaluation(
             config=config,
@@ -304,7 +309,7 @@ def test_resume_rejects_checkpoint_seed_or_dataset_drift(tmp_path: Path, monkeyp
 
 def test_resume_rejects_nonfinite_or_out_of_order_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     problems = [_problem("p1", "ONE"), _problem("p2", "TWO")]
-    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda dataset_dir, split: problems)
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
     config = _config(tmp_path)
     output_root = tmp_path / "outputs"
     summary = run_pass1_evaluation(
@@ -353,4 +358,4 @@ def test_load_evaluation_problems_rejects_missing_hf_artifact(tmp_path: Path, mo
         lambda dataset_dir: SimpleNamespace(hf_dataset_dir=None),
     )
     with pytest.raises(EvaluationError, match="hf_dataset"):
-        evaluation_module.load_evaluation_problems(tmp_path, "test")
+        evaluation_module.load_evaluation_problems(_config(tmp_path))

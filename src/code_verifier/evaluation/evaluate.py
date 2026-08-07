@@ -462,14 +462,14 @@ def evaluate_completion(
     return evaluation_record_from_mapping(values)
 
 
-def load_evaluation_problems(dataset_dir: Path, split: Literal["validation", "test"]) -> list[CodeProblem]:
+def load_evaluation_problems(config: EvaluationConfig) -> list[CodeProblem]:
     """Load only a validated WP1 HF Dataset artifact and preserve canonical row order."""
-    summary = check_prepared_data(dataset_dir)
+    summary = check_prepared_data(config.dataset_dir)
     if summary.hf_dataset_dir is None:
         raise EvaluationError("prepared dataset does not contain the required hf_dataset artifact")
-    problems = [problem for problem in load_hf_dataset(summary.hf_dataset_dir) if problem.split == split]
+    problems = [problem for problem in load_hf_dataset(summary.hf_dataset_dir) if problem.split == config.split]
     if not problems:
-        raise EvaluationError(f"prepared dataset contains no {split} problems")
+        raise EvaluationError(f"prepared dataset contains no {config.split} problems")
     problem_ids = [problem.problem_id for problem in problems]
     if len(problem_ids) != len(set(problem_ids)):
         raise EvaluationError("evaluation split contains duplicate problem_id values")
@@ -595,6 +595,7 @@ def _populate_new_run_artifacts(
     context.results_path.parent.mkdir(parents=True, exist_ok=False)
     environment = collect_environment()
     resolved = _resolved_config_mapping(config)
+    resolved["run_id"] = run_id
     resolved["model_id"] = model_id
     resolved["seed"] = seed
     run_metadata: dict[str, object] = {
@@ -660,7 +661,7 @@ def _resume_run_artifacts(
     dataset_hash_value: str,
     config_hash_value: str,
     problems: Sequence[CodeProblem],
-) -> _RunContext:
+) -> tuple[_RunContext, list[EvaluationRecord]]:
     context = _run_context(output_root, run_id, completed=0)
     expected_names = {
         "resolved_config.yaml",
@@ -676,6 +677,7 @@ def _resume_run_artifacts(
     if {path.name for path in (context.run_dir / "samples").iterdir()} != {"results.jsonl"}:
         raise EvaluationError("existing samples directory contains unexpected artifacts")
     resolved_expected = _resolved_config_mapping(config)
+    resolved_expected["run_id"] = run_id
     resolved_expected["model_id"] = model_id
     resolved_expected["seed"] = seed
     try:
@@ -718,6 +720,7 @@ def _resume_run_artifacts(
         raise EvaluationError(f"results.jsonl is unreadable: {type(error).__name__}") from None
     if len(lines) > len(problems):
         raise EvaluationError("results.jsonl contains more rows than the selected evaluation split")
+    records: list[EvaluationRecord] = []
     for index, line in enumerate(lines):
         if not line.strip():
             raise EvaluationError("results.jsonl must not contain blank rows")
@@ -726,6 +729,7 @@ def _resume_run_artifacts(
         except StrictJsonError as error:
             raise EvaluationError(f"results.jsonl row {index + 1} is invalid: {type(error).__name__}") from None
         record = evaluation_record_from_mapping(value)
+        records.append(record)
         problem = problems[index]
         expected_prompt_hash = prompt_hash(build_evaluation_prompt(problem))
         row_identity = {
@@ -748,27 +752,27 @@ def _resume_run_artifacts(
         }
         if row_identity != expected_row_identity:
             raise EvaluationError(f"results.jsonl row {index + 1} is not the exact expected resume prefix")
-    return _run_context(output_root, run_id, completed=len(lines))
+    return _run_context(output_root, run_id, completed=len(lines)), records
 
 
 def initialize_or_resume_run(
     *,
     output_root: Path,
     run_id: str,
-    config: EvaluationConfig,
     model_id: str,
     seed: int,
-    dataset_hash_value: str,
-    config_hash_value: str,
+    config: EvaluationConfig,
     problems: Sequence[CodeProblem],
-) -> _RunContext:
-    """Create a fresh artifact set or validate an existing run as an exact completed-prefix resume."""
+) -> tuple[Path, list[EvaluationRecord]]:
+    """Create a fresh run or validate an existing exact-prefix resume and return completed records."""
     _validate_run_id(run_id)
+    dataset_hash_value = dataset_hash(problems)
+    config_hash_value = evaluation_config_hash(config, model_id=model_id, seed=seed)
     run_dir = output_root / "evaluation" / run_id
     if run_dir.exists():
         if not run_dir.is_dir():
             raise EvaluationError("run path exists but is not a directory")
-        return _resume_run_artifacts(
+        context, records = _resume_run_artifacts(
             output_root=output_root,
             run_id=run_id,
             config=config,
@@ -778,7 +782,8 @@ def initialize_or_resume_run(
             config_hash_value=config_hash_value,
             problems=problems,
         )
-    return _new_run_artifacts(
+        return context.run_dir, records
+    context = _new_run_artifacts(
         output_root=output_root,
         run_id=run_id,
         config=config,
@@ -787,6 +792,7 @@ def initialize_or_resume_run(
         dataset_hash_value=dataset_hash_value,
         config_hash_value=config_hash_value,
     )
+    return context.run_dir, []
 
 
 def _update_run_status(context: _RunContext, status: Literal["running", "failed", "completed"]) -> None:
@@ -795,9 +801,13 @@ def _update_run_status(context: _RunContext, status: Literal["running", "failed"
     _write_json(context.run_json_path, metadata)
 
 
-def append_evaluation_record(context: _RunContext, record: EvaluationRecord, *, completed: int) -> None:
-    """Durably append one result row and one completion/code-free progress row."""
-    _append_jsonl(context.results_path, evaluation_record_to_mapping(record))
+def append_evaluation_record(path: Path, record: EvaluationRecord) -> None:
+    """Durably append one strict evaluation record to a JSONL results path."""
+    _append_jsonl(path, evaluation_record_to_mapping(record))
+
+
+def _append_progress(context: _RunContext, record: EvaluationRecord, *, completed: int) -> None:
+    """Append one completion/code-free progress event for a persisted evaluation record."""
     _append_jsonl(
         context.metrics_path,
         {
@@ -825,19 +835,20 @@ def run_pass1_evaluation(
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise EvaluationError("seed must be an integer")
     model_id = _nonempty_string(model_id, field_name="model_id")
-    problems = load_evaluation_problems(config.dataset_dir, config.split)
+    problems = load_evaluation_problems(config)
     dataset_identity = dataset_hash(problems)
     config_identity = evaluation_config_hash(config, model_id=model_id, seed=seed)
-    context = initialize_or_resume_run(
+    run_dir, completed_records = initialize_or_resume_run(
         output_root=output_root,
         run_id=run_id,
-        config=config,
         model_id=model_id,
         seed=seed,
-        dataset_hash_value=dataset_identity,
-        config_hash_value=config_identity,
+        config=config,
         problems=problems,
     )
+    context = _run_context(output_root, run_id, completed=len(completed_records))
+    if context.run_dir != run_dir:
+        raise EvaluationError("initialized run directory does not match the requested run")
     _update_run_status(context, "running")
     generated = 0
     try:
@@ -855,7 +866,8 @@ def run_pass1_evaluation(
                 generation=generation,
                 executor=executor,
             )
-            append_evaluation_record(context, record, completed=index)
+            append_evaluation_record(context.results_path, record)
+            _append_progress(context, record, completed=index)
             generated += 1
     except Exception as error:
         _update_run_status(context, "failed")

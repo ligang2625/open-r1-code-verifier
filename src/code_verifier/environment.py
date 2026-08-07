@@ -111,9 +111,11 @@ def _gpu_identity() -> tuple[str | None, str | None, int]:
     except ImportError:
         return None, None, 0
     try:
-        cuda = getattr(torch_runtime.version, "cuda", None)
         available = bool(torch_runtime.cuda.is_available())
-        count = int(torch_runtime.cuda.device_count()) if available else 0
+        if not available:
+            return None, None, 0
+        cuda = getattr(torch_runtime.version, "cuda", None)
+        count = int(torch_runtime.cuda.device_count())
         name = str(torch_runtime.cuda.get_device_name(0)) if count > 0 else None
     except Exception:
         return None, None, 0

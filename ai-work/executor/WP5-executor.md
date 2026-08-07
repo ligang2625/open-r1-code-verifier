@@ -278,3 +278,74 @@ PYTHONPATH=src ../../.venv/bin/python -c "import torch, transformers; ..."
 ## 6. 结论
 
 WP5-a 计划内的 deterministic generation contract、frozen Transformers backend、严格逐题 schema、三层 verifier evaluation、prepared-HF input、run identity、exact-prefix resume、artifact payload isolation、environment identity、`evaluate` CLI、端到端 fake integration 与文档均已完成。默认全仓测试与静态检查为 0 failed；当前阶段可提交 `wp-plan-reviewer` 独立审查。
+
+## 7. R1 代码修复报告
+
+修复依据：`ai-work/reviewer/WP5-review.md` R1。R1 共列出 M1、M2、m3 三项需处理问题，本轮全部接受并修复，无异议项；审查报告本身未修改。
+
+### M1：恢复 Step 5 函数级计划合同
+
+修复位置：`src/code_verifier/evaluation/evaluate.py`、`tests/unit/evaluation/test_runner_resume.py`、`tests/integration/test_wp5a_evaluation_pipeline.py`。
+
+- `load_evaluation_problems()` 恢复为计划签名 `load_evaluation_problems(config: EvaluationConfig) -> list[CodeProblem]`，从 config 读取 dataset root 与 selected split。
+- `initialize_or_resume_run()` 恢复为计划的 keyword-only 参数集合，并返回 `tuple[Path, list[EvaluationRecord]]`。内部仍通过私有 `_RunContext` 保持现有严格 artifact/resume 实现，但公开合同不再暴露预计算 hash 或私有 context。
+- resume 解析现在同时返回已经严格验证过的 completed `EvaluationRecord` 前缀；runner 以其长度继续生成，已完成 run 仍保持零 generation/executor 调用。
+- `append_evaluation_record()` 恢复为 `append_evaluation_record(path: Path, record: EvaluationRecord) -> None`，仅负责 durable results JSONL append；安全 progress event 拆到私有 `_append_progress()`，保持 metrics payload 隔离。
+- 所有 unit/integration caller 与 monkeypatch 均同步到计划合同。
+
+### M2：修正 no-CUDA environment identity 并补齐边界测试
+
+修复位置：`src/code_verifier/environment.py`、`tests/unit/test_environment.py`。
+
+- `_gpu_identity()` 在 torch 不存在时继续返回 `(None, None, 0)`。
+- torch 即使是 CUDA build，只要 `torch.cuda.is_available()` 为 false，也按计划返回 `(None, None,0)`，不再把编译时 `torch.version.cuda` 误记为当前可用 CUDA identity。
+- CUDA 可用时才记录 CUDA version、首个 GPU name 和 device count。
+- 新增三类明确单测：no-torch fallback、CUDA build 但 CUDA unavailable、mocked CUDA available identity。
+
+### m3：`resolved_config.yaml` 记录 run identity
+
+修复位置：`src/code_verifier/evaluation/evaluate.py`、`tests/unit/evaluation/test_runner_resume.py`。
+
+- 新 run 的 resolved config 现在同时写入 `run_id`、`model_id`、`seed`。
+- resume 的 expected resolved mapping 同步要求 `run_id`，因此 run-name/config artifact drift 会 fail closed。
+- 单测直接解析 `resolved_config.yaml` 并断言上述三个 CLI identity 字段。
+
+### R1 修复后实际复测
+
+```text
+PYTHONPATH=src ../../.venv/bin/python -m pytest \
+  tests/unit/evaluation/test_runner_resume.py \
+  tests/unit/test_environment.py \
+  tests/integration/test_wp5a_evaluation_pipeline.py -q
+→ 13 passed
+
+PYTHONPATH=src make VENV=../../.venv lint
+→ Ruff check: All checks passed
+→ Ruff format --check: 70 files already formatted
+→ strict Mypy: Success, no issues found in 70 source files
+
+PYTHONPATH=src ../../.venv/bin/python -m pytest \
+  tests/unit/evaluation/test_generate.py \
+  tests/unit/evaluation/test_evaluate.py \
+  tests/unit/evaluation/test_runner_resume.py \
+  tests/unit/test_environment.py \
+  tests/integration/test_wp5a_evaluation_pipeline.py -q
+→ 51 passed
+
+PYTHONPATH=src make VENV=../../.venv test
+→ 592 passed, 3 skipped, 0 failed
+```
+
+三个 skip 仍仅为既有、需显式启用的真实 Piston tests；本轮未新增 skip/xfail。
+
+CLI 回归：
+
+```text
+PYTHONPATH=src ../../.venv/bin/python -m code_verifier.cli --help
+→ exit 0
+
+PYTHONPATH=src ../../.venv/bin/python -m code_verifier.cli evaluate --help
+→ exit 0
+```
+
+本轮只修改 reviewer 点名的 WP5-a Step 5 contract/environment/artifact 问题及对应测试与 executor 报告；未修改 `third_party/open-r1/**`、`proceedings.md` 或 `ai-work/reviewer/WP5-review.md`，未新增 WP5-b metrics/bootstrap 或后续训练功能。R1 的 M1、M2、m3 均已处置，可提交下一轮 `wp-plan-reviewer` 复审。

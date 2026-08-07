@@ -69,9 +69,6 @@ def test_prepared_hf_evaluation_interrupts_resumes_and_writes_exact_rows(tmp_pat
         seed=42,
         output_dir=prepared,
     )
-    problems = load_evaluation_problems(prepared, "test")
-    assert len(problems) == 4
-
     config = EvaluationConfig(
         dataset_dir=prepared,
         split="test",
@@ -81,6 +78,8 @@ def test_prepared_hf_evaluation_interrupts_resumes_and_writes_exact_rows(tmp_pat
         device="cpu",
         generation=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=512),
     )
+    problems = load_evaluation_problems(config)
+    assert len(problems) == 4
     output_root = tmp_path / "outputs"
     first_count = len(problems) // 2
     first_generator = _PromptAwareGenerator(fail_after=first_count)
