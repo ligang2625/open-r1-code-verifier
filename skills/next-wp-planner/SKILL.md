@@ -1,6 +1,6 @@
 ---
 name: next-wp-planner
-description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的、精确到函数级别、高度可执行的实施计划（plan 文件），并为当前阶段创建独立分支与 worktree（分支名含主阶段+子阶段，如 feat/wp3-c）。当用户要求“规划下一个 WP”、“为下一个工作包制定实施计划”、“把下一里程碑拆解为文件/函数级任务并给出测试方案与通过标准”时使用。计划供后续执行 agent 使用，因此必须自包含，且不依赖任何 Codex 专用工具、MCP 或其它 skill。
+description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的、精确到函数级别、高度可执行的实施计划（plan 文件），并为当前阶段创建独立分支与 worktree（分支名含主阶段+子阶段，如 feat/wp3-c）。当用户要求“规划下一个 WP”、“为下一个工作包制定实施计划”、“把下一里程碑拆解为文件/函数级任务并给出测试方案与通过标准”时使用。计划供后续执行 agent 使用。
 ---
 
 # Next WP Planner
@@ -11,7 +11,6 @@ description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生�
 
 - **精确到函数级别**：每个步骤指明要新建/修改的文件路径、函数或类的完整签名、主要功能。
 - **高度可执行**：拿到计划的 agent 只需文件读写和基础 shell（运行仓库自带的 Makefile / pytest / CLI），即可逐步实现，无需再向任何人澄清。
-- **自包含**：不依赖 Codex 的工具、MCP、其它 skill 或 Codex 内部约定。本 skill 的指令与产出的计划都不得出现这些依赖。
 - **可验证**：每个步骤都带测试方案与可测量的通过标准。
 
 > 本 skill 不负责创建、启动或指挥任何执行 agent；计划文件只是供后续执行 agent 消费的产物。

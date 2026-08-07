@@ -1,6 +1,6 @@
 ---
 name: wp-plan-executor
-description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-work/planner/WP1-plan.md），在 planner 创建的独立分支与 worktree 中按计划逐步完成代码实现、单元测试与验证，每完成一个任务即提交到当前阶段分支（绝不在 main 上修改）；也可接收 wp-plan-reviewer 的审查报告，根据审查结果修复缺陷并重新验证。执行结果与修复报告写入 ai-work/executor/WP{n}-executor.md（同一阶段同一文件）。当用户要求“执行某个 WP 计划”、“按 plan 文件写代码并跑测试”、“根据审查报告修复代码”时使用。面向独立于 Codex 的外部执行 agent：只依赖文件读写与基础 shell（仓库自带的 make / pytest / CLI 与 git），不使用 Codex 工具、MCP 或其它 skill。
+description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-work/planner/WP1-plan.md），在 planner 创建的独立分支与 worktree 中按计划逐步完成代码实现、单元测试与验证，每完成一个任务即提交到当前阶段分支（绝不在 main 上修改）；也可接收 wp-plan-reviewer 的审查报告，根据审查结果修复缺陷并重新验证。执行结果与修复报告写入 ai-work/executor/WP{n}-executor.md（同一阶段同一文件）。当用户要求“执行某个 WP 计划”、“按 plan 文件写代码并跑测试”、“根据审查报告修复代码”时使用。
 ---
 
 # WP Plan Executor
@@ -16,7 +16,6 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 
 执行 agent 的边界：
 
-- 只有文件读写与基础 shell 能力（可运行仓库自带的 `make`、pytest、CLI 命令）。不使用 Codex 工具、MCP、其它 skill，也不创建或委派其它 agent。
 - 严格按计划/审查结果执行，不擅自扩大或修改范围；发现问题先停下报告，不静默改计划。
 - 每完成一个计划步骤（任务）即在**独立分支**上提交一次（见“阶段工作区与提交”）；绝不提交到主分支；不自动 push。
 - 本阶段所有改动都在 planner 创建的独立 worktree/分支中完成；**不得在主分支（main）内做任何修改或提交**。

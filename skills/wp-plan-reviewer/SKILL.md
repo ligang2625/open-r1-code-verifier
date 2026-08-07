@@ -1,6 +1,6 @@
 ---
 name: wp-plan-reviewer
-description: 在 wp-plan-executor 完成计划执行与代码测试之后，在独立 worktree 中审查并重新测试当前阶段的代码与功能：核对计划交付与验收、复查代码质量与规格合规、亲自重跑测试，并把每轮审查结果追加到 ai-work/reviewer/WP{n}-review.md；executor 按报告修复后可再次复审，审查全部通过后将独立分支合并回主分支、向 proceedings.md 写入简洁的阶段完成记录并提交。当用户要求“审查/复查某个 WP 的实现”、“验证 executor 的交付”、“独立测试并 review 当前阶段代码”、“复审修复结果”、“审查通过后合并提交”时使用。面向独立于 Codex 的外部 agent：只依赖文件读写与基础 shell（仓库自带的 make / pytest / CLI 与 git），不使用 Codex 工具、MCP 或其它 skill。
+description: 在 wp-plan-executor 完成计划执行与代码测试之后，在独立 worktree 中审查并重新测试当前阶段的代码与功能：核对计划交付与验收、复查代码质量与规格合规、亲自重跑测试，并把每轮审查结果追加到 ai-work/reviewer/WP{n}-review.md；executor 按报告修复后可再次复审，审查全部通过后将独立分支合并回主分支、向 proceedings.md 写入简洁的阶段完成记录并提交。当用户要求“审查/复查某个 WP 的实现”、“验证 executor 的交付”、“独立测试并 review 当前阶段代码”、“复审修复结果”、“审查通过后合并提交”时使用。
 ---
 
 # WP Plan Reviewer
@@ -16,7 +16,6 @@ description: 在 wp-plan-executor 完成计划执行与代码测试之后，在�
 
 审查 agent 的边界：
 
-- 只有文件读写与基础 shell 能力（可运行仓库自带的 `make`、pytest、CLI 命令）。不使用 Codex 工具、MCP、其它 skill，也不创建或委派其它 agent。
 - **只读审查**：不修改 `src/`、`tests/` 与 `third_party/open-r1/` 中任何代码；发现问题写入报告，修复留给执行方。
 - **独立取证**：不信任 executor 报告中的结论，只把它当作待核验的声明；所有结论必须以自己读到的代码与亲自运行的命令为依据。
 - 代码提交：审查结果追加到独立分支上的阶段报告文件；**仅在审查结论为“通过”时将独立分支合并回主分支**，随后写入简洁 proceedings 记录并提交（见“合并、proceedings 与提交”一节），不自动 push（除非任务明确要求）。
