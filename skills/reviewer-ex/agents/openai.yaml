@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reviewer Ex"
+  short_description: "Independent review and re-test of a WP"
+  default_prompt: "Use $reviewer-ex to independently review and re-test the WP just executed at ai-work/planner/WP1-plan.md."

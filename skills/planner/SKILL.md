@@ -1,9 +1,20 @@
 ---
-name: next-wp-planner
-description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的、精确到函数级别、高度可执行的实施计划（plan 文件），并为当前阶段创建独立分支与 worktree（分支名含主阶段+子阶段，如 feat/wp3-c）。当用户要求“规划下一个 WP”、“为下一个工作包制定实施计划”、“把下一里程碑拆解为文件/函数级任务并给出测试方案与通过标准”时使用。计划供后续执行 agent 使用。
+name: planner
+description: 使用 Codex 内部 agent，根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的函数级实施计划并创建阶段分支/worktree。Use when Codex must delegate WP planning to a dedicated gpt-5.6-sol agent with high reasoning effort and produce a testable plan for the internal executor workflow.
 ---
 
-# Next WP Planner
+# Planner
+
+## Codex 内部 agent 配置
+
+入口协调 agent 不直接执行规划。必须使用 `spawn_agent` 创建一个专用规划 agent，并等待其完成：
+
+- `model`: `gpt-5.6-sol`
+- `reasoning_effort`: `high`
+- `fork_turns`: `none`
+- 任务消息：写明仓库绝对路径、用户要求，并明确“你是已创建好的专用规划 agent，不是入口协调 agent；不得再次执行本节的 spawn 步骤”。要求其先完整读取本 `SKILL.md`、`references/plan-template.md` 与下述全部输入，再直接执行原有 WP 规划流程。
+
+协调 agent 只负责传递任务、等待结果和向用户转述最终结果，不另行修改计划。若 `spawn_agent` 不可用或指定模型无法创建，明确报告阻塞，不得静默改用其它模型或当前 agent 代跑。
 
 ## 用途
 
@@ -13,7 +24,7 @@ description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生�
 - **高度可执行**：拿到计划的 agent 只需文件读写和基础 shell（运行仓库自带的 Makefile / pytest / CLI），即可逐步实现，无需再向任何人澄清。
 - **可验证**：每个步骤都带测试方案与可测量的通过标准。
 
-> 本 skill 不负责创建、启动或指挥任何执行 agent；计划文件只是供后续执行 agent 消费的产物。
+> 专用规划 agent 不负责创建、启动或指挥任何执行 agent；计划文件只是供后续 executor 消费的产物。
 
 ## 输入
 

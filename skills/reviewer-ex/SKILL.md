@@ -1,16 +1,16 @@
 ---
-name: wp-plan-reviewer
-description: 在 wp-plan-executor 完成计划执行与代码测试之后，在独立 worktree 中审查并重新测试当前阶段的代码与功能：核对计划交付与验收、复查代码质量与规格合规、亲自重跑测试，并把每轮审查结果追加到 ai-work/reviewer/WP{n}-review.md；executor 按报告修复后可再次复审，审查全部通过后将独立分支合并回主分支、向 proceedings.md 写入简洁的阶段完成记录并提交。当用户要求“审查/复查某个 WP 的实现”、“验证 executor 的交付”、“独立测试并 review 当前阶段代码”、“复审修复结果”、“审查通过后合并提交”时使用。
+name: reviewer-ex
+description: 在 executor-ex 完成计划执行与代码测试之后，在独立 worktree 中审查并重新测试当前阶段的代码与功能：核对计划交付与验收、复查代码质量与规格合规、亲自重跑测试，并把每轮审查结果追加到 ai-work/reviewer/WP{n}-review.md；executor-ex 按报告修复后可再次复审，审查全部通过后将独立分支合并回主分支、向 proceedings.md 写入简洁的阶段完成记录并提交。当 Codex 外部 agent 要求“审查/复查某个 WP 的实现”、“验证 executor-ex 的交付”、“独立测试并 review 当前阶段代码”、“复审修复结果”、“审查通过后合并提交”时使用。
 ---
 
-# WP Plan Reviewer
+# Reviewer Ex
 
 ## 用途
 
-本 skill 用于在 wp-plan-executor 完成一个 WP 的实施与测试后，作为**独立审查方**复查该阶段的代码与功能：核对计划交付与验收项、审查代码质量与规格合规、亲自重跑测试，并把审查结果写入阶段报告文件。支持两类任务：
+本 skill 用于在 executor-ex 完成一个 WP 的实施与测试后，作为**独立审查方**复查该阶段的代码与功能：核对计划交付与验收项、审查代码质量与规格合规、亲自重跑测试，并把审查结果写入阶段报告文件。支持两类任务：
 
-- **首轮审查**：executor 完成实现与测试后，对当前阶段全面审查并重测；
-- **复审**：executor 按审查报告完成修复后，针对上一轮问题清单复核修复结果、检查回归与新问题，重新给出结论。
+- **首轮审查**：executor-ex 完成实现与测试后，对当前阶段全面审查并重测；
+- **复审**：executor-ex 按审查报告完成修复后，针对上一轮问题清单复核修复结果、检查回归与新问题，重新给出结论。
 
 审查结论供人工 Code Review 参考，不替代人工判断。**最终审查方**（给出“通过”结论的一轮）负责：合并独立分支回主分支、向 `proceedings.md` 写入简洁的阶段完成记录并提交。
 
@@ -24,7 +24,7 @@ description: 在 wp-plan-executor 完成计划执行与代码测试之后，在�
 
 执行前读取以下文件：
 
-- **阶段 worktree**：本阶段代码位于 planner 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）；所有审查与测试命令在 worktree 目录中运行。
+- **阶段 worktree**：本阶段代码位于 planner-ex 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）；所有审查与测试命令在 worktree 目录中运行。
 1. **计划文件**：任务给出的路径（如 `ai-work/planner/WP1-plan.md`）；未给出时取 `ai-work/planner/` 下编号最大的 `WP{n}-plan.md` 并在报告中注明。计划中的交付与验收是审查基准。
 2. **分支名**：从计划元信息读取当前阶段分支（`feat/wp{n}` 或 `feat/wp{n}-{sub}`，如 `feat/wp3-c`），合并时使用该分支名。
 3. **executor 的阶段报告**：`ai-work/executor/WP{n}-executor.md`（执行结果与历次修复报告），待核验的声明。

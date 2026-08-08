@@ -1,23 +1,48 @@
 ---
-name: wp-plan-executor
-description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-work/planner/WP1-plan.md），在 planner 创建的独立分支与 worktree 中按计划逐步完成代码实现、单元测试与验证，每完成一个任务即提交到当前阶段分支（绝不在 main 上修改）；也可接收 wp-plan-reviewer 的审查报告，根据审查结果修复缺陷并重新验证。执行结果与修复报告写入 ai-work/executor/WP{n}-executor.md（同一阶段同一文件）。当用户要求“执行某个 WP 计划”、“按 plan 文件写代码并跑测试”、“根据审查报告修复代码”时使用。
+name: executor
+description: 使用 Codex 内部主 agent 与多个 subagent 执行 WP 计划或审查修复。Use when Codex needs a gpt-5.6-sol main agent with medium reasoning effort to read an ai-work/planner/WP{n}-plan.md file, split it into mutually independent subplans, delegate one subplan each to gpt-5.6-luna subagents with max reasoning effort, integrate and verify their work, commit it, and write ai-work/executor/WP{n}-executor.md.
 ---
 
-# WP Plan Executor
+# Executor
+
+## Codex 内部 agent 编排（优先级最高）
+
+入口协调 agent 不直接实施计划。必须先使用 `spawn_agent` 创建一个**主 agent**：
+
+- `model`: `gpt-5.6-sol`
+- `reasoning_effort`: `medium`
+- `fork_turns`: `none`
+- 任务消息：写明仓库与阶段 worktree 的绝对路径、计划/审查报告路径、用户要求，并明确“你是已创建好的主 agent，不是入口协调 agent；不得再次创建主 agent，应从下述主 agent 流程开始”。要求主 agent 完整读取本 `SKILL.md`、`references/execution-workflow.md` 和下述输入。
+
+主 agent 必须执行以下流程；本节与后文冲突时以本节为准：
+
+1. 全文阅读 plan；修复任务同时全文阅读最新 review。读取相关 spec、`AGENTS.md`、`proceedings.md` 和代码基线后，才允许拆分。
+2. 按依赖关系、文件所有权与可独立验证边界，把整体 plan 拆成最大化且**相互独立**的子计划。依赖步骤或会修改同一文件/符号的步骤必须合并到同一子计划，禁止伪并行。无法拆成多个独立组时，形成 1 个子计划。
+3. 为每个子计划创建且只创建 1 个 subagent；subagent 总数必须等于子计划数。每个 subagent 固定使用：
+   - `model`: `gpt-5.6-luna`
+   - `reasoning_effort`: `max`
+   - `fork_turns`: `none`
+4. 每个 subagent 的自包含任务消息必须列明：worktree、plan/review 路径、分配的步骤或问题、唯一可写文件、禁止改动项、定向测试命令与汇报格式。subagent 必须读取完整 plan 和相关项目约束，但只实施自己的子计划；不得继续创建 agent、不得暂存或提交、不得写总执行报告、不得修改 plan/review/`proceedings.md`。
+5. 独立子计划应并行派发。受并发槽位限制时分批创建，但最终仍保持“一份子计划对应一个 subagent”，不得合并或省略 agent。
+6. 等待全部 subagent 向主 agent 汇报。汇报必须包含：修改文件、实现内容、实际运行的命令与结果、未完成项、风险。失败或不完整时，优先向同一 subagent 发送 follow-up 修正，不另建重复 subagent。
+7. 主 agent 检查每份改动是否符合文件所有权与计划，处理集成顺序，运行计划要求的 `make lint`、`make test` 与 WP 特有验收。主 agent 不把 subagent 声称的测试结果当作最终验收证据。
+8. 仅由主 agent 显式暂存并按独立子计划依次提交；仅由主 agent 撰写最终 `ai-work/executor/WP{n}-executor.md`，汇总拆分映射、各 subagent 结果、集成验证、提交哈希、偏差与遗留问题。
+
+入口协调 agent 等待主 agent 完成并转述其最终执行结果。若无法创建指定模型的主 agent 或 subagent，明确报告阻塞，不得静默替换模型、effort 或改为入口 agent 直接实施。
 
 ## 用途
 
-本 skill 用于执行一份 WP 实施计划（由 next-wp-planner 产出）：按计划的步骤顺序完成代码实现与测试，逐项验证通过后把执行结果写入阶段报告文件。支持两类任务：
+本 skill 用于执行一份 WP 实施计划（由 planner 产出）：由主 agent 拆分、委派并整合代码实现与测试，逐项验证通过后把执行结果写入阶段报告文件。支持两类任务：
 
 - **实现任务**：按计划新增/修改代码与测试（首次实施）；
-- **修复任务**：根据 wp-plan-reviewer 的审查报告修复缺陷并重新验证（修复轮次）。
+- **修复任务**：根据 reviewer 的审查报告修复缺陷并重新验证（修复轮次）。
 
 计划文件与审查报告是执行依据；本 skill 只规定执行流程与纪律，不替代其内容。
 
 执行 agent 的边界：
 
 - 严格按计划/审查结果执行，不擅自扩大或修改范围；发现问题先停下报告，不静默改计划。
-- 每完成一个计划步骤（任务）即在**独立分支**上提交一次（见“阶段工作区与提交”）；绝不提交到主分支；不自动 push。
+- 每个独立子计划由对应 subagent 完成并经主 agent 验收后，即由主 agent 在**独立分支**上提交一次（见“阶段工作区与提交”）；绝不提交到主分支；不自动 push。
 - 本阶段所有改动都在 planner 创建的独立 worktree/分支中完成；**不得在主分支（main）内做任何修改或提交**。
 - 绝不修改 `third_party/open-r1/`；所有 Open-R1 访问经 `code_verifier.training.open_r1_adapter`。
 - 不修改审查报告文件（`ai-work/reviewer/WP{n}-review.md`）——它归审查方所有。
@@ -46,10 +71,10 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 1. **确认阶段工作区**：本阶段工作目录为 planner 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）。若未指定，运行 `git worktree list` 定位该分支对应的 worktree；找不到则停止并报告——分支与 worktree 由 planner 创建，executor 不自行创建。
 2. **分支校验（必须，任务开始与每次提交前）**：运行 `git branch --show-current`，必须等于计划元信息记录的分支名（如 `feat/wp3-c`）；若当前在 `main` 或其它分支，先 `git switch <分支名>`；校验不通过时禁止任何修改与提交。
 3. **禁止在主分支修改**：所有代码、测试、配置、报告文件的写入与提交都必须在分支上进行；绝不在 main 上修改或提交。
-4. **每任务提交**：每完成一个计划步骤并通过该步骤验证后立即提交：先 `git status` 确认只含本步骤文件，显式 `git add` 本步骤涉及路径（**不用 `git add -A`**），提交消息用 Conventional Commits（如 `feat: add data schema and validation`），提交到当前阶段分支。
+4. **每子计划提交**：每个 subagent 完成后，由主 agent 检查其改动并通过对应验证，再依次提交：先 `git status` 确认范围，显式 `git add` 该子计划涉及路径（**不用 `git add -A`**），提交消息用 Conventional Commits（如 `feat: add data schema and validation`），提交到当前阶段分支。
 5. **报告随提交**：阶段报告文件 `ai-work/executor/WP{n}-executor.md` 随对应实现/修复提交一起（或单独一条 docs 提交）进入分支。
 6. **提交失败处理**：hook 拒绝、冲突或误暂存时停下报告，不使用 `--no-verify`、`--force` 等绕过手段。
-7. 不自动 push；合并回主分支由 wp-plan-reviewer 在审查通过后执行。
+7. 不自动 push；合并回主分支由 reviewer 在审查通过后执行。
 
 ## 执行前检查
 
@@ -61,7 +86,7 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 
 ## 执行协议
 
-实现任务按计划步骤顺序执行；每个步骤循环「实现 → 写测试 → 验证 → 修正」：
+实现任务按主 agent 生成的独立子计划执行；每个 subagent 对其子计划循环「实现 → 写测试 → 验证 → 修正」，主 agent 负责最终整合与验证：
 
 1. **实现**：只改动该步骤指定的目标文件。新增/修改的符号与签名以计划为准；计划从规格中引用的接口（如 `ExecutionStatus`、`ParseResult`、`CodeExecutor`、`compute_code_rewards`）必须逐字保留，不得改名或改签名。
 2. **测试**：按计划的“测试方案”在指定测试文件添加指定测试函数；断言针对规格与计划定义的行为。
@@ -103,6 +128,7 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 完成前逐条核对：
 
 - [ ] 只实现了计划/审查范围内内容，无越界改动；
+- [ ] plan 已由主 agent 全文阅读并拆为互不冲突的子计划，每份子计划恰有一个 Luna/max subagent；
 - [ ] 计划每个实现步骤都有对应代码与测试；
 - [ ] 任务开始与每次提交前均确认当前分支为 planner 创建的分支（`feat/wp{n}` 或 `feat/wp{n}-{sub}`）；
 - [ ] 未在主分支（main）上做任何修改或提交；
@@ -110,10 +136,10 @@ description: 接收 next-wp-planner 产出的 WP 实施计划文件（如 ai-wor
 - [ ] 遇到计划/规格冲突时停止并报告，而非静默偏离；
 - [ ] `make lint` 与 `make test` 实际运行且全绿（或如实记录失败）；
 - [ ] 未修改 `third_party/open-r1/`；
-- [ ] 每完成一个计划步骤均在独立分支提交，未提交到主分支；
+- [ ] 每个独立子计划均由主 agent 验收后在独立分支提交，未提交到主分支；
 - [ ] 提交只含本步骤文件，未用 `git add -A` 混入无关改动；
 - [ ] 未自动 push；
-- [ ] 阶段报告写入 `ai-work/executor/WP{n}-executor.md`：执行结果在前、修复报告追加在后；新阶段时已按 plan 覆盖内容清空重写；
+- [ ] 最终阶段报告仅由主 agent 写入 `ai-work/executor/WP{n}-executor.md`：含子计划/subagent 映射与结果，执行结果在前、修复报告追加在后；新阶段时已按 plan 覆盖内容清空重写；
 - [ ] 未写入 `proceedings.md`；
 - [ ] 修复任务：审查报告中的“阻断/主要/次要”问题均已修复，或已记录异议与证据；
 - [ ] 修复任务：修复后重新运行了 `make lint` / `make test`，且未修改审查报告文件。

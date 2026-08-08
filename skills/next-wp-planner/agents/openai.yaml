@@ -1,4 +1,0 @@
-interface:
-  display_name: "Next WP Planner"
-  short_description: "Function-level plan for the next Work Package"
-  default_prompt: "Use $next-wp-planner to create a function-level implementation plan for the next Work Package from the project spec and proceedings."

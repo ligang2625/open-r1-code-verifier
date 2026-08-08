@@ -7,6 +7,7 @@ __pycache__/
 build/
 dist/
 .worktrees/
+.codegraph/
 
 # Generated experiment artifacts.
 data/raw/

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Executor"
+  short_description: "Sol main agent delegates WP work to Luna agents"
+  default_prompt: "Use $executor to run the WP plan through the required Codex main-agent/subagent workflow and write the final execution report."

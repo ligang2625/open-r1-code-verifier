@@ -1,0 +1,4 @@
+interface:
+  display_name: "Planner Ex"
+  short_description: "Function-level plan for the next Work Package"
+  default_prompt: "Use $planner-ex to create a function-level implementation plan for the next Work Package from the project spec and proceedings."

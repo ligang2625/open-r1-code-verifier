@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Planner"
+  short_description: "Sol/high internal agent plans the next WP"
+  default_prompt: "Use $planner to delegate next-WP planning to the required Codex internal agent and produce a function-level implementation plan."
