@@ -39,6 +39,8 @@ class EnvironmentRecord(TypedDict):
     cuda_version: str | None
     gpu_name: str | None
     gpu_count: int
+    compute_capability: str | None
+    bf16_supported: bool | None
     dependency_lock_hash: str
 
 
@@ -122,11 +124,25 @@ def _gpu_identity() -> tuple[str | None, str | None, int]:
     return None if cuda is None else str(cuda), name, count
 
 
+def _gpu_capabilities() -> tuple[str | None, bool | None]:
+    """Collect compute capability and BF16 support when a CUDA device is available."""
+    try:
+        torch_runtime = importlib.import_module("torch")
+        if not bool(torch_runtime.cuda.is_available()):
+            return None, None
+        capability = ".".join(str(part) for part in torch_runtime.cuda.get_device_capability(0))
+        bf16 = bool(torch_runtime.cuda.is_bf16_supported())
+    except Exception:
+        return None, None
+    return capability, bf16
+
+
 def collect_environment(repository_root: Path | None = None) -> EnvironmentRecord:
     """Collect project, submodule, runtime, dependency, and optional GPU identity."""
     root = (repository_root or _find_repository_root()).resolve()
     packages = {name: _distribution_version(name) for name in TRACKED_DISTRIBUTIONS}
     cuda_version, gpu_name, gpu_count = _gpu_identity()
+    compute_capability, bf16_supported = _gpu_capabilities()
     return {
         "project_commit": _git_commit(root),
         "open_r1_commit": _gitlink_commit(root, OPEN_R1_SUBMODULE),
@@ -136,6 +152,8 @@ def collect_environment(repository_root: Path | None = None) -> EnvironmentRecor
         "cuda_version": cuda_version,
         "gpu_name": gpu_name,
         "gpu_count": gpu_count,
+        "compute_capability": compute_capability,
+        "bf16_supported": bf16_supported,
         "dependency_lock_hash": _dependency_lock_hash(root, packages),
     }
 

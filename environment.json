@@ -1,15 +1,21 @@
 {
+  "bf16_supported": true,
+  "compute_capability": "7.5",
+  "cuda_version": "12.4",
+  "dependency_lock_hash": "5dd860483cc073f71b9bce72507ed9ce3510ed25f98925138f09132ed0a25eda",
+  "gpu_count": 1,
+  "gpu_name": "NVIDIA GeForce GTX 1660 Ti",
   "open_r1_commit": "1416fa0cf21595d2083b399a2a0bbddd7f6e9563",
   "packages": {
-    "accelerate": null,
-    "datasets": null,
+    "accelerate": "1.4.0",
+    "datasets": "3.2.0",
     "open-r1": "0.1.0.dev0",
     "peft": null,
-    "torch": null,
-    "transformers": null,
-    "trl": null
+    "torch": "2.6.0+cu124",
+    "transformers": "4.52.3",
+    "trl": "0.18.0"
   },
   "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
-  "project_commit": "a0e0853f42dd17a4edce7ba765cc82904c26c02d",
+  "project_commit": "3239aa3c347fc4393ecdb1901f6de4a2715a2dba",
   "python_version": "3.10.12"
 }

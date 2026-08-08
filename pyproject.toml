@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["mypy==1.15.0", "pytest==8.3.5", "ruff==0.9.10", "types-PyYAML==6.0.12.20241230"]
+gpu = ["torch==2.6.0"]
 
 [project.scripts]
 code-verifier = "code_verifier.cli:main"
@@ -29,6 +30,17 @@ where = ["src"]
 # uv installs this project and the pinned local Open-R1 source in editable mode.
 [tool.uv.sources]
 open-r1 = { path = "third_party/open-r1", editable = true }
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [tool.pytest.ini_options]
 addopts = "-ra"

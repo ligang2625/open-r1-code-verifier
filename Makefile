@@ -5,7 +5,7 @@ DEV_PACKAGES := mypy==1.15.0 pytest==8.3.5 ruff==0.9.10 types-PyYAML==6.0.12.202
 DATA_PACKAGES := PyYAML==6.0.2 datasets==3.2.0
 PISTON_CONFIG ?= configs/execution/piston-local.yaml
 
-.PHONY: install install-full lint test test-piston test-gpu record-environment
+.PHONY: install install-gpu install-full lint test test-piston test-gpu record-environment
 
 install:
 	$(UV) venv --allow-existing $(VENV)
@@ -13,8 +13,10 @@ install:
 	$(UV) pip install --python $(PYTHON) $(DATA_PACKAGES)
 	$(UV) pip install --python $(PYTHON) $(DEV_PACKAGES)
 
-install-full:
-	$(UV) sync --extra dev
+install-gpu:
+	$(UV) sync --extra dev --extra gpu
+
+install-full: install-gpu
 
 lint:
 	$(PYTHON) -m ruff check src tests

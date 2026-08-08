@@ -73,3 +73,25 @@ def test_gpu_identity_with_available_cuda_records_runtime_identity(monkeypatch: 
     monkeypatch.setattr(importlib, "import_module", lambda name: fake_torch)
 
     assert environment_module._gpu_identity() == ("12.1", "Mock GPU 0", 2)
+
+
+def test_gpu_capabilities_without_cuda_returns_nulls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No available CUDA device yields null capability and BF16 support."""
+    fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
+    monkeypatch.setattr(importlib, "import_module", lambda name: fake_torch)
+
+    assert environment_module._gpu_capabilities() == (None, None)
+
+
+def test_gpu_capabilities_records_capability_and_bf16(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Available CUDA records compute capability and BF16 support."""
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            get_device_capability=lambda index: (7, 5),
+            is_bf16_supported=lambda: False,
+        ),
+    )
+    monkeypatch.setattr(importlib, "import_module", lambda name: fake_torch)
+
+    assert environment_module._gpu_capabilities() == ("7.5", False)

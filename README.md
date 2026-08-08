@@ -23,9 +23,15 @@ make install
 
 `make install` creates `.venv`, installs this project and the pinned Open-R1 checkout in editable mode, and installs the minimal WP1 data stack and development tools. The data dependencies are pinned to `PyYAML==6.0.2` and `datasets==3.2.0`; strict Mypy support also uses `types-PyYAML==6.0.12.20241230`.
 
-The command intentionally skips Open-R1's large training dependency tree. `make install` is sufficient for the CPU-only unit/default test suite, but real WP5-a Transformers generation requires `make install-full`. Neither installation command updates the pinned Open-R1 commit.
+`make install` intentionally skips Open-R1's large training dependency tree and torch: it is sufficient for lint and the CPU-only unit/default test suite. Real WP5-a Transformers generation requires the GPU environment:
 
-Development and smoke tests move to a machine with a single NVIDIA GeForce GTX 1660 Ti (6GB VRAM); SFT/GRPO training still runs on the 24GB GPU (e.g. RTX 4090) machine per the project spec. On the 1660 Ti machine, run `make install-full` to install the full inference stack (Linux default PyPI torch wheels bundle a CUDA 12.x runtime compatible with Turing/sm_75), then regenerate `environment.json` with `record-environment` to confirm `cuda_version` / `gpu_name` / `gpu_count` are recorded. The CPU-only workflow (`make install` + `make test`) remains valid on machines without a GPU.
+```bash
+make install-gpu
+```
+
+`make install-gpu` runs `uv sync --extra dev --extra gpu`: it installs the full pinned Open-R1/Transformers dependency stack plus the project-pinned CUDA torch wheel (`torch==2.6.0`, CUDA 12.4 build, from the PyTorch `cu124` index, compatible with Turing/sm_75). `make install-full` is kept as an alias for `make install-gpu`. Neither installation command updates the pinned Open-R1 commit.
+
+Development and smoke tests run on a machine with a single NVIDIA GeForce GTX 1660 Ti (6GB VRAM, Turing/sm_75); SFT/GRPO training still runs on the 24GB GPU (e.g. RTX 4090) machine per the project spec. After `make install-gpu`, regenerate `environment.json` with `record-environment` to confirm `cuda_version` / `gpu_name` / `gpu_count` and the added `compute_capability` / `bf16_supported` fields. Turing has no native BF16 tensor cores, so the smoke generator uses fp16; `torch.cuda.is_bf16_supported()` may still report True on Turing because torch 2.6 falls back to emulation, and the final RTX 4090 training design keeps BF16. The CPU-only workflow (`make install` + `make test`) remains valid on machines without a GPU, where GPU smoke tests auto-skip with an explicit reason.
 
 ## Quality checks
 
@@ -43,7 +49,7 @@ make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
 
 The command requires a self-hosted Piston service bound only to loopback with the exact configured Python runtime. See [`docs/piston-local.md`](docs/piston-local.md).
 
-GPU-required tests are detected automatically: on a machine with a CUDA-capable GPU and the full inference dependencies (`make install-full`), `make test` runs the complete suite including the CUDA generation smoke tests. On a machine without a GPU, those tests are skipped with an explicit message telling you they require a GPU, and only the CPU suite runs. To run just the GPU smoke subset:
+GPU-required tests are detected automatically: on a machine with a CUDA-capable GPU and the full inference dependencies (`make install-gpu`), `make test` runs the complete suite including the CUDA generation smoke tests. On a machine without a GPU, those tests are skipped with an explicit message telling you they require a GPU, and only the CPU suite runs. To run just the GPU smoke subset:
 
 ```bash
 make test-gpu
@@ -361,7 +367,7 @@ WP5-a evaluates a frozen model checkpoint one problem at a time using the fixed 
 Prepare a validated WP1 artifact first, start the loopback Piston service described in [`docs/piston-local.md`](docs/piston-local.md), and install the full inference dependencies before a real model run:
 
 ```bash
-make install-full
+make install-gpu
 .venv/bin/code-verifier evaluate \
   --config configs/eval/pass1.yaml \
   --model-id <model-or-checkpoint-id> \
