@@ -84,14 +84,54 @@ def test_gpu_capabilities_without_cuda_returns_nulls(monkeypatch: pytest.MonkeyP
 
 
 def test_gpu_capabilities_records_capability_and_bf16(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Available CUDA records compute capability and BF16 support."""
+    """Available CUDA records compute capability and native BF16 support."""
     fake_torch = SimpleNamespace(
         cuda=SimpleNamespace(
             is_available=lambda: True,
             get_device_capability=lambda index: (7, 5),
-            is_bf16_supported=lambda: False,
+            is_bf16_supported=lambda including_emulation=True: False,
         ),
     )
     monkeypatch.setattr(importlib, "import_module", lambda name: fake_torch)
 
     assert environment_module._gpu_capabilities() == ("7.5", False)
+
+
+def test_gpu_capabilities_turing_records_native_bf16_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Turing-like device (capability 7.5) must record native BF16 as False.
+
+    torch reports emulated BF16 support as True, which must not leak into the
+    native-support record.
+    """
+
+    def bf16_support(including_emulation: bool = True) -> bool:
+        return including_emulation
+
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            get_device_capability=lambda index: (7, 5),
+            is_bf16_supported=bf16_support,
+        ),
+    )
+    monkeypatch.setattr(importlib, "import_module", lambda name: fake_torch)
+
+    assert environment_module._gpu_capabilities() == ("7.5", False)
+
+
+def test_gpu_capabilities_ampere_records_native_bf16_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An Ampere-like device (capability >= 8.0) records native BF16 as True."""
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            get_device_capability=lambda index: (8, 9),
+            is_bf16_supported=lambda including_emulation=True: True,
+        ),
+    )
+    monkeypatch.setattr(importlib, "import_module", lambda name: fake_torch)
+
+    assert environment_module._gpu_capabilities() == ("8.9", True)

@@ -301,3 +301,58 @@ WP0 已完成以下工作：
 - `make test`：592 passed，5 skipped（3 个 Piston 显式跳过 + 2 个 GPU 用例自动跳过，均明确提示需要 GPU）。
 - 当前机器无 CUDA：`make test-gpu` 报告 2 skipped（自动跳过并提示需要 GPU），退出码 0，符合设计。
 - 迁移后的 1660 Ti 开发机需执行：`make install-full` → `record-environment`（确认 `cuda_version`/`gpu_name`/`gpu_count`）→ `make test-piston`（若继续使用本地 Piston）→ `make test`（GPU 冒烟自动包含，0 failed、0 skipped），也可单独运行 `make test-gpu`。训练阶段回到 24GB GPU（如 RTX 4090）机器进行。
+
+---
+
+## 环境维护：迁移后 GTX 1660 Ti GPU 环境实际验收（最终收口）
+
+- **完成日期**：2026-08-08
+- **阶段状态**：环境维护（非 Work Package 阶段）
+- **验收结论**：通过（真实 GPU 验收在 GTX 1660 Ti 开发机上完成）
+- **实施范围**：仅收口已确认的环境遗漏，并完成最后一轮审查修复（`dtype=auto` 向后兼容、`pass1.yaml` 明确 fp16、离线缓存 GPU smoke）；未新增 WP 功能；未升级固定 Open-R1 dependency stack；未修改 `third_party/open-r1/**`；未安装系统 CUDA Toolkit。
+
+### 1. 实际环境 identity
+
+```text
+GPU: NVIDIA GeForce GTX 1660 Ti
+VRAM: 6144 MiB（6GB）
+compute capability: 7.5（sm_75 / Turing）
+torch: 2.6.0+cu124
+torch CUDA: 12.4
+native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
+```
+
+说明：PyTorch 2.6 默认 `is_bf16_supported()` 在 Turing 上因软件/模拟 BF16 tensor 返回 True，这不等于原生硬件支持；`environment.json` 的 `bf16_supported` 现改为仅记录 native/hardware 支持（`including_emulation=False`），在 GTX 1660 Ti 上记录 `false`。本地 GPU smoke 明确使用 fp16 加载 0.5B debug 模型并断言实际 dtype。
+
+### 2. 本阶段完成事项
+
+1. `make install-gpu` 已落地（`uv sync --extra dev --extra gpu`，torch==2.6.0 来自 PyTorch cu124 index）；`make install-full` 为其 alias，语义一致。
+2. `GenerationConfig` 新增 `dtype`（auto / float16 / bfloat16 / float32）：`dtype=auto` 保持旧行为（**不**向 `from_pretrained` 传 `torch_dtype`，与修复前等价），仅 `float16`/`bfloat16`/`float32` 显式传 `torch_dtype`。
+3. `configs/eval/pass1.yaml` 使用 `generation.dtype: float16`（符合 §5.2 的 1660 Ti debug 评测规格：6GB / fp16 / 0.5B）；GPU smoke 显式 `dtype: float16` 并通过公开属性 `generator.model_dtype` 断言模型真实以 FP16 加载。
+4. GPU smoke 模型加载使用 `local_files_only=True`（离线缓存契约）：模型已缓存且网络不可达时不再因 Hugging Face retry 长时间阻塞；模型未缓存时快速失败并明确提示先下载/缓存。普通 `code-verifier evaluate` 仍默认允许联网下载模型。
+5. 新增极小 CUDA autograd smoke（256×256 tensor，forward+backward，真实 CUDA 执行、不加载模型、不 mock）。
+6. `environment.json` 的 `bf16_supported` 语义修正为 native-only（`including_emulation=False`），并补充 7.5/原生 BF16 false 的 fake-runtime 单元测试；`bf16_supported=false` 保持。
+7. README/AGENTS 明确 `make install-gpu` 是“当前 Open-R1 inference/GPU dependency stack”，不是 training stack 验收。
+
+### 3. 真实验收结果（GTX 1660 Ti）
+
+- `make lint`：PASS（ruff check / ruff format / strict mypy 全绿）。
+- `make test`（GPU 可见）：606 passed，3 skipped，0 failed（仅真实 Piston 用例显式跳过）。GPU 冒烟真实执行（非 skip）。
+- `make test-gpu`：3 passed（CUDA identity、Qwen 0.5B fp16 CUDA 生成、CUDA autograd forward/backward）；模型已缓存且网络不可用时不再发生 Hugging Face 网络重试。
+- Qwen/Qwen2.5-Coder-0.5B-Instruct CUDA inference：PASS，模型实际 dtype 为 FP16。
+- CUDA autograd：PASS（`x.grad is not None`，device=cuda）。
+- `make test-piston`：9 passed，0 failed，0 skipped（本地 loopback Piston 服务已部署，Python 3.10.0 runtime）。
+- `make record-environment`：environment.json 已重生成，包含 cuda_version=12.4、gpu_name、gpu_count=1、compute_capability=7.5、bf16_supported=false、uv.lock hash。
+- `make lint` 与全部单元/集成测试均在最终轮修复后重跑；`dtype=auto` 单元测试验证 `torch_dtype` 不再传入，`dtype=float16/bfloat16/float32` 验证显式传入。
+
+### 4. 能力边界
+
+- 1660 Ti 验收覆盖：CUDA runtime、fp16 inference、CUDA autograd、Qwen 0.5B 生成。
+- 1660 Ti 验收不覆盖：LoRA/SFT、GRPO、PEFT training、DeepSpeed training、最终 BF16 training —— 全部留给 RTX 4090 训练机重新做 GPU training integration acceptance。
+- PEFT 当前未进入 inference 环境（`peft=null`），在 SFT/LoRA WP 前必须正式引入并固定。
+- DeepSpeed 已随固定 Open-R1 栈安装，但其 GPU training 集成未在 1660 Ti 上验证，也不作为本机 acceptance 项；不因此安装系统 CUDA Toolkit。
+
+### 5. 配置影响与文件
+
+- 修改：`pyproject.toml`（gpu extra）、`uv.lock`（新增）、`Makefile`（install-gpu）、`src/code_verifier/environment.py`、`src/code_verifier/evaluation/generate.py`（dtype=auto 兼容 + local_files_only）、`src/code_verifier/evaluation/evaluate.py`、`configs/eval/pass1.yaml`（dtype: float16）、`tests/unit/test_environment.py`、`tests/unit/evaluation/test_generate.py`、`tests/unit/evaluation/test_evaluate.py`、`tests/integration/test_wp5a_gpu_smoke.py`（local_files_only）、`README.md`、`AGENTS.md`、`environment.json`、`proceedings.md`
+- 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。

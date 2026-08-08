@@ -94,7 +94,7 @@ Source code lives in `src/code_verifier/`. The `third_party/open-r1/` submodule 
 | Command | Description |
 |---------|-------------|
 | `make install` | Creates `.venv`, installs project + pinned Open-R1 in editable mode, adds dev tools |
-| `make install-gpu` | `uv sync --extra dev --extra gpu`: installs the full pinned Open-R1/Transformers stack plus the pinned CUDA torch wheel (`torch==2.6.0`, CUDA 12.4, PyTorch cu124 index); required for real WP5 generation and GPU smoke tests |
+| `make install-gpu` | `uv sync --extra dev --extra gpu`: installs the current pinned Open-R1/Transformers inference/GPU stack plus the pinned CUDA torch wheel (`torch==2.6.0`, CUDA 12.4, PyTorch cu124 index); required for real WP5 generation and GPU smoke tests |
 | `make install-full` | Alias for `make install-gpu` (kept for backward compatibility) |
 | `make lint` | Runs ruff check, ruff format --check, and mypy on src/ and tests/ |
 | `make test` | Runs default pytest suite; GPU-required tests auto-run when a CUDA-capable GPU is detected and auto-skip with an explicit reason on CPU-only machines; real Piston tests are skipped without explicit enablement |

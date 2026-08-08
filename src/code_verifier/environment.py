@@ -125,13 +125,18 @@ def _gpu_identity() -> tuple[str | None, str | None, int]:
 
 
 def _gpu_capabilities() -> tuple[str | None, bool | None]:
-    """Collect compute capability and BF16 support when a CUDA device is available."""
+    """Collect compute capability and native BF16 support when a CUDA device is available.
+
+    ``bf16_supported`` records native hardware support only: torch's default
+    ``is_bf16_supported()`` treats software/emulated BF16 tensors as supported
+    (e.g. True on Turing), so the emulation path is explicitly excluded here.
+    """
     try:
         torch_runtime = importlib.import_module("torch")
         if not bool(torch_runtime.cuda.is_available()):
             return None, None
         capability = ".".join(str(part) for part in torch_runtime.cuda.get_device_capability(0))
-        bf16 = bool(torch_runtime.cuda.is_bf16_supported())
+        bf16 = bool(torch_runtime.cuda.is_bf16_supported(including_emulation=False))
     except Exception:
         return None, None
     return capability, bf16

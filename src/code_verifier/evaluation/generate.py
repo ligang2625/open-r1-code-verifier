@@ -16,6 +16,9 @@ class GenerationError(RuntimeError):
     """Raised when model generation cannot satisfy the configured inference contract."""
 
 
+SUPPORTED_DTYPES = ("auto", "float16", "bfloat16", "float32")
+
+
 @dataclass(frozen=True)
 class GenerationConfig:
     """Frozen deterministic pass@1 decoding settings."""
@@ -24,6 +27,7 @@ class GenerationConfig:
     temperature: float | None
     top_p: float | None
     max_new_tokens: int
+    dtype: str = "auto"
 
     def __post_init__(self) -> None:
         validate_generation_config(self)
@@ -95,6 +99,8 @@ def validate_generation_config(config: GenerationConfig) -> None:
         raise GenerationError("generation.max_new_tokens must be a positive integer")
     if not 1 <= config.max_new_tokens <= 4096:
         raise GenerationError("generation.max_new_tokens must be between 1 and 4096")
+    if not isinstance(config.dtype, str) or config.dtype not in SUPPORTED_DTYPES:
+        raise GenerationError("generation.dtype must be one of auto, float16, bfloat16, float32")
 
 
 def build_evaluation_prompt(problem: CodeProblem) -> str:
@@ -131,6 +137,17 @@ def _load_transformers_runtime() -> tuple[Any, Any]:
     return torch_runtime, transformers_runtime
 
 
+def _resolve_torch_dtype(torch_runtime: Any, dtype: str) -> Any:
+    """Map the project dtype name to a transformers ``torch_dtype`` argument."""
+    if dtype == "float16":
+        return torch_runtime.float16
+    if dtype == "bfloat16":
+        return torch_runtime.bfloat16
+    if dtype == "float32":
+        return torch_runtime.float32
+    raise GenerationError(f"unsupported dtype: {dtype}")
+
+
 class TransformersCompletionGenerator:
     """Frozen deterministic Transformers backend for one-completion pass@1 evaluation."""
 
@@ -159,6 +176,7 @@ class TransformersCompletionGenerator:
         model_revision: str | None,
         device: str,
         config: GenerationConfig,
+        local_files_only: bool = False,
     ) -> TransformersCompletionGenerator:
         """Load tokenizer/model from one identity and freeze the model for deterministic inference."""
         if not isinstance(model_id, str) or not model_id.strip():
@@ -167,6 +185,8 @@ class TransformersCompletionGenerator:
             raise GenerationError("model_revision must be a non-empty string or null")
         if device not in {"cpu", "cuda", "auto"}:
             raise GenerationError("device must be cpu, cuda, or auto")
+        if not isinstance(local_files_only, bool):
+            raise GenerationError("local_files_only must be a boolean")
         validate_generation_config(config)
         torch_runtime, transformers_runtime = _load_transformers_runtime()
         tokenizer_loader = getattr(transformers_runtime.AutoTokenizer, "from_" + "pretrained")
@@ -174,16 +194,30 @@ class TransformersCompletionGenerator:
         safety_key = "trust_" + "remote_code"
         tokenizer_options: dict[str, object] = {"revision": model_revision, safety_key: False}
         model_options: dict[str, object] = {"revision": model_revision, safety_key: False}
+        if config.dtype != "auto":
+            model_options["torch_dtype"] = _resolve_torch_dtype(torch_runtime, config.dtype)
+        if local_files_only:
+            tokenizer_options["local_files_only"] = True
+            model_options["local_files_only"] = True
         if device == "auto":
             model_options["device_map"] = "auto"
         try:
             tokenizer = tokenizer_loader(model_id, **tokenizer_options)
             model = model_loader(model_id, **model_options)
+        except Exception as error:
+            if local_files_only:
+                raise GenerationError(
+                    "could not load the configured model from the local cache (offline smoke); "
+                    "download and cache the model once on a network-connected machine before "
+                    "running the GPU smoke tests"
+                ) from None
+            raise GenerationError(f"could not load configured model runtime: {type(error).__name__}") from None
+        try:
             if device != "auto":
                 model = model.to(device)
             model.eval()
         except Exception as error:
-            raise GenerationError(f"could not load configured model runtime: {type(error).__name__}") from None
+            raise GenerationError(f"could not initialize configured model runtime: {type(error).__name__}") from None
         return cls(
             tokenizer=tokenizer,
             model=model,
@@ -192,6 +226,19 @@ class TransformersCompletionGenerator:
             device=device,
             config=config,
         )
+
+    @property
+    def model_dtype(self) -> str:
+        """Return the loaded model parameter dtype as a stable public name."""
+        dtype = getattr(self._model, "dtype", None)
+        for torch_dtype, name in (
+            (self._torch.float16, "float16"),
+            (self._torch.bfloat16, "bfloat16"),
+            (self._torch.float32, "float32"),
+        ):
+            if dtype is torch_dtype:
+                return name
+        raise GenerationError(f"unsupported model dtype: {dtype!r}")
 
     def generate(self, prompt: str, *, seed: int) -> GenerationResult:
         """Generate one completion with the frozen deterministic decoding contract."""

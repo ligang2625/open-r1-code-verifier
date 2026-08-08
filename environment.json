@@ -1,5 +1,5 @@
 {
-  "bf16_supported": true,
+  "bf16_supported": false,
   "compute_capability": "7.5",
   "cuda_version": "12.4",
   "dependency_lock_hash": "5dd860483cc073f71b9bce72507ed9ce3510ed25f98925138f09132ed0a25eda",
@@ -16,6 +16,6 @@
     "trl": "0.18.0"
   },
   "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
-  "project_commit": "3239aa3c347fc4393ecdb1901f6de4a2715a2dba",
+  "project_commit": "d4330d917a5c23d69a2d64ff1eb8e09ef328ab0b",
   "python_version": "3.10.12"
 }

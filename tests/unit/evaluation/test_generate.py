@@ -67,6 +67,7 @@ class _FakeTokenizer:
 class _FakeModel:
     def __init__(self) -> None:
         self.device = "cpu"
+        self.dtype: Any = None
         self.eval_called = False
         self.to_device: str | None = None
         self.generate_kwargs: dict[str, object] | None = None
@@ -105,6 +106,10 @@ class _FakeTransformers:
 
 
 class _FakeTorch:
+    float16 = "fake-float16"
+    bfloat16 = "fake-bfloat16"
+    float32 = "fake-float32"
+
     @staticmethod
     def inference_mode() -> Any:
         return nullcontext()
@@ -281,6 +286,147 @@ def test_transformers_generator_calls_eval_and_inference_path(monkeypatch: pytes
     assert model.generate_kwargs[token_key] == 512
     assert "temperature" not in model.generate_kwargs
     assert "top_p" not in model.generate_kwargs
+
+
+def test_generation_config_rejects_unsupported_dtype() -> None:
+    """Only the supported dtype names may be configured."""
+
+    with pytest.raises(GenerationError, match="dtype"):
+        GenerationConfig(
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            max_new_tokens=8,
+            dtype="float64",
+        )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "torch_dtype_name"),
+    [("float16", "fake-float16"), ("bfloat16", "fake-bfloat16"), ("float32", "fake-float32")],
+)
+def test_transformers_generator_passes_configured_dtype_to_model_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    dtype: str,
+    torch_dtype_name: str,
+) -> None:
+    """The configured dtype must reach the model loader and be exposed publicly."""
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    monkeypatch.setattr(generation_module, "_load_transformers_runtime", lambda: (_FakeTorch(), runtime))
+
+    generator = TransformersCompletionGenerator.from_pretrained(
+        "example/model",
+        model_revision=None,
+        device="cpu",
+        config=GenerationConfig(
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            max_new_tokens=8,
+            dtype=dtype,
+        ),
+    )
+
+    assert runtime.AutoModelForCausalLM.calls[0][1]["torch_dtype"] == torch_dtype_name
+    model.dtype = getattr(_FakeTorch, dtype)
+    assert generator.model_dtype == dtype
+
+
+def test_transformers_generator_default_dtype_does_not_override_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dtype=auto must not pass torch_dtype, preserving the legacy loader behavior."""
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    monkeypatch.setattr(generation_module, "_load_transformers_runtime", lambda: (_FakeTorch(), runtime))
+
+    TransformersCompletionGenerator.from_pretrained(
+        "example/model",
+        model_revision=None,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+    )
+
+    assert "torch_dtype" not in runtime.AutoModelForCausalLM.calls[0][1]
+
+
+def test_transformers_generator_local_files_only_reaches_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """local_files_only must be forwarded only when the offline smoke requests it."""
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    monkeypatch.setattr(generation_module, "_load_transformers_runtime", lambda: (_FakeTorch(), runtime))
+
+    TransformersCompletionGenerator.from_pretrained(
+        "example/model",
+        model_revision=None,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+        local_files_only=True,
+    )
+
+    assert runtime.AutoTokenizer.calls[0][1]["local_files_only"] is True
+    assert runtime.AutoModelForCausalLM.calls[0][1]["local_files_only"] is True
+
+
+def test_local_files_only_loader_failure_reports_cache_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loader failure under local_files_only must report the missing local cache."""
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    monkeypatch.setattr(generation_module, "_load_transformers_runtime", lambda: (_FakeTorch(), runtime))
+    seen_kwargs: dict[str, object] = {}
+
+    def failing_model_loader(model_id: str, **kwargs: object) -> object:
+        seen_kwargs.update(kwargs)
+        raise RuntimeError("fake load failure")
+
+    monkeypatch.setattr(runtime.AutoModelForCausalLM, "from_pretrained", failing_model_loader)
+
+    with pytest.raises(GenerationError, match="local cache"):
+        TransformersCompletionGenerator.from_pretrained(
+            "example/model",
+            model_revision=None,
+            device="cpu",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+            local_files_only=True,
+        )
+    assert seen_kwargs["local_files_only"] is True
+
+
+def test_local_files_only_device_failure_does_not_report_cache_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model.to() CUDA failure under local_files_only must not be misreported as cache missing."""
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    monkeypatch.setattr(generation_module, "_load_transformers_runtime", lambda: (_FakeTorch(), runtime))
+
+    def failing_to(device: str) -> _FakeModel:
+        raise RuntimeError("fake cuda failure")
+
+    monkeypatch.setattr(model, "to", failing_to)
+
+    with pytest.raises(GenerationError) as error:
+        TransformersCompletionGenerator.from_pretrained(
+            "example/model",
+            model_revision=None,
+            device="cuda",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+            local_files_only=True,
+        )
+    message = str(error.value)
+    assert "could not initialize configured model runtime: RuntimeError" in message
+    assert "local cache" not in message
+    assert "download and cache" not in message
 
 
 def test_transformers_generator_decodes_only_new_tokens() -> None:

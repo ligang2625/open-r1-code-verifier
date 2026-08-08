@@ -103,7 +103,7 @@ _CONFIG_FIELDS = {
     "device",
     "generation",
 }
-_GENERATION_FIELDS = {"do_sample", "temperature", "top_p", "max_new_tokens"}
+_GENERATION_FIELDS = {"do_sample", "temperature", "top_p", "max_new_tokens", "dtype"}
 _RECORD_FIELDS = {
     "run_id",
     "model_id",
@@ -191,6 +191,7 @@ def evaluation_config_from_mapping(value: object) -> EvaluationConfig:
             temperature=generation_mapping["temperature"],  # type: ignore[arg-type]
             top_p=generation_mapping["top_p"],  # type: ignore[arg-type]
             max_new_tokens=generation_mapping["max_new_tokens"],  # type: ignore[arg-type]
+            dtype=generation_mapping["dtype"],  # type: ignore[arg-type]
         )
     except GenerationError as error:
         raise EvaluationError(str(error)) from None

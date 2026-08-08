@@ -85,6 +85,7 @@ def _config_mapping() -> dict[str, object]:
             "temperature": None,
             "top_p": None,
             "max_new_tokens": 512,
+            "dtype": "auto",
         },
     }
 
@@ -143,6 +144,12 @@ def test_evaluation_config_rejects_training_split() -> None:
     mapping["split"] = "train"
     with pytest.raises(EvaluationError, match="validation or test"):
         evaluation_config_from_mapping(mapping)
+
+
+def test_pass1_config_uses_float16_for_gpu_debug_evaluation() -> None:
+    """The 1660 Ti debug evaluation config must explicitly load in FP16."""
+    config = load_evaluation_config(Path("configs/eval/pass1.yaml"))
+    assert config.generation.dtype == "float16"
 
 
 def test_evaluation_record_round_trip_is_exact_and_json_safe() -> None:
