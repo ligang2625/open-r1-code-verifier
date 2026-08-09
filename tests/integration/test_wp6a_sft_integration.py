@@ -120,6 +120,7 @@ def _config(tmp_path: Path, artifact: Path) -> SFTTrainingConfig:
             "model_id": "example/model",
             "model_revision": "a" * 40,
             "dataset_path": str(artifact),
+            "validation_dataset_path": None,
             "piston_config": str(tmp_path / "piston.yaml"),
             "max_seq_length": 128,
             "max_steps": 1,

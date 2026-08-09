@@ -103,6 +103,7 @@ def test_wp1_smoke_pipeline_exports_twenty_problems(
 
     for artifact_name in ("sft.jsonl", "public_grpo.jsonl", "hidden_grpo.jsonl"):
         assert len(_read_jsonl(output_dir / "training" / artifact_name)) == 12
+    assert len(_read_jsonl(output_dir / "training" / "sft_validation.jsonl")) == 4
 
 
 def test_wp1_training_artifacts_never_contain_eval_hidden_tests(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -202,3 +203,17 @@ def test_load_training_artifact_duplicate_key_cannot_hide_eval_content(tmp_path:
         load_training_artifact(path, kind=TrainingArtifactKind.PUBLIC_GRPO)
     assert "duplicate JSON key" in str(excinfo.value)
     assert "HIDDEN_MARKER" not in str(excinfo.value)
+
+
+def test_load_sft_artifact_preserves_unicode_line_separators_inside_physical_line(tmp_path: Path) -> None:
+    record = build_training_record(_dataset()[0], kind=TrainingArtifactKind.SFT)
+    record["prompt"] = "prompt\u2028continues"
+    record["sft_response"] = "def fn_train(value):\u2029    return value"
+    path = tmp_path / "sft.jsonl"
+    path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    assert path.read_bytes().count(b"\n") == 1
+    assert load_training_artifact(path, kind=TrainingArtifactKind.SFT) == [record]
+
+    path.write_text(json.dumps(record, ensure_ascii=False) + "\r\n\r\n", encoding="utf-8")
+    assert load_training_artifact(path, kind=TrainingArtifactKind.SFT) == [record]

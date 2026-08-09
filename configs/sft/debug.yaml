@@ -2,6 +2,7 @@ run_name: debug
 model_id: Qwen/Qwen2.5-Coder-0.5B-Instruct
 model_revision: null
 dataset_path: data/processed/wp1-smoke/training/sft.jsonl
+validation_dataset_path: null
 piston_config: configs/execution/piston-local.yaml
 max_seq_length: 512
 max_steps: 2

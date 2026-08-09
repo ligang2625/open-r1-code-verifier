@@ -204,9 +204,9 @@ def check_training_record(
 
 
 def load_training_artifact(path: Path, *, kind: TrainingArtifactKind) -> list[dict[str, JsonValue]]:
-    """Load and validate every record in one training artifact."""
+    """Load physical-LF JSONL, accepting CRLF and ignoring blank/trailing lines."""
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except (OSError, UnicodeError) as error:
         raise LeakageError(f"Could not read {kind.value} artifact {path}: {error}") from error
     records: list[dict[str, JsonValue]] = []

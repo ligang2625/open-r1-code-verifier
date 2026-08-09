@@ -180,9 +180,11 @@ def test_prepare_data_writes_expected_layout(tmp_path: Path) -> None:
     assert (output / "canonical" / "problems.jsonl").is_file()
     assert {path.name for path in (output / "training").iterdir()} == {
         "sft.jsonl",
+        "sft_validation.jsonl",
         "public_grpo.jsonl",
         "hidden_grpo.jsonl",
     }
+    assert summary.sft_validation_artifact == output / "training" / "sft_validation.jsonl"
 
 
 def test_prepare_data_training_artifacts_exclude_eval_hidden(tmp_path: Path) -> None:
@@ -213,6 +215,28 @@ def test_prepared_sft_artifact_matches_canonical_visible_view(tmp_path: Path) ->
     sft_records[0]["visible_tests"] = problem_to_mapping(train_problem)["train_hidden_tests"]
     _write_json_records(output / "training" / "sft.jsonl", sft_records)
     with pytest.raises(DataPreparationError):
+        check_prepared_data(output)
+
+
+def test_prepared_sft_validation_artifact_matches_only_canonical_validation_split(tmp_path: Path) -> None:
+    raw = tmp_path / "raw.jsonl"
+    _write_raw(raw)
+    output = tmp_path / "prepared"
+    prepare_data(_config(raw), seed=42, output_dir=output)
+
+    canonical = _load_canonical_problems(output)
+    validation_problem = next(problem for problem in canonical if problem.split == "validation")
+    train_problem = next(problem for problem in canonical if problem.split == "train")
+    validation_path = output / "training" / "sft_validation.jsonl"
+    assert _read_json_records(validation_path) == [
+        build_training_record(validation_problem, kind=TrainingArtifactKind.SFT)
+    ]
+
+    _write_json_records(
+        validation_path,
+        [cast(dict[str, object], build_training_record(train_problem, kind=TrainingArtifactKind.SFT))],
+    )
+    with pytest.raises(DataPreparationError, match="canonical validation split"):
         check_prepared_data(output)
 
 

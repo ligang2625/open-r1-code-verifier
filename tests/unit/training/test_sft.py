@@ -8,9 +8,10 @@ import re
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import pytest
+import yaml
 
 import code_verifier.training.sft as sft_module
 from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
@@ -34,6 +35,7 @@ def _config_mapping(tmp_path: Path) -> dict[str, object]:
         "model_id": "example/model",
         "model_revision": "a" * 40,
         "dataset_path": str(tmp_path / "sft.jsonl"),
+        "validation_dataset_path": None,
         "piston_config": str(tmp_path / "piston.yaml"),
         "max_seq_length": 128,
         "max_steps": 2,
@@ -76,6 +78,7 @@ def _config(tmp_path: Path) -> SFTTrainingConfig:
         ("lora_r", 0),
         ("lora_dropout", 1.0),
         ("lr_scheduler_type", "linear"),
+        ("min_cuda_memory_gb", 19.9),
     ],
 )
 def test_load_sft_training_config_rejects_unknown_and_unsafe_values(
@@ -113,6 +116,22 @@ def test_main_config_matches_spec_lora_defaults_and_frozen_revision() -> None:
     assert config.bf16 is True
     assert config.fp16 is False
     assert config.gradient_checkpointing is True
+    assert config.eval_strategy == "steps"
+    assert config.eval_steps == 100
+    assert config.validation_dataset_path == Path.cwd() / "data/processed/wp1-smoke/training/sft_validation.jsonl"
+
+
+def test_eval_strategy_requires_exactly_one_validation_artifact_mode(tmp_path: Path) -> None:
+    mapping = _config_mapping(tmp_path)
+    mapping["eval_strategy"] = "steps"
+    mapping["eval_steps"] = 1
+    with pytest.raises(SFTTrainingError, match="validation_dataset_path"):
+        sft_training_config_from_mapping(mapping)
+
+    mapping = _config_mapping(tmp_path)
+    mapping["validation_dataset_path"] = str(tmp_path / "validation.jsonl")
+    with pytest.raises(SFTTrainingError, match="validation_dataset_path"):
+        sft_training_config_from_mapping(mapping)
 
 
 class _FakeCuda:
@@ -144,6 +163,10 @@ def test_hardware_guard_rejects_six_gb_gpu_before_model_load(
     )
     with pytest.raises(SFTTrainingError, match="at least 20"):
         validate_sft_training_hardware(_config(tmp_path))
+
+    lowered_config = replace(_config(tmp_path), min_cuda_memory_gb=1.0)
+    with pytest.raises(SFTTrainingError, match="at least 20"):
+        validate_sft_training_hardware(lowered_config)
 
 
 def test_hardware_guard_accepts_mock_24gb_bf16_gpu(
@@ -297,12 +320,18 @@ def _execution_result() -> ExecutionResult:
     )
 
 
-def _write_artifact(path: Path) -> None:
+def _write_artifact(
+    path: Path,
+    *,
+    problem_id: str = "unit-1",
+    prompt: str = "PRIVATE_PROMPT_SENTINEL",
+    visible_value: int = 1,
+) -> None:
     record = {
-        "problem_id": "unit-1",
-        "prompt": "PRIVATE_PROMPT_SENTINEL",
+        "problem_id": problem_id,
+        "prompt": prompt,
         "function_name": "solve",
-        "visible_tests": [{"input": 1, "expected": 1}],
+        "visible_tests": [{"input": visible_value, "expected": visible_value}],
         "sft_response": "def solve(value):\n    return value",
         "metadata": {
             "difficulty": "easy",
@@ -380,14 +409,102 @@ def test_run_artifacts_are_payload_free_and_loss_must_be_finite(
     assert json.loads((invalid_run / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
 
 
-def test_resume_path_is_forwarded_without_changing_run_identity(
+def test_eval_strategy_steps_builds_independent_payload_minimal_validation_dataset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
-    checkpoint = tmp_path / "source-checkpoint"
-    checkpoint.mkdir()
+    validation_path = tmp_path / "sft-validation.jsonl"
+    _write_artifact(
+        validation_path,
+        problem_id="validation-1",
+        prompt="VALIDATION_PROMPT_SENTINEL",
+        visible_value=2,
+    )
+    config = replace(
+        config,
+        validation_dataset_path=validation_path,
+        eval_strategy="steps",
+        eval_steps=1,
+    )
     summary = run_sft_training(
+        config,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor([_execution_result(), _execution_result()]),
+    )
+
+    trainer = _FakeTrainer.instances[0]
+    train_dataset = cast(Any, trainer.kwargs["train_dataset"])
+    eval_dataset = cast(Any, trainer.kwargs["eval_dataset"])
+    assert train_dataset.column_names == ["prompt", "completion"]
+    assert eval_dataset.column_names == ["prompt", "completion"]
+    assert len(train_dataset) == 1
+    assert len(eval_dataset) == 1
+    assert "VALIDATION_PROMPT_SENTINEL" not in repr(train_dataset[0])
+    assert "PRIVATE_PROMPT_SENTINEL" not in repr(eval_dataset[0])
+    for forbidden in ("visible_tests", "function_name", "metadata"):
+        assert forbidden not in repr(eval_dataset[0])
+    metrics = json.loads((summary.run_dir / "metrics.jsonl").read_text(encoding="utf-8"))
+    assert metrics["eval_samples"] == 1
+
+
+def test_resume_rejects_fresh_run_external_and_cross_run_checkpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
+    external_checkpoint = tmp_path / "checkpoint-1"
+    external_checkpoint.mkdir()
+    with pytest.raises(SFTTrainingError, match="existing SFT run"):
+        run_sft_training(
+            config,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor([_execution_result()]),
+            resume_from_checkpoint=external_checkpoint,
+        )
+
+    summary = run_sft_training(
+        config,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor([_execution_result()]),
+    )
+    run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    run_metadata["status"] = "failed"
+    (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")
+    other_checkpoint = tmp_path / "other-run" / "checkpoints" / "checkpoint-1"
+    other_checkpoint.mkdir(parents=True)
+    with pytest.raises(SFTTrainingError, match="same SFT run"):
+        run_sft_training(
+            config,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor([_execution_result()]),
+            resume_from_checkpoint=other_checkpoint,
+        )
+
+
+def test_resume_is_provenance_bound_records_source_and_accumulates_cost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
+    summary = run_sft_training(
+        config,
+        output_root=output_root,
+        seed=7,
+        executor=MockExecutor([_execution_result()]),
+    )
+    checkpoint = summary.checkpoint_dir / "checkpoint-1"
+    checkpoint.mkdir()
+    run_metadata = cast(dict[str, object], json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8")))
+    run_metadata["status"] = "failed"
+    run_metadata["gpu_hours"] = 1.25
+    (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")
+
+    resumed = run_sft_training(
         config,
         output_root=output_root,
         seed=7,
@@ -395,8 +512,45 @@ def test_resume_path_is_forwarded_without_changing_run_identity(
         resume_from_checkpoint=checkpoint,
     )
 
-    trainer = _FakeTrainer.instances[0]
+    trainer = _FakeTrainer.instances[-1]
     assert trainer.resume_from_checkpoint == str(checkpoint.resolve())
-    run_metadata = cast(dict[str, object], json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8")))
+    run_metadata = cast(dict[str, object], json.loads((resumed.run_dir / "run.json").read_text(encoding="utf-8")))
     assert run_metadata["run_id"] == config.run_name
     assert run_metadata["seed"] == 7
+    assert run_metadata["seed_override"] == {"config": 42, "cli": 7}
+    assert run_metadata["resume_from_checkpoint"] == "checkpoints/checkpoint-1"
+    assert cast(float, run_metadata["gpu_hours"]) > 1.25
+    resolved_config = cast(
+        dict[str, object],
+        yaml.safe_load((resumed.run_dir / "resolved_config.yaml").read_text(encoding="utf-8")),
+    )
+    assert resolved_config["seed"] == 7
+    assert "effective_seed" not in resolved_config
+
+
+def test_resume_rejects_repository_provenance_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
+    summary = run_sft_training(
+        config,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor([_execution_result()]),
+    )
+    checkpoint = summary.checkpoint_dir / "checkpoint-1"
+    checkpoint.mkdir()
+    run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    run_metadata["status"] = "failed"
+    run_metadata["git_commit"] = "0" * 40
+    (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")
+
+    with pytest.raises(SFTTrainingError, match="identity"):
+        run_sft_training(
+            config,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor([_execution_result()]),
+            resume_from_checkpoint=checkpoint,
+        )

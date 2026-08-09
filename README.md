@@ -445,10 +445,16 @@ Resume is explicit:
   --config configs/sft/debug.yaml \
   --seed 42 \
   --output-dir outputs/sft \
-  --resume-from-checkpoint outputs/sft/debug/checkpoints
+  --resume-from-checkpoint outputs/sft/debug/checkpoints/checkpoint-1
 ```
 
-Each run uses `outputs/sft/<run-name>/` with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. `configs/sft/debug.yaml` is a short 0.5B/fp16 path and `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration; both require at least 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
+Resume accepts only a concrete `checkpoint-*` directory inside the already-existing run. The existing run's
+model, effective config/seed, train and validation datasets, repository/Open-R1 commits, dependency lock, and
+recorded cost must match; external or cross-run checkpoints are rejected. GPU-hours accumulate across attempts.
+If `--seed` is omitted, `train-sft` uses the YAML seed. An explicit different CLI seed is printed as an override
+and becomes the resolved run identity.
+
+Each run uses `outputs/sft/<run-name>/` with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. `configs/sft/debug.yaml` is a short 0.5B/fp16 path with evaluation disabled. `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration and evaluates every 100 steps against the independent visible-only `training/sft_validation.jsonl` artifact. Both enforce a non-lowerable project minimum of 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
 
 WP6-a does not claim a real SFT checkpoint or B-group result. WP6-b must run on a 24GB GPU with at least 50 validated SFT examples and still complete the 1–2 step smoke, finite-loss check, checkpoint reload, unified deterministic pass@1 evaluation, and cost recording.
 
