@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through WP5 trustworthy evaluation are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through the WP6-a SFT control plane are implemented.
 
-WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6+ training integration is not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6-a adds a visible-only SFT data contract, trajectory validation, pinned LoRA/TRL/Open-R1 runtime construction, hardware protection, reproducible run artifacts, and the `train-sft` CLI. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -31,7 +31,15 @@ make install-gpu
 
 `make install-gpu` runs `uv sync --extra dev --extra gpu`: it installs the current pinned Open-R1/Transformers inference/GPU dependency stack plus the project-pinned CUDA torch wheel (`torch==2.6.0`, CUDA 12.4 build, from the PyTorch `cu124` index, compatible with Turing/sm_75). `make install-full` is kept as an alias for `make install-gpu`. Neither installation command updates the pinned Open-R1 commit.
 
-Development and smoke tests run on a machine with a single NVIDIA GeForce GTX 1660 Ti (6GB VRAM, Turing/sm_75); SFT/GRPO training still runs on the 24GB GPU (e.g. RTX 4090) machine per the project spec. After `make install-gpu`, regenerate `environment.json` with `record-environment` to confirm `cuda_version` / `gpu_name` / `gpu_count` and the added `compute_capability` / `bf16_supported` fields. `bf16_supported` records native hardware support only (torch `is_bf16_supported(including_emulation=False)`): it is `false` on Turing even though torch can create emulated BF16 tensors, and the final RTX 4090 training design keeps BF16. The GPU smoke generator explicitly loads the 0.5B debug model in fp16 and asserts the loaded dtype; `configs/eval/pass1.yaml` uses `generation.dtype: float16` for 1660 Ti debug evaluation. The GPU smoke tests load the model with `local_files_only=True` (offline cached model): they never perform Hugging Face network retries when the model is cached and the network is unreachable, and they fail fast with a clear message if the model is not cached yet. `generation.dtype: auto` keeps the legacy Transformers default loading behavior (no `torch_dtype` override). PEFT is intentionally not part of the current inference stack and must be formally introduced and pinned before the SFT/LoRA work package; DeepSpeed is installed as pinned Open-R1 metadata but its GPU training integration is not validated on the 1660 Ti, so GPU training-stack acceptance is deferred to the RTX 4090. The CPU-only workflow (`make install` + `make test`) remains valid on machines without a GPU, where GPU smoke tests auto-skip with an explicit reason.
+Install the exact SFT stack only on the 24GB training machine:
+
+```bash
+make install-train
+```
+
+`make install-train` adds the `training` extra and the exact `peft==0.14.0` pin while preserving TRL `0.18.0`, Transformers `4.52.3`, Accelerate `1.4.0`, torch `2.6.0`, and the pinned Open-R1 checkout.
+
+Development and smoke tests run on a machine with a single NVIDIA GeForce GTX 1660 Ti (6GB VRAM, Turing/sm_75); SFT/GRPO training still runs on the 24GB GPU (e.g. RTX 4090) machine per the project spec. After `make install-gpu`, regenerate `environment.json` with `record-environment` to confirm `cuda_version` / `gpu_name` / `gpu_count` and the added `compute_capability` / `bf16_supported` fields. `bf16_supported` records native hardware support only (torch `is_bf16_supported(including_emulation=False)`): it is `false` on Turing even though torch can create emulated BF16 tensors, and the final RTX 4090 training design keeps BF16. The GPU smoke generator explicitly loads the 0.5B debug model in fp16 and asserts the loaded dtype; `configs/eval/pass1.yaml` uses `generation.dtype: float16` for 1660 Ti debug evaluation. The GPU smoke tests load the model with `local_files_only=True` (offline cached model): they never perform Hugging Face network retries when the model is cached and the network is unreachable, and they fail fast with a clear message if the model is not cached yet. `generation.dtype: auto` keeps the legacy Transformers default loading behavior (no `torch_dtype` override). PEFT remains separate from the inference-only install and is available through `make install-train`; the `train-sft` hardware guard rejects the 1660 Ti before tokenizer/model/trainer loading. DeepSpeed is installed as pinned Open-R1 metadata but its GPU training integration is not validated on the 1660 Ti, so GPU training-stack acceptance is deferred to the RTX 4090. The CPU-only workflow (`make install` + `make test`) remains valid on machines without a GPU, where GPU smoke tests auto-skip with an explicit reason.
 
 ## Quality checks
 
@@ -112,7 +120,7 @@ problems = load_hf_dataset(Path("data/processed/wp1-smoke/hf_dataset"))
 
 The `training/` files contain only the 12 train-split problems and are built from explicit field whitelists:
 
-- `sft.jsonl` contains no test fields or reference solutions.
+- `sft.jsonl` contains the shared rendered prompt, function name, visible tests, SFT response, and bounded metadata needed for the pre-training quality gate; it contains no hidden tests or reference solution.
 - `public_grpo.jsonl` contains visible tests only.
 - `hidden_grpo.jsonl` contains visible and train-hidden tests.
 - No training artifact contains `eval_hidden_tests`.
@@ -414,6 +422,35 @@ The committed 20-problem smoke fixture currently has four test-split problems. I
 Reusing the same run name performs strict prefix resume rather than overwrite or best-effort matching. Resume succeeds only when the resolved config, model/checkpoint identity, seed, dataset hash, prompt hashes/order, repository/submodule identity, dependency identity, and CUDA/GPU identity match the existing run. Already completed rows are not generated again. Corrupt, reordered, duplicated, non-finite, or identity-drifted rows cause a hard error.
 
 The evaluation path is read-only with respect to training: it does not modify the frozen checkpoint, invoke Public/Hidden training rewards, write eval-hidden tests into training artifacts, or add SFT/GRPO behavior. Those boundaries must remain intact during WP6+ work.
+
+## WP6-a LoRA SFT control plane
+
+WP6-a normalizes every accepted SFT target to exactly one closed Python fenced block, parses the expected top-level function, verifies it only against the artifact's visible tests through `verify_completion()` and the configured `CodeExecutor`, and rejects failed, truncated, duplicate, repetitive, or over-length trajectories. After validation, the TRL dataset contains only conversational `prompt` and `completion` columns; tests, function names, and metadata are dropped before trainer construction.
+
+On the 24GB training machine, prepare the WP1 data, start the loopback Piston service, install the training extra, and run:
+
+```bash
+make install-train
+.venv/bin/code-verifier train-sft \
+  --config configs/sft/debug.yaml \
+  --seed 42 \
+  --output-dir outputs/sft \
+  --log-level INFO
+```
+
+Resume is explicit:
+
+```bash
+.venv/bin/code-verifier train-sft \
+  --config configs/sft/debug.yaml \
+  --seed 42 \
+  --output-dir outputs/sft \
+  --resume-from-checkpoint outputs/sft/debug/checkpoints
+```
+
+Each run uses `outputs/sft/<run-name>/` with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. `configs/sft/debug.yaml` is a short 0.5B/fp16 path and `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration; both require at least 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
+
+WP6-a does not claim a real SFT checkpoint or B-group result. WP6-b must run on a 24GB GPU with at least 50 validated SFT examples and still complete the 1–2 step smoke, finite-loss check, checkpoint reload, unified deterministic pass@1 evaluation, and cost recording.
 
 ## Current limitations
 
