@@ -90,3 +90,76 @@ repair_routing:
 ### Required next lifecycle action
 
 Run `$stage-lifecycle checkpoint_review` to provenance-check and commit this R1 review. After that checkpoint, run `$execution-router` for the `R1-M1` repair. Do not finalize WP5-b from this review round.
+
+## R2 — completed E1 repair review
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP5-b
+  review_round: 2
+  source_execution_id: E1
+  reviewed_head_commit: 82acf24ba0d00a74cb1d43393c02645d763bd02a
+  conclusion: pass
+```
+
+### Provenance
+
+- R1 review was checkpointed at `14f365a217782a5a2b5245a568cc87b55a3406fe` with `conclusion=needs_repair` and sole repair issue `R1-M1`.
+- Latest completed execution is `E1`, `task_kind=repair`, `source_review_round=1`, `source_review_commit=14f365a217782a5a2b5245a568cc87b55a3406fe`, `repair_issue_ids=[R1-M1]`, and `result_code_commit=30964b2c6af9bf0dbc8b76f59e99b2ca8ba0b218`.
+- The E1 execution record is contained by current stage HEAD `82acf24ba0d00a74cb1d43393c02645d763bd02a` (`docs(executor): record WP5-b repair`).
+- Review started and finished with HEAD unchanged at that commit; tracked worktree was clean before this R2 artifact append.
+
+### R1 issue closure
+
+#### R1-M1 — resolved
+
+`load_evaluation_records()` now splits persisted JSONL only on the repository's physical LF delimiter (`"\n"`) instead of `str.splitlines()`. It removes only the synthetic final empty fragment produced by a terminal LF; empty files remain valid, while genuine blank LF-delimited rows still reach the existing strict rejection path.
+
+The added regression `test_load_evaluation_records_round_trips_writer_unicode_line_separators` writes a strict record through `append_evaluation_record()` containing both U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, confirms the raw UTF-8 bytes are persisted, and verifies exact loader round-trip. Existing invalid JSON, duplicate-key, unknown-field, invalid UTF-8, finite-value, and blank-row guards remain covered.
+
+Reviewer independently replayed the original failure mode against current HEAD: writer→loader round-trip with `before<U+2028>middle<U+2029>after` succeeded, while a physical blank LF row was still rejected with `EvaluationError`.
+
+### Independent verification
+
+Reviewer commands were executed from the WP5-b stage worktree. As in R1, the primary checkout's installed virtual environment was reused while `PYTHONPATH=src` forced imports to resolve to the stage worktree source.
+
+- Affected strict-record/resume suite: `34 passed`.
+- `make lint VENV=/home/dzy/open-r1-code-verifier/.venv`: Ruff check/format and strict Mypy passed for 76 files.
+- `PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv`: `660 passed, 3 skipped`; all three skips are the explicitly gated real-Piston cases.
+- `PYTHONPATH=src make test-piston VENV=/home/dzy/open-r1-code-verifier/.venv PISTON_CONFIG=configs/execution/piston-local.yaml`: `9 passed`, `0 skipped` (`2 deselected`).
+- `PYTHONPATH=src make test-gpu VENV=/home/dzy/open-r1-code-verifier/.venv`: `3 passed`.
+- Current-HEAD formal Base reviewer run using the already-cached immutable model (`HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`) completed 4 problems with `resumed=0`, `generated=4`.
+- Re-running the same reviewer run produced `resumed=4`, `generated=0`, confirming no-op resume after the repair.
+- Comparing `base-main-r1-repair` with `reviewer-r2-offline` while excluding only `run_id`, `runtime_ms`, and `generation_latency_ms` produced identical ordered normalized records. Under the reviewer's canonical sorted compact JSON encoding, both normalized sets hash to `03f4168f04155bca9d2a66bed919aa6f5d41004f687e075a862c405165f755b0`.
+- Core metrics matched: parse/target/executable rates `1.0`; visible/train-hidden/eval-hidden pass@1 `0.5`; eval-hidden average test pass rate `0.5`; public-eval gap `0.0`.
+- Full regression coverage, including WP5-b summary/CSV payload-isolation checks, passed after the repair.
+
+### Findings
+
+No new blocker, major, minor, or other actionable findings were identified. `R1-M1` is closed.
+
+### Conclusion
+
+E1 fixes the only R1 defect without weakening the strict persisted-record guards or changing the statistical, Base configuration, execution, or payload-isolation contracts. All required independent tests and the current-HEAD Base/resume acceptance pass. WP5-b therefore passes R2 for reviewed HEAD `82acf24ba0d00a74cb1d43393c02645d763bd02a`.
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 2
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "R1-M1 is resolved and no new actionable findings remain; no repair execution is required after R2."
+  workstream_candidates: []
+```
+
+### Required next lifecycle action
+
+Run `$stage-lifecycle checkpoint_review` to provenance-check and commit this R2 PASS review. After that checkpoint succeeds, run `$stage-lifecycle finalize` for WP5-b. Do not run `$execution-router` again unless the review becomes stale or new code changes are introduced.
