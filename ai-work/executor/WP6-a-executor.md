@@ -111,3 +111,55 @@ execution_record:
   result_code_commit: 66045604468dc475127cd26ef160f8b7398e1ea7
   status: completed
 ```
+
+## E2 repair summary
+
+`R2-m1` is repaired without expanding the routed scope. The WP1 raw and canonical JSONL readers now treat only
+physical LF (`\n`) as a record boundary, matching the training artifact reader. CRLF remains accepted as JSON
+whitespace, blank and trailing lines remain ignored, and strict duplicate-key, schema, split, and leakage checks are
+unchanged.
+
+### Issue disposition and files
+
+| Issue | Disposition | Files |
+|---|---|---|
+| `R2-m1` | Replaced Unicode-aware line splitting in raw/canonical readers; added U+2028/U+2029 raw ingestion and canonical export/reload regressions, plus explicit CRLF/blank/trailing-LF coverage. | `src/code_verifier/data/adapters.py`, `src/code_verifier/data/prepare.py`, `tests/unit/data/test_adapters.py`, `tests/unit/data/test_prepare.py` |
+
+### Verification
+
+- Pre-fix regression proof: the four new U+2028/U+2029 cases failed with `Unterminated string`; all unrelated focused
+  cases passed (`4 failed, 41 passed`).
+- `PYTHONPATH=src ... pytest tests/unit/data/test_adapters.py tests/unit/data/test_prepare.py tests/integration/test_wp1_data_pipeline.py -q`:
+  `51 passed`.
+- `PYTHONPATH=src ... pytest tests/unit/data tests/integration/test_wp1_data_pipeline.py -q`: `123 passed`.
+- `PYTHONPATH=src make lint VENV=/home/dzy/open-r1-code-verifier/.venv`: PASS; Ruff check/format and strict Mypy
+  passed for 84 source files.
+- `PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv`: `713 passed, 3 skipped`; only the three
+  explicit real-Piston opt-in cases skipped.
+- `PYTHONPATH=src make test-gpu VENV=/home/dzy/open-r1-code-verifier/.venv`: `3 passed` on the GTX 1660 Ti; no SFT
+  ran.
+- Worktree-resolved `code-verifier --help` and `code-verifier train-sft --help`: PASS.
+- Runtime versions remain Open-R1 `0.1.0.dev0`, TRL `0.18.0`, Transformers `4.52.3`, Accelerate `1.4.0`, and PEFT
+  `0.14.0`.
+- Sealed plan, review records/routing, `proceedings.md`, and `third_party/open-r1/**`: unchanged.
+
+### Deviations and blockers
+
+- Deviations: none.
+- Blockers: none.
+
+## Structured E2 execution record
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP6-a
+  execution_id: E2
+  task_kind: repair
+  source_plan_commit: 0d17934e101c142d5117c6ec5c05bdf8c938921d
+  source_review_round: 2
+  source_review_commit: 00cf7487e0d95a8ff22e7597acbee84c2ab15725
+  repair_issue_ids: [R2-m1]
+  result_code_commit: 7a8d5ddb1fa7d68318624d562f9841e7f18650c2
+  status: completed
+```
