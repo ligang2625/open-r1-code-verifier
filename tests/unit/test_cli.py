@@ -31,6 +31,7 @@ from code_verifier.execution import (
     PistonExecutor,
 )
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
+from code_verifier.training import SFTTrainingError
 
 
 def test_help_lists_environment_command() -> None:
@@ -616,6 +617,46 @@ def test_evaluate_error_returns_two_without_traceback(monkeypatch: pytest.Monkey
     )
     output = capsys.readouterr()
     assert "evaluation config mismatch" in output.err
+    assert "Traceback" not in output.err
+
+
+def test_train_sft_help_exposes_common_and_resume_arguments(capsys: Any) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(["train-sft", "--help"])
+
+    assert error.value.code == 0
+    help_text = capsys.readouterr().out
+    for option in ("--help", "--config", "--seed", "--output-dir", "--log-level", "--resume-from-checkpoint"):
+        assert option in help_text
+
+
+def test_train_sft_reports_hardware_or_runtime_error_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    class FakeConfig:
+        piston_config = Path("piston.yaml")
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    monkeypatch.setattr(cli_module, "load_sft_training_config", lambda path: FakeConfig())
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(
+        cli_module,
+        "run_sft_training",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SFTTrainingError("training hardware rejected")),
+    )
+
+    assert main(["train-sft", "--config", "sft.yaml"]) == 2
+    output = capsys.readouterr()
+    assert "training hardware rejected" in output.err
     assert "Traceback" not in output.err
 
 

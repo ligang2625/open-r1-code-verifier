@@ -376,7 +376,7 @@ def _safe_run_dir(output_root: Path, run_name: str) -> Path:
     root = output_root.resolve(strict=False)
     if root == Path(root.anchor) or root == Path.cwd().resolve():
         raise SFTTrainingError("output_root must be a dedicated non-root directory")
-    run_dir = root / "sft" / run_name
+    run_dir = root / run_name
     if root not in run_dir.parents:
         raise SFTTrainingError("resolved SFT run directory escapes output_root")
     return run_dir

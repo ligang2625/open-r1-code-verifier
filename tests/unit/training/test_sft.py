@@ -376,7 +376,7 @@ def test_run_artifacts_are_payload_free_and_loss_must_be_finite(
             seed=42,
             executor=MockExecutor([_execution_result()]),
         )
-    invalid_run = invalid_root / "sft" / "invalid-loss"
+    invalid_run = invalid_root / "invalid-loss"
     assert json.loads((invalid_run / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
 
 

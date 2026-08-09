@@ -59,6 +59,12 @@ from code_verifier.execution import (
     validate_batch_cache_policy,
 )
 from code_verifier.parsing import extract_python_code
+from code_verifier.training import (
+    SFTDataError,
+    SFTTrainingError,
+    load_sft_training_config,
+    run_sft_training,
+)
 
 CommandHandler = Callable[[argparse.Namespace], int]
 DATA_ERRORS = (
@@ -79,6 +85,7 @@ EXECUTION_ERRORS = (
     UnicodeError,
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
+TRAINING_ERRORS = (SFTDataError, SFTTrainingError)
 
 
 def _add_common_arguments(
@@ -344,8 +351,28 @@ def _evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _train_sft(args: argparse.Namespace) -> int:
+    """Run one strict visible-only LoRA SFT workflow through local Piston validation."""
+    config = load_sft_training_config(Path(str(args.config)))
+    piston_config = load_piston_executor_config(config.piston_config)
+    executor = PistonExecutor(piston_config)
+    executor.validate_runtime()
+    resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
+    summary = run_sft_training(
+        config,
+        output_root=Path(str(args.output_dir)),
+        seed=int(args.seed),
+        executor=executor,
+        resume_from_checkpoint=resume,
+    )
+    print(f"trained {summary.train_samples} samples (train_loss={summary.train_loss:g})")
+    print(f"run_dir={summary.run_dir}")
+    print(f"checkpoint_dir={summary.checkpoint_dir}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0-WP5 commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP6-a commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -438,6 +465,24 @@ def build_parser() -> argparse.ArgumentParser:
         output_dir_required=False,
     )
     evaluate_parser.set_defaults(handler=_evaluate)
+
+    train_sft_parser = subparsers.add_parser(
+        "train-sft",
+        help="run visible-validated LoRA supervised fine-tuning",
+    )
+    train_sft_parser.add_argument(
+        "--resume-from-checkpoint",
+        type=Path,
+        default=None,
+        help="explicit checkpoint directory to resume",
+    )
+    _add_common_arguments(
+        train_sft_parser,
+        config_required=True,
+        output_dir_default=Path("outputs/sft"),
+        output_dir_required=False,
+    )
+    train_sft_parser.set_defaults(handler=_train_sft)
     return parser
 
 
@@ -459,7 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return handler(args)
-    except DATA_ERRORS + EXECUTION_ERRORS + EVALUATION_ERRORS as error:
+    except DATA_ERRORS + EXECUTION_ERRORS + EVALUATION_ERRORS + TRAINING_ERRORS as error:
         print(f"error: {' '.join(str(error).splitlines())}", file=sys.stderr)
         return 2
 
