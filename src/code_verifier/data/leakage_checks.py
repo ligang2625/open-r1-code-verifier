@@ -21,6 +21,7 @@ from code_verifier.data.schema import (
     validate_json_value,
     validate_problem,
 )
+from code_verifier.prompting import build_code_prompt
 
 
 class LeakageError(ValueError):
@@ -36,7 +37,14 @@ class TrainingArtifactKind(str, Enum):
 
 
 _ALLOWED_FIELDS = {
-    TrainingArtifactKind.SFT: {"problem_id", "prompt", "sft_response", "metadata"},
+    TrainingArtifactKind.SFT: {
+        "problem_id",
+        "prompt",
+        "function_name",
+        "visible_tests",
+        "sft_response",
+        "metadata",
+    },
     TrainingArtifactKind.PUBLIC_GRPO: {
         "problem_id",
         "prompt",
@@ -122,18 +130,22 @@ def build_training_record(
     """Construct a training record from an explicit per-kind field whitelist."""
     record: dict[str, JsonValue] = {}
     record["problem_id"] = problem.problem_id
-    record["prompt"] = problem.prompt
     if kind is TrainingArtifactKind.SFT:
         if not isinstance(problem.sft_response, str) or not problem.sft_response.strip():
             raise LeakageError(f"problem {problem.problem_id} has no non-empty sft_response")
+        record["prompt"] = build_code_prompt(problem)
+        record["function_name"] = problem.function_name
+        record["visible_tests"] = _test_layer_to_json(problem.visible_tests)
         record["sft_response"] = problem.sft_response
         record["metadata"] = _metadata_to_json(problem)
     elif kind is TrainingArtifactKind.PUBLIC_GRPO:
+        record["prompt"] = problem.prompt
         record["function_name"] = problem.function_name
         record["function_signature"] = problem.function_signature
         record["visible_tests"] = _test_layer_to_json(problem.visible_tests)
         record["metadata"] = _metadata_to_json(problem)
     elif kind is TrainingArtifactKind.HIDDEN_GRPO:
+        record["prompt"] = problem.prompt
         record["function_name"] = problem.function_name
         record["function_signature"] = problem.function_signature
         record["visible_tests"] = _test_layer_to_json(problem.visible_tests)
@@ -145,11 +157,11 @@ def build_training_record(
     return record
 
 
-def _contains_eval_hidden_key(value: object) -> bool:
+def _contains_forbidden_key(value: object, forbidden: frozenset[str]) -> bool:
     if isinstance(value, Mapping):
-        return any(key == "eval_hidden_tests" or _contains_eval_hidden_key(nested) for key, nested in value.items())
+        return any(key in forbidden or _contains_forbidden_key(nested, forbidden) for key, nested in value.items())
     if isinstance(value, list):
-        return any(_contains_eval_hidden_key(item) for item in value)
+        return any(_contains_forbidden_key(item, forbidden) for item in value)
     return False
 
 
@@ -170,10 +182,22 @@ def check_training_record(
             f"{kind.value} record contains forbidden or unknown field(s): "
             f"{', '.join(sorted(str(key) for key in unknown))}"
         )
-    if _contains_eval_hidden_key(record):
-        raise LeakageError(f"{kind.value} record contains forbidden eval_hidden_tests key")
+    forbidden = {"eval_hidden_tests", "reference_solution", "starter_code"}
+    if kind is not TrainingArtifactKind.HIDDEN_GRPO:
+        forbidden.add("train_hidden_tests")
+    if _contains_forbidden_key(record, frozenset(forbidden)):
+        raise LeakageError(f"{kind.value} record contains a forbidden training-data key")
     if kind is TrainingArtifactKind.SFT:
+        prompt = record["prompt"]
+        function_name = record["function_name"]
+        visible_tests = record["visible_tests"]
         response = record["sft_response"]
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise LeakageError("sft record requires a non-empty prompt")
+        if not isinstance(function_name, str) or not function_name.strip():
+            raise LeakageError("sft record requires a non-empty function_name")
+        if not isinstance(visible_tests, list) or not visible_tests:
+            raise LeakageError("sft record requires non-empty visible_tests")
         if not isinstance(response, str) or not response.strip():
             raise LeakageError("sft record requires a non-empty sft_response")
     validate_json_value(dict(record), field_path=f"{kind.value} record")

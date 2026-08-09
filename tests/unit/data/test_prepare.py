@@ -192,8 +192,28 @@ def test_prepare_data_training_artifacts_exclude_eval_hidden(tmp_path: Path) -> 
     prepare_data(_config(raw), seed=42, output_dir=output)
     for path in (output / "training").iterdir():
         assert b"eval_hidden_tests" not in path.read_bytes()
+        assert b"reference_solution" not in path.read_bytes()
     assert b"train_hidden_tests" not in (output / "training" / "public_grpo.jsonl").read_bytes()
-    assert b"visible_tests" not in (output / "training" / "sft.jsonl").read_bytes()
+    sft_bytes = (output / "training" / "sft.jsonl").read_bytes()
+    assert b"train_hidden_tests" not in sft_bytes
+    assert b"visible_tests" in sft_bytes
+    assert b"Function signature:" in sft_bytes
+
+
+def test_prepared_sft_artifact_matches_canonical_visible_view(tmp_path: Path) -> None:
+    raw = tmp_path / "raw.jsonl"
+    _write_raw(raw)
+    output = tmp_path / "prepared"
+    prepare_data(_config(raw), seed=42, output_dir=output)
+
+    sft_records = _read_json_records(output / "training" / "sft.jsonl")
+    train_problem = next(problem for problem in _load_canonical_problems(output) if problem.split == "train")
+    assert sft_records == [build_training_record(train_problem, kind=TrainingArtifactKind.SFT)]
+
+    sft_records[0]["visible_tests"] = problem_to_mapping(train_problem)["train_hidden_tests"]
+    _write_json_records(output / "training" / "sft.jsonl", sft_records)
+    with pytest.raises(DataPreparationError):
+        check_prepared_data(output)
 
 
 def test_prepare_data_is_byte_deterministic_for_same_seed(tmp_path: Path) -> None:

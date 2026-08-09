@@ -88,9 +88,30 @@ def test_check_dataset_requires_all_three_splits() -> None:
         check_dataset(_dataset()[:2])
 
 
-def test_sft_record_contains_no_test_fields() -> None:
+def test_sft_training_record_uses_shared_prompt_and_visible_tests_only() -> None:
     record = build_training_record(_dataset()[0], kind=TrainingArtifactKind.SFT)
-    assert set(record) == {"problem_id", "prompt", "sft_response", "metadata"}
+    assert set(record) == {
+        "problem_id",
+        "prompt",
+        "function_name",
+        "visible_tests",
+        "sft_response",
+        "metadata",
+    }
+    assert record["function_name"] == "fn_train"
+    assert record["visible_tests"] == [{"input": ["train", 0], "expected": 0}]
+    assert "Function signature:\ndef fn_train(value):" in str(record["prompt"])
+    assert '"input":["train",0]' in str(record["prompt"])
+    assert "Train task" in str(record["prompt"])
+
+
+def test_sft_training_record_rejects_train_hidden_eval_hidden_and_reference_solution() -> None:
+    record = build_training_record(_dataset()[0], kind=TrainingArtifactKind.SFT)
+    for field in ("train_hidden_tests", "eval_hidden_tests", "reference_solution", "starter_code"):
+        tampered = dict(record)
+        tampered[field] = []
+        with pytest.raises(LeakageError):
+            check_training_record(tampered, kind=TrainingArtifactKind.SFT)
 
 
 def test_public_record_contains_visible_tests_only() -> None:
@@ -117,7 +138,7 @@ def test_training_record_rejects_deleted_required_field(kind: TrainingArtifactKi
 @pytest.mark.parametrize(
     ("kind", "field"),
     [
-        (TrainingArtifactKind.SFT, "visible_tests"),
+        (TrainingArtifactKind.SFT, "train_hidden_tests"),
         (TrainingArtifactKind.PUBLIC_GRPO, "train_hidden_tests"),
         (TrainingArtifactKind.HIDDEN_GRPO, "eval_hidden_tests"),
     ],
@@ -133,7 +154,7 @@ def test_training_record_rejects_nested_eval_hidden_key() -> None:
     record = build_training_record(_dataset()[0], kind=TrainingArtifactKind.SFT)
     metadata = cast(dict[str, JsonValue], record["metadata"])
     metadata["nested"] = {"eval_hidden_tests": []}
-    with pytest.raises(LeakageError, match="eval_hidden_tests"):
+    with pytest.raises(LeakageError, match="forbidden"):
         check_training_record(record, kind=TrainingArtifactKind.SFT)
 
 
