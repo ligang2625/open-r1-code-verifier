@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +15,7 @@ from code_verifier.evaluation.metrics import (
     EvaluationAggregate,
     MetricsError,
     aggregate_evaluation_records,
+    aggregate_evaluation_run,
     evaluation_aggregate_to_mapping,
 )
 
@@ -214,3 +218,84 @@ def test_metric_mapping_is_finite_json_safe_and_payload_free() -> None:
     assert "PRIVATE_CODE" not in serialized
     assert isinstance(metrics_mapping, dict)
     assert all(key in metrics_mapping for key in ("visible_pass@1", "eval_hidden_pass@1", "public_eval_gap"))
+
+
+def _write_run(tmp_path: Path, records: list[EvaluationRecord], *, status: str = "completed") -> Path:
+    run_dir = tmp_path / "run"
+    (run_dir / "samples").mkdir(parents=True)
+    first = records[0]
+    metadata = {
+        "run_id": first.run_id,
+        "model_id": first.model_id,
+        "model_revision": "a" * 40,
+        "checkpoint": first.checkpoint,
+        "dataset_hash": first.dataset_hash,
+        "config_hash": first.config_hash,
+        "seed": 42,
+        "project_commit": "b" * 40,
+        "open_r1_commit": "c" * 40,
+        "dependency_lock_hash": "d" * 64,
+        "status": status,
+    }
+    (run_dir / "run.json").write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+    (run_dir / "samples" / "results.jsonl").write_text(
+        "".join(json.dumps(record.__dict__, allow_nan=False) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def test_aggregate_run_requires_completed_status(tmp_path: Path) -> None:
+    run_dir = _write_run(tmp_path, [_record("p1")], status="failed")
+
+    with pytest.raises(MetricsError, match="status completed"):
+        aggregate_evaluation_run(run_dir, bootstrap_seed=42, bootstrap_resamples=20)
+
+
+def test_aggregate_run_rejects_run_record_identity_mismatch(tmp_path: Path) -> None:
+    run_dir = _write_run(tmp_path, [_record("p1")])
+    metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    metadata["model_id"] = "different"
+    (run_dir / "run.json").write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+
+    with pytest.raises(MetricsError, match="identity"):
+        aggregate_evaluation_run(run_dir, bootstrap_seed=42, bootstrap_resamples=20)
+
+
+def test_aggregate_run_writes_stable_summary_and_one_row_csv(tmp_path: Path) -> None:
+    run_dir = _write_run(tmp_path, [_record("p1"), _record("p2", eval_hidden_pass_rate=0.5)])
+
+    summary = aggregate_evaluation_run(run_dir, bootstrap_seed=7, bootstrap_resamples=50)
+    summary_mapping = json.loads(summary.summary_path.read_text(encoding="utf-8"))
+    rows = list(csv.DictReader(io.StringIO(summary.main_results_path.read_text(encoding="utf-8"))))
+
+    assert summary.total_problems == 2
+    assert summary_mapping["schema_version"] == 1
+    assert summary_mapping["bootstrap"] == {"confidence_level": 0.95, "resamples": 50, "seed": 7}
+    assert summary_mapping["metrics"]["eval_hidden_pass@1"] == 0.5
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "run-1"
+    assert rows[0]["total_problems"] == "2"
+
+
+def test_summary_and_csv_exclude_completion_code_and_test_payloads(tmp_path: Path) -> None:
+    run_dir = _write_run(tmp_path, [_record("p1")])
+    summary = aggregate_evaluation_run(run_dir, bootstrap_seed=42, bootstrap_resamples=20)
+    derived = summary.summary_path.read_text(encoding="utf-8") + summary.main_results_path.read_text(encoding="utf-8")
+
+    assert "PRIVATE_COMPLETION" not in derived
+    assert "PRIVATE_CODE" not in derived
+    for forbidden in ("tests", "reference_solution", "stdout", "stderr"):
+        assert forbidden not in derived
+
+
+def test_reaggregating_same_run_is_byte_stable_except_no_variable_fields(tmp_path: Path) -> None:
+    run_dir = _write_run(tmp_path, [_record("p1"), _record("p2")])
+    first = aggregate_evaluation_run(run_dir, bootstrap_seed=42, bootstrap_resamples=20)
+    first_summary = first.summary_path.read_bytes()
+    first_csv = first.main_results_path.read_bytes()
+
+    second = aggregate_evaluation_run(run_dir, bootstrap_seed=42, bootstrap_resamples=20)
+
+    assert second.summary_path.read_bytes() == first_summary
+    assert second.main_results_path.read_bytes() == first_csv
