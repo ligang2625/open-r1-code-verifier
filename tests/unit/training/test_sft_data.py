@@ -76,10 +76,13 @@ def _record(response: str = "def solve(value):\n    return value") -> dict[str, 
 
 
 def test_normalize_raw_python_to_single_fenced_completion() -> None:
-    assert normalize_sft_completion(
-        "def solve(value):\r\n    return value\r\n",
-        expected_function_name="solve",
-    ) == "```python\ndef solve(value):\n    return value\n```"
+    assert (
+        normalize_sft_completion(
+            "def solve(value):\r\n    return value\r\n",
+            expected_function_name="solve",
+        )
+        == "```python\ndef solve(value):\n    return value\n```"
+    )
 
 
 @pytest.mark.parametrize(
