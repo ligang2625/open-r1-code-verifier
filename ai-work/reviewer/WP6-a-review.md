@@ -373,3 +373,13 @@ repair_routing:
 1. reviewer-ex 本轮只追加 R3 PASS review，未 commit/merge/finalize，也未修改 `proceedings.md`。
 2. 本地运行 `$stage-lifecycle checkpoint_review` 封存 R3。
 3. checkpoint 成功后运行 `$stage-lifecycle finalize`，由 lifecycle 完成 merge、proceedings/finalization record 与 worktree/branch cleanup。
+
+---
+
+## Finalization Record
+
+- `review_round`: 3
+- `review_commit`: `ad9f75f00579e129c4bee001c76b169a83c86a80`
+- `merge_commit`: `7a85ab86f8b74fffc27654fdc2eb9125b98ede6c`
+- `finalized_at`: `2026-08-09T21:04:24+08:00`
+- `status`: `FINALIZED`

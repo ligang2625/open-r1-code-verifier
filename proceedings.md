@@ -303,6 +303,24 @@ WP5-a 与 WP5-b 均已完成。当前 WP5 已具备确定性生成、逐题三�
 
 ---
 
+## WP6-a：SFT 数据合同与 LoRA 训练控制面
+
+- **完成日期**：2026-08-09
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP6-a-review.md` R3）
+- **执行计划**：`ai-work/planner/WP6-a-plan.md`
+- **实施范围**：完成 SFT visible-only 数据合同、共享 code-generation prompt、trajectory quality gate、pinned PEFT/TRL/Open-R1 runtime、LoRA 配置与硬件保护、payload-free run artifacts、`train-sft` CLI/resume 控制面及非训练集成验证；未执行真实 SFT、checkpoint reload、B 组评测或成本验收，这些 gate 保留给 WP6-b。
+
+### 验收结论
+
+- `make lint` 通过；`make test`：713 passed、3 个既有显式 Piston tests 按设计 skipped；GPU smoke：3 passed。
+- `train-sft` 在 GTX 1660 Ti 上于模型加载前按不可下调的 20 GiB 硬件门槛 fail closed，未启动真实 SFT。
+- SFT artifact、trainer/eval dataset 保持 visible-only 与 hidden/reference isolation；raw、canonical、training JSONL 均遵守 physical-LF contract，并覆盖 U+2028/U+2029 round-trip。
+- pinned runtime：Open-R1 `0.1.0.dev0`、TRL `0.18.0`、Transformers `4.52.3`、Accelerate `1.4.0`、PEFT `0.14.0`。
+- 上游 `third_party/open-r1/**` 未修改；WP6-b 的 24GB GPU、至少 50 条 validated SFT examples、checkpoint reload、B 组评测与成本 gate 未提前伪造通过。
+
+---
+
 ## 环境与硬件迁移准备：GPU 开发/冒烟机适配
 
 - **完成日期**：2026-08-07
