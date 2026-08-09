@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["mypy==1.15.0", "pytest==8.3.5", "ruff==0.9.10", "types-PyYAML==6.0.12.20241230"]
 gpu = ["torch==2.6.0"]
+training = ["peft==0.14.0"]
 
 [project.scripts]
 code-verifier = "code_verifier.cli:main"

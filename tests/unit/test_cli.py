@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -31,6 +32,7 @@ from code_verifier.execution import (
     PistonExecutor,
 )
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
+from code_verifier.training import SFTTrainingError
 
 
 def test_help_lists_environment_command() -> None:
@@ -95,6 +97,7 @@ def _summary(root: Path) -> PreparationSummary:
         canonical_jsonl=root / "canonical" / "problems.jsonl",
         hf_dataset_dir=root / "hf_dataset",
         training_artifacts={kind: root / "training" / f"{kind.value}.jsonl" for kind in TrainingArtifactKind},
+        sft_validation_artifact=root / "training" / "sft_validation.jsonl",
     )
 
 
@@ -617,6 +620,89 @@ def test_evaluate_error_returns_two_without_traceback(monkeypatch: pytest.Monkey
     output = capsys.readouterr()
     assert "evaluation config mismatch" in output.err
     assert "Traceback" not in output.err
+
+
+def test_train_sft_help_exposes_common_and_resume_arguments(capsys: Any) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(["train-sft", "--help"])
+
+    assert error.value.code == 0
+    help_text = capsys.readouterr().out
+    for option in ("--help", "--config", "--seed", "--output-dir", "--log-level", "--resume-from-checkpoint"):
+        assert option in help_text
+
+
+def test_train_sft_reports_hardware_or_runtime_error_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    class FakeConfig:
+        piston_config = Path("piston.yaml")
+        seed = 42
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    monkeypatch.setattr(cli_module, "load_sft_training_config", lambda path: FakeConfig())
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(
+        cli_module,
+        "run_sft_training",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SFTTrainingError("training hardware rejected")),
+    )
+
+    assert main(["train-sft", "--config", "sft.yaml"]) == 2
+    output = capsys.readouterr()
+    assert "training hardware rejected" in output.err
+    assert "Traceback" not in output.err
+
+
+def test_train_sft_uses_yaml_seed_and_prints_explicit_cli_override(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    class FakeConfig:
+        piston_config = Path("piston.yaml")
+        seed = 7
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    seen_seeds: list[int] = []
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        del args
+        seen_seeds.append(cast(int, kwargs["seed"]))
+        return SimpleNamespace(
+            train_samples=1,
+            train_loss=0.25,
+            run_dir=Path("outputs/sft/unit"),
+            checkpoint_dir=Path("outputs/sft/unit/checkpoints"),
+        )
+
+    monkeypatch.setattr(cli_module, "load_sft_training_config", lambda path: FakeConfig())
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
+
+    assert main(["train-sft", "--config", "sft.yaml"]) == 0
+    assert seen_seeds == [7]
+    assert "override:" not in capsys.readouterr().err
+
+    assert main(["train-sft", "--config", "sft.yaml", "--seed", "11"]) == 0
+    assert seen_seeds == [7, 11]
+    assert "override: seed: 7 -> 11" in capsys.readouterr().err
 
 
 def _cli_execution_result(status: ExecutionStatus = ExecutionStatus.PASSED) -> ExecutionResult:

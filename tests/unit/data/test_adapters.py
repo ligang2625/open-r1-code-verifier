@@ -39,8 +39,21 @@ def test_load_raw_jsonl_reads_valid_records(tmp_path: Path) -> None:
     first = _raw_mapping()
     second = _raw_mapping()
     second["problem_id"] = "p2"
-    path.write_text(f"{json.dumps(first)}\n\n{json.dumps(second)}\n", encoding="utf-8")
+    path.write_text(f"{json.dumps(first)}\r\n\r\n{json.dumps(second)}\r\n", encoding="utf-8")
     assert [problem.problem_id for problem in load_raw_jsonl(path)] == ["p1", "p2"]
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_load_raw_jsonl_preserves_unicode_line_separator_inside_physical_line(
+    tmp_path: Path,
+    separator: str,
+) -> None:
+    path = tmp_path / "raw.jsonl"
+    record = _raw_mapping()
+    record["prompt"] = f"before{separator}after"
+    path.write_text(f"{json.dumps(record, ensure_ascii=False)}\n", encoding="utf-8")
+
+    assert load_raw_jsonl(path)[0].prompt == f"before{separator}after"
 
 
 def test_load_raw_jsonl_reports_malformed_line_number(tmp_path: Path) -> None:

@@ -33,6 +33,7 @@ from code_verifier.data.split_tests import TestSplitConfig, adapt_raw_problem, v
 
 HF_DATASET_SCHEMA_VERSION = "wp1-canonical-json-v1"
 HF_DATASET_SCHEMA_FIELD = "code_verifier_schema"
+SFT_VALIDATION_ARTIFACT_NAME = "sft_validation.jsonl"
 
 
 class DataPreparationError(RuntimeError):
@@ -58,6 +59,7 @@ class PreparationSummary:
     canonical_jsonl: Path | None
     hf_dataset_dir: Path | None
     training_artifacts: dict[TrainingArtifactKind, Path]
+    sft_validation_artifact: Path
 
 
 def _exact_mapping(value: object, expected: set[str], *, field: str) -> Mapping[str, object]:
@@ -262,8 +264,9 @@ def export_training_artifacts(
     problems: Sequence[CodeProblem],
     output_dir: Path,
 ) -> dict[TrainingArtifactKind, Path]:
-    """Write and revalidate SFT/Public/Hidden JSONL files from field whitelists."""
+    """Write and revalidate train and independent SFT validation JSONL views."""
     train_problems = [problem for problem in problems if problem.split == "train"]
+    validation_problems = [problem for problem in problems if problem.split == "validation"]
     output_dir.mkdir(parents=True, exist_ok=True)
     result: dict[TrainingArtifactKind, Path] = {}
     for kind in TrainingArtifactKind:
@@ -271,6 +274,12 @@ def export_training_artifacts(
         write_jsonl((build_training_record(problem, kind=kind) for problem in train_problems), path)
         check_training_artifact(path, kind=kind)
         result[kind] = path
+    validation_path = output_dir / SFT_VALIDATION_ARTIFACT_NAME
+    write_jsonl(
+        (build_training_record(problem, kind=TrainingArtifactKind.SFT) for problem in validation_problems),
+        validation_path,
+    )
+    check_training_artifact(validation_path, kind=TrainingArtifactKind.SFT)
     return result
 
 
@@ -310,8 +319,9 @@ def prepare_data(
 
 
 def _load_canonical(path: Path) -> list[CodeProblem]:
+    """Load physical-LF canonical JSONL, accepting CRLF and ignoring blank/trailing lines."""
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except (OSError, UnicodeError) as error:
         raise DataPreparationError(f"Could not read canonical JSONL {path}: {error}") from error
     problems: list[CodeProblem] = []
@@ -332,18 +342,19 @@ def _check_training_artifact_matches_canonical(
     path: Path,
     *,
     kind: TrainingArtifactKind,
-    train_problems: Sequence[CodeProblem],
+    canonical_problems: Sequence[CodeProblem],
+    split_name: str,
 ) -> None:
-    """Require one serialized training view to exactly match canonical train records."""
+    """Require one serialized training view to exactly match one canonical split."""
     actual = load_training_artifact(path, kind=kind)
-    expected = [build_training_record(problem, kind=kind) for problem in train_problems]
+    expected = [build_training_record(problem, kind=kind) for problem in canonical_problems]
     actual_ids: list[str] = []
     for index, record in enumerate(actual, start=1):
         problem_id = record["problem_id"]
         if not isinstance(problem_id, str) or not problem_id.strip():
             raise DataPreparationError(f"{kind.value} artifact row {index} has an invalid problem_id")
         actual_ids.append(problem_id)
-    expected_ids = [problem.problem_id for problem in train_problems]
+    expected_ids = [problem.problem_id for problem in canonical_problems]
 
     if len(actual_ids) != len(set(actual_ids)):
         raise DataPreparationError(f"{kind.value} artifact contains duplicate problem_id values")
@@ -351,10 +362,11 @@ def _check_training_artifact_matches_canonical(
         missing = sorted(str(value) for value in set(expected_ids) - set(actual_ids))
         extra = sorted(str(value) for value in set(actual_ids) - set(expected_ids))
         raise DataPreparationError(
-            f"{kind.value} artifact problem IDs do not match canonical train split; missing={missing}, extra={extra}"
+            f"{kind.value} artifact problem IDs do not match canonical {split_name} split; "
+            f"missing={missing}, extra={extra}"
         )
     if actual_ids != expected_ids:
-        raise DataPreparationError(f"{kind.value} artifact row order does not match canonical train split")
+        raise DataPreparationError(f"{kind.value} artifact row order does not match canonical {split_name} split")
     for actual_record, expected_record, problem_id in zip(actual, expected, expected_ids, strict=True):
         if not json_values_equal(actual_record, expected_record):
             raise DataPreparationError(
@@ -373,8 +385,20 @@ def check_prepared_data(dataset_dir: Path) -> PreparationSummary:
     train_problems = [problem for problem in problems if problem.split == "train"]
     for kind in TrainingArtifactKind:
         path = training_dir / f"{kind.value}.jsonl"
-        _check_training_artifact_matches_canonical(path, kind=kind, train_problems=train_problems)
+        _check_training_artifact_matches_canonical(
+            path,
+            kind=kind,
+            canonical_problems=train_problems,
+            split_name="train",
+        )
         training_artifacts[kind] = path
+    sft_validation_artifact = training_dir / SFT_VALIDATION_ARTIFACT_NAME
+    _check_training_artifact_matches_canonical(
+        sft_validation_artifact,
+        kind=TrainingArtifactKind.SFT,
+        canonical_problems=[problem for problem in problems if problem.split == "validation"],
+        split_name="validation",
+    )
 
     hf_dataset_dir = dataset_dir / "hf_dataset"
     hf_path: Path | None = None
@@ -393,4 +417,5 @@ def check_prepared_data(dataset_dir: Path) -> PreparationSummary:
         canonical_jsonl=canonical_path,
         hf_dataset_dir=hf_path,
         training_artifacts=training_artifacts,
+        sft_validation_artifact=sft_validation_artifact,
     )

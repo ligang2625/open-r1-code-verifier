@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import importlib
-import json
 import math
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from code_verifier.data.schema import CodeProblem, test_case_to_mapping
+from code_verifier.data.schema import CodeProblem
+from code_verifier.prompting import build_code_prompt
 
 
 class GenerationError(RuntimeError):
@@ -105,26 +105,7 @@ def validate_generation_config(config: GenerationConfig) -> None:
 
 def build_evaluation_prompt(problem: CodeProblem) -> str:
     """Build the fixed §7.2 prompt using only the problem statement, signature, and visible tests."""
-    visible_examples = json.dumps(
-        [test_case_to_mapping(test_case) for test_case in problem.visible_tests],
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return (
-        "You are given a Python programming problem.\n\n"
-        "Problem:\n"
-        f"{problem.prompt}\n\n"
-        "Function signature:\n"
-        f"{problem.function_signature}\n\n"
-        "Visible examples:\n"
-        f"{visible_examples}\n\n"
-        "Return a correct implementation.\n"
-        "The final answer must contain exactly one Python code block.\n"
-        "Do not read from stdin unless the problem explicitly requires it.\n"
-        "Do not print debugging information."
-    )
+    return build_code_prompt(problem)
 
 
 def _load_transformers_runtime() -> tuple[Any, Any]:

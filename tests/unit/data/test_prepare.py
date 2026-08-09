@@ -170,6 +170,32 @@ def test_write_jsonl_is_deterministic_and_round_trippable(tmp_path: Path) -> Non
     assert [json.loads(line) for line in first.read_text(encoding="utf-8").splitlines()] == records
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_prepare_data_round_trips_unicode_line_separator_through_canonical_jsonl(
+    tmp_path: Path,
+    separator: str,
+) -> None:
+    raw = tmp_path / "raw.jsonl"
+    records = [
+        _raw_problem(0, "train"),
+        _raw_problem(1, "validation"),
+        _raw_problem(2, "test"),
+    ]
+    records[0]["prompt"] = f"before{separator}after"
+    raw.write_text(
+        "".join(f"{json.dumps(record, ensure_ascii=False)}\n" for record in records),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "prepared"
+    summary = prepare_data(_config(raw), seed=42, output_dir=output)
+    canonical = output / "canonical" / "problems.jsonl"
+
+    assert separator.encode() in canonical.read_bytes()
+    assert summary.total_problems == 3
+    assert check_prepared_data(output).total_problems == 3
+
+
 def test_prepare_data_writes_expected_layout(tmp_path: Path) -> None:
     raw = tmp_path / "raw.jsonl"
     _write_raw(raw)
@@ -180,9 +206,11 @@ def test_prepare_data_writes_expected_layout(tmp_path: Path) -> None:
     assert (output / "canonical" / "problems.jsonl").is_file()
     assert {path.name for path in (output / "training").iterdir()} == {
         "sft.jsonl",
+        "sft_validation.jsonl",
         "public_grpo.jsonl",
         "hidden_grpo.jsonl",
     }
+    assert summary.sft_validation_artifact == output / "training" / "sft_validation.jsonl"
 
 
 def test_prepare_data_training_artifacts_exclude_eval_hidden(tmp_path: Path) -> None:
@@ -192,8 +220,50 @@ def test_prepare_data_training_artifacts_exclude_eval_hidden(tmp_path: Path) -> 
     prepare_data(_config(raw), seed=42, output_dir=output)
     for path in (output / "training").iterdir():
         assert b"eval_hidden_tests" not in path.read_bytes()
+        assert b"reference_solution" not in path.read_bytes()
     assert b"train_hidden_tests" not in (output / "training" / "public_grpo.jsonl").read_bytes()
-    assert b"visible_tests" not in (output / "training" / "sft.jsonl").read_bytes()
+    sft_bytes = (output / "training" / "sft.jsonl").read_bytes()
+    assert b"train_hidden_tests" not in sft_bytes
+    assert b"visible_tests" in sft_bytes
+    assert b"Function signature:" in sft_bytes
+
+
+def test_prepared_sft_artifact_matches_canonical_visible_view(tmp_path: Path) -> None:
+    raw = tmp_path / "raw.jsonl"
+    _write_raw(raw)
+    output = tmp_path / "prepared"
+    prepare_data(_config(raw), seed=42, output_dir=output)
+
+    sft_records = _read_json_records(output / "training" / "sft.jsonl")
+    train_problem = next(problem for problem in _load_canonical_problems(output) if problem.split == "train")
+    assert sft_records == [build_training_record(train_problem, kind=TrainingArtifactKind.SFT)]
+
+    sft_records[0]["visible_tests"] = problem_to_mapping(train_problem)["train_hidden_tests"]
+    _write_json_records(output / "training" / "sft.jsonl", sft_records)
+    with pytest.raises(DataPreparationError):
+        check_prepared_data(output)
+
+
+def test_prepared_sft_validation_artifact_matches_only_canonical_validation_split(tmp_path: Path) -> None:
+    raw = tmp_path / "raw.jsonl"
+    _write_raw(raw)
+    output = tmp_path / "prepared"
+    prepare_data(_config(raw), seed=42, output_dir=output)
+
+    canonical = _load_canonical_problems(output)
+    validation_problem = next(problem for problem in canonical if problem.split == "validation")
+    train_problem = next(problem for problem in canonical if problem.split == "train")
+    validation_path = output / "training" / "sft_validation.jsonl"
+    assert _read_json_records(validation_path) == [
+        build_training_record(validation_problem, kind=TrainingArtifactKind.SFT)
+    ]
+
+    _write_json_records(
+        validation_path,
+        [cast(dict[str, object], build_training_record(train_problem, kind=TrainingArtifactKind.SFT))],
+    )
+    with pytest.raises(DataPreparationError, match="canonical validation split"):
+        check_prepared_data(output)
 
 
 def test_prepare_data_is_byte_deterministic_for_same_seed(tmp_path: Path) -> None:

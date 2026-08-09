@@ -113,9 +113,9 @@ def raw_problem_from_mapping(value: object, *, line_number: int | None = None) -
 
 
 def load_raw_jsonl(path: Path) -> list[RawCodeProblem]:
-    """Load nonblank JSONL lines and reject malformed JSON, duplicate keys, and empty files."""
+    """Load physical-LF JSONL, accepting CRLF and ignoring blank/trailing lines."""
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except (OSError, UnicodeError) as error:
         raise InputAdapterError(f"Could not read raw JSONL {path}: {error}") from error
 

@@ -2620,19 +2620,23 @@ dev = [
 gpu = [
     { name = "torch" },
 ]
+training = [
+    { name = "peft" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = "==3.2.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = "==1.15.0" },
     { name = "open-r1", editable = "third_party/open-r1" },
+    { name = "peft", marker = "extra == 'training'", specifier = "==0.14.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.5" },
     { name = "pyyaml", specifier = "==6.0.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.9.10" },
     { name = "torch", marker = "extra == 'gpu'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = "==6.0.12.20241230" },
 ]
-provides-extras = ["dev", "gpu"]
+provides-extras = ["dev", "gpu", "training"]
 
 [[package]]
 name = "openai"
@@ -2930,6 +2934,27 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6a/6d/eed37d7ebc1e0bcd27b831c0cf1fe94881934316187c4b30d23f29ea0bd4/partial_json_parser-0.2.1.1.post7.tar.gz", hash = "sha256:86590e1ba6bcb6739a2dfc17d2323f028cb5884f4c6ce23db376999132c9a922", size = 10296, upload-time = "2025-11-17T07:27:41.202Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/42/32/658973117bf0fd82a24abbfb94fe73a5e86216e49342985e10acce54775a/partial_json_parser-0.2.1.1.post7-py3-none-any.whl", hash = "sha256:145119e5eabcf80cbb13844a6b50a85c68bf99d376f8ed771e2a3c3b03e653ae", size = 10877, upload-time = "2025-11-17T07:27:40.457Z" },
+]
+
+[[package]]
+name = "peft"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "psutil" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/21/33/fb0c31eaa8162c01e9250b21aa65d46a5339f17a818a97c68391db2ff44b/peft-0.14.0.tar.gz", hash = "sha256:546d69af7b42f5ef715a3d3261ed818bc917ae6055e5d7e187ed3f2c76ad72dc", size = 411902, upload-time = "2024-12-06T11:37:44.258Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/05/e58e3aaa36544d30a917814e336fc65a746f708e5874945e92999bc22fa3/peft-0.14.0-py3-none-any.whl", hash = "sha256:2f04f3a870c3baf30f15e7dcaa5dd70d3e54cfdd146d3c6c187735d3ae0a0700", size = 374831, upload-time = "2024-12-06T11:37:41.602Z" },
 ]
 
 [[package]]

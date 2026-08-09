@@ -103,6 +103,7 @@ def test_wp1_smoke_pipeline_exports_twenty_problems(
 
     for artifact_name in ("sft.jsonl", "public_grpo.jsonl", "hidden_grpo.jsonl"):
         assert len(_read_jsonl(output_dir / "training" / artifact_name)) == 12
+    assert len(_read_jsonl(output_dir / "training" / "sft_validation.jsonl")) == 4
 
 
 def test_wp1_training_artifacts_never_contain_eval_hidden_tests(
@@ -121,8 +122,11 @@ def test_wp1_training_artifacts_never_contain_eval_hidden_tests(
     public_records = _read_jsonl(training_dir / "public_grpo.jsonl")
     assert all("train_hidden_tests" not in record for record in public_records)
     sft_records = _read_jsonl(training_dir / "sft.jsonl")
+    assert all("visible_tests" in record for record in sft_records)
+    assert all("Function signature:" in cast(str, record["prompt"]) for record in sft_records)
+    assert all("Visible examples:" in cast(str, record["prompt"]) for record in sft_records)
     assert all(
-        not any(field in record for field in ("visible_tests", "train_hidden_tests", "eval_hidden_tests"))
+        not any(field in record for field in ("train_hidden_tests", "eval_hidden_tests", "reference_solution"))
         for record in sft_records
     )
 

@@ -59,6 +59,12 @@ from code_verifier.execution import (
     validate_batch_cache_policy,
 )
 from code_verifier.parsing import extract_python_code
+from code_verifier.training import (
+    SFTDataError,
+    SFTTrainingError,
+    load_sft_training_config,
+    run_sft_training,
+)
 
 CommandHandler = Callable[[argparse.Namespace], int]
 DATA_ERRORS = (
@@ -79,6 +85,7 @@ EXECUTION_ERRORS = (
     UnicodeError,
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
+TRAINING_ERRORS = (SFTDataError, SFTTrainingError)
 
 
 def _add_common_arguments(
@@ -87,6 +94,7 @@ def _add_common_arguments(
     config_required: bool = False,
     output_dir_default: Path | None = None,
     output_dir_required: bool | None = None,
+    seed_default: int | None = 42,
 ) -> None:
     """Add common project options while allowing independent config/output requirements."""
     parser.add_argument(
@@ -95,7 +103,10 @@ def _add_common_arguments(
         required=config_required,
         help="YAML config path; required by commands that execute configured workflows",
     )
-    parser.add_argument("--seed", type=int, default=42, help="deterministic seed (default: 42)")
+    seed_help = (
+        "deterministic seed (default: config seed)" if seed_default is None else "deterministic seed (default: 42)"
+    )
+    parser.add_argument("--seed", type=int, default=seed_default, help=seed_help)
     resolved_output_required = config_required if output_dir_required is None else output_dir_required
     parser.add_argument(
         "--output-dir",
@@ -126,6 +137,7 @@ def _print_summary(action: str, summary: PreparationSummary) -> None:
         print(f"hf_dataset={summary.hf_dataset_dir}")
     for kind, path in sorted(summary.training_artifacts.items(), key=lambda item: item[0].value):
         print(f"training_{kind.value}={path}")
+    print(f"training_sft_validation={summary.sft_validation_artifact}")
 
 
 def _record_environment(args: argparse.Namespace) -> int:
@@ -344,8 +356,32 @@ def _evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _train_sft(args: argparse.Namespace) -> int:
+    """Run one strict visible-only LoRA SFT workflow through local Piston validation."""
+    config = load_sft_training_config(Path(str(args.config)))
+    cli_seed = None if args.seed is None else int(args.seed)
+    effective_seed = config.seed if cli_seed is None else cli_seed
+    if cli_seed is not None and cli_seed != config.seed:
+        print(f"override: seed: {config.seed} -> {cli_seed}", file=sys.stderr)
+    piston_config = load_piston_executor_config(config.piston_config)
+    executor = PistonExecutor(piston_config)
+    executor.validate_runtime()
+    resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
+    summary = run_sft_training(
+        config,
+        output_root=Path(str(args.output_dir)),
+        seed=effective_seed,
+        executor=executor,
+        resume_from_checkpoint=resume,
+    )
+    print(f"trained {summary.train_samples} samples (train_loss={summary.train_loss:g})")
+    print(f"run_dir={summary.run_dir}")
+    print(f"checkpoint_dir={summary.checkpoint_dir}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0-WP5 commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP6-a commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -438,6 +474,25 @@ def build_parser() -> argparse.ArgumentParser:
         output_dir_required=False,
     )
     evaluate_parser.set_defaults(handler=_evaluate)
+
+    train_sft_parser = subparsers.add_parser(
+        "train-sft",
+        help="run visible-validated LoRA supervised fine-tuning",
+    )
+    train_sft_parser.add_argument(
+        "--resume-from-checkpoint",
+        type=Path,
+        default=None,
+        help="explicit checkpoint directory to resume",
+    )
+    _add_common_arguments(
+        train_sft_parser,
+        config_required=True,
+        output_dir_default=Path("outputs/sft"),
+        output_dir_required=False,
+        seed_default=None,
+    )
+    train_sft_parser.set_defaults(handler=_train_sft)
     return parser
 
 
@@ -459,7 +514,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return handler(args)
-    except DATA_ERRORS + EXECUTION_ERRORS + EVALUATION_ERRORS as error:
+    except DATA_ERRORS + EXECUTION_ERRORS + EVALUATION_ERRORS + TRAINING_ERRORS as error:
         print(f"error: {' '.join(str(error).splitlines())}", file=sys.stderr)
         return 2
 

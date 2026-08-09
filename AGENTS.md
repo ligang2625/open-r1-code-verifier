@@ -13,6 +13,7 @@ open-r1-code-verifier/
 │       ├── cli.py                    # CLI entry point (code-verifier)
 │       ├── config.py                 # Strict YAML loading
 │       ├── environment.py            # Reproducibility metadata collection
+│       ├── prompting.py              # Shared visible-only §7.2 code prompt
 │       ├── data/                     # WP1 schema, split, dedup, leakage, export
 │       ├── parsing/
 │       │   └── code_extractor.py     # WP2 deterministic fenced-code parser
@@ -36,7 +37,9 @@ open-r1-code-verifier/
 │       │   ├── bootstrap.py           # WP5-b deterministic problem-level bootstrap
 │       │   └── metrics.py             # WP5-b aggregate metrics and summary artifacts
 │       └── training/
-│           └── open_r1_adapter.py    # Open-R1 integration boundary
+│           ├── open_r1_adapter.py    # Open-R1 integration boundary
+│           ├── sft_data.py           # WP6-a trajectory validation/dataset mapping
+│           └── sft.py                # WP6-a LoRA config/runtime/artifacts
 ├── tests/
 │   ├── integration/
 │   │   ├── test_wp1_data_pipeline.py
@@ -47,7 +50,8 @@ open-r1-code-verifier/
 │   │   ├── test_wp4b_reward_pipeline.py
 │   │   ├── test_wp5a_evaluation_pipeline.py
 │   │   ├── test_wp5a_gpu_smoke.py
-│   │   └── test_wp5b_metrics_pipeline.py
+│   │   ├── test_wp5b_metrics_pipeline.py
+│   │   └── test_wp6a_sft_integration.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
@@ -72,6 +76,9 @@ open-r1-code-verifier/
 │       │   ├── test_metrics.py
 │       │   ├── test_evaluate.py
 │       │   └── test_runner_resume.py
+│       ├── training/
+│       │   ├── test_sft_data.py
+│       │   └── test_sft.py
 │       ├── test_cli.py
 │       ├── test_config.py
 │       ├── test_environment.py
@@ -80,9 +87,12 @@ open-r1-code-verifier/
 │   ├── execution/
 │   │   ├── piston-local.yaml          # WP3-b strict loopback Piston config
 │   │   └── batch-local.yaml           # WP3-c bounded batch/cache config
-│   └── eval/
-│       ├── pass1.yaml                 # WP5-a debug deterministic pass@1 config
-│       └── base.yaml                  # WP5-b immutable CUDA/FP16 Base config
+│   ├── eval/
+│   │   ├── pass1.yaml                 # WP5-a debug deterministic pass@1 config
+│   │   └── base.yaml                  # WP5-b immutable CUDA/FP16 Base config
+│   └── sft/
+│       ├── debug.yaml                 # WP6-a short 0.5B/fp16 config
+│       └── main.yaml                  # WP6-a frozen 1.5B/bf16 LoRA config
 ├── docs/
 │   └── piston-local.md                # Local Piston deployment and safety runbook
 ├── third_party/
@@ -102,6 +112,7 @@ Source code lives in `src/code_verifier/`. The `third_party/open-r1/` submodule 
 | `make install` | Creates `.venv`, installs project + pinned Open-R1 in editable mode, adds dev tools |
 | `make install-gpu` | `uv sync --extra dev --extra gpu`: installs the current pinned Open-R1/Transformers inference/GPU stack plus the pinned CUDA torch wheel (`torch==2.6.0`, CUDA 12.4, PyTorch cu124 index); required for real WP5 generation and GPU smoke tests |
 | `make install-full` | Alias for `make install-gpu` (kept for backward compatibility) |
+| `make install-train` | Adds exact `peft==0.14.0` to the pinned GPU/Open-R1 training stack; use only on the 24GB training machine |
 | `make lint` | Runs ruff check, ruff format --check, and mypy on src/ and tests/ |
 | `make test` | Runs default pytest suite; GPU-required tests auto-run when a CUDA-capable GPU is detected and auto-skip with an explicit reason on CPU-only machines; real Piston tests are skipped without explicit enablement |
 | `make test-piston` | Runs the real loopback Piston safety acceptance suite; requires local service/runtime |
@@ -109,6 +120,7 @@ Source code lives in `src/code_verifier/`. The `third_party/open-r1/` submodule 
 | `make record-environment` | Records repo/submodule/Python/dependency versions to environment.json |
 | `.venv/bin/code-verifier --help` | Shows CLI help |
 | `.venv/bin/code-verifier evaluate --help` | Shows deterministic evaluation and aggregation options |
+| `.venv/bin/code-verifier train-sft --help` | Shows strict LoRA SFT and resume options |
 
 ## Coding Style & Naming Conventions
 
@@ -143,7 +155,9 @@ Run `make lint` before committing — it runs all three checks.
 
 - **Never edit `third_party/open-r1/`** — it's a pinned submodule. Use `open_r1_adapter.py` for integrations.
 - **Target hardware split**: development, builds, and smoke tests run on a GTX 1660 Ti (6GB VRAM) machine; SFT/GRPO training runs on a 24GB GPU (e.g. RTX 4090) machine. Never start training on the 1660 Ti.
-- **Current scope**: WP0–WP5 are implemented. WP5 covers deterministic frozen generation, per-problem three-layer evaluation, exact-prefix resume, problem-level metrics/bootstrap, generated result tables, and formal immutable Base acceptance. WP6 SFT is the next stage. Do not add later-WP functionality without the corresponding plan.
+- **Current scope**: WP0–WP5 and the WP6-a SFT data/training control plane are implemented. Real SFT training, checkpoint reload, B-group evaluation, and cost acceptance remain WP6-b work on the 24GB training machine. Do not add WP6-b or later-WP functionality without the corresponding plan.
+- WP6-a SFT artifacts may carry only the shared visible-only prompt, function name, visible tests, SFT response, and bounded metadata. They must never carry train/eval hidden tests, reference solutions, or starter code; trainer datasets must drop validation payloads after `verify_completion()`.
+- `train-sft` must retain exact pinned runtime checks, non-quantized LoRA, `trust_remote_code=False`, local-only reporting, payload-free run metadata, and the pre-model-load 20 GiB hardware guard. Never bypass that guard on the GTX 1660 Ti.
 - The WP4-a verifier accepts exactly one caller-selected non-empty test list, never a complete problem or test-layer selector. It must use `extract_python_code()` for parsing and `CodeExecutor` for execution, and sanitized mappings must not store completion, code, tests, function name, or metadata.
 - WP4 reward code must flow through `verify_completion()` and therefore through the configured `CodeExecutor`; reward modules must not parse or execute candidate code independently.
 - Public and Hidden reward wrappers must share `rewards/common.py`. Public may score only `visible_tests`; Hidden may score only `train_hidden_tests`; `eval_hidden_tests` must never enter either training reward path.
