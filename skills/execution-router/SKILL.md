@@ -9,6 +9,8 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 输入与 stage 定位
 
+标准入口是在**主仓库 root checkout** 调用 execution-router；用户不需要手动进入最新 worktree。若从 linked stage worktree 调用，也必须先解析主仓库 root，再通过 Git worktree 状态定位目标 stage；router 自己不 `git switch` stage branch。
+
 必须定位唯一 `stage_id` 与 stage worktree。优先使用调用方给出的 plan/stage_id；未给时只能在尚未合并 stage worktree 中**恰好一个候选**时继续：0 → `ROUTING_PLAN_MISSING`；>1 → `ROUTING_PLAN_AMBIGUOUS`。禁止最大编号、mtime、最近创建等猜测。
 
 Open-R1 artifact：

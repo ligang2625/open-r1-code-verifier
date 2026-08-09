@@ -15,7 +15,9 @@ description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与
 - 不在 `main` 写最终 plan 文件；
 - 最终 plan 交给本地 `stage-lifecycle bootstrap_plan` 写入并 commit。
 
-如果 CodexPro handoff 可用，优先把完整最终 plan 发布到 `.ai-bridge/current-plan.md`（例如 handoff_to_codex）；handoff 只是传输层，不是仓库 stage artifact。若 handoff 不可用，返回完整 plan 正文与 stage descriptor，供调用方传给 `stage-lifecycle`。
+planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `git worktree list` / branch / log 等只读状态，但不得进入已有 stage worktree 继续规划，也不得创建、删除、移动或修改任何 worktree/branch。
+
+如果 CodexPro handoff 可用，优先把完整最终 plan 发布到 `.ai-bridge/current-plan.md`（例如 handoff_to_codex）；handoff 只是传输层，不是仓库 stage artifact。handoff 工具可以在 plan 外增加 `Updated/Workspace/Target agent/## Plan` 等 transport wrapper；真正 payload 始终是完整 plan 正文。若 handoff 不可用，返回完整 plan 正文与 stage descriptor，供调用方传给 `stage-lifecycle`。
 
 ## 输入
 
@@ -26,7 +28,7 @@ description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与
 
 ## Active-stage guard
 
-规划下一 stage 前先枚举尚未合并的 stage worktree/branch：
+规划下一 stage 前先记录 `planning_base_commit = main HEAD`，并快照当前 `git worktree list` 与相关 stage branches。然后枚举尚未合并的 stage worktree/branch：
 
 - 0 个 active stage：允许规划下一 stage；
 - 1 个或多个 active stage：默认返回 `PLANNER_ACTIVE_STAGE_EXISTS`，不得规划后续 stage；
@@ -131,8 +133,9 @@ planner-ex 不写模型名/effort；single 映射只由 execution-router 维护�
 
 1. 自检 schema、范围、验收与 stage metadata；
 2. 不写入 main 的 `ai-work/planner/`；
-3. 优先通过 CodexPro handoff 把完整正文交给本地 Codex，并明确下一步：`$stage-lifecycle bootstrap_plan`；
-4. 若只能文本返回，必须同时返回 `stage_id / planning_base_commit / branch / worktree / final plan path`，供 bootstrap 使用。
+3. handoff 前再次确认 `main HEAD == planning_base_commit`，且 `git worktree list` / stage branch 集合与规划开始时一致；若 planner 运行期间出现新的 branch/worktree 或 primary HEAD 改变，返回 `PLANNER_GIT_STATE_CHANGED`，不要发布可执行 handoff；
+4. 优先通过 CodexPro handoff 把完整正文交给本地 Codex，并明确下一步：`$stage-lifecycle bootstrap_plan`；
+5. 若只能文本返回，必须同时返回 `stage_id / planning_base_commit / branch / worktree / final plan path`，供 bootstrap 使用。
 
 `stage-lifecycle` commit 完 plan 后，execution-router 才能消费；未 seal 的 handoff plan 不可执行。
 
@@ -148,4 +151,5 @@ planner-ex 不写模型名/effort；single 映射只由 execution-router 维护�
 - [ ] routing 三维独立评估，MULTI 通过 hard gate；
 - [ ] plan 未写模型/effort；
 - [ ] planner-ex 没有创建 worktree/branch、commit/merge/push，也没有在 main 写最终 plan；
+- [ ] planner-ex 前后的 primary HEAD、worktree 集合与 stage branch 集合一致；
 - [ ] 最终正文已准备交给 `stage-lifecycle bootstrap_plan`。

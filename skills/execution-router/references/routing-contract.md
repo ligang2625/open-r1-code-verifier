@@ -11,6 +11,18 @@
 
 不同 stage 不共用 execution/review 文件。`bootstrap_plan` 与 `finalize` 都要求 primary HEAD 仍等于该 planning base；正常流程不自动换基线或 rebase。
 
+### Canonical handoff / worktree ownership
+
+- `planner-ex`：只在 primary repo root 做只读规划；唯一可写输出是 transport handoff `.ai-bridge/current-plan.md`，不得创建/修改 branch/worktree。
+- `stage-lifecycle bootstrap_plan`：唯一负责创建 stage branch/worktree，并把 handoff payload 写成 stage worktree 内的 sealed plan；成功后消费 `current-plan.md`。
+- `execution-router`：从 primary root 作为 control plane 定位 stage worktree；不写业务文件。
+- `executor-ex` / `executor`：所有实现、测试、execution report 与 commit 都在 stage worktree。
+- `reviewer-ex`：可从 primary root 被调用，但必须先打开准确 stage worktree；所有 review 读取、测试和 review artifact 写入都在 stage worktree，不 commit。
+- `stage-lifecycle checkpoint_review`：从 primary root 定位 stage worktree，验证并提交 review。
+- `stage-lifecycle finalize`：从 primary root 校验 stage + primary，merge 后在 primary 更新 proceedings/finalization，再清理 stage worktree/branch。
+
+`.ai-bridge/current-plan.md` 只是 pending transport；stage plan seal 成功后，Git 中的 stage plan 是唯一 authoritative plan。
+
 ## 2. Plan routing
 
 ```yaml

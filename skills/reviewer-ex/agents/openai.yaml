@@ -1,4 +1,4 @@
 interface:
   display_name: "Reviewer Ex"
   short_description: "Independent provenance-bound review + repair routing; local lifecycle checkpoints/finalizes"
-  default_prompt: "Use $reviewer-ex to review the latest completed execution for one explicit stage_id, append review_record and repair_routing, and stop for local $stage-lifecycle checkpoint_review."
+  default_prompt: "Use $reviewer-ex for one explicit stage_id. Resolve and open the exact stage worktree first; all review reads/tests/writes must occur there, never in the primary checkout. Review the latest completed execution, append review_record and repair_routing, then stop for local $stage-lifecycle checkpoint_review."

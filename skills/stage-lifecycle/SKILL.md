@@ -15,6 +15,8 @@ description: 本地 Git 生命周期控制面。接收 planner-ex 的最终 plan
 
 本 skill **不实现业务代码、不修改 routing 决策、不执行 review、不创建 execution agent、不自动 push**。
 
+三个 operation 都以**主仓库 root checkout** 为 control-plane 起点。若调用发生在 linked stage worktree，先解析主仓库 root/primary checkout，再从 root 执行生命周期操作；不得在主 checkout `git switch` 到已被 worktree 占用的 stage branch。
+
 Routing compatibility marker: `execution-routing-v2`。
 
 ## 通用 stage identity
@@ -33,18 +35,26 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 ## Operation A: bootstrap_plan
 
-输入：planner-ex 的完整最终计划正文（优先来自 `.ai-bridge/current-plan.md` handoff；也可由调用方直接提供），其中必须包含 `stage_id`、`planning_base_commit`、目标 branch、worktree、最终 plan path 与合法 `execution_routing.version: 1`。
+输入：planner-ex 的完整最终计划正文（优先来自主仓库 root 的 `.ai-bridge/current-plan.md` handoff；也可由调用方直接提供），其中必须包含 `stage_id`、`planning_base_commit`、目标 branch、worktree、最终 plan path 与合法 `execution_routing.version: 1`。
+
+若来源是 `.ai-bridge/current-plan.md`，它是 transport envelope 而不是正式 plan：
+
+- 若存在 `## Plan` wrapper，只取第一个 `## Plan` **之后**的完整 Markdown 作为 plan payload；
+- `Updated`、`Workspace`、`Target agent`、handoff 标题与 `## Plan` 本身不得写入正式 plan artifact；
+- `Workspace` 若存在，必须解析为当前主仓库 root，否则返回 `STAGE_HANDOFF_WORKSPACE_MISMATCH`；
+- 找不到非空 plan payload、或 payload 缺少所需 metadata/routing 时返回 `STAGE_HANDOFF_INVALID`。
 
 步骤：
 
 1. 确认主仓库 `main` 的 tracked working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`，不 stash、不自动换基线。
 2. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`；若正是同一 stage，仅允许显式 replan 且它仍处于纯 PLANNED 状态：没有 completed E0，并且 `HEAD` 恰好等于当前 plan seal commit。plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。
 3. 验证 plan 中 `stage_id/planning_base_commit/branch/worktree/plan path` 互相一致；禁止按“最大 WP 编号”猜测。
-4. 创建或复用 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。
-5. 把 handoff 中的完整 plan 正文写入阶段 worktree 的 `ai-work/planner/{stage_id}-plan.md`。
-6. 确认 worktree 中 `skills/executor/SKILL.md`、`skills/executor-ex/SKILL.md`、`skills/reviewer-ex/SKILL.md` 均包含 `execution-routing-v2`。任一缺失返回 `STAGE_SKILL_VERSION_MISMATCH`；不要开始 execution/review。
+4. 从 `planning_base_commit` 对应的当前 `main` 创建或复用 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
+5. 只把上面解析出的 plan payload 写入阶段 worktree 的 `ai-work/planner/{stage_id}-plan.md`。
+6. 确认 worktree 中 `skills/execution-router/SKILL.md`、`skills/executor/SKILL.md`、`skills/executor-ex/SKILL.md`、`skills/reviewer-ex/SKILL.md`、`skills/stage-lifecycle/SKILL.md` 均存在且相应 v2 marker 可解析；同时 `.agents/skills/execution-router`、`.agents/skills/executor`、`.agents/skills/executor-ex`、`.agents/skills/stage-lifecycle` 必须能解析到这些 repo-local skills。任一缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
 7. 仅暂存最终 plan 文件并提交：`docs: add {stage_id} plan`。该提交是 router 后续推导 `source_plan_commit` 的唯一 plan seal。
-8. 报告 `stage_id`、`planning_base_commit`、branch、worktree、plan path、`plan_commit`。不修改 `.ai-bridge` 之外的主仓库文件。
+8. 仅在 plan seal commit 成功后，若输入来自 `.ai-bridge/current-plan.md`，删除该 `current-plan.md`，表示 pending handoff 已消费；正式 plan 从此只以 stage worktree 中的 sealed artifact 为准。其它 `.ai-bridge` 文件不动。
+9. 报告 `stage_id`、`planning_base_commit`、branch、worktree 绝对路径、plan path、`plan_commit`。不修改 `.ai-bridge` 之外的主仓库文件。
 
 ## Operation B: checkpoint_review
 
@@ -52,7 +62,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 步骤：
 
-1. 定位唯一 stage worktree 与 `ai-work/reviewer/{stage_id}-review.md`；不存在或有歧义则停止。
+1. 从主仓库 root 的 `git worktree list` 定位唯一 stage worktree，并验证其 branch 与 sealed plan metadata 一致；再定位 `ai-work/reviewer/{stage_id}-review.md`。不存在或有歧义则停止。
 2. 解析最新 review record，要求至少有：
    - `review_record.version: 1`
    - `review_round`（正整数）

@@ -1,4 +1,4 @@
 interface:
-  display_name: "Codex Planner"
-  short_description: "Sol/high internal agent plans the next WP"
-  default_prompt: "Use $planner to delegate next-WP planning to the required Codex internal agent and produce a function-level implementation plan."
+  display_name: "Legacy Codex Planner"
+  short_description: "Legacy full-local planner that creates the stage worktree"
+  default_prompt: "Use $planner only for the legacy full-local planner → executor → reviewer workflow. It may create the stage branch/worktree. For v2 Web/CodexPro workflow use $planner-ex, then local $stage-lifecycle bootstrap_plan instead."

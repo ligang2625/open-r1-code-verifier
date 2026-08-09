@@ -1,6 +1,6 @@
 ---
 name: planner
-description: 使用 Codex 内部 agent，根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的函数级实施计划并创建阶段分支/worktree。Use when Codex must delegate WP planning to a dedicated gpt-5.6-sol agent with high reasoning effort and produce a testable plan for the internal executor workflow.
+description: Legacy full-local planner，仅用于旧的 `planner → executor → reviewer` 流程；会创建阶段 branch/worktree 并提交 plan。v2 Web/CodexPro workflow 必须使用 `planner-ex → stage-lifecycle bootstrap_plan`，不要调用本 skill。
 ---
 
 # Planner
