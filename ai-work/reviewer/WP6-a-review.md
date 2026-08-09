@@ -282,3 +282,94 @@ repair_routing:
 2. 本地运行 `$stage-lifecycle checkpoint_review` 封存 R2。
 3. checkpoint 成功后运行 `$execution-router`，仅 repair `R2-m1`。
 4. 新 completed repair execution 产生后，再运行 reviewer-ex R3。
+
+---
+
+## R3 — latest execution E2
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP6-a
+  review_round: 3
+  source_execution_id: E2
+  reviewed_head_commit: 287f3f67c1d2ffbf0899d72f2cc14faf44a38af2
+  conclusion: pass
+```
+
+### 1. Provenance 与审查边界
+
+- 目标 stage：`WP6-a`，worktree `/home/dzy/open-r1-code-verifier/.worktrees/wp6-a`，branch `feat/wp6-a`，与 sealed plan 一致。
+- 上一轮已提交 review：R2 commit `00cf7487e0d95a8ff22e7597acbee84c2ab15725`，结论 `needs_repair`，唯一 issue `R2-m1`。
+- 最新 completed execution：`E2`，`task_kind=repair`，`source_review_round=2`，`source_review_commit=00cf7487e0d95a8ff22e7597acbee84c2ab15725`，`repair_issue_ids=[R2-m1]`。
+- E2 `result_code_commit=7a8d5ddb1fa7d68318624d562f9841e7f18650c2`；首次包含 E2 record 的 execution report commit 为当前 `HEAD=287f3f67c1d2ffbf0899d72f2cc14faf44a38af2`。
+- 审查开始前与写入前 worktree 均干净；审查期间 HEAD 未变化。
+
+### 2. `R2-m1` repair 核验
+
+`R2-m1` **RESOLVED**。
+
+- `src/code_verifier/data/adapters.py::load_raw_jsonl()` 已从 Unicode-aware `splitlines()` 改为仅按物理 `\n` 分隔；CRLF 仍由 JSON whitespace 规则正常接受，blank/trailing lines 沿用既有 ignore policy。
+- `src/code_verifier/data/prepare.py::_load_canonical()` 使用相同 physical-LF contract，因此项目 `ensure_ascii=False` 写出的 U+2028/U+2029 canonical JSONL 可重新加载。
+- 新增 raw U+2028/U+2029 regressions，以及完整 `prepare_data()` canonical export → `check_prepared_data()` round-trip regressions。
+- Reviewer 搜索确认 `src/code_verifier/data` 中已无 `splitlines()` 残留；training artifact、raw、canonical 三类 JSONL reader 的物理行语义已统一。
+- duplicate-key、schema、split/leakage 等 fail-closed 路径未被放宽，相关 data/full tests 均通过。
+
+### 3. 独立验证结果
+
+Reviewer 在 `287f3f67...` 上独立执行：
+
+- focused raw/canonical/WP1 suite：`51 passed`。
+- `PYTHONPATH=src make lint VENV=/home/dzy/open-r1-code-verifier/.venv`：PASS；Ruff check/format 与 strict Mypy 全绿，84 source files。
+- `PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv`：PASS；`713 passed, 3 skipped`，仅三个显式 real-Piston opt-in cases 默认 skip。
+- `PYTHONPATH=src make test-gpu VENV=/home/dzy/open-r1-code-verifier/.venv`：PASS；真实 GTX 1660 Ti 上 `3 passed`，未运行 SFT。
+- `code-verifier train-sft --help`：PASS，返回 0；CLI 仍采用 config-seed default 与 explicit resume contract。
+- pinned runtime versions：Open-R1 `0.1.0.dev0`、TRL `0.18.0`、Transformers `4.52.3`、Accelerate `1.4.0`、PEFT `0.14.0`。
+- 真实 guarded debug CLI：当前 6GB GTX 1660 Ti 返回 exit 2：`SFT training requires at least 20 GiB CUDA memory; detected 6.0 GiB`；未启动真实训练。
+- E2 scope 未修改 `third_party/open-r1/**`、sealed plan 或 `proceedings.md`。
+
+### 4. Stage acceptance 最终复核
+
+- Step 1 shared §7.2 prompt builder：PASS；WP5/SFT prompt contract 未漂移。
+- Step 2 visible-only SFT artifact / WP1 data contract：PASS；train + independent validation mapping、physical-LF JSONL round-trip 与 hidden/reference isolation 均成立。
+- Step 3 SFT target normalization / visible-only verification / payload-minimal TRL dataset：PASS。
+- Step 4 PEFT/Open-R1/TRL exact runtime integration：PASS。
+- Step 5 strict config / non-lowerable hardware guard / LoRA runtime / validation / resume provenance / run artifacts：PASS。
+- Step 6 `train-sft` CLI 与 non-training integration：PASS。
+- Step 7 documentation / WP6-b handoff readiness：PASS。
+
+总体验收：`make lint`、`make test`、GPU smoke、CLI help、runtime pins、visible-only isolation、20 GiB hardware fail-closed、no-real-SFT-on-1660、no fabricated checkpoint/B-group result 全部满足。WP6-b 的 24GB GPU、>=50 validated SFT examples、real smoke/checkpoint reload/B-group evaluation/cost gates 仍按计划保留，不属于 WP6-a 未完成项。
+
+### 5. Execution report 核验
+
+- E2 对 `R2-m1` 的 disposition 与当前代码及 reviewer 独立结果一致。
+- E2 自报 focused `51 passed`、全量 `713 passed, 3 skipped`、GPU `3 passed` 均已独立复现。
+- runtime version 与 no-real-SFT 声明已核验，无实质不一致。
+- 未发现新的 blocker/major/minor actionable finding。
+
+### 6. R3 结论
+
+当前 `reviewed_head_commit=287f3f67c1d2ffbf0899d72f2cc14faf44a38af2` **PASS**。R1 与 R2 的全部 actionable findings 均已关闭；在本轮证据下不存在需要下一轮 executor 行动的问题。
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 3
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "E2 已关闭 R2-m1，R1/R2 全部 actionable findings 均 resolved；独立 focused/full/GPU/CLI/runtime/hardware 验收均通过，因此无需 repair。"
+  workstream_candidates: []
+```
+
+### 7. 下一步
+
+1. reviewer-ex 本轮只追加 R3 PASS review，未 commit/merge/finalize，也未修改 `proceedings.md`。
+2. 本地运行 `$stage-lifecycle checkpoint_review` 封存 R3。
+3. checkpoint 成功后运行 `$stage-lifecycle finalize`，由 lifecycle 完成 merge、proceedings/finalization record 与 worktree/branch cleanup。
