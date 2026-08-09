@@ -87,6 +87,14 @@ repair_routing:
   workstream_candidates: []
 ```
 
+## Finalization Record
+
+- `review_round`: 2
+- `review_commit`: `88fbf6272b82f353537b7feae322ae7dfd119562`
+- `merge_commit`: `03eb5b73f5cd6ea8bce4fae5297b96017e87a435`
+- `finalized_at`: `2026-08-09T10:45:25Z`
+- `status`: `FINALIZED`
+
 ### Required next lifecycle action
 
 Run `$stage-lifecycle checkpoint_review` to provenance-check and commit this R1 review. After that checkpoint, run `$execution-router` for the `R1-M1` repair. Do not finalize WP5-b from this review round.

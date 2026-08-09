@@ -270,6 +270,39 @@ WP0 已完成以下工作：
 
 ---
 
+## WP5-b：聚合指标、Bootstrap 与 Base 正式验收
+
+- **完成日期**：2026-08-09
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP5-b-review.md` R2）
+- **执行计划**：`ai-work/planner/WP5-b-plan.md`
+- **实施范围**：完成 WP5 的第二子阶段：严格评测记录读取、问题级聚合指标、Bootstrap 置信区间、summary/CSV 派生结果、immutable Base 配置与正式 Base 工程验收；未实现 WP6+ 训练功能。
+
+### 本阶段完成的功能
+
+- 新增严格 `EvaluationRecord` JSONL 读取与 completed-run 派生 artifact resume guard；JSONL 按物理 LF 分隔，支持 U+2028/U+2029 合法 UTF-8 记录往返。
+- 新增无第三方统计依赖的问题级 deterministic bootstrap 与 paired bootstrap difference。
+- 新增 parse/target/executable、错误率、三层 pass@1、平均测试通过率、public-eval gap、错误分类与 execution status 聚合指标。
+- 完成 `summary.json` 与单行 `main_results.csv` 原子生成，并保持 completion/code/tests 仅存在于 `samples/results.jsonl`。
+- 新增正式 Base 配置：`Qwen/Qwen2.5-Coder-1.5B-Instruct` immutable revision、CUDA、FP16、deterministic pass@1。
+
+### 验收结论
+
+- `make lint`：Ruff check、format check、strict Mypy 全绿。
+- `make test`：660 passed，3 个真实 Piston 用例按设计显式 skipped。
+- `make test-piston`：9 passed，0 failed，0 skipped。
+- `make test-gpu`：3 passed，0 failed，0 skipped。
+- Base smoke split：4 题；Eval-Hidden Pass@1 `0.5`，95% CI `[0.0, 1.0]`。
+- 同 run resume：`generated=0`；独立 deterministic run 的逐题 correctness records 与 metrics 完全一致。
+- R1-M1 修复后，严格 JSONL、全局回归、Piston、GPU 与 Base gates 均通过。
+- WP5-b 合并提交：`03eb5b73f5cd6ea8bce4fae5297b96017e87a435`（`feat: complete WP5-b metrics, bootstrap, and Base acceptance`）。
+
+### WP5 聚合状态
+
+WP5-a 与 WP5-b 均已完成。当前 WP5 已具备确定性生成、逐题三层 Pass@1、可恢复运行、聚合指标、问题级 Bootstrap 与 Base 工程验收；Base 数值仍仅代表当前四题 smoke split 的工程基线，不是最终研究 benchmark。
+
+---
+
 ## 环境与硬件迁移准备：GPU 开发/冒烟机适配
 
 - **完成日期**：2026-08-07
