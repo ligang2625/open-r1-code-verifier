@@ -132,6 +132,19 @@ Source code lives in `src/code_verifier/`. The `third_party/open-r1/` submodule 
 
 Run `make lint` before committing — it runs all three checks.
 
+## Implementation Design Principles
+
+These rules apply to planning, implementation, refactoring, and review. The current project spec and the current-stage acceptance criteria are the source of truth; do not optimize for hypothetical future requirements.
+
+- **Do not preserve backward compatibility.** When a CLI option, config key, schema, module path, artifact format, or internal API is superseded by the current requirements, update all in-repo callers, tests, configs, and docs in the same change and delete the obsolete path. Do not add compatibility aliases, dual-read/dual-write behavior, legacy fallbacks, migration shims, or deprecated wrappers unless the current stage explicitly requires that exact behavior.
+- **Choose the smallest complete implementation.** Prefer the simplest design that fully satisfies the current WP/stage. Do not add speculative registries, plugin systems, strategy layers, configuration switches, generalized factories, or indirection for cases that are not required now. Reuse the existing module boundaries before creating new abstractions.
+- **Grow by working end-to-end layers.** Implement the smallest vertical slice that works through the affected pipeline and keeps the repository in a passing, usable state; then add the next capability on top. A stage must not replace a working path with a broader framework whose critical path is incomplete, stubbed, or deferred to a later stage.
+- **Keep concerns separated.** Preserve the boundaries in `PROJECT_SPEC_Open-R1_CodeVerifier.md`: Data, Generation, Parsing, Execution, Verification, Reward, Training, Evaluation, and Analysis must not absorb one another's responsibilities. In particular, keep execution behind `CodeExecutor`, Open-R1 integration behind `training/open_r1_adapter.py`, and test-layer/payload secrecy at the existing verification/reward/evaluation boundaries.
+- **Prefer established libraries when they reduce total complexity or improve reliability.** Use a well-maintained library for standard functionality when it removes meaningful custom code or failure modes; do not reimplement commodity functionality merely to avoid a dependency.
+- **Use existing dependencies before adding code or packages.** Before implementing utility logic or adding a dependency, inspect the capabilities, documentation, types, and pinned version of libraries already present in `pyproject.toml`/the lockfile and, where relevant, the read-only `third_party/open-r1/` API surface. Do not assume an existing dependency lacks a needed capability without checking. Add a new package only when the existing stack cannot meet the current requirement cleanly and the added dependency reduces net complexity.
+
+Reviewers should treat unnecessary compatibility code, speculative abstraction, duplicated dependency functionality, cross-layer responsibility leakage, and partially integrated frameworks as design defects even when tests pass.
+
 ## Testing Guidelines
 
 - **Framework**: pytest (configured in pyproject.toml with `-ra` addopts)
@@ -150,6 +163,7 @@ Run `make lint` before committing — it runs all three checks.
   - WP3 execution, batch, or cache changes also require `make test-piston` with 0 failed and 0 skipped
   - Link related issues in PR description
   - Keep changes minimal and focused on the stated goal
+  - Enforce the Implementation Design Principles above: reject compatibility shims, speculative abstractions, duplicated library functionality, cross-layer leakage, and incomplete framework-first changes
 
 ## Agent-Specific Instructions
 
