@@ -156,6 +156,97 @@ def test_interrupted_run_resumes_exact_prefix_without_regeneration(
     assert completed_generator.calls == []
 
 
+def test_resume_allows_known_derived_artifacts_for_completed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problems = [_problem("p1", "ONE")]
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
+    config = _config(tmp_path)
+    output_root = tmp_path / "outputs"
+    summary = run_pass1_evaluation(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("ONE")]),
+        executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+        run_id="derived-completed",
+        output_root=output_root,
+        seed=42,
+    )
+    run_dir = summary.results_path.parents[1]
+    (run_dir / "summary.json").write_text("{}\n", encoding="utf-8")
+    (run_dir / "main_results.csv").write_text("header\n", encoding="utf-8")
+
+    resumed = run_pass1_evaluation(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([]),
+        executor=MockExecutor([]),
+        run_id="derived-completed",
+        output_root=output_root,
+        seed=42,
+    )
+
+    assert resumed.generated_this_run == 0
+
+
+def test_resume_rejects_derived_artifacts_for_partial_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = [_problem("p1", "ONE"), _problem("p2", "TWO")]
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
+    config = _config(tmp_path)
+    output_root = tmp_path / "outputs"
+    with pytest.raises(GenerationError):
+        run_pass1_evaluation(
+            config=config,
+            model_id="example/model",
+            generator=_SequenceGenerator([_completion("ONE"), GenerationError("stop")]),
+            executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+            run_id="derived-partial",
+            output_root=output_root,
+            seed=42,
+        )
+    run_dir = output_root / "evaluation" / "derived-partial"
+    (run_dir / "summary.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(EvaluationError, match="derived summary artifacts"):
+        run_pass1_evaluation(
+            config=config,
+            model_id="example/model",
+            generator=_SequenceGenerator([_completion("TWO")]),
+            executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+            run_id="derived-partial",
+            output_root=output_root,
+            seed=42,
+        )
+
+
+def test_resume_still_rejects_unknown_run_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = [_problem("p1", "ONE")]
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
+    config = _config(tmp_path)
+    output_root = tmp_path / "outputs"
+    summary = run_pass1_evaluation(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("ONE")]),
+        executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+        run_id="unknown-artifact",
+        output_root=output_root,
+        seed=42,
+    )
+    (summary.results_path.parents[1] / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+
+    with pytest.raises(EvaluationError, match="strict WP5-a artifact layout"):
+        run_pass1_evaluation(
+            config=config,
+            model_id="example/model",
+            generator=_SequenceGenerator([]),
+            executor=MockExecutor([]),
+            run_id="unknown-artifact",
+            output_root=output_root,
+            seed=42,
+        )
+
+
 def test_resume_rejects_model_identity_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     problems = [_problem("p1", "ONE")]
     monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)

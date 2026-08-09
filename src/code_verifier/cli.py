@@ -35,6 +35,7 @@ from code_verifier.data.schema import SchemaError
 from code_verifier.environment import write_environment_record
 from code_verifier.evaluation.evaluate import EvaluationError, load_evaluation_config, run_pass1_evaluation
 from code_verifier.evaluation.generate import GenerationError, TransformersCompletionGenerator
+from code_verifier.evaluation.metrics import MetricsError, aggregate_evaluation_run
 from code_verifier.execution import (
     BatchExecutionConfig,
     BatchExecutionError,
@@ -77,7 +78,7 @@ EXECUTION_ERRORS = (
     OSError,
     UnicodeError,
 )
-EVALUATION_ERRORS = (EvaluationError, GenerationError)
+EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
 
 
 def _add_common_arguments(
@@ -320,7 +321,7 @@ def _evaluate(args: argparse.Namespace) -> int:
         device=config.device,
         config=config.generation,
     )
-    summary = run_pass1_evaluation(
+    run_summary = run_pass1_evaluation(
         config=config,
         model_id=str(args.model_id),
         generator=generator,
@@ -329,11 +330,17 @@ def _evaluate(args: argparse.Namespace) -> int:
         output_root=Path(str(args.output_dir)),
         seed=int(args.seed),
     )
-    print(
-        f"evaluated {summary.total_problems} problems "
-        f"(resumed={summary.completed_before_run}, generated={summary.generated_this_run})"
+    aggregate_summary = aggregate_evaluation_run(
+        run_summary.results_path.parent.parent,
+        bootstrap_seed=int(args.seed),
     )
-    print(f"results={summary.results_path}")
+    print(
+        f"evaluated {run_summary.total_problems} problems "
+        f"(resumed={run_summary.completed_before_run}, generated={run_summary.generated_this_run})"
+    )
+    print(f"results={run_summary.results_path}")
+    print(f"summary={aggregate_summary.summary_path}")
+    print(f"main_results={aggregate_summary.main_results_path}")
     return 0
 
 

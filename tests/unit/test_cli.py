@@ -17,6 +17,7 @@ from code_verifier.data.prepare import DataPreparationConfig, DataPreparationErr
 from code_verifier.data.split_tests import TestSplitConfig as SplitConfig
 from code_verifier.evaluation.evaluate import EvaluationConfig, EvaluationError, EvaluationRunSummary
 from code_verifier.evaluation.generate import GenerationConfig
+from code_verifier.evaluation.metrics import MetricsError
 from code_verifier.execution import (
     BatchExecutionError,
     BatchExecutionItemResult,
@@ -378,6 +379,7 @@ def test_evaluate_handler_wires_runtime_generator_and_runner(
     seen: dict[str, object] = {}
     fake_piston_config = object()
     fake_generator = object()
+    results_path = tmp_path / "outputs/evaluation/base-debug/samples/results.jsonl"
 
     class FakePistonExecutor:
         def __init__(self, received: object) -> None:
@@ -407,14 +409,26 @@ def test_evaluate_handler_wires_runtime_generator_and_runner(
             total_problems=4,
             completed_before_run=1,
             generated_this_run=3,
-            results_path=tmp_path / "outputs/evaluation/base-debug/samples/results.jsonl",
+            results_path=results_path,
         )
+
+    def fake_aggregate(run_dir: Path, *, bootstrap_seed: int) -> object:
+        seen["aggregate_args"] = (run_dir, bootstrap_seed)
+        return type(
+            "AggregateSummary",
+            (),
+            {
+                "summary_path": run_dir / "summary.json",
+                "main_results_path": run_dir / "main_results.csv",
+            },
+        )()
 
     monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
     monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: fake_piston_config)
     monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
     monkeypatch.setattr(cli_module, "TransformersCompletionGenerator", FakeGeneratorFactory)
     monkeypatch.setattr(cli_module, "run_pass1_evaluation", fake_run)
+    monkeypatch.setattr(cli_module, "aggregate_evaluation_run", fake_aggregate)
 
     output_root = tmp_path / "outputs"
     assert (
@@ -445,8 +459,139 @@ def test_evaluate_handler_wires_runtime_generator_and_runner(
     assert runner_kwargs["run_id"] == "base-debug"
     assert runner_kwargs["output_root"] == output_root
     assert runner_kwargs["seed"] == 17
+    assert seen["aggregate_args"] == (results_path.parent.parent, 17)
     output = capsys.readouterr().out
     assert "evaluated 4 problems (resumed=1, generated=3)" in output
+    assert f"summary={results_path.parent.parent / 'summary.json'}" in output
+    assert f"main_results={results_path.parent.parent / 'main_results.csv'}" in output
+
+
+def test_evaluate_cli_reaggregates_zero_generation_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _evaluation_config(tmp_path)
+    run_dir = tmp_path / "outputs/evaluation/base-resume"
+    seen: list[tuple[Path, int]] = []
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        def validate_runtime(self) -> str:
+            return "3.10.0"
+
+    class FakeGeneratorFactory:
+        @classmethod
+        def from_pretrained(cls, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return object()
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "TransformersCompletionGenerator", FakeGeneratorFactory)
+    monkeypatch.setattr(
+        cli_module,
+        "run_pass1_evaluation",
+        lambda **kwargs: EvaluationRunSummary(
+            run_id="base-resume",
+            total_problems=4,
+            completed_before_run=4,
+            generated_this_run=0,
+            results_path=run_dir / "samples/results.jsonl",
+        ),
+    )
+
+    def fake_aggregate(path: Path, *, bootstrap_seed: int) -> object:
+        seen.append((path, bootstrap_seed))
+        return type(
+            "AggregateSummary",
+            (),
+            {"summary_path": path / "summary.json", "main_results_path": path / "main_results.csv"},
+        )()
+
+    monkeypatch.setattr(cli_module, "aggregate_evaluation_run", fake_aggregate)
+
+    assert (
+        main(
+            [
+                "evaluate",
+                "--config",
+                "eval.yaml",
+                "--model-id",
+                "example/model",
+                "--run-name",
+                "base-resume",
+                "--output-dir",
+                str(tmp_path / "outputs"),
+            ]
+        )
+        == 0
+    )
+    assert seen == [(run_dir, 42)]
+
+
+def test_evaluate_cli_surfaces_aggregation_error_without_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    sentinel = "PRIVATE_COMPLETION_SENTINEL"
+    config = _evaluation_config(tmp_path)
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        def validate_runtime(self) -> str:
+            return "3.10.0"
+
+    class FakeGeneratorFactory:
+        @classmethod
+        def from_pretrained(cls, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return object()
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "TransformersCompletionGenerator", FakeGeneratorFactory)
+    monkeypatch.setattr(
+        cli_module,
+        "run_pass1_evaluation",
+        lambda **kwargs: EvaluationRunSummary(
+            run_id="base-error",
+            total_problems=1,
+            completed_before_run=0,
+            generated_this_run=1,
+            results_path=tmp_path / "outputs/evaluation/base-error/samples/results.jsonl",
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "aggregate_evaluation_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(MetricsError("aggregation failed")),
+    )
+
+    assert (
+        main(
+            [
+                "evaluate",
+                "--config",
+                "eval.yaml",
+                "--model-id",
+                "example/model",
+                "--run-name",
+                "base-error",
+            ]
+        )
+        == 2
+    )
+    output = capsys.readouterr()
+    assert "aggregation failed" in output.err
+    assert sentinel not in output.err
+    assert "Traceback" not in output.err
 
 
 def test_evaluate_error_returns_two_without_traceback(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
