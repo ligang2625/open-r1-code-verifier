@@ -15,3 +15,12 @@ def test_adapter_rejects_non_open_r1_modules() -> None:
     """Callers cannot use the adapter as an unrestricted import helper."""
     with pytest.raises(ValueError, match="open_r1 module name"):
         import_open_r1_module("transformers")
+
+
+def test_open_r1_sft_modules_resolve_only_through_adapter() -> None:
+    configs = import_open_r1_module("open_r1.configs")
+    model_utils = import_open_r1_module("open_r1.utils.model_utils")
+
+    assert hasattr(configs, "SFTConfig")
+    assert hasattr(model_utils, "get_model")
+    assert hasattr(model_utils, "get_tokenizer")
