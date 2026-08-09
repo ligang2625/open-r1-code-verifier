@@ -189,6 +189,19 @@ def test_build_evaluation_prompt_excludes_hidden_sentinels() -> None:
         assert sentinel not in prompt
 
 
+def test_build_evaluation_prompt_delegates_without_behavior_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    problem = _problem()
+    calls: list[CodeProblem] = []
+
+    def fake_builder(value: CodeProblem) -> str:
+        calls.append(value)
+        return "shared prompt"
+
+    monkeypatch.setattr(generation_module, "build_code_prompt", fake_builder)
+    assert build_evaluation_prompt(problem) == "shared prompt"
+    assert calls == [problem]
+
+
 def test_generation_config_accepts_exact_pass1_defaults() -> None:
     config = GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=512)
     assert config.max_new_tokens == 512
