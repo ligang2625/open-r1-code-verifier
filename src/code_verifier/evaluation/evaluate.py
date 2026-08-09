@@ -324,6 +324,24 @@ def evaluation_record_to_mapping(record: EvaluationRecord) -> dict[str, object]:
     return mapping
 
 
+def load_evaluation_records(path: Path) -> list[EvaluationRecord]:
+    """Strictly deserialize persisted UTF-8 JSONL evaluation rows."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise EvaluationError(f"results JSONL is unreadable: {type(error).__name__}") from None
+    records: list[EvaluationRecord] = []
+    for index, line in enumerate(lines, start=1):
+        if not line.strip():
+            raise EvaluationError("results JSONL must not contain blank rows")
+        try:
+            value = loads_strict(line)
+        except StrictJsonError as error:
+            raise EvaluationError(f"results JSONL row {index} is invalid: {type(error).__name__}") from None
+        records.append(evaluation_record_from_mapping(value))
+    return records
+
+
 def dataset_hash(problems: Sequence[CodeProblem]) -> str:
     """Hash ordered canonical problem records, including all three test-layer identities."""
     payload = json.dumps(
@@ -673,7 +691,9 @@ def _resume_run_artifacts(
         "stderr.log",
         "samples",
     }
-    if {path.name for path in context.run_dir.iterdir()} != expected_names:
+    derived_names = {"summary.json", "main_results.csv"}
+    actual_names = {path.name for path in context.run_dir.iterdir()}
+    if not expected_names <= actual_names or actual_names - expected_names - derived_names:
         raise EvaluationError("existing run directory does not match the strict WP5-a artifact layout")
     if {path.name for path in (context.run_dir / "samples").iterdir()} != {"results.jsonl"}:
         raise EvaluationError("existing samples directory contains unexpected artifacts")
@@ -715,22 +735,12 @@ def _resume_run_artifacts(
     ):
         if environment.get(key) != current_environment.get(key):
             raise EvaluationError(f"current environment identity mismatch for {key}")
-    try:
-        lines = context.results_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise EvaluationError(f"results.jsonl is unreadable: {type(error).__name__}") from None
-    if len(lines) > len(problems):
+    records = load_evaluation_records(context.results_path)
+    if len(records) > len(problems):
         raise EvaluationError("results.jsonl contains more rows than the selected evaluation split")
-    records: list[EvaluationRecord] = []
-    for index, line in enumerate(lines):
-        if not line.strip():
-            raise EvaluationError("results.jsonl must not contain blank rows")
-        try:
-            value = loads_strict(line)
-        except StrictJsonError as error:
-            raise EvaluationError(f"results.jsonl row {index + 1} is invalid: {type(error).__name__}") from None
-        record = evaluation_record_from_mapping(value)
-        records.append(record)
+    if actual_names & derived_names and (run_metadata.get("status") != "completed" or len(records) != len(problems)):
+        raise EvaluationError("derived summary artifacts require a completed run with the full evaluation split")
+    for index, record in enumerate(records):
         problem = problems[index]
         expected_prompt_hash = prompt_hash(build_evaluation_prompt(problem))
         row_identity = {
@@ -753,7 +763,7 @@ def _resume_run_artifacts(
         }
         if row_identity != expected_row_identity:
             raise EvaluationError(f"results.jsonl row {index + 1} is not the exact expected resume prefix")
-    return _run_context(output_root, run_id, completed=len(lines)), records
+    return _run_context(output_root, run_id, completed=len(records)), records
 
 
 def initialize_or_resume_run(

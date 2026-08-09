@@ -21,6 +21,7 @@ from code_verifier.evaluation.evaluate import (
     evaluation_record_from_mapping,
     evaluation_record_to_mapping,
     load_evaluation_config,
+    load_evaluation_records,
 )
 from code_verifier.evaluation.generate import GenerationResult, build_evaluation_prompt
 from code_verifier.execution.base import ExecutionResult, ExecutionStatus
@@ -157,6 +158,37 @@ def test_evaluation_record_round_trip_is_exact_and_json_safe() -> None:
     mapping = evaluation_record_to_mapping(record)
     assert evaluation_record_from_mapping(mapping) == record
     json.dumps(mapping, allow_nan=False)
+
+
+def test_load_evaluation_records_round_trips_strict_rows(tmp_path: Path) -> None:
+    path = tmp_path / "results.jsonl"
+    rows = [_record(), replace(_record(), problem_id="problem-2")]
+    path.write_text(
+        "".join(json.dumps(evaluation_record_to_mapping(row), allow_nan=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    assert load_evaluation_records(path) == rows
+    path.write_text("", encoding="utf-8")
+    assert load_evaluation_records(path) == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"\n",
+        b"{\n",
+        b'{"duplicate": 1, "duplicate": 2}\n',
+        b'{"unknown": true}\n',
+        b"\xff\n",
+    ],
+)
+def test_load_evaluation_records_rejects_blank_invalid_or_unknown_rows(tmp_path: Path, content: bytes) -> None:
+    path = tmp_path / "results.jsonl"
+    path.write_bytes(content)
+
+    with pytest.raises(EvaluationError):
+        load_evaluation_records(path)
 
 
 @pytest.mark.parametrize(
