@@ -160,3 +160,125 @@ repair_routing:
 2. 本地下一步运行 `$stage-lifecycle checkpoint_review` 封存 R1。
 3. checkpoint 成功后运行 `$execution-router`，按 `R1-M1/R1-M2/R1-M3/R1-M4/R1-m1` 执行 repair。
 4. repair execution 完成并产生新的 completed execution record 后，再运行 reviewer-ex R2。
+
+---
+
+## R2 — latest execution E1
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP6-a
+  review_round: 2
+  source_execution_id: E1
+  reviewed_head_commit: 0965d88ef5944ac9da07d0d8c97ca5b553ebfcd6
+  conclusion: needs_repair
+```
+
+### 1. Provenance 与审查边界
+
+- 目标 stage：`WP6-a`，实际 worktree `/home/dzy/open-r1-code-verifier/.worktrees/wp6-a`，branch `feat/wp6-a`，与 sealed plan metadata 一致。
+- 上一轮已提交 review：R1 commit `8638d4b648a811ee093463a6cdf89ec0075fabdd`，结论 `needs_repair`。
+- 最新 completed execution：`E1`，`task_kind=repair`，`source_review_round=1`，`source_review_commit=8638d4b648a811ee093463a6cdf89ec0075fabdd`，repair issue 集合恰为 `R1-M1/R1-M2/R1-M3/R1-M4/R1-m1`。
+- E1 `result_code_commit=66045604468dc475127cd26ef160f8b7398e1ea7`；首次包含 E1 record 的 execution report commit 为当前 `HEAD=0965d88ef5944ac9da07d0d8c97ca5b553ebfcd6`。
+- 审查开始前和写入本 record 前均确认 worktree 干净；审查期间 HEAD 未变化。
+
+### 2. R1 repair 核验
+
+| Issue | R2 结论 | 独立证据 |
+|---|---|---|
+| `R1-M1` hardware floor | RESOLVED | parser 强制 `min_cuda_memory_gb >= 20`，runtime 又以 `max(config floor, project floor)` 二次保护；reviewer 独立 lowered-threshold probe 返回 `SFTTrainingError min_cuda_memory_gb must be at least 20 GiB`。 |
+| `R1-M2` resume provenance/cost | RESOLVED | resume 只接受已存在同 run 的直接子目录 `checkpoints/checkpoint-*`；fresh/external/cross-run checkpoint 被拒；run identity 绑定 train/validation hash、git/Open-R1/dependency/GPU runtime identity；source 使用 run-relative path 记录；`gpu_hours` 在 attempts 间累计。相关 unit tests 与全量回归通过。 |
+| `R1-M3` spec-default validation | RESOLVED | data pipeline 新增 canonical validation-only `sft_validation.jsonl`；main config 恢复 `eval_strategy: steps` / `eval_steps: 100`；runtime 为 validation records 构造独立 payload-minimal eval dataset，并检查 train/validation problem IDs 不重叠。 |
+| `R1-M4` seed override | RESOLVED | `train-sft --seed` 默认 `None`，未指定时使用 YAML seed；显式不同值会打印 override，effective seed 进入 resolved config/config hash/trainer/run identity；reviewer 真实 CLI probe 输出 `override: seed: 42 -> 7` 后再按硬件 gate fail closed。 |
+| `R1-m1` SFT artifact physical-LF loader | RESOLVED | `load_training_artifact()` 改为物理 `\n` 分隔并保留 CRLF/blank-line policy；U+2028/U+2029 SFT prompt/response regression 已加入并通过。 |
+
+R1 五项均不再需要继续沿用原 issue ID。
+
+### 3. 独立验证结果
+
+Reviewer 在 `0965d88...` 上独立执行：
+
+- focused data/training/CLI/WP1/WP6-a suite：`144 passed`。
+- `PYTHONPATH=src make lint VENV=/home/dzy/open-r1-code-verifier/.venv`：PASS；Ruff check/format 与 strict Mypy 全绿，84 source files。
+- `PYTHONPATH=src make test VENV=/home/dzy/open-r1-code-verifier/.venv`：PASS；`709 passed, 3 skipped`，仅既有 opt-in Piston tests 默认 skip。
+- `PYTHONPATH=src make test-gpu VENV=/home/dzy/open-r1-code-verifier/.venv`：PASS；真实 GTX 1660 Ti `3 passed`，未执行 SFT。
+- `PYTHONPATH=src make test-piston VENV=/home/dzy/open-r1-code-verifier/.venv`：PASS；`9 passed`，2 non-Piston tests deselected。
+- pinned runtime versions：Open-R1 `0.1.0.dev0`、TRL `0.18.0`、Transformers `4.52.3`、Accelerate `1.4.0`、PEFT `0.14.0`。
+- `code-verifier train-sft --help`：PASS，seed help 已变为 `default: config seed`。
+- real guarded debug CLI：当前 6GB GTX 1660 Ti 返回 exit 2，错误为 `requires at least 20 GiB`，未启动真实训练。
+- E1 repair range 未修改 `third_party/open-r1/**`。
+
+### 4. 新 finding
+
+#### R2-m1 — Physical-LF JSONL 修复未覆盖 WP1 raw/canonical readers，合法 Unicode line separator 仍会阻断 `prepare-data`
+
+**位置**：`src/code_verifier/data/adapters.py:115-133`、`src/code_verifier/data/prepare.py:321-337`。
+
+E1 正确修复了 `load_training_artifact()`，但同一 WP1 pipeline 还有两个 JSONL reader 继续使用 `str.splitlines()`：
+
+- `load_raw_jsonl()` 对用户输入 raw JSONL 使用 `splitlines()`；
+- `_load_canonical()` 对项目自己通过 `write_jsonl(..., ensure_ascii=False)` 输出的 canonical JSONL 使用 `splitlines()`。
+
+Python `splitlines()` 会把 U+2028/U+2029 当作行边界，而 JSON 字符串允许这些 Unicode 字符原样存在。由于项目 writer 明确使用 `ensure_ascii=False`，这不是非法输入。
+
+Reviewer 独立做了两个仓库外临时文件 probe：
+
+1. 将现有 WP1 raw fixture 的 `prompt` 改为 `before\u2028after`，用标准 `json.dumps(..., ensure_ascii=False)` 写成只有 **1 个物理 LF** 的合法 JSONL；`load_raw_jsonl()` 报 `Unterminated string`。
+2. 直接构造合法 `CodeProblem(prompt="before\u2028after")`，调用项目 `export_canonical_jsonl()`；文件同样只有 **1 个物理 LF**，但随后 `_load_canonical()` 无法读取项目自己写出的 record，报 `Unterminated string`。
+
+这会使合法 Unicode problem 在进入 SFT mapping 前就失败，也会使 canonical export → `check_prepared_data()` 自身不具备 round-trip closure；因此 Step 2 的 WP1/SFT data contract 仍有一个实际可复现的边界缺口。
+
+**要求修复**：统一 raw/canonical reader 与已修复的 training artifact reader 的 physical-LF contract。至少：
+
+- `load_raw_jsonl()` 和 `_load_canonical()` 不得使用 Unicode-aware `splitlines()`；按物理 `\n` 分隔，并明确兼容 CRLF、尾部 LF 与既有 blank-line policy；
+- 增加 raw input U+2028/U+2029 regression；
+- 增加 canonical writer → reader / `check_prepared_data()` U+2028/U+2029 round-trip regression；
+- 不改变 JSON duplicate-key、schema、split/leakage 等既有 fail-closed 行为。
+
+### 5. Plan / acceptance 复核
+
+- Steps 1、3、4：PASS。
+- Step 5 的 R1 控制面问题已修复；LoRA mapping、hardware guard、resume、validation、seed/run identity 均通过本轮证据。
+- Step 6：PASS；CLI/help/error sanitation/seed override 与 non-training integration 可用。
+- Step 7：PASS with no new documentation blocker；README 的 resume、hardware split、WP6-b gate 与现代码一致。
+- Step 2：**PARTIAL**，仅因 `R2-m1` 的 WP1 raw/canonical JSONL round-trip 缺口未通过；该 failed plan item 已映射到本轮 repair issue。
+
+其余本阶段 acceptance 均通过：shared prompt、visible-only trainer/eval datasets、hidden/reference isolation、single fenced target + visible verification、pinned runtime、20 GiB non-lowerable guard、1660 Ti no-training gate、`make lint`/`make test`、未伪造 checkpoint/B-group 结果。
+
+### 6. Execution report 核验
+
+- E1 对 `R1-M1`～`R1-M4`、`R1-m1` 的 disposition：与当前代码和 reviewer 独立验证一致。
+- `709 passed, 3 skipped`、GPU `3 passed`、exact runtime versions、real guarded CLI：已独立复现。
+- “no real SFT training”：未发现相反证据，reviewer 本轮也未执行 SFT。
+- “deviations/blockers: none”：就 E1 routed R1 issues 而言成立；但本轮新发现 `R2-m1`，因此 stage 仍不能 finalize。
+
+### 7. R2 结论
+
+当前 `reviewed_head_commit=0965d88ef5944ac9da07d0d8c97ca5b553ebfcd6` **needs_repair**。R1 的五项 repair 已全部关闭；剩余仅一个新发现的 WP1 JSONL physical-line 边界问题，但它会让合法 Unicode raw/canonical data 无法通过项目自己的 preparation/round-trip，因此在 stage PASS 前应修复。
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 2
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R2-m1
+  rationale:
+    - "修复集中在 WP1 两个 JSONL readers 与对应数据回归测试，接口简单但必须同时保持 raw ingestion、canonical round-trip、duplicate-key/schema/leakage 行为一致，适合单路串行修复。"
+    - "只有一个 issue，拆成 multi lane 不会产生净收益；repair 后应重跑 data focus 与全量 lint/test。"
+  workstream_candidates: []
+```
+
+### 8. 下一步
+
+1. reviewer-ex 本轮只追加 R2 review record，未 commit/merge/finalize，也未修改 `proceedings.md`。
+2. 本地运行 `$stage-lifecycle checkpoint_review` 封存 R2。
+3. checkpoint 成功后运行 `$execution-router`，仅 repair `R2-m1`。
+4. 新 completed repair execution 产生后，再运行 reviewer-ex R3。
