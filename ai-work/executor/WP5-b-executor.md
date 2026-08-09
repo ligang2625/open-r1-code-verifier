@@ -108,3 +108,69 @@ execution_record:
   result_code_commit: e84266b
   status: completed
 ```
+
+## E1 repair execution — completed
+
+- `stage_id`: `WP5-b`
+- `task_kind`: `repair`
+- `repair_issue_ids`: `R1-M1`
+- Scope was limited to physical-LF JSONL loading and its writer-reader regression test.
+
+### Repair
+
+- Changed `load_evaluation_records()` to split only on literal `\n`, removing only the
+  synthetic empty fragment caused by a terminal LF. Empty files remain valid, while
+  blank LF-delimited rows still reach the existing strict rejection path.
+- Added `test_load_evaluation_records_round_trips_writer_unicode_line_separators`,
+  which writes a strict record through `append_evaluation_record()` with both U+2028
+  and U+2029, verifies their UTF-8 bytes are persisted, and round-trips the record.
+- Existing duplicate-key, unknown-field, invalid UTF-8, blank-row, invalid JSON, and
+  finite-value guards were preserved; no plan, review, proceedings, or submodule files
+  were changed.
+
+### Verification evidence
+
+- Pre-repair affected tests: `33 passed`.
+- Post-repair affected tests:
+  `.venv/bin/python -m pytest tests/unit/evaluation/test_evaluate.py
+  tests/unit/evaluation/test_runner_resume.py -q`: `34 passed`.
+- `make lint` with the worktree source path: Ruff check/format and strict Mypy passed
+  for 76 files.
+- `make test`: `660 passed, 3 skipped`; skips were the explicitly gated real-Piston
+  tests.
+- `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`:
+  `9 passed, 0 failed, 0 skipped` (`2 deselected`).
+- `make test-gpu`: `3 passed, 0 skipped`.
+- Fresh repair-era Base run `outputs/evaluation/base-main-r1-repair`: 4 problems,
+  `resumed=0, generated=4`; model revision
+  `2e1fd397ee46e1388853d2af2c993145b0f1098a`; project commit
+  `30964b2c6af9bf0dbc8b76f59e99b2ca8ba0b218`.
+- Same-run no-op resume: `resumed=4, generated=0`.
+- Independent `base-main-repro-repair` run: `resumed=0, generated=4`.
+  Ignoring only `run_id`, `runtime_ms`, and `generation_latency_ms`, the two ordered
+  record sets were equal with normalized SHA-256
+  `eb3ba2f31d42d5be97b688325651903ceff6fdf4e8e1b3104d64adb6328035a2`.
+  Correctness metrics and main-result columns matched after excluding identity and
+  timing fields. Base metrics were parse/target/executable `1.0`, visible/train-hidden/
+  eval-hidden pass@1 `0.5`, eval-hidden average test pass rate `0.5`, public-eval gap
+  `0.0`, and error categories `passed=2`, `runtime_error=2`; all metric values were
+  finite and counts summed to 4. Derived summary/CSV payload-key audit passed.
+
+The pre-repair E0 run name `base-main-r1` was intentionally not mutated. Re-running it
+after this code commit was rejected by the strict `project_commit` identity check, as
+its metadata belongs to the prior E0 HEAD. The fresh repair-era run names above provide
+the equivalent full acceptance evidence without weakening resume identity checks.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP5-b
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: c830b4acffd336fd5daf78945e7f6fcc004c002b
+  source_review_round: 1
+  source_review_commit: 14f365a217782a5a2b5245a568cc87b55a3406fe
+  repair_issue_ids: [R1-M1]
+  result_code_commit: 30964b2c6af9bf0dbc8b76f59e99b2ca8ba0b218
+  status: completed
+```
