@@ -77,7 +77,7 @@ description: 使用 Codex 内部 agent，根据 PROJECT_SPEC_Open-R1_CodeVerifie
 
 为本阶段创建独立分支与 worktree，供 executor 实施、reviewer 审查：
 
-1. **分支命名**：分支名必须包含主阶段与子阶段——未拆分使用 `feat/wp{n}`；拆分子阶段使用 `feat/wp{n}-{sub}`（如 `feat/wp3-c`）。
+1. **阶段标识与分支命名**：先定义完整 `stage_id`——未拆分为 `WP{n}`，拆分子阶段为 `WP{n}-{sub}`（如 `WP3-c`）。分支名对应使用 `feat/wp{n}` 或 `feat/wp{n}-{sub}`。
 2. 在主仓库根目录运行 `git worktree list` / `git branch --list` 检查：若该分支与 worktree 已存在则复用；不存在则创建：
 
    ```bash
@@ -85,12 +85,12 @@ description: 使用 Codex 内部 agent，根据 PROJECT_SPEC_Open-R1_CodeVerifie
    ```
 
    worktree 路径默认 `.worktrees/wp{n}`（未拆分）或 `.worktrees/wp{n}-{sub}`（拆分子阶段），可随任务指定调整。
-3. **计划写入分支**：把计划文件写到该 worktree 的 `ai-work/planner/WP{n}-plan.md` 并提交到分支（`docs: add WP{n} plan`），保证 executor 在分支上直接可取计划。
+3. **计划写入分支**：把计划文件写到该 worktree 的 `ai-work/planner/{stage_id}-plan.md` 并提交到分支（`docs: add {stage_id} plan`），保证 executor 在分支上直接可取计划。
 4. 在计划文件元信息中记录分支名与 worktree 路径。
 
 ### 第 5 步：编写计划
 
-在分支 worktree 的 `ai-work/planner/WP{n}-plan.md`（n 为 WP 编号，如 `ai-work/planner/WP1-plan.md`）按 `references/plan-template.md` 的模板产出计划，并提交到当前阶段分支。默认使用中文（与 proceedings/规格一致），代码标识符、签名、文件路径保留英文。若用户另行指定语言或路径，以用户要求为准。
+在分支 worktree 的 `ai-work/planner/{stage_id}-plan.md`（如 `ai-work/planner/WP1-plan.md`、`ai-work/planner/WP3-c-plan.md`）按 `references/plan-template.md` 的模板产出计划，并提交到当前阶段分支。默认使用中文（与 proceedings/规格一致），代码标识符、签名、文件路径保留英文。若用户另行指定语言或路径，以用户要求为准。
 
 阶段边界以**一个计划文件覆盖的内容**为准：不同计划文件视为不同阶段。
 

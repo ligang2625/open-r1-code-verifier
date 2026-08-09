@@ -1,0 +1,4 @@
+interface:
+  display_name: "Execution Router"
+  short_description: "Idempotent state-aware routing from sealed plan or checkpointed review"
+  default_prompt: "Use $execution-router to derive the stage state from Git plus execution/review provenance, reject stale or duplicate sources, and dispatch the correct SINGLE or MULTI execution path."

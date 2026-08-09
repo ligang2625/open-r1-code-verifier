@@ -1,119 +1,104 @@
 ---
 name: executor-ex
-description: 接收 planner-ex 产出的 WP 实施计划文件（如 ai-work/planner/WP1-plan.md），在 planner-ex 创建的独立分支与 worktree 中按计划逐步完成代码实现、单元测试与验证，每完成一个任务即提交到当前阶段分支（绝不在 main 上修改）；也可接收 reviewer-ex 的审查报告，根据审查结果修复缺陷并重新验证。执行结果与修复报告写入 ai-work/executor/WP{n}-executor.md（同一阶段同一文件）。当 Codex 外部 agent 要求“执行某个 WP 计划”、“按 plan 文件写代码并跑测试”、“根据审查报告修复代码”时使用。
+description: SINGLE execution protocol。由 execution-router 传入明确 task_kind 与 provenance，在 stage worktree 中执行一次 implementation 或一次 repair（严格二选一），提交代码/测试后写结构化 execution_record。不得 subagent、不得重新 routing、不得做 review/finalization。
 ---
 
 # Executor Ex
 
-## 用途
+Routing compatibility marker: `execution-routing-v2`。
 
-本 skill 用于执行一份 WP 实施计划（由 planner-ex 产出）：按计划的步骤顺序完成代码实现与测试，逐项验证通过后把执行结果写入阶段报告文件。支持两类任务：
+## 单 agent 边界
 
-- **实现任务**：按计划新增/修改代码与测试（首次实施）；
-- **修复任务**：根据 reviewer-ex 的审查报告修复缺陷并重新验证（修复轮次）。
+- 恰好一个 execution agent；不得 spawn/subagent。
+- 不重判 execution_routing/repair_routing，不改 model/effort。
+- `task_kind` 必须显式为 `implementation` 或 `repair`，两个流程**互斥**；repair 完成后绝不继续跑 implementation 流程。
+- 所有操作先进入 router 给定的 stage worktree，不在 main checkout 切 stage branch。
 
-计划文件与审查报告是执行依据；本 skill 只规定执行流程与纪律，不替代其内容。
+## 必需输入
 
-执行 agent 的边界：
+共同：`stage_id`、绝对 worktree、plan path、`plan_commit`、stage branch、task_kind。
 
-- 严格按计划/审查结果执行，不擅自扩大或修改范围；发现问题先停下报告，不静默改计划。
-- 每完成一个计划步骤（任务）即在**独立分支**上提交一次（见“阶段工作区与提交”）；绝不提交到主分支；不自动 push。
-- 本阶段所有改动都在 planner-ex 创建的独立 worktree/分支中完成；**不得在主分支（main）内做任何修改或提交**。
-- 绝不修改 `third_party/open-r1/`；所有 Open-R1 访问经 `code_verifier.training.open_r1_adapter`。
-- 不修改审查报告文件（`ai-work/reviewer/WP{n}-review.md`）——它归审查方所有。
-- 不写入 `proceedings.md`——阶段完成记录由最终审查方在审查通过并合并后统一写入。
+- implementation：plan `execution_routing` 只作为已由 router 消费的上游决策；本 skill 按完整 plan 实施。
+- repair：额外必须有 review path、整数 `source_review_round`、`review_commit`、`repair_issue_ids`；只处理这些 issue IDs。plan 只提供规格、禁止范围与总体验收约束。
 
-## 输入
+Artifact：
 
-执行前读取以下文件：
+- execution report：`ai-work/executor/{stage_id}-executor.md`
+- review：`ai-work/reviewer/{stage_id}-review.md`（只读）
 
-1. **计划文件**：任务中给出的路径（如 `ai-work/planner/WP1-plan.md`）。若未给出，取 `ai-work/planner/` 下编号最大的 `WP{n}-plan.md`，并在报告中注明。
-2. **审查报告**（仅修复任务）：`ai-work/reviewer/WP{n}-review.md`，取其最新轮次内容；问题清单是修复依据。实现任务无此输入。
-3. `PROJECT_SPEC_Open-R1_CodeVerifier.md`：精读计划中引用的章节（至少 §6 模块边界、§7 数据、§8 执行器、§9 解析器、§10 奖励、§17 CLI、§19 测试计划、§20 WP 注册表）。
-4. `proceedings.md`：了解前置阶段状态与已记录决策（只读，不修改）。
-5. `src/` 与 `tests/` 当前代码：确认改动基线，避免重复实现已存在的能力。
+同一 stage report append-only，不因“重跑”自动清空。
 
-## 阶段报告文件与重置规则
+## 前置校验
 
-本阶段所有结果写入**同一文件** `ai-work/executor/WP{n}-executor.md`：
+1. 当前目录/branch 必须等于 plan metadata 指定 stage worktree/branch。
+2. plan 必须是 plan_commit 中 seal 的同一文件。
+3. implementation：report 不得已有 matching completed E0，且开始修改前 `HEAD` 必须精确等于 `plan_commit`；若 HEAD 已前进，视为不完整/未知 execution baseline，停止而不是重跑 plan。
+4. repair：开始修改前 stage HEAD 必须等于 router 传入的 `review_commit`；latest review round/issues 必须与任务消息完全一致；若不一致停止。
+5. 不修改 review、plan、proceedings、`third_party/open-r1/`。
 
-- 文件结构：开头是"基于 plan 的执行结果"；之后每次 review 后的"代码修复报告"依次追加在末尾，不覆盖前面的内容。
-- **阶段识别**：文件头部记录所依据的计划文件路径。开始任务时，若文件记录的 plan 与当前计划文件不同（或文件不存在），视为进入新阶段——先清空文件，再写入当前阶段内容。
-- 每次写文件时，先确认目标目录 `ai-work/executor/` 存在，不存在则创建。
+## task_kind=implementation
 
-## 阶段工作区与提交
+1. 全文读 plan/spec/相关代码。
+2. 按 plan steps 顺序循环“实现 → 测试 → 验证 → 修正”；不修改测试预期迁就实现。
+3. 每个可独立步骤验证后显式暂存该步骤文件并 commit；禁止 `git add -A`。
+4. 完整运行 plan 总体验收（至少 `make lint`、`make test` 与 stage 特有 gate）。
+5. 所有代码/测试提交完成后记录当前 HEAD 为 `result_code_commit`。
+6. 在 execution report 追加 E0 记录与人类可读摘要，再单独 docs commit report。E0：
 
-1. **确认阶段工作区**：本阶段工作目录为 planner-ex 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）。若未指定，运行 `git worktree list` 定位该分支对应的 worktree；找不到则停止并报告——分支与 worktree 由 planner-ex 创建，executor-ex 不自行创建。
-2. **分支校验（必须，任务开始与每次提交前）**：运行 `git branch --show-current`，必须等于计划元信息记录的分支名（如 `feat/wp3-c`）；若当前在 `main` 或其它分支，先 `git switch <分支名>`；校验不通过时禁止任何修改与提交。
-3. **禁止在主分支修改**：所有代码、测试、配置、报告文件的写入与提交都必须在分支上进行；绝不在 main 上修改或提交。
-4. **每任务提交**：每完成一个计划步骤并通过该步骤验证后立即提交：先 `git status` 确认只含本步骤文件，显式 `git add` 本步骤涉及路径（**不用 `git add -A`**），提交消息用 Conventional Commits（如 `feat: add data schema and validation`），提交到当前阶段分支。
-5. **报告随提交**：阶段报告文件 `ai-work/executor/WP{n}-executor.md` 随对应实现/修复提交一起（或单独一条 docs 提交）进入分支。
-6. **提交失败处理**：hook 拒绝、冲突或误暂存时停下报告，不使用 `--no-verify`、`--force` 等绕过手段。
-7. 不自动 push；合并回主分支由 reviewer-ex 在审查通过后执行。
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP5-b
+  execution_id: E0
+  task_kind: implementation
+  source_plan_commit: <plan_commit>
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: <code HEAD before report docs commit>
+  status: completed
+```
 
-## 执行前检查
+只有所有必须验收通过才写 `status: completed`。阻塞/失败可如实写 narrative/blocked attempt，但不得伪造 completed E0。
 
-通读计划全文，确认每个实施步骤都包含：目标文件、函数/类签名、主要功能、测试方案、验证命令与通过标准。
+## task_kind=repair
 
-- 若计划缺失关键信息（如没有目标文件、没有通过标准），**停止并报告缺失项**，不要自行猜测补全。
-- 若计划引用了不存在的文件或符号，先对照当前代码核实；确实不存在则停下报告，等待计划修订。
-- 修复任务须额外确认审查报告包含问题清单（严重级别、位置、问题、建议）；缺失则停止并报告。
+1. 只解析 router 指定 `repair_issue_ids` 对应的 latest committed review findings。
+2. 不把其它 minor/suggestion/plan step 自动加入 scope；人工严重级别默认规则不适用于 routed repair。
+3. 每个 issue 做最小修复；异议/无法复现记录证据，不静默忽略。
+4. 运行受影响定向测试，再运行 plan 的全局 regression/acceptance。**全局测试是验证约束，不会扩大 repair scope**。
+5. 修复代码/测试提交完成后记录 `result_code_commit=HEAD`。
+6. 追加下一 execution_id（E1/E2/...）并 docs commit report：
 
-## 执行协议
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP5-b
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: <plan_commit>
+  source_review_round: 1
+  source_review_commit: <review_commit>
+  repair_issue_ids: [R1-M1]
+  result_code_commit: <code HEAD>
+  status: completed
+```
 
-实现任务按计划步骤顺序执行；每个步骤循环「实现 → 写测试 → 验证 → 修正」：
+同一 review_commit 只能有一个 completed repair record。全部 repair_issue_ids 必须已修复或附证据处置，且 regression/acceptance 满足后才 completed。
 
-1. **实现**：只改动该步骤指定的目标文件。新增/修改的符号与签名以计划为准；计划从规格中引用的接口（如 `ExecutionStatus`、`ParseResult`、`CodeExecutor`、`compute_code_rewards`）必须逐字保留，不得改名或改签名。
-2. **测试**：按计划的“测试方案”在指定测试文件添加指定测试函数；断言针对规格与计划定义的行为。
-3. **验证**：原样运行该步骤的“验证命令与通过标准”（如 `make lint`、`make test`、具体 CLI 调用），核对通过标准后再进入下一步，不跳步。
-4. **失败处理**（详见 `references/execution-workflow.md` 的决策表）：
-   - 自己的实现或测试写错 → 修正实现，**不得修改测试预期来迁就实现**；
-   - 测试预期与规格冲突 → 停止并报告冲突（引用规格章节与测试断言）；
-   - 计划本身不可执行 → 停止并报告，不自行改写计划；
-   - 外部环境限制（依赖缺失、无 GPU 等）→ 如实记录；若计划给出替代路径则执行，否则停下报告。
-5. **横切规则**：业务逻辑不硬编码路径/模型名/设备/密钥/数据位置；训练与评测配置走 YAML 或 CLI；新模块带类型标注、docstring、单元测试；不触碰与本 WP 无关的代码。
+## 报告与提交
 
-## 修复任务流程（根据审查结果修复）
+- code/test commit 在先；report docs commit 在后，避免在同一 commit 中自引用 hash。
+- report 包含真实命令/结果、修改文件、issue/step 映射、偏差/阻塞。
+- 不自动 push；review 由 reviewer-ex；Git checkpoint/finalization 由 stage-lifecycle。
 
-修复任务不重跑全部计划步骤，按审查报告的问题清单逐项处置：
+## 自检
 
-1. **确定修复范围**：默认修复全部“阻断 / 主要 / 次要”问题；“建议”级别只在任务明确要求时处理。未处理的条目必须在报告中写明原因。
-2. **逐项定位与修复**：按问题的“位置”定位代码，结合“问题”与“建议”做最小改动；只修改与本 WP 相关且被审查点名的代码，不顺手改其它代码。
-3. **异议处理**：认为某条审查意见与规格或代码事实不符时，不静默忽略，也不盲目“修复”：对确实有效的问题照常修复；对存疑条目在报告中记录异议与证据（引用规格章节或代码位置），交人工仲裁——审查方会在下一轮复审中核验；对无法按描述复现的条目，记录复现尝试与证据并标注“无法复现”，同样交下一轮复审核验。
-4. **重新验证**：先运行受影响模块的验证命令，再完整运行 `make lint`、`make test` 及计划的总体验收；确认修复未引入回归。
-5. **提交**：修复完成并通过复测后，按“阶段工作区与提交”规则提交（`fix: ...`）到同一独立分支。
-6. **记录修复**：在阶段报告文件 `ai-work/executor/WP{n}-executor.md` 末尾追加"代码修复报告"（修复的问题清单、改动位置、复测结果、异议项），不覆盖执行结果；**不修改审查报告**。
-
-## 总体验收
-
-两类任务共用同一验收口径：
-
-1. 运行计划的“总体验收与测试计划”（§5 风格）：`make lint` 全绿（ruff check / ruff format --check / mypy）、`make test` 全绿、WP 特有指标达标。
-2. 修复任务额外以“审查报告问题清单已全部处置（修复或已记录异议）”为前提。
-3. 只记录**实际运行过**的命令与真实结论，不得根据代码阅读推断测试通过。
-4. 存在未通过的验收项时不得标记完成：先修复；无法修复则如实报告。
-
-## 收尾与报告
-
-1. 将完成报告写入 `ai-work/executor/WP{n}-executor.md`：实现任务写入“基于 plan 的执行结果”（执行的计划文件、新建/修改的文件清单、新增的函数/类清单、每个验证命令的实际结论、偏离计划的点及原因、已知限制、下一步建议）；修复任务在文件末尾追加"代码修复报告"。
-2. 所有报告随独立分支提交；不写入 `proceedings.md`（该文件由最终审查方在阶段通过、合并回主分支后写入简洁记录）。
-
-## 自检清单
-
-完成前逐条核对：
-
-- [ ] 只实现了计划/审查范围内内容，无越界改动；
-- [ ] 计划每个实现步骤都有对应代码与测试；
-- [ ] 任务开始与每次提交前均确认当前分支为 planner-ex 创建的分支（`feat/wp{n}` 或 `feat/wp{n}-{sub}`）；
-- [ ] 未在主分支（main）上做任何修改或提交；
-- [ ] 未修改测试预期来迁就实现；
-- [ ] 遇到计划/规格冲突时停止并报告，而非静默偏离；
-- [ ] `make lint` 与 `make test` 实际运行且全绿（或如实记录失败）；
-- [ ] 未修改 `third_party/open-r1/`；
-- [ ] 每完成一个计划步骤均在独立分支提交，未提交到主分支；
-- [ ] 提交只含本步骤文件，未用 `git add -A` 混入无关改动；
-- [ ] 未自动 push；
-- [ ] 阶段报告写入 `ai-work/executor/WP{n}-executor.md`：执行结果在前、修复报告追加在后；新阶段时已按 plan 覆盖内容清空重写；
-- [ ] 未写入 `proceedings.md`；
-- [ ] 修复任务：审查报告中的“阻断/主要/次要”问题均已修复，或已记录异议与证据；
-- [ ] 修复任务：修复后重新运行了 `make lint` / `make test`，且未修改审查报告文件。
+- [ ] task_kind 只执行了一个互斥流程；repair 后没有继续 implementation；
+- [ ] stage_id 与 report 路径使用完整 stage id；
+- [ ] implementation source_plan_commit 正确且没有重复 completed E0；
+- [ ] repair source_review_round/review_commit/issues 与 router 完全一致且没有扩大 scope；
+- [ ] repair 总体验收没有被误解释成“修所有 review 问题”；
+- [ ] result_code_commit 在 report docs commit 之前捕获；
+- [ ] completed execution_record schema 完整；
+- [ ] 未修改 plan/review/proceedings/third_party；未 push。

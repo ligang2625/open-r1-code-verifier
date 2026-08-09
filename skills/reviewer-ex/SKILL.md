@@ -1,192 +1,148 @@
 ---
 name: reviewer-ex
-description: 在 executor-ex 完成计划执行与代码测试之后，在独立 worktree 中审查并重新测试当前阶段的代码与功能：核对计划交付与验收、复查代码质量与规格合规、亲自重跑测试，并把每轮审查结果追加到 ai-work/reviewer/WP{n}-review.md；executor-ex 按报告修复后可再次复审，审查全部通过后将独立分支合并回主分支、向 proceedings.md 写入简洁的阶段完成记录并提交。当 Codex 外部 agent 要求“审查/复查某个 WP 的实现”、“验证 executor-ex 的交付”、“独立测试并 review 当前阶段代码”、“复审修复结果”、“审查通过后合并提交”时使用。
+description: Web/CodexPro 独立审查入口。审查 execution-router 产生的最新 completed execution，绑定具体 stage HEAD 与 execution_id，输出 append-only review record 和本轮 repair_routing；不做 Git commit/merge/finalize。审查文件由本地 stage-lifecycle checkpoint_review 封存。
 ---
 
 # Reviewer Ex
 
-## 用途
+Workflow compatibility marker: `execution-routing-v2`。
 
-本 skill 用于在 executor-ex 完成一个 WP 的实施与测试后，作为**独立审查方**复查该阶段的代码与功能：核对计划交付与验收项、审查代码质量与规格合规、亲自重跑测试，并把审查结果写入阶段报告文件。支持两类任务：
+## 目标与边界
 
-- **首轮审查**：executor-ex 完成实现与测试后，对当前阶段全面审查并重测；
-- **复审**：executor-ex 按审查报告完成修复后，针对上一轮问题清单复核修复结果、检查回归与新问题，重新给出结论。
+reviewer-ex 是独立 Web-side reviewer：亲自读代码、核对 plan、重跑测试、生成问题和 repair routing。它不信任 executor 自报通过，也不关心 SINGLE/MULTI 实现拓扑。
 
-审查结论供人工 Code Review 参考，不替代人工判断。**最终审查方**（给出“通过”结论的一轮）负责：合并独立分支回主分支、向 `proceedings.md` 写入简洁的阶段完成记录并提交。
+它**不执行 Git mutation 生命周期**：
 
-审查 agent 的边界：
+- 不 commit review；
+- 不 merge；
+- 不更新 proceedings；
+- 不删除 worktree/branch；
+- 不启动 executor。
 
-- **只读审查**：不修改 `src/`、`tests/` 与 `third_party/open-r1/` 中任何代码；发现问题写入报告，修复留给执行方。
-- **独立取证**：不信任 executor 报告中的结论，只把它当作待核验的声明；所有结论必须以自己读到的代码与亲自运行的命令为依据。
-- 代码提交：审查结果追加到独立分支上的阶段报告文件；**仅在审查结论为“通过”时将独立分支合并回主分支**，随后写入简洁 proceedings 记录并提交（见“合并、proceedings 与提交”一节），不自动 push（除非任务明确要求）。
+每轮 review 写完后交本地 `$stage-lifecycle checkpoint_review` 做 provenance/stale-check 并 commit。PASS review checkpoint 后再由 `$stage-lifecycle finalize` 完成 merge/proceedings/cleanup。
 
-## 输入
+## Stage identity 与输入
 
-执行前读取以下文件：
+必须显式定位唯一 `stage_id`，例如 `WP5-b`。不得按“最大 WP 编号”猜 stage。
 
-- **阶段 worktree**：本阶段代码位于 planner-ex 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）；所有审查与测试命令在 worktree 目录中运行。
-1. **计划文件**：任务给出的路径（如 `ai-work/planner/WP1-plan.md`）；未给出时取 `ai-work/planner/` 下编号最大的 `WP{n}-plan.md` 并在报告中注明。计划中的交付与验收是审查基准。
-2. **分支名**：从计划元信息读取当前阶段分支（`feat/wp{n}` 或 `feat/wp{n}-{sub}`，如 `feat/wp3-c`），合并时使用该分支名。
-3. **executor 的阶段报告**：`ai-work/executor/WP{n}-executor.md`（执行结果与历次修复报告），待核验的声明。
-4. **历史审查报告**（复审时）：同一阶段文件 `ai-work/reviewer/WP{n}-review.md` 中此前轮次的内容；上一轮问题清单是复审焦点。
-5. `PROJECT_SPEC_Open-R1_CodeVerifier.md`：精读计划引用的章节，以及 §21 的 Code Review 清单（通用/数据/执行器/奖励/结果）。
-6. `proceedings.md` 历史：了解前置阶段状态与已记录决策。
-7. 当前 `src/` 与 `tests/` 代码：审查对象。
+输入：
 
-## 审查原则
+- plan：`ai-work/planner/{stage_id}-plan.md`
+- execution：`ai-work/executor/{stage_id}-executor.md`
+- review：`ai-work/reviewer/{stage_id}-review.md`
+- stage worktree/branch：来自 plan metadata
+- spec / proceedings / 当前 src/tests
+- `skills/execution-router/references/routing-contract.md`
 
-- 审查对象是**当前阶段**（本 WP 相关改动与功能），同时确认既有功能未被破坏。
-- 每个结论必须带证据：文件路径/行号、命令实际输出、规格章节引用。无法取证的主张不得写入结论。
-- 报告与实际不一致时，以实际为准并在报告中明确指出。
-- 无法核实的项（如缺命令输出）标记“无法核实”，**不得默认通过**。
+开始审查前要求 stage tracked working tree 干净；review 文件若存在，必须是该 stage 的 append-only 历史。
 
-## 阶段报告文件与重置规则
+## Review/execution provenance guard
 
-本阶段所有审查轮次写入**同一文件** `ai-work/reviewer/WP{n}-review.md`：
+reviewer 只能审查一个**新的 completed execution record**：
 
-- 文件结构：每轮审查结果（首轮、R2、R3…）依次追加，不覆盖此前轮次。
-- **阶段识别**：文件头部记录所审查的计划文件路径。开始审查时，若文件记录的 plan 与当前计划文件不同（或文件不存在），视为进入新阶段——先清空文件，再写入当前阶段内容。
-- 写入前确认 `ai-work/reviewer/` 目录存在，不存在则创建。
+1. 读取 execution report 的最新 completed `execution_record`，并从 Git 历史定位**提交该 record 的 `execution_report_commit`**。
+2. 开始审查前 stage worktree 必须干净，且当前 `HEAD == execution_report_commit`；execution record 之后若出现任何额外 commit 或未提交改动，返回 `REVIEW_EXECUTION_NOT_HEAD`，不得把未知变化悄悄纳入本轮。
+3. 首轮 R1：最新 record 必须是 `task_kind=implementation`。
+4. R2+：最新 record 必须是 `task_kind=repair`，且 `source_review_round == 上一已提交 review_round`，其 `source_review_commit` 必须指向上一 review commit。
+5. 若上一轮 review 之后没有新的 completed execution，返回 `REVIEW_NO_NEW_EXECUTION`；不得仅因 review 文件存在就生成下一 round。
+6. 若 execution provenance 与当前 stage/plan 不匹配，返回 `REVIEW_EXECUTION_PROVENANCE_INVALID`。
+7. 将当前 `execution_report_commit` 记录为 `reviewed_head_commit`；审查期间若 HEAD 改变，停止并返回 `REVIEW_CODE_CHANGED_DURING_REVIEW`。
 
 ## 审查流程
 
-### 第 0 步：确定审查轮次
+1. 全文读取 plan 和最新 execution record/report。
+2. 对照 plan 每个实施步骤、交付、总体验收，核对实际 diff/代码。
+3. 精读适用 spec/审查清单；检查接口、范围、安全、数据泄漏、测试真实性等。
+4. 在 stage worktree 独立运行 `make lint`、`make test` 和 plan 特有验收；一次性验证脚本放仓库外临时目录，不污染 tracked/untracked stage artifact。
+5. 核验 execution report 声明，标记核实通过/与事实不符/无法核实。
+6. 生成稳定 issue IDs：`R{round}-B1`/`M1`/`m1`/`S1` 等；上一轮未解决问题沿用原 ID，新问题用当前 round 新 ID。
+7. 生成结论与 repair routing。
+8. 把本轮 record **追加**到 `ai-work/reviewer/{stage_id}-review.md`；同一 stage 永不因“重跑”自动清空历史。
+9. 不提交；调用方下一步必须运行 `$stage-lifecycle checkpoint_review`。
 
-读取 `ai-work/reviewer/WP{n}-review.md`：
+## Actionable issue coverage invariant
 
-- 文件不存在或为空 → 首轮审查，执行第 1–5 步；
-- 已有内容 → 复审，以上一轮问题清单为基准执行“复审流程”。
+所有需要 executor 行动的失败项必须映射到问题 ID：
 
-### 第 1 步：建立基线
+- 未完成/部分完成/与计划不符的 plan step；
+- 未通过的 acceptance item；
+- 独立测试失败；
+- blocker/major/minor 中 reviewer 要求修复的项。
 
-通读计划，列出本 WP 应交付的文件、函数/类、验收项；通读 executor 阶段报告与 proceedings 历史，列出其声称完成的事项。从规格中提取本 WP 适用的接口与规则（§6 模块边界、§7/§8/§9/§10 相关接口、§17 CLI、§19 测试计划、§20 验收、§21 审查清单）。
+上述每个 actionable finding 必须至少对应 1 个稳定 issue ID，并且该 ID 必须出现在本轮 `repair_issue_ids`。纯 suggestion 若明确不要求执行方修改，可以保留在问题列表但不得进入 `repair_issue_ids`。
 
-### 第 2 步：代码审查与计划完成度核验
+因此不能出现“计划完成度表写未通过，但 repair_issue_ids 没有对应问题”的状态。
 
-**计划完成度核验（必须，逐条对照 plan 文件）**：
+## Review Record
 
-- 对照计划的每个“实施步骤”（步骤 N）：要求的目标文件是否创建/修改、函数/类签名是否与计划一致、主要功能是否真实实现、测试方案是否落地；
-- 对照计划的“交付”清单与“总体验收与测试计划”：逐项标记为 已完成 / 未完成 / 部分完成 / 与计划不符 / 无法核实；
-- 检查是否存在计划内功能缺失（未实现、被跳过、静默简化或替换为计划外实现）；
-- 检查是否存在计划外实现（越界改动）；
-- 核验结果必须以代码位置或命令输出为证据，写入报告的“计划完成度核验表”。
+每轮必须先写结构化 provenance：
 
-**代码质量与规格合规核查**：
-
-对照计划逐项核查：
-
-- 目标文件是否创建/修改正确；是否改动计划外的文件（越界改动）；
-- 函数/类签名与计划及规格一致，规格已定义的接口未被改名或改签名；
-- 实现是否符合“主要功能”描述：行为、输入、输出、错误处理；
-- 类型标注、docstring、异常处理是否齐备；
-- 无硬编码（路径/模型名/设备/密钥/seed）；配置走 YAML 或 CLI；
-- 模块边界职责正确（§6.2）；未复制上游能力（应经 `code_verifier.training.open_r1_adapter` 复用）；
-- 未修改 `third_party/open-r1/`；
-- 数据/测试层泄漏检查（按 WP 适用，见 `references/review-checklist.md`）。
-
-按 `references/review-checklist.md` 中适用的清单逐条过（§21.1 通用必查；数据/执行器/奖励/结果按 WP 内容选择）。
-
-### 第 3 步：独立测试
-
-亲自运行以下命令并记录真实输出，不引用 executor 声称的结果（均在阶段 worktree 目录中执行）：
-
-```bash
-make lint
-make test
-# 计划中列出的 CLI / 集成验证命令，逐一运行
+```yaml
+review_record:
+  version: 1
+  stage_id: WP5-b
+  review_round: 1
+  source_execution_id: E0
+  reviewed_head_commit: <stage HEAD before writing this review>
+  conclusion: needs_repair  # needs_repair | pass
 ```
 
-- 若命令无法运行或环境缺失，如实记录，不得推断通过。
-- 对关键功能可做只读抽查：阅读实现与测试后判断测试断言是否有意义（非恒真、非只跑路径）；需要验证边界行为时，可在仓库外（如临时目录）运行一次性检查脚本，不得修改 `tests/`。
-- 核查测试真实性：是否为了迁就实现而修改测试预期（与计划/规格中的预期对比）。
+`review_round` 固定为整数。不要写 `R1`；问题 ID 才使用 `R1-...`。
 
-### 第 4 步：核验报告声明
+## Repair Routing
 
-对照 executor 阶段报告逐条标记：
+每轮必须有且只有一份：
 
-- **核实通过**：有代码或命令输出证据；
-- **与事实不符**：指出实际内容与差异；
-- **无法核实**：缺证据，不得默认通过。
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 1
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R1-M1
+  rationale:
+    - "..."
+    - "..."
+  workstream_candidates: []
+```
 
-### 第 5 步：出具审查结果
+规则：
 
-按 `references/review-checklist.md` 的报告模板，把本轮结果**追加**到 `ai-work/reviewer/WP{n}-review.md`（首轮、R2、R3…依次追加；**不覆盖历史轮次**），包含：审查范围与方法、**计划完成度核验表**、交付与验收核验表、问题清单（按严重级别）、独立测试结果、结论。追加后提交到当前独立分支（`docs: add WP{n} review round r{round}`），供 executor 修复与最终合并使用。
+- `source_review_round` 必须等于同一 record 的整数 `review_round`。
+- `conclusion` 与 `required` 是同一状态的两种表达，必须严格一致：`pass ⇔ required=false`，`needs_repair ⇔ required=true`。
+- PASS：`required=false`；`mode/complexity/single_class/parallelizability/multi_benefit=null`；`independent_workstreams=0`；`repair_issue_ids=[]`；`workstream_candidates=[]`；rationale 只说明本轮通过无需 repair。
+- needs_repair：required=true 且 `repair_issue_ids` 非空；只按当前 `repair_issue_ids` 重新评估复杂度/并行性/净收益，不继承 plan 或上一轮 routing。
+- SINGLE：`single_class==complexity`，workstream_candidates=[]。
+- MULTI：仅在非 very_simple、parallelizability=high、multi_benefit=high、≥2 真正独立 repair lane 时；candidate 每项含唯一 id、非空且互不重叠 `issue_ids`、互不重叠 tracked `write_scope`，所有 repair_issue_ids 恰好覆盖一次。
+- 不写具体 model/effort。
 
-## 复审流程（executor 修复后）
+## 判定
 
-1. **读取上一轮结果**：从同一阶段文件读取上一轮问题清单（严重级别、位置、问题、建议）。
-2. **逐条核验修复**：对每条问题，用代码阅读与命令输出判断：已修复 / 未修复 / 修复不完整 / 修复引入新问题；每条都给出证据。若上轮“计划完成度核验”存在未通过项，一并逐条复核其完成情况。
-3. **回归检查**：完整重跑 `make lint`、`make test` 及受影响功能验证，确认修复未破坏既有功能。
-4. **新问题检查**：检查修复是否引入新的缺陷、越界改动或新的泄漏。
-5. **出具复审结果**：按模板把本轮结果追加到同一文件（含上轮问题核验表、新的问题清单、独立测试结果与结论），随后提交到当前独立分支（`docs: add WP{n} review round r{round+1}`）。
+以下任何一项存在时不得 PASS：计划/验收未完成、独立测试失败、关键 spec/safety/leakage 违规、测试预期为迁就实现而改、execution report 与事实实质不符、仍存在必须修复 blocker/major/actionable issue。
 
-## 判定规则
+PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过”。它不是永久状态；`stage-lifecycle checkpoint_review/finalize` 会检查 review 后是否发生新 commit。
 
-出现以下任一项时，结论必须为“不通过”或“需修改”，不得判定通过：
+## 输出后续
 
-- 计划验收项未实际通过（含独立重跑失败）；
-- 计划内功能缺失或与计划不符（计划要求的功能未完成、未实现或实现偏离计划）；
-- 存在数据/测试层泄漏或训练评测隔离被破坏；
-- 执行器安全要求被绕过（如可在宿主机执行不可信代码、资源限制缺失）；
-- 修改了 `third_party/open-r1/`；
-- 测试预期被改动以迁就实现；
-- executor 报告与实际存在实质性不符。
+- needs_repair：review 文件写完 → `$stage-lifecycle checkpoint_review` → `$execution-router` repair → 下一轮 reviewer-ex。
+- pass：review 文件写完 → `$stage-lifecycle checkpoint_review` → `$stage-lifecycle finalize`。
 
-其余问题按严重级别（阻断 / 主要 / 次要 / 建议）记录；无阻断与主要问题时方可给出“通过”，并在报告中列出全部残余问题。
+## 自检
 
-复审判定：
-
-- 上一轮“阻断 / 主要”问题仍有未修复 → “不通过”；
-- 上一轮问题全部处置且无新增“阻断 / 主要”问题 → “通过”；
-- 其余情况 → “需修改”。
-
-## 合并、proceedings 与提交（审查通过后，由最终审查方执行）
-
-仅当审查结论为“通过”时执行；结论为“不通过 / 需修改”时禁止合并。
-
-1. **前置条件**：结论为“通过”、计划验收项全部通过、独立重测全绿、最新审查轮次已提交到独立分支。
-2. **确认 worktree 干净**：在阶段 worktree 中运行 `git status`，必须无未提交改动；存在未提交文件则中止并报告，不强行合并。
-3. **检查主仓库状态**：在主仓库目录运行 `git status`；主分支存在已跟踪文件的未提交修改时中止并报告（不 stash、不覆盖）。无关未跟踪文件可保留，但需确认合并不会覆盖同名路径。
-4. **合并回主分支**：在主仓库目录运行：
-
-   ```bash
-   git merge --no-ff <分支名> -m "feat: complete WP{n} <标题>"
-   ```
-
-   `<分支名>` 为计划元信息记录的 `feat/wp{n}` 或 `feat/wp{n}-{sub}`（如 `feat/wp3-c`）；产生合并提交；消息可用 Conventional Commits 或任务指定消息。
-5. **写入简洁 proceedings 记录**：合并完成后，在 `proceedings.md` 末尾追加当前阶段完成记录，**内容保持简洁**：只写本阶段完成的功能概述与相关文件（新增/修改清单）、验收结论；**不写入中间多次 review 与 execution 的细节**（那些细节在 `ai-work/` 报告文件中）。未拆分的 WP 使用 `## WP{n}：<名称>`；拆分的子阶段使用 `## WP{n}-<后缀>：<名称>`。
-6. **WP 整合（仅当本 WP 被拆分为多个子阶段，且本轮是其最后一个子阶段）**：
-   - 检查 `ai-work/planner/` 下同前缀 `WP{n}-*` 的全部计划文件，并核对 `proceedings.md` 中每个子阶段是否都已有对应记录；
-   - 若全部子阶段已完成，把该 WP 的所有子阶段记录整合为**一条** `## WP{n}：<WP 名称>` 记录：头部为 WP 级元信息与实施范围，主体为整合后的完成功能与相关文件（汇总），各子阶段以小节保留（如 `### 子阶段 WP{n}-a`）；删除独立的子阶段小节，内容仍保持简洁，不含 review/execution 细节；
-   - 未拆分（单一计划）的 WP 跳过整合，其阶段记录即为最终 WP 记录。
-7. **提交**：提交 proceedings 记录（普通场景 `docs: record WP{n} completion in proceedings`；整合场景 `docs: consolidate WP{n} sub-stages in proceedings`），并将合并提交 hash 与提交信息记录到审查报告的结论节。
-8. **清理阶段分支与 worktree（合并与 proceedings 提交完成后执行）**：
-   - 再次确认阶段 worktree 无未提交改动（`git status`）；
-   - 移除 worktree：`git worktree remove .worktrees/wp{n}`（或 `.worktrees/wp{n}-{sub}`）；若因 submodule 限制被拒绝，先执行 `git -C <worktree 路径> submodule deinit --all` 后重试；仍被拒绝且 worktree 干净（无未提交/未跟踪改动）时，允许 `git worktree remove --force <路径>` 兜底；
-   - **默认删除阶段分支**：`git branch -d <分支名>`（已合并，安全删除）；若删除失败（如仍被 worktree 检出），先确保 worktree 已移除再重试；仍失败则如实报告并保留分支。
-9. **失败处理**：合并或提交阶段的冲突、hook 拒绝或暂存异常时不强行绕过（不用 `--no-verify`、`--force` 等），停下报告；worktree 清理的 `--force` 兜底仅限第 8 步列出的干净 worktree 场景。
-10. **不自动 push**：push 仅在任务或人工明确要求时执行。
-
-## 自检清单
-
-完成前逐条核对：
-
-- [ ] 未修改 `src/`、`tests/` 与 `third_party/open-r1/`；
-- [ ] 所有结论均有证据（代码位置 / 命令输出 / 规格章节）；
-- [ ] 已逐条对照 plan 核验计划内功能完成度（每个实施步骤与交付项），无计划内功能缺失或已如实报告；
-- [ ] `make lint` 与 `make test` 由本审查方亲自运行并记录结果；
-- [ ] executor 阶段报告的每项声明均已标记核实状态；
-- [ ] 无法核实的项未被默认视为通过；
-- [ ] 问题清单按严重级别分类并给出位置与建议；
-- [ ] 结论与判定规则一致，无“应不通过却通过”的情形；
-- [ ] 审查结果追加到 `ai-work/reviewer/WP{n}-review.md`（同阶段单文件、轮次追加、未覆盖历史）；新阶段时按 plan 覆盖内容清空重写；
-- [ ] 复审：上一轮每条问题均已标记“已修复/未修复/修复不完整/新问题”并附证据；
-- [ ] 审查与测试均在阶段 worktree 中执行；
-- [ ] 合并使用的分支名为计划元信息记录的 `feat/wp{n}` 或 `feat/wp{n}-{sub}`；
-- [ ] 审查结果已提交到独立分支；结论为“通过”才合并回主分支，不通过 / 需修改时未合并；
-- [ ] 合并前 worktree 与主仓库均无意外未提交改动；合并仅含本 WP 分支内容；
-- [ ] 最终审查方已写入简洁 proceedings 记录（仅功能概述与相关文件，无中间 review/execution 细节）并提交；
-- [ ] 本 WP 拆分为多子阶段时：各子阶段先分节记录；整个 WP 最后一个子阶段通过后，已整合为一条 WP 记录（子阶段保留为小节）；未拆分时跳过整合；
-- [ ] 合并使用 `--no-ff` 且消息符合 Conventional Commits，合并 hash 已记录到审查报告；
-- [ ] 合并与 proceedings 提交完成后，已默认删除阶段分支（`git branch -d`）并移除阶段 worktree；非强制移除失败且 worktree 干净时使用 `--force` 兜底，删除失败已如实报告；
-- [ ] 未自动 push。
+- [ ] stage_id 唯一明确，没有最大编号猜测；
+- [ ] latest execution 是上一 review 之后的新 completed record，否则已返回 REVIEW_NO_NEW_EXECUTION；
+- [ ] recorded `reviewed_head_commit` 在审查期间未变化；
+- [ ] 全部结论有代码/命令/spec 证据；
+- [ ] 所有 actionable failed plan/acceptance/test finding 都映射到 repair_issue_ids；
+- [ ] conclusion 与 required 严格一致（pass=false / needs_repair=true）；
+- [ ] review_round/source_review_round 都是整数且相等；
+- [ ] repair routing 只按本轮剩余问题重算；
+- [ ] review history append-only；
+- [ ] reviewer-ex 未 commit/merge/update proceedings/cleanup；
+- [ ] 已明确下一步交给 stage-lifecycle checkpoint_review。

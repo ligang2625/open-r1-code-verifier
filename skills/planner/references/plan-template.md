@@ -1,21 +1,22 @@
-# 计划模板：WP{n} Implementation Plan
+# 计划模板：{stage_id} Implementation Plan
 
-> 使用说明：本模板用于产出下一个 WP 的实施计划。把 `{n}` 替换为实际 WP 编号，把 `[方括号]` 占位内容替换为实际内容，最后删除本说明。
+> 使用说明：本模板用于产出一个完整 stage 的实施计划。`{stage_id}` 未拆分时为 `WP{n}`，拆分时为 `WP{n}-{sub}`（如 `WP3-c`）；把 `[方括号]` 占位内容替换为实际内容，最后删除本说明。
 > 消费约束：本计划由 executor 的 Codex 内部 agent 工作流消费。计划内容只依赖仓库文件与项目自带 `make` / pytest / CLI，不得把 Codex 编排工具、MCP 或其它 skill 写成实施依赖，也不得包含创建 agent 的步骤；agent 拆分与创建由 executor skill 负责。
 > 分支约定：planner 为本阶段创建分支与 worktree（`.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，分支 `feat/wp{n}` 或 `feat/wp{n}-{sub}`），executor 的主 agent 与 subagent 只在该分支上工作，不在 main 上修改。
 
-# WP{n} 实施计划（[WP 名称，来自规格 §20]）
+# {stage_id} 实施计划（[WP 名称，来自规格 §20]）
 
 ## 1. 元信息
 
 | 项 | 值 |
 |---|---|
+| stage_id | `WP{n}`（未拆分）或 `WP{n}-{sub}`（拆分，如 `WP3-c`） |
 | 目标 WP | WP{n}：[名称] |
 | 规格依据 | `PROJECT_SPEC_Open-R1_CodeVerifier.md` §20 WP{n} |
 | 前置 WP | WP{n-1}（proceedings.md 状态：已完成） |
 | 分支 | `feat/wp{n}`（未拆分）或 `feat/wp{n}-{sub}`（拆分子阶段，planner 创建） |
 | worktree | `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}` |
-| 计划文件 | `ai-work/planner/WP{n}-plan.md` |
+| 计划文件 | `ai-work/planner/{stage_id}-plan.md` |
 | 面向的执行 agent | executor 内部 agent；计划本身仅依赖仓库文件与项目命令 |
 
 > 粒度约束：单个计划实施步骤最多 10 个、新模块最多 8 个；任务过多时拆分为多个阶段计划，每个计划文件视为独立阶段。

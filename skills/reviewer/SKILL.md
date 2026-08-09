@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: 使用 Codex 内部 agent 独立审查并重新测试当前 WP 的代码与功能。Use when Codex must delegate the unchanged review workflow to a dedicated gpt-5.6-sol agent with medium reasoning effort, append ai-work/reviewer/WP{n}-review.md, and merge/update proceedings.md only after the review passes.
+description: 使用 Codex 内部 agent 独立审查并重新测试当前 WP 的代码与功能。Use when Codex must delegate the unchanged review workflow to a dedicated gpt-5.6-sol agent with medium reasoning effort, append ai-work/reviewer/{stage_id}-review.md, and merge/update proceedings.md only after the review passes.
 ---
 
 # Reviewer
@@ -36,10 +36,10 @@ description: 使用 Codex 内部 agent 独立审查并重新测试当前 WP 的�
 执行前读取以下文件：
 
 - **阶段 worktree**：本阶段代码位于 planner 创建的分支 worktree（默认 `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，以计划元信息为准）；所有审查与测试命令在 worktree 目录中运行。
-1. **计划文件**：任务给出的路径（如 `ai-work/planner/WP1-plan.md`）；未给出时取 `ai-work/planner/` 下编号最大的 `WP{n}-plan.md` 并在报告中注明。计划中的交付与验收是审查基准。
+1. **计划文件**：优先使用任务给出的路径（如 `ai-work/planner/WP3-c-plan.md`）。未给出时只能在尚未合并的阶段 worktree 中恰好定位到 1 个 plan；0 个或多个候选都停止，不按最大编号猜测。由计划文件名/元信息得到完整 `stage_id`（如 `WP3-c`）。计划中的交付与验收是审查基准。
 2. **分支名**：从计划元信息读取当前阶段分支（`feat/wp{n}` 或 `feat/wp{n}-{sub}`，如 `feat/wp3-c`），合并时使用该分支名。
-3. **executor 的阶段报告**：`ai-work/executor/WP{n}-executor.md`（执行结果与历次修复报告），待核验的声明。
-4. **历史审查报告**（复审时）：同一阶段文件 `ai-work/reviewer/WP{n}-review.md` 中此前轮次的内容；上一轮问题清单是复审焦点。
+3. **executor 的阶段报告**：`ai-work/executor/{stage_id}-executor.md`（执行结果与历次修复报告），待核验的声明。
+4. **历史审查报告**（复审时）：同一阶段文件 `ai-work/reviewer/{stage_id}-review.md` 中此前轮次的内容；上一轮问题清单是复审焦点。
 5. `PROJECT_SPEC_Open-R1_CodeVerifier.md`：精读计划引用的章节，以及 §21 的 Code Review 清单（通用/数据/执行器/奖励/结果）。
 6. `proceedings.md` 历史：了解前置阶段状态与已记录决策。
 7. 当前 `src/` 与 `tests/` 代码：审查对象。
@@ -53,17 +53,17 @@ description: 使用 Codex 内部 agent 独立审查并重新测试当前 WP 的�
 
 ## 阶段报告文件与重置规则
 
-本阶段所有审查轮次写入**同一文件** `ai-work/reviewer/WP{n}-review.md`：
+本阶段所有审查轮次写入**同一文件** `ai-work/reviewer/{stage_id}-review.md`：
 
 - 文件结构：每轮审查结果（首轮、R2、R3…）依次追加，不覆盖此前轮次。
-- **阶段识别**：文件头部记录所审查的计划文件路径。开始审查时，若文件记录的 plan 与当前计划文件不同（或文件不存在），视为进入新阶段——先清空文件，再写入当前阶段内容。
+- `stage_id` 已隔离不同子阶段，因此同一 review 文件只对应一个 stage；历史默认 append-only，不因计划文件变化/重跑而自动清空。真正的新 stage 使用新的 `{stage_id}-review.md`。
 - 写入前确认 `ai-work/reviewer/` 目录存在，不存在则创建。
 
 ## 审查流程
 
 ### 第 0 步：确定审查轮次
 
-读取 `ai-work/reviewer/WP{n}-review.md`：
+读取 `ai-work/reviewer/{stage_id}-review.md`：
 
 - 文件不存在或为空 → 首轮审查，执行第 1–5 步；
 - 已有内容 → 复审，以上一轮问题清单为基准执行“复审流程”。
@@ -121,7 +121,7 @@ make test
 
 ### 第 5 步：出具审查结果
 
-按 `references/review-checklist.md` 的报告模板，把本轮结果**追加**到 `ai-work/reviewer/WP{n}-review.md`（首轮、R2、R3…依次追加；**不覆盖历史轮次**），包含：审查范围与方法、**计划完成度核验表**、交付与验收核验表、问题清单（按严重级别）、独立测试结果、结论。追加后提交到当前独立分支（`docs: add WP{n} review round r{round}`），供 executor 修复与最终合并使用。
+按 `references/review-checklist.md` 的报告模板，把本轮结果**追加**到 `ai-work/reviewer/{stage_id}-review.md`（首轮、R2、R3…依次追加；**不覆盖历史轮次**），包含：审查范围与方法、**计划完成度核验表**、交付与验收核验表、问题清单（按严重级别）、独立测试结果、结论。追加后提交到当前独立分支（`docs: add {stage_id} review round r{round}`），供 executor 修复与最终合并使用。
 
 ## 复审流程（executor 修复后）
 
@@ -129,7 +129,7 @@ make test
 2. **逐条核验修复**：对每条问题，用代码阅读与命令输出判断：已修复 / 未修复 / 修复不完整 / 修复引入新问题；每条都给出证据。若上轮“计划完成度核验”存在未通过项，一并逐条复核其完成情况。
 3. **回归检查**：完整重跑 `make lint`、`make test` 及受影响功能验证，确认修复未破坏既有功能。
 4. **新问题检查**：检查修复是否引入新的缺陷、越界改动或新的泄漏。
-5. **出具复审结果**：按模板把本轮结果追加到同一文件（含上轮问题核验表、新的问题清单、独立测试结果与结论），随后提交到当前独立分支（`docs: add WP{n} review round r{round+1}`）。
+5. **出具复审结果**：按模板把本轮结果追加到同一文件（含上轮问题核验表、新的问题清单、独立测试结果与结论），随后提交到当前独立分支（`docs: add {stage_id} review round r{round+1}`）。
 
 ## 判定规则
 
@@ -173,9 +173,9 @@ make test
 7. **提交**：提交 proceedings 记录（普通场景 `docs: record WP{n} completion in proceedings`；整合场景 `docs: consolidate WP{n} sub-stages in proceedings`），并将合并提交 hash 与提交信息记录到审查报告的结论节。
 8. **清理阶段分支与 worktree（合并与 proceedings 提交完成后执行）**：
    - 再次确认阶段 worktree 无未提交改动（`git status`）；
-   - 移除 worktree：`git worktree remove .worktrees/wp{n}`（或 `.worktrees/wp{n}-{sub}`）；若因 submodule 限制被拒绝，先执行 `git -C <worktree 路径> submodule deinit --all` 后重试；仍被拒绝且 worktree 干净（无未提交/未跟踪改动）时，允许 `git worktree remove --force <路径>` 兜底；
+   - 正常移除 worktree：`git worktree remove .worktrees/wp{n}`（或 `.worktrees/wp{n}-{sub}`）；若移除失败，停止并报告，不自动 `--force` 或继续猜测清理方式；
    - **默认删除阶段分支**：`git branch -d <分支名>`（已合并，安全删除）；若删除失败（如仍被 worktree 检出），先确保 worktree 已移除再重试；仍失败则如实报告并保留分支。
-9. **失败处理**：合并或提交阶段的冲突、hook 拒绝或暂存异常时不强行绕过（不用 `--no-verify`、`--force` 等），停下报告；worktree 清理的 `--force` 兜底仅限第 8 步列出的干净 worktree 场景。
+9. **失败处理**：合并、提交或清理阶段出现冲突、hook 拒绝或命令失败时不强行绕过（不用 `--no-verify`、`--force` 等），停下并报告当前状态。
 10. **不自动 push**：push 仅在任务或人工明确要求时执行。
 
 ## 自检清单
@@ -190,7 +190,7 @@ make test
 - [ ] 无法核实的项未被默认视为通过；
 - [ ] 问题清单按严重级别分类并给出位置与建议；
 - [ ] 结论与判定规则一致，无“应不通过却通过”的情形；
-- [ ] 审查结果追加到 `ai-work/reviewer/WP{n}-review.md`（同阶段单文件、轮次追加、未覆盖历史）；新阶段时按 plan 覆盖内容清空重写；
+- [ ] 审查结果追加到 `ai-work/reviewer/{stage_id}-review.md`（同 stage 单文件、轮次追加、未覆盖历史）；新 stage 使用新的 stage_id 文件，不清空旧 stage 历史；
 - [ ] 复审：上一轮每条问题均已标记“已修复/未修复/修复不完整/新问题”并附证据；
 - [ ] 审查与测试均在阶段 worktree 中执行；
 - [ ] 合并使用的分支名为计划元信息记录的 `feat/wp{n}` 或 `feat/wp{n}-{sub}`；
@@ -199,5 +199,5 @@ make test
 - [ ] 最终审查方已写入简洁 proceedings 记录（仅功能概述与相关文件，无中间 review/execution 细节）并提交；
 - [ ] 本 WP 拆分为多子阶段时：各子阶段先分节记录；整个 WP 最后一个子阶段通过后，已整合为一条 WP 记录（子阶段保留为小节）；未拆分时跳过整合；
 - [ ] 合并使用 `--no-ff` 且消息符合 Conventional Commits，合并 hash 已记录到审查报告；
-- [ ] 合并与 proceedings 提交完成后，已默认删除阶段分支（`git branch -d`）并移除阶段 worktree；非强制移除失败且 worktree 干净时使用 `--force` 兜底，删除失败已如实报告；
+- [ ] 合并与 proceedings 提交完成后，已正常删除阶段分支（`git branch -d`）并移除阶段 worktree；清理失败时已停止并如实报告，没有自动 `--force`；
 - [ ] 未自动 push。

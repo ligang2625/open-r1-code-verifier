@@ -1,113 +1,151 @@
 ---
 name: planner-ex
-description: 根据 PROJECT_SPEC_Open-R1_CodeVerifier.md 与 proceedings.md 生成下一个 Work Package（WP）的、精确到函数级别、高度可执行的实施计划（plan 文件），并为当前阶段创建独立分支与 worktree（分支名含主阶段+子阶段，如 feat/wp3-c）。当 Codex 外部 agent 要求“规划下一个 WP”、“为下一个工作包制定实施计划”、“把下一里程碑拆解为文件/函数级任务并给出测试方案与通过标准”时使用。计划供后续外部执行 agent 使用。
+description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与代码现状生成下一 stage 的函数级最终 plan 和 execution_routing；不做 Git mutation。计划通过 handoff 交给本地 stage-lifecycle bootstrap_plan 封存到独立 worktree/branch 后，再由 execution-router 执行。
 ---
 
 # Planner Ex
 
-## 用途
+## 目标与边界
 
-本 skill 用于生成“下一个 Work Package 的实施计划”文档。计划是给后续执行 agent 使用的工件，因此必须：
+本 skill 负责生成一个**完整、可执行、可验证、可路由**的 stage plan。它是 Web-side planning artifact producer，不负责 Git 生命周期：
 
-- **精确到函数级别**：每个步骤指明要新建/修改的文件路径、函数或类的完整签名、主要功能。
-- **高度可执行**：拿到计划的 agent 只需文件读写和基础 shell（运行仓库自带的 Makefile / pytest / CLI），即可逐步实现，无需再向任何人澄清。
-- **可验证**：每个步骤都带测试方案与可测量的通过标准。
+- 不创建/删除 branch 或 worktree；
+- 不 commit/merge/push；
+- 不启动 executor；
+- 不在 `main` 写最终 plan 文件；
+- 最终 plan 交给本地 `stage-lifecycle bootstrap_plan` 写入并 commit。
 
-> 本 skill 不负责创建、启动或指挥任何执行 agent；计划文件只是供后续执行 agent 消费的产物。
+如果 CodexPro handoff 可用，优先把完整最终 plan 发布到 `.ai-bridge/current-plan.md`（例如 handoff_to_codex）；handoff 只是传输层，不是仓库 stage artifact。若 handoff 不可用，返回完整 plan 正文与 stage descriptor，供调用方传给 `stage-lifecycle`。
 
 ## 输入
 
-从仓库根目录读取以下文件（若仓库结构不同，按实际路径调整）：
+1. `PROJECT_SPEC_Open-R1_CodeVerifier.md`：至少精读目标 WP 相关章节、§20 WP 注册表、§21 Code Review、§19 测试、§29 默认决策。
+2. `proceedings.md`：确认已完成、部分完成、受阻阶段。
+3. 当前 `src/`、`tests/` 与只读 Git/worktree 状态。
+4. `references/plan-template.md`。
 
-1. `PROJECT_SPEC_Open-R1_CodeVerifier.md` —— 项目最高规格。Work Package 注册表（WP0–WP8 的目标、交付、验收）在 §20；相关细节见 §6 模块边界、§7 数据规范、§8 执行器、§9 解析器、§10 奖励、§11 SFT、§12 GRPO、§13 评测、§16 仓库结构、§17 CLI、§19 测试计划、§29 默认决策。
-2. `proceedings.md` —— 实施记录。已完成的 WP 在此登记；下一个 WP 是第一个未登记为“已完成”的 WP。
-3. `src/` 与 `tests/` 当前源码 —— 只读检查，确保计划在现有代码上增量扩展，而不是重复造轮子。
+## Active-stage guard
 
-若上下文允许，通读整份规格；至少必须精读上面列出的章节。
+规划下一 stage 前先枚举尚未合并的 stage worktree/branch：
 
-## 工作流程
+- 0 个 active stage：允许规划下一 stage；
+- 1 个或多个 active stage：默认返回 `PLANNER_ACTIVE_STAGE_EXISTS`，不得规划后续 stage；
+- 只有用户明确要求“重规划当前 stage”才允许进入 replan；replan 仅允许该 stage 仍处于纯 PLANNED 状态：没有 completed implementation record，且 stage `HEAD` 仍等于当前 plan seal commit。只要 plan seal 后已有任何其它 commit，就返回 `PLANNER_REPLAN_AFTER_EXECUTION`，不得覆盖原 plan，后续变化交给 execution/review 流程处理。
 
-### 第 1 步：确定下一个 WP
+禁止按“最近创建”“最大 WP 编号”猜当前 stage。
 
-1. 通读 `proceedings.md`，找到最后一个 WP 小节及其状态（已完成/部分完成/受阻）。
-2. 阅读 `PROJECT_SPEC_Open-R1_CodeVerifier.md` §20 的 WP 顺序（WP0 → WP8）。
-3. 下一个 WP = 按 §20 顺序第一个未被 proceedings 标记为完全完成的 WP。若该 WP 在 proceedings 中被记为部分完成，计划应覆盖其剩余交付物，不得跳档。
-4. 把 proceedings 中与下一个 WP 相关的未完成项、决策、已知问题写入计划的“前置条件与约束”。
-5. 若 proceedings 缺失或没有 WP 小节，默认取 §20 中 `src/` 尚未实现的首个 WP，并在计划中注明该假设。
+## Stage identity
 
-### 第 2 步：提取 WP 契约
+每个计划必须定义唯一 `stage_id`：
 
-从规格中提取并原样保留：
+- 未拆分 WP：`WP5`
+- 拆分：`WP5-a`、`WP5-b`
 
-1. 目标 WP 的“目标 / 交付 / 验收”（§20 原文）。
-2. 该 WP 触及章节中**规格已给出签名**的接口，逐字使用，不得另造冲突签名，例如：
-   - §8.3：`ExecutionStatus`、`TestCaseResult`、`ExecutionResult`、`CodeExecutor` Protocol；
-   - §9.2：`ParseResult`、`extract_python_code`；
-   - §10.5：`public_code_reward`、`hidden_code_reward`、`compute_code_rewards`；
-   - §7.1 数据 schema 字段名与结构。
-3. §6.2 的模块边界（Data / Generation / Parsing / Execution / Verification / Reward / Training / Evaluation / Analysis 各自的职责与禁止事项）。
-4. §17 要求的 CLI 命令形态与全局参数（`--help`、`--config`、`--seed`、`--output-dir`、`--log-level`）。
-5. §19 的单元/集成测试要求。
-6. §29 默认决策。
-7. 横切规则：业务逻辑不得硬编码路径/模型名/设备/密钥/数据位置；训练与评测配置必须走 YAML 或 CLI；新模块必须带类型标注、docstring、单元测试；**绝不修改 `third_party/open-r1/`**；所有 Open-R1 访问必须经 `code_verifier.training.open_r1_adapter`。
+规划开始时记录只读 Git 基线 `planning_base_commit = main HEAD`。并给出 proposed lifecycle metadata：
 
-### 第 3 步：检查当前代码
+- `planning_base_commit`：`<main HEAD sha>`
+- branch：`feat/wp5` 或 `feat/wp5-b`
+- worktree：`.worktrees/wp5` 或 `.worktrees/wp5-b`
+- final plan path：`ai-work/planner/{stage_id}-plan.md`
+- execution report path：`ai-work/executor/{stage_id}-executor.md`
+- review path：`ai-work/reviewer/{stage_id}-review.md`
 
-读取 `src/code_verifier/` 与 `tests/unit/` 下已有文件，确认：
+完整 `stage_id` 是 artifact key。拆分 stage 不得共用 `WP5-executor.md` / `WP5-review.md`。
 
-- 已有内容（WP0 脚手架：`cli.py`、`environment.py`、`training/open_r1_adapter.py` 及对应测试）；
-- 代码风格：双引号、119 列、strict mypy、`from __future__ import annotations`；
-- CLI 子命令模式：`build_parser()` / `main()` / handler 函数，新命令必须沿用；
-- 测试风格：`tests/unit/test_*.py`。
+## 确定下一 stage
 
-计划只添加目标 WP 要求的改动。
+1. 阅读 proceedings，按 §20 顺序找到第一个未完全完成 WP。
+2. 若该 WP 部分完成，计划只覆盖剩余交付。
+3. 若规模超过单 stage 上限，拆成连续 stage（如 `WP5-a`、`WP5-b`），但**不要仅因内部可并行而拆 stage**。
+4. 每个 stage 必须有独立验收边界。
 
-### 第 4 步：创建当前阶段分支
+规模约束：通常实施步骤 ≤10、新模块 ≤8；超过或无法在一次可靠执行/验收中完成时拆分。
 
-为本阶段创建独立分支与 worktree，供 executor-ex 实施、reviewer-ex 审查：
+## 计划内容要求
 
-1. **分支命名**：分支名必须包含主阶段与子阶段——未拆分使用 `feat/wp{n}`；拆分子阶段使用 `feat/wp{n}-{sub}`（如 `feat/wp3-c`）。
-2. 在主仓库根目录运行 `git worktree list` / `git branch --list` 检查：若该分支与 worktree 已存在则复用；不存在则创建：
+计划必须：
 
-   ```bash
-   git worktree add .worktrees/wp{n}-{sub} -b feat/wp{n}-{sub}
-   ```
+- 精确到文件、函数/类完整签名；
+- 逐步说明输入/输出/错误处理/调用关系；
+- 保留规格已定义接口，不另造冲突签名；
+- 每个步骤给测试文件、测试函数、断言与验证命令；
+- 不确定外部 API/runtime 行为写入前置验证，不臆造；
+- 不修改 `third_party/open-r1/`；Open-R1 访问只经 adapter；
+- 实施步骤只依赖仓库文件、项目命令与执行 agent 自身文件/shell 能力，不依赖 MCP/其它 skill。
 
-   worktree 路径默认 `.worktrees/wp{n}`（未拆分）或 `.worktrees/wp{n}-{sub}`（拆分子阶段），可随任务指定调整。
-3. **计划写入分支**：把计划文件写到该 worktree 的 `ai-work/planner/WP{n}-plan.md` 并提交到分支（`docs: add WP{n} plan`），保证 executor-ex 在分支上直接可取计划。
-4. 在计划文件元信息中记录分支名与 worktree 路径。
+## Execution Routing Assessment
 
-### 第 5 步：编写计划
+完整 plan 写完后再计算 routing。计划中包含且只包含一份：
 
-在分支 worktree 的 `ai-work/planner/WP{n}-plan.md`（n 为 WP 编号，如 `ai-work/planner/WP1-plan.md`）按 `references/plan-template.md` 的模板产出计划，并提交到当前阶段分支。默认使用中文（与 proceedings/规格一致），代码标识符、签名、文件路径保留英文。若用户另行指定语言或路径，以用户要求为准。
+```yaml
+execution_routing:
+  version: 1
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  rationale:
+    - "..."
+    - "..."
+  workstream_candidates: []
+```
 
-阶段边界以**一个计划文件覆盖的内容**为准：不同计划文件视为不同阶段。
+### 三个独立维度
 
-存在不确定信息（如上游 Open-R1/TRL 或 Piston 的实际接口行为）时，写入计划的“前置条件与约束”并要求先验证，不得臆造接口；计划中不得出现未经确认的假设实现。
+- `complexity`: `very_simple | normal | difficult_serial`，衡量单 agent 推理/调试强度；
+- `parallelizability`: `low | medium | high`；
+- `multi_benefit`: `low | medium | high`，必须考虑 coordinator/context/integration 成本。
 
-### 规划粒度约束
+### MULTI hard gate
 
-一次规划的内容不宜过多，保持"一个可独立验收的阶段"的粒度：
+只有以下全部满足才允许 `mode=multi`：
 
-- 单个计划的实施步骤最多 10 个，涉及的新模块最多 8 个；
-- 若目标 WP 任务过多（步骤超过 10 个、新模块超过 8 个、跨多个独立模块或存在长依赖链），必须拆分为多个连续阶段计划（如 `WP{n}-a`、`WP{n}-b`，或拆为子计划），每个子计划仍满足函数级精度、测试方案与独立验收标准；
-- 拆分后每个计划文件视为独立阶段，按各自计划执行、审查与合并。
+1. `complexity != very_simple`；
+2. `parallelizability == high`；
+3. `multi_benefit == high`；
+4. 至少 2 个 substantive implementation workstream；
+5. tracked write file/symbol ownership 基本互斥；
+6. 无 lane 依赖另一 lane 尚未实现/定稿的 public API；
+7. 每 lane 有独立、有意义的定向测试；
+8. worker 完成后 coordinator 主要做集成验证，不需大量新 glue implementation。
 
-### 第 6 步：自检
+“能并行”不等于“值得 MULTI”。多个很小 lane 仍用 SINGLE。
 
-完成前逐条核对；不满足则修改计划直到全部通过：
+### SINGLE
 
-- [ ] 只覆盖一个 WP，无后续 WP 范围蔓延；
-- [ ] 每个实现步骤都给出仓库根目录相对的文件路径；
-- [ ] 每个新增/修改代码的步骤都给出函数/类名与完整签名；
-- [ ] 每个步骤都说明主要功能及与现有代码/CLI/配置的衔接；
-- [ ] 每个步骤都有测试方案：测试文件路径、测试函数名、断言内容；
-- [ ] 每个步骤都有具体验证命令与可测量的通过标准（如 `make lint`、`make test`、具体 CLI 调用）；
-- [ ] 规格已给的接口被逐字复用，无冲突签名；
-- [ ] 无任何步骤修改 `third_party/open-r1/`；
-- [ ] 计划不依赖 Codex 工具、MCP、其它 skill；只涉及仓库文件、项目自带命令与执行 agent 自身的文件/shell 能力；
-- [ ] 计划不含创建/启动执行 agent 的步骤；
-- [ ] 计划粒度适中（步骤 ≤ 10、新模块 ≤ 8）；任务过多时已拆分为多个阶段计划；
-- [ ] 已为本阶段创建/复用分支（名称含主阶段+子阶段）与 worktree，计划已提交到该分支；
-- [ ] 计划未提交到 main，未在 main 上留下本阶段改动；
-- [ ] 通过标准可判定（通过/失败无需主观判断）。
+- `very_simple`：机械、低风险局部实现，通常步骤≤3、生产/配置文件≤2、核心 public symbols≤4，且不涉及外部 runtime 探索、GPU/网络、事务/并发/状态机、checkpoint、安全、hidden-data、核心持久化格式、跨模块 public API 或关键真实 integration。
+- `normal`：默认常规多文件实现/debug。
+- `difficult_serial`：强串行高推理/调试风险。
+
+SINGLE 时 `single_class == complexity`；`independent_workstreams` 填实际数量（可 >1），`workstream_candidates: []`。
+
+MULTI 时 `single_class: null`；candidate 数量必须等于 `independent_workstreams`，每项含唯一 `id`、互不重叠 `steps`、互不重叠 tracked `write_scope`。candidate 只是证据，executor 仍按实际代码复核。
+
+planner-ex 不写模型名/effort；single 映射只由 execution-router 维护。
+
+## 输出与 handoff
+
+最终产物是**完整 plan 正文**，使用 `references/plan-template.md`。完成后：
+
+1. 自检 schema、范围、验收与 stage metadata；
+2. 不写入 main 的 `ai-work/planner/`；
+3. 优先通过 CodexPro handoff 把完整正文交给本地 Codex，并明确下一步：`$stage-lifecycle bootstrap_plan`；
+4. 若只能文本返回，必须同时返回 `stage_id / planning_base_commit / branch / worktree / final plan path`，供 bootstrap 使用。
+
+`stage-lifecycle` commit 完 plan 后，execution-router 才能消费；未 seal 的 handoff plan 不可执行。
+
+## 自检
+
+- [ ] 无 active stage，或本次是明确且允许的 pre-execution replan；
+- [ ] stage_id 唯一且完整，拆分 stage 使用 `WPn-a/b/...`；
+- [ ] 已记录 planning_base_commit，且与本次规划读取的 `main HEAD` 一致；
+- [ ] plan/execution/review artifact 都使用完整 stage_id；
+- [ ] 只覆盖一个可独立验收 stage；
+- [ ] 每步函数级、可测试、可判定；
+- [ ] 没有 plan 外范围蔓延或 `third_party/open-r1/` 修改；
+- [ ] routing 三维独立评估，MULTI 通过 hard gate；
+- [ ] plan 未写模型/effort；
+- [ ] planner-ex 没有创建 worktree/branch、commit/merge/push，也没有在 main 写最终 plan；
+- [ ] 最终正文已准备交给 `stage-lifecycle bootstrap_plan`。

@@ -1,4 +1,4 @@
 interface:
   display_name: "Planner Ex"
-  short_description: "Function-level plan for the next Work Package"
-  default_prompt: "Use $planner-ex to create a function-level implementation plan for the next Work Package from the project spec and proceedings."
+  short_description: "Web stage planning + execution routing handoff; local lifecycle seals Git state"
+  default_prompt: "Use $planner-ex to produce the next stage's complete function-level plan and execution_routing without Git mutation, then hand it to local $stage-lifecycle bootstrap_plan."

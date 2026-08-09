@@ -1,4 +1,4 @@
 interface:
   display_name: "Executor Ex"
-  short_description: "Execute a WP plan: code, tests, verification"
-  default_prompt: "Use $executor-ex to execute the WP plan at ai-work/planner/WP1-plan.md and report results."
+  short_description: "Single-agent implementation or exact routed repair with execution provenance"
+  default_prompt: "Use $executor-ex for the router-provided task_kind only, preserve exact provenance/scope, commit code first, then append a structured execution_record and report."

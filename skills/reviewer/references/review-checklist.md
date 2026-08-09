@@ -5,8 +5,8 @@
 - 所有结论必须带证据：文件路径/行号、命令实际输出、规格章节引用。
 - 不引用 executor 的测试结果代替亲自运行。
 - 审查期间不修改 `src/` 与 `tests/`。
-- 审查与测试在阶段 worktree 目录中进行；审查结果追加到 `ai-work/reviewer/WP{n}-review.md`（同阶段单文件、轮次追加），提交到独立分支；通过后合并回主分支，并由最终审查方向 `proceedings.md` 写入简洁记录。
-- 计划完成度核验以 `ai-work/planner/WP{n}-plan.md` 为基准逐条进行；缺失、未完成或与计划不符的项不得默认通过。
+- 审查与测试在阶段 worktree 目录中进行；审查结果追加到 `ai-work/reviewer/{stage_id}-review.md`（同阶段单文件、轮次追加），提交到独立分支；通过后合并回主分支，并由最终审查方向 `proceedings.md` 写入简洁记录。
+- 计划完成度核验以 `ai-work/planner/{stage_id}-plan.md` 为基准逐条进行；缺失、未完成或与计划不符的项不得默认通过。
 
 ## 二、通用审查清单（规格 §21.1）
 
@@ -81,14 +81,14 @@
 
 ## 八、审查报告模板
 
-报告文件：`ai-work/reviewer/WP{n}-review.md`（同一阶段同一文件，每轮结果依次追加，不覆盖历史轮次）。
+报告文件：`ai-work/reviewer/{stage_id}-review.md`（同一阶段同一文件，每轮结果依次追加，不覆盖历史轮次）。
 
 ```markdown
 # WP{n} 独立审查报告
 
 ## 1. 审查范围与方法
 
-- 计划文件：`ai-work/planner/WP{n}-plan.md`
+- 计划文件：`ai-work/planner/{stage_id}-plan.md`
 - 分支：`feat/wp{n}` 或 `feat/wp{n}-{sub}`（计划元信息）
 - executor 报告：<位置>
 - 审查方式：代码阅读 + 独立运行命令
@@ -141,7 +141,7 @@
 
 - **完成日期**：YYYY-MM-DD
 - **阶段状态**：已完成
-- **验收结论**：通过（依据 `ai-work/reviewer/WP{n}-review.md` 最终轮次）
+- **验收结论**：通过（依据 `ai-work/reviewer/{stage_id}-review.md` 最终轮次）
 - **实施范围**：<一句话概述本阶段完成的功能>
 
 ### 本阶段完成的功能

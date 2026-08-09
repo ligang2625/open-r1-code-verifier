@@ -1,214 +1,106 @@
-# 审查清单参考
+# Reviewer Ex checklist / report template
 
-## 一、独立审查纪律
+本文件是 `{stage_id}` 的 append-only review artifact 模板。不同 stage 使用不同文件：`ai-work/reviewer/{stage_id}-review.md`。不得因为“重跑同一 stage”清空历史。
 
-- 所有结论必须带证据：文件路径/行号、命令实际输出、规格章节引用。
-- 不引用 executor 的测试结果代替亲自运行。
-- 审查期间不修改 `src/` 与 `tests/`。
-- 审查与测试在阶段 worktree 目录中进行；审查结果追加到 `ai-work/reviewer/WP{n}-review.md`（同阶段单文件、轮次追加），提交到独立分支；通过后合并回主分支，并由最终审查方向 `proceedings.md` 写入简洁记录。
-- 计划完成度核验以 `ai-work/planner/WP{n}-plan.md` 为基准逐条进行；缺失、未完成或与计划不符的项不得默认通过。
+## 审查记录 {N}
 
-## 二、通用审查清单（规格 §21.1）
+### Review Record
 
-- 实现是否严格匹配当前 WP 的交付；
-- 是否引入无必要依赖；
-- 是否存在硬编码（路径/模型名/设备/密钥/seed）；
-- 是否有类型标注；
-- 是否有异常处理；
-- 是否有测试，且测试真正覆盖逻辑（不是只覆盖执行路径）；
-- 配置是否可复现；
-- 日志是否足以定位问题；
-- 是否修改了实验定义；
-- 是否存在数据或测试泄漏；
-- 是否能用更小、更直接的实现完成；
-- 是否复制了上游已有能力（应经 `open_r1_adapter` 复用）。
+```yaml
+review_record:
+  version: 1
+  stage_id: WP5-b
+  review_round: 1
+  source_execution_id: E0
+  reviewed_head_commit: <HEAD captured before review file is edited>
+  conclusion: needs_repair  # needs_repair | pass
+```
 
-## 三、数据审查清单（§21.3，数据相关 WP 必查）
+### 计划完成度 / 验收核对
 
-- 三层测试是否真的分离；
-- 训练文件是否包含 eval hidden；
-- problem ID 是否跨 split 重复；
-- 题面近似重复是否处理；
-- reference solution 是否泄漏；
-- prompt 是否意外包含隐藏测试；
-- 数据来源与许可证是否记录；
-- 测试预期是否由可信实现生成；
-- 错误测试是否被识别。
-
-## 四、执行器审查清单（§21.2，执行器相关 WP 必查）
-
-- 不可信代码是否可能在宿主机执行；
-- 网络是否真正关闭；
-- 文件系统是否隔离；
-- timeout 是否杀死整个进程组；
-- 内存/PID/output 限制是否生效；
-- 用户权限是否为非 root；
-- 容器复用是否导致样本间状态泄漏；
-- 测试输入是否可能注入 runner；
-- stderr 是否包含敏感环境信息；
-- 缓存是否可能错误复用。
-
-## 五、奖励审查清单（§21.4，奖励相关 WP 必查）
-
-- Public/Hidden 是否只改变测试来源；
-- reward 是否与 batch 正确对齐；
-- 异常是否被误记为 0 或 1 分；
-- 是否有 reward clipping 的隐式变化；
-- 部分通过率计算是否一致；
-- timeout/format 辅助奖励是否相同；
-- reward 日志是否可复算；
-- eval hidden 是否绝对不可访问；
-- group 内全同 reward 是否被监控。
-
-## 六、结果审查清单（§21.5，评测/实验类 WP 适用）
-
-- 是否使用同一评测集；
-- 解码参数是否一致；
-- checkpoint 选择规则是否一致；
-- 有无选择性报告；
-- pass@1 与 pass@k 是否混淆；
-- 平均测试通过率与整题通过率是否混淆；
-- 置信区间单位是题目而非测试用例；
-- 是否使用 paired comparison；
-- 负结果是否诚实报告；
-- 结论是否超出实验支持范围。
-
-## 七、测试真实性检查
-
-- 测试断言是否有意义（不是恒真断言、不是只覆盖执行路径）；
-- 是否存在测试通过但实现明显错误的样本（抽查边界输入）；
-- 是否修改了测试预期以迁就实现（与计划/规格中的预期对比）。
-
-## 八、审查报告模板
-
-报告文件：`ai-work/reviewer/WP{n}-review.md`（同一阶段同一文件，每轮结果依次追加，不覆盖历史轮次）。
-
-```markdown
-# WP{n} 独立审查报告
-
-## 1. 审查范围与方法
-
-- 计划文件：`ai-work/planner/WP{n}-plan.md`
-- 分支：`feat/wp{n}` 或 `feat/wp{n}-{sub}`（计划元信息）
-- executor 报告：<位置>
-- 审查方式：代码阅读 + 独立运行命令
-
-## 2. 计划完成度核验（逐条对照 plan）
-
-| 计划步骤 / 交付项 | 计划要求 | 状态 | 证据 |
+| 项 | 状态 | 证据 | issue_id（若需 executor 行动） |
 |---|---|---|---|
-| 步骤 1 / 交付项… | 目标文件、函数/类、主要功能… | 已完成 / 未完成 / 部分完成 / 与计划不符 / 无法核实 | 代码位置 / 命令输出 |
+| Step N / acceptance X | 通过 / 未完成 / 部分完成 / 与计划不符 / 无法核实 | 文件:行号 / 命令输出 | `R1-M1` 或 `—` |
 
-> 每个计划实施步骤与交付项都必须有一行核验结果；缺失项不得跳过。
+**Coverage invariant**：凡状态要求 executor 行动，必须填写 issue_id，且该 ID 必须进入本轮 `repair_issue_ids`。
 
-## 3. 交付与验收核验
+### 独立测试
 
-| 验收项（计划 §5 / §20） | 状态 | 证据 |
-|---|---|---|
-| ... | 通过 / 未通过 / 无法核实 | 命令输出 / 代码位置 |
+- `make lint` → ...
+- `make test` → ...
+- stage 特有验收 → ...
 
-## 4. 上轮问题核验（复审时）
+### Execution report 声明核验
 
-| 上轮问题 | 严重级别 | 状态 | 证据 |
+- <声明>：核实通过 / 与事实不符 / 无法核实；证据：...
+
+### 上一轮问题核验（R2+）
+
+| issue_id | 上轮严重级别 | 状态 | 证据 |
 |---|---|---|---|
-| ... | ... | 已修复 / 未修复 / 修复不完整 / 新问题 | 命令输出 / 代码位置 |
+| R1-M1 | major | 已修复 / 未修复 / 修复不完整 / 引入新问题 | ... |
 
-## 5. 问题清单
+### 问题列表
 
-| 严重级别 | 位置 | 问题 | 依据 | 建议 |
-|---|---|---|---|---|
-| 阻断 / 主要 / 次要 / 建议 | `文件:行号` | ... | ... | ... |
+| ID | 严重级别 | 位置 | 问题 | 依据 | 建议 | 下一轮需修复 |
+|---|---|---|---|---|---|---|
+| `R1-M1` | blocker / major / minor / suggestion | `file:line` | ... | ... | ... | yes/no |
 
-## 6. 独立测试结果
+未解决旧问题沿用原 ID；当前 round 新问题使用 `R{round}-...`。
 
-- 命令：`make lint` → 实际输出：...
-- 命令：`make test` → 实际输出：...
-- 命令：<计划中的 CLI 验证命令> → 实际输出：...
+### Repair Routing
 
-## 7. 结论
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 1
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R1-M1
+  rationale:
+    - "[当前剩余修复复杂度/依赖/ownership]"
+    - "[single/multi 净收益判断]"
+  workstream_candidates: []
+```
 
-- 通过 / 需修改 / 不通过
+`review_record.conclusion` 与 `repair_routing.required` 必须严格一致：`pass ⇔ false`，`needs_repair ⇔ true`。PASS 时仍保留本节：`required:false`；mode/complexity/single_class/parallelizability/multi_benefit 全部 null；independent_workstreams=0；repair_issue_ids/workstream_candidates 为空；rationale 仅说明无需 repair。
+
+Repair MULTI candidate 格式：
+
+```yaml
+workstream_candidates:
+  - id: A
+    issue_ids: [R1-M1]
+    write_scope:
+      - src/...
+      - tests/...
+```
+
+candidate 的 issue_ids 与 tracked write_scope 必须互不重叠，issue_ids 并集恰好等于 repair_issue_ids。
+
+### 结论
+
+- needs_repair / pass
 - 理由：...
-- 合并提交（仅“通过”时）：hash `...`，消息 `...`
+- 下一步：`stage-lifecycle checkpoint_review`
+
+> Reviewer-ex 到此结束，不 commit、不 merge、不更新 proceedings。checkpoint 后 required=true 才调用 execution-router；PASS 则调用 stage-lifecycle finalize。
+
+## Finalization Record（仅 stage-lifecycle finalize 在 main 上追加）
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP5-b
+  review_round: 3
+  review_commit: <sha>
+  merge_commit: <sha>
+  status: finalized
+  finalized_at: <timestamp>
 ```
-
-## 九、proceedings 简洁记录模板（最终审查方，审查通过并合并后）
-
-只写阶段完成的功能概述与相关文件，**不写**中间 review/execution 细节（细节在 `ai-work/` 报告中）。
-
-```markdown
-## WP{n}：<阶段名称>
-
-- **完成日期**：YYYY-MM-DD
-- **阶段状态**：已完成
-- **验收结论**：通过（依据 `ai-work/reviewer/WP{n}-review.md` 最终轮次）
-- **实施范围**：<一句话概述本阶段完成的功能>
-
-### 本阶段完成的功能
-
-- <功能概述 1-3 条，不包含修复过程细节>
-
-### 相关文件
-
-- 新增：`src/code_verifier/...`、`tests/...`
-- 修改：`src/code_verifier/...`
-- 上游：`third_party/open-r1/**` 未修改（固定 commit：`...`）
-
-### 验收结论
-
-- `make lint` / `make test` 通过；阶段验收项全部通过。
-```
-
-## 十、WP 整合记录模板（拆分为多个子阶段且全部完成后）
-
-子阶段各自先按“九、proceedings 简洁记录模板”写入 `## WP{n}-<后缀>` 记录；整个 WP 最后一个子阶段通过后，最终审查方把它们整合为一条 `## WP{n}` 记录，子阶段保留为小节，删除独立的子阶段小节。
-
-```markdown
-## WP{n}：<WP 名称>
-
-- **完成日期**：YYYY-MM-DD（最后一个子阶段完成日期）
-- **阶段状态**：已完成
-- **验收结论**：通过（依据各子阶段审查报告最终轮次）
-- **实施范围**：<整个 WP 完成的功能范围一句话>
-
-### 本 WP 完成的功能
-
-- <汇总各子阶段的功能概述，不含修复过程细节>
-
-### 子阶段
-
-#### 子阶段 WP{n}-a：<名称>
-
-- 完成功能：<一句话>
-- 相关文件：`src/code_verifier/...`、`tests/...`
-
-#### 子阶段 WP{n}-b：<名称>
-
-- 完成功能：<一句话>
-- 相关文件：`src/code_verifier/...`、`tests/...`
-
-### 相关文件（汇总）
-
-- 新增：...
-- 修改：...
-- 上游：`third_party/open-r1/**` 未修改（固定 commit：`...`）
-
-### 验收结论
-
-- `make lint` / `make test` 通过；WP 各验收项全部通过。
-```
-
-## 九、复审核验表
-
-复审时，对上一轮报告的每条问题逐行填写：
-
-| 上轮问题（含严重级别与位置） | 修复后代码位置 | 状态 | 证据 | 新问题 |
-|---|---|---|---|---|
-| 例：次要，`src/code_verifier/xxx.py:12`，缺类型标注 | `src/code_verifier/xxx.py:12` | 已修复 | 已添加 `-> int` 标注 | 无 |
-| ... | ... | 未修复 / 修复不完整 / 新问题 | 代码阅读 / 命令输出 | ... |
-
-核验规则：
-
-- “已修复”必须同时满足：问题描述中的行为确实改变，且 `make lint` / `make test` 重跑通过；
-- “未修复 / 修复不完整”直接进入新问题清单，按原严重级别保留；
-- 修复引入的新问题按严重级别加入新问题清单，并标注为“修复引入”。

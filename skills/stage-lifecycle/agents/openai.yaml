@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stage Lifecycle"
+  short_description: "Local Git bootstrap, review checkpoint, and finalization for routed stages"
+  default_prompt: "Use $stage-lifecycle for the requested lifecycle operation only: bootstrap_plan, checkpoint_review, or finalize. Do not implement code, change routing, review code, or push."

@@ -1,128 +1,74 @@
-# 执行工作流参考
+# SINGLE execution workflow reference v2
 
-## 一、计划步骤字段 → 执行动作
+## Core rule
 
-计划中每个“步骤 N”应包含以下字段，对应执行动作：
+`task_kind=implementation` 与 `task_kind=repair` 严格互斥。任何 routed repair 的工作范围只由 `repair_issue_ids` 决定；plan 的全局测试/验收只用于 regression verification，不会把其它 review findings 或 plan steps 拉回 scope。
 
-| 计划字段 | 执行动作 |
-|---|---|
-| 目标文件 | 只允许改动该路径（新建或修改）；跨文件改动需由该步骤明确列出 |
-| 新增/修改的符号 | 按签名实现；规格已定义的接口逐字保留 |
-| 主要功能 | 实现必须满足描述的行为、输入、输出与错误处理 |
-| 配置 / CLI 变更 | 同步更新 YAML 或 CLI，默认值与计划一致 |
-| 测试方案 | 在指定测试文件添加指定测试函数，断言与功能一致 |
-| 验证命令与通过标准 | 原样运行命令，核对通过标准后再进入下一步 |
-
-## 二、失败处理决策表
+## Failure table
 
 | 情况 | 动作 |
 |---|---|
-| 实现不符合自己预期 | 修正实现 |
-| 测试失败，且测试预期与规格冲突 | 停下，报告冲突（引用规格章节与测试断言） |
-| 计划步骤引用不存在的文件/符号 | 停下，报告缺失，等待计划修订 |
-| 依赖或环境缺失（GPU、未安装包等） | 如实记录；计划有替代路径则执行，否则停下报告 |
-| 验证命令本身无法运行（如 `make` 不存在） | 报告环境问题，不得假装通过 |
+| 实现错误 | 修实现，不改测试预期迁就实现 |
+| 测试预期与规格冲突 | 停止并记录规格/测试证据 |
+| plan/review provenance 不一致 | 停止，不猜测 |
+| 外部环境缺失 | 如实记录；plan 有替代路径才继续 |
+| routed repair 遇到 routing 外问题 | 不顺手修改；在报告遗留/风险中记录，交 reviewer 下一轮决定 |
 
-## 三、验收结果记录要求
+## Report protocol
 
-- 只记录实际运行过的命令与真实结论。
-- 不得仅凭阅读代码推断测试通过；每个验收项对应一条实际命令输出或明确的客观证据。
-- 存在未完成项时如实记录，不得将阶段标记为完成。
+同一 `{stage_id}` 使用 `ai-work/executor/{stage_id}-executor.md`，append-only。
 
-## 四、阶段报告文件格式（ai-work/executor/WP{n}-executor.md）
+### Implementation E0
 
-同一阶段内所有结果写入同一文件：执行结果在最前，之后每次 review 后的修复报告依次追加。文件头部必须记录所依据的计划文件路径，用于阶段识别。
-
-```markdown
-# WP{n} 执行报告
-
-- **计划文件**：`ai-work/planner/WP{n}-plan.md`（阶段识别依据）
-- **分支**：`feat/wp{n}`
-
-## 一、基于 plan 的执行结果
-
-- 执行的计划文件、新建/修改文件清单、新增函数/类清单
-- 每个验证命令的实际结论
-- 偏离计划的点及原因（如有）、已知限制、下一步建议
-
-## 二、代码修复报告（R1，依据 ai-work/reviewer/WP{n}-review.md）
-
-- 修复的问题清单、改动位置、复测结果、异议项
-
-## 三、代码修复报告（R2，依据 …）
-
-- …
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP5-b
+  execution_id: E0
+  task_kind: implementation
+  source_plan_commit: <sha>
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: <sha>
+  status: completed
 ```
 
-> 新阶段判定：若当前计划文件与文件头部记录的 plan 不同，清空文件后重新写入；本项目代码变更与 `third_party/open-r1` 变更分开记录。`proceedings.md` 不由 executor 写入。
+### Repair En
 
-## 五、修复任务参考
-
-### 问题分级与默认处置
-
-- 阻断 / 主要 / 次要：默认全部修复；
-- 建议：任务明确要求时处理，否则记录“未处理（建议项）”。
-
-### 修复定位
-
-- 按审查报告的“位置”（`文件:行号`）与“问题”描述定位代码；
-- 只做最小改动；跨文件改动必须与该问题直接相关。
-
-### 异议处理
-
-- 认为审查意见与规格或代码事实不符：不静默忽略，也不盲目修复；
-- 记录异议与证据（规格章节 / 代码位置 / 命令输出），交人工仲裁；
-- 审查方将在下一轮复审中核验该条目。
-
-### 修复后验证顺序
-
-1. 受影响模块的验证命令；
-2. `make lint`；
-3. `make test`；
-4. 计划总体验收（若适用）；
-5. 提交到独立分支（`git commit -m "fix: ..."`）。
-
-### 修复报告追加示例（阶段报告文件末尾追加）
-
-```markdown
-## 代码修复报告（R{round}，依据 ai-work/reviewer/WP{n}-review.md）
-
-- 修复范围：<审查问题清单条目>
-- 文件变更：...
-- 复测结果：`make lint` → 全绿；`make test` → N passed
-- 异议项：...（如有，附证据）
-- 遗留问题：...（如有）
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP5-b
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: <sha>
+  source_review_round: 1
+  source_review_commit: <sha>
+  repair_issue_ids: [R1-M1]
+  result_code_commit: <sha>
+  status: completed
 ```
 
-## 六、阶段工作区与提交
+每个 record 后写人类可读的文件变更、命令与结果、issue/step 处置、异议和遗留问题。
 
-### 确认 planner-ex 创建的分支与 worktree（executor-ex 只复用，不创建）
+## Commit ordering
 
-分支与 worktree 由 planner-ex 创建：`.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}`，分支 `feat/wp{n}` 或 `feat/wp{n}-{sub}`（如 `feat/wp3-c`）。
+1. code/test/config 修改按计划/repair scope commit；
+2. 完成整体验收；
+3. 捕获 `result_code_commit=HEAD`；
+4. append execution record/report；
+5. 单独 docs commit execution report。
 
-```bash
-git worktree list          # 定位分支对应的 worktree；找不到则停下报告
-git branch --show-current  # 必须等于计划元信息中的分支名
-git switch <分支名>         # 若不在该分支先切换；禁止在 main 上修改或提交
-```
+因此 report commit 不需要自引用自己的 hash。
 
-所有阶段文件操作与命令都在该 worktree 目录中执行。
+## Repair scope
 
-### 每任务提交（worktree 目录中执行）
+- routed repair：只处理 repair_issue_ids；
+- 不存在“blocker/major/minor 默认全部修”的隐式规则；
+- suggestion 只有 reviewer 把其 ID 放进 repair_issue_ids 才处理；
+- 运行 `make lint`/`make test`/stage gate 是 regression verification，不等于允许修 routing 外问题。
 
-```bash
-git status                     # 确认只含本步骤文件
-git add <本步骤涉及的具体文件...>   # 禁止 git add -A
-git commit -m "feat: <本步骤能力概述>"
-```
+## Workspace
 
-提交消息示例：
-
-- 实现步骤：`feat: add data schema and validation`
-- 修复轮次：`fix: resolve WP1 review findings`
-- 审查报告（由 reviewer-ex 提交）：`docs: add WP1 review round r1`
-
-### 收尾与合并边界
-
-- 阶段报告 `ai-work/executor/WP{n}-executor.md` 随对应提交落在独立分支上；
-- 执行方不创建分支/worktree、不写入 `proceedings.md`、不合并、不 push；分支由 planner-ex 创建，合并回主分支与 proceedings 简洁记录由 reviewer-ex 在审查通过后执行。
+所有操作在 stage worktree；不在 main checkout 切换已被 linked worktree 占用的 branch。不修改 plan/review/proceedings/third_party，不自动 push。
