@@ -319,8 +319,9 @@ def prepare_data(
 
 
 def _load_canonical(path: Path) -> list[CodeProblem]:
+    """Load physical-LF canonical JSONL, accepting CRLF and ignoring blank/trailing lines."""
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except (OSError, UnicodeError) as error:
         raise DataPreparationError(f"Could not read canonical JSONL {path}: {error}") from error
     problems: list[CodeProblem] = []

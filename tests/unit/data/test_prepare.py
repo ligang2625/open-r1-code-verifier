@@ -170,6 +170,32 @@ def test_write_jsonl_is_deterministic_and_round_trippable(tmp_path: Path) -> Non
     assert [json.loads(line) for line in first.read_text(encoding="utf-8").splitlines()] == records
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_prepare_data_round_trips_unicode_line_separator_through_canonical_jsonl(
+    tmp_path: Path,
+    separator: str,
+) -> None:
+    raw = tmp_path / "raw.jsonl"
+    records = [
+        _raw_problem(0, "train"),
+        _raw_problem(1, "validation"),
+        _raw_problem(2, "test"),
+    ]
+    records[0]["prompt"] = f"before{separator}after"
+    raw.write_text(
+        "".join(f"{json.dumps(record, ensure_ascii=False)}\n" for record in records),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "prepared"
+    summary = prepare_data(_config(raw), seed=42, output_dir=output)
+    canonical = output / "canonical" / "problems.jsonl"
+
+    assert separator.encode() in canonical.read_bytes()
+    assert summary.total_problems == 3
+    assert check_prepared_data(output).total_problems == 3
+
+
 def test_prepare_data_writes_expected_layout(tmp_path: Path) -> None:
     raw = tmp_path / "raw.jsonl"
     _write_raw(raw)
