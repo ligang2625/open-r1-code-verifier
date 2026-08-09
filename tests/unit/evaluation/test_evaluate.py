@@ -15,6 +15,7 @@ from code_verifier.data.schema import TestCase as CodeTestCase
 from code_verifier.evaluation.evaluate import (
     EvaluationError,
     EvaluationRecord,
+    append_evaluation_record,
     classify_evaluation_error,
     dataset_hash,
     evaluate_completion,
@@ -182,6 +183,18 @@ def test_load_evaluation_records_round_trips_strict_rows(tmp_path: Path) -> None
     assert load_evaluation_records(path) == rows
     path.write_text("", encoding="utf-8")
     assert load_evaluation_records(path) == []
+
+
+def test_load_evaluation_records_round_trips_writer_unicode_line_separators(tmp_path: Path) -> None:
+    path = tmp_path / "results.jsonl"
+    record = replace(_record(), completion="before\u2028middle\u2029after")
+
+    append_evaluation_record(path, record)
+
+    serialized = path.read_bytes()
+    assert b"\xe2\x80\xa8" in serialized
+    assert b"\xe2\x80\xa9" in serialized
+    assert load_evaluation_records(path) == [record]
 
 
 @pytest.mark.parametrize(

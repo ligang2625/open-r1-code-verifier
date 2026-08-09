@@ -327,7 +327,10 @@ def evaluation_record_to_mapping(record: EvaluationRecord) -> dict[str, object]:
 def load_evaluation_records(path: Path) -> list[EvaluationRecord]:
     """Strictly deserialize persisted UTF-8 JSONL evaluation rows."""
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        text = path.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        if lines[-1] == "":
+            lines.pop()
     except (OSError, UnicodeError) as error:
         raise EvaluationError(f"results JSONL is unreadable: {type(error).__name__}") from None
     records: list[EvaluationRecord] = []
