@@ -1,0 +1,12 @@
+dataset_dir: data/processed/wp1-smoke
+split: test
+piston_config: configs/execution/piston-local.yaml
+model_revision: 2e1fd397ee46e1388853d2af2c993145b0f1098a
+checkpoint: base
+device: cuda
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 512
+  dtype: float16

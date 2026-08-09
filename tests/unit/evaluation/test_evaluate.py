@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -127,6 +128,16 @@ def test_load_evaluation_config_accepts_pass1_yaml() -> None:
     assert config.split == "test"
     assert config.generation.max_new_tokens == 512
     assert config.dataset_dir == Path.cwd() / "data/processed/wp1-smoke"
+
+
+def test_load_evaluation_config_accepts_immutable_base_yaml() -> None:
+    config = load_evaluation_config(Path("configs/eval/base.yaml"))
+
+    assert config.split == "test"
+    assert config.device == "cuda"
+    assert config.generation.dtype == "float16"
+    assert config.model_revision is not None
+    assert re.fullmatch(r"[0-9a-f]{40}", config.model_revision)
 
 
 @pytest.mark.parametrize("mutation", ["unknown", "missing"])

@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding, the WP1 data layer, the WP2 deterministic code parser, the complete WP3 execution layer, the complete WP4 verification/reward layer, and WP5-a deterministic per-problem evaluation are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through WP5 trustworthy evaluation are implemented.
 
-WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5-a adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict run artifacts, and exact-prefix resume through the `evaluate` CLI. WP5-b metrics/bootstrap/Base acceptance and later training integration are not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6+ training integration is not implemented. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -360,7 +360,7 @@ Reward callback completion items may be raw strings or the currently pinned Open
 
 Component records contain only mode, reward components, sanitized verification status/flags/counts, parser taxonomy, and failure counts. They do not contain completion text, extracted code, tests, function names, metadata, stdout/stderr, or nested execution results.
 
-## WP5-a deterministic pass@1 evaluation
+## WP5 deterministic pass@1 evaluation and aggregation
 
 WP5-a evaluates a frozen model checkpoint one problem at a time using the fixed project prompt. The prompt contains only the problem statement, function signature, and visible examples. Generation is deterministic pass@1 (`do_sample: false`, `temperature: null`, `top_p: null`) and uses the tokenizer's configured chat template. Evaluation then sends the same parsed completion through the existing verifier three times, in visible → train-hidden → eval-hidden order. The top-level `execution_status` is always the eval-hidden status.
 
@@ -378,7 +378,16 @@ make install-gpu
 
 `configs/eval/pass1.yaml` sets `device: auto` and `generation.dtype: float16`; on the 1660 Ti development machine the frozen generator runs on CUDA when torch reports it available, loads the 0.5B debug model in FP16, and the run's `environment.json` records the CUDA/GPU identity so resume fails closed on hardware drift.
 
-`configs/eval/pass1.yaml` currently uses `model_revision: null` for local/debug workflows. That is not sufficient for the formal Base experiment: WP5-b must pin the exact model revision before reporting Base metrics. WP5-a does not implement aggregate pass@1 metrics, bootstrap confidence intervals, or the formal Base result.
+`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal Base evaluation uses the immutable 1.5B revision, CUDA, FP16, and real Piston configuration:
+
+```bash
+.venv/bin/code-verifier evaluate \
+  --config configs/eval/base.yaml \
+  --model-id Qwen/Qwen2.5-Coder-1.5B-Instruct \
+  --run-name base-main-r1 \
+  --seed 42 \
+  --output-dir outputs
+```
 
 Each run is stored under `outputs/evaluation/<run-name>/`:
 
@@ -390,15 +399,21 @@ outputs/evaluation/<run-name>/
 ├── metrics.jsonl
 ├── stdout.log
 ├── stderr.log
+├── summary.json
+├── main_results.csv
 └── samples/
     └── results.jsonl
 ```
 
-Only `samples/results.jsonl` may persist completion text and extracted code. The manifest, environment record, progress metrics, and logs are payload-bounded and do not store tests, reference solutions, completion text, or extracted code. `results.jsonl` stores per-problem status/rate summaries for all three test layers, but never stores the test payloads themselves.
+Only `samples/results.jsonl` may persist completion text and extracted code. The manifest, environment record, progress metrics, logs, summary, and CSV are payload-bounded and do not store tests, reference solutions, completion text, or extracted code. `results.jsonl` stores per-problem status/rate summaries for all three test layers, but never stores the test payloads themselves.
+
+`summary.json` uses schema version 1 and records run/model/dataset/config identities, bootstrap parameters, metrics, confidence intervals, and error/status counts. `main_results.csv` contains exactly one stable row for the run. Pass@1 means the fraction of problems whose layer pass rate is exactly 1.0; `eval_hidden_average_test_pass_rate` separately averages per-problem test pass rates. Error rates and bootstrap samples are problem-level. `public_eval_gap` is visible pass@1 minus eval-hidden pass@1, with a paired bootstrap interval that preserves problem pairing.
+
+The committed 20-problem smoke fixture currently has four test-split problems. Its Base result is an auditable engineering/pipeline gate, not a final 300–500 problem research benchmark or evidence for broad model-quality claims.
 
 Reusing the same run name performs strict prefix resume rather than overwrite or best-effort matching. Resume succeeds only when the resolved config, model/checkpoint identity, seed, dataset hash, prompt hashes/order, repository/submodule identity, dependency identity, and CUDA/GPU identity match the existing run. Already completed rows are not generated again. Corrupt, reordered, duplicated, non-finite, or identity-drifted rows cause a hard error.
 
-The evaluation path is read-only with respect to training: it does not modify the frozen checkpoint, invoke Public/Hidden training rewards, write eval-hidden tests into training artifacts, or add SFT/GRPO behavior. Those boundaries must remain intact when WP5-b adds aggregation and Base acceptance.
+The evaluation path is read-only with respect to training: it does not modify the frozen checkpoint, invoke Public/Hidden training rewards, write eval-hidden tests into training artifacts, or add SFT/GRPO behavior. Those boundaries must remain intact during WP6+ work.
 
 ## Current limitations
 
