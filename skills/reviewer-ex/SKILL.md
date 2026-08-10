@@ -1,6 +1,6 @@
 ---
 name: reviewer-ex
-description: Web/CodexPro 独立审查入口。审查 execution-router 产生的最新 completed execution，绑定具体 stage HEAD 与 execution_id，输出 append-only review record 和本轮 repair_routing；不做 Git commit/merge/finalize。审查文件由本地 stage-lifecycle checkpoint_review 封存。
+description: Web/CodexPro 独立审查入口。审查 execution-router 产生的最新 completed execution，绑定具体 stage HEAD 与 execution_id，输出 append-only review record 和本轮 repair_routing；不做 Git commit/merge/finalize。审查文件由 Web/Local 共用 stage-lifecycle checkpoint_review 封存，审查标准与 execution backend 无关。
 ---
 
 # Reviewer Ex
@@ -9,7 +9,7 @@ Workflow compatibility marker: `execution-routing-v2`。
 
 ## 目标与边界
 
-reviewer-ex 是独立 Web-side reviewer：亲自读代码、核对 plan、重跑测试、生成问题和 repair routing。它不信任 executor 自报通过，也不关心 SINGLE/MULTI 实现拓扑。
+reviewer-ex 是独立 Web-side reviewer：亲自读代码、核对 plan、重跑测试、生成问题和 repair routing。它不信任 executor 自报通过，也不关心 `local_codex/web_codexpro` 或 SINGLE/MULTI/serialized_multi 实现拓扑；所有 backend 使用同一审查标准。
 
 它**不执行 Git mutation 生命周期**：
 
@@ -19,7 +19,7 @@ reviewer-ex 是独立 Web-side reviewer：亲自读代码、核对 plan、重跑
 - 不删除 worktree/branch；
 - 不启动 executor。
 
-每轮 review 写完后交本地 `$stage-lifecycle checkpoint_review` 做 provenance/stale-check 并 commit。PASS review checkpoint 后再由 `$stage-lifecycle finalize` 完成 merge/proceedings/cleanup。
+每轮 review 写完后交共用 `$stage-lifecycle checkpoint_review` 做 provenance/stale-check 并 commit；该 lifecycle 可在 Web GPT + CodexPro 或 Local Codex 中执行。PASS checkpoint 后再由同一个 `$stage-lifecycle finalize` 完成 merge/proceedings/cleanup。
 
 ## Stage identity 与输入
 

@@ -1,6 +1,6 @@
 ---
 name: planner-ex
-description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与代码现状生成下一 stage 的函数级最终 plan 和 execution_routing；不做 Git mutation。计划通过 handoff 交给本地 stage-lifecycle bootstrap_plan 封存到独立 worktree/branch 后，再由 execution-router 执行。
+description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与代码现状生成下一 stage 的函数级最终 plan 和 execution_routing；不做 Git mutation、不选择 execution backend。计划通过 handoff 交给 Web/Local 共用 stage-lifecycle bootstrap_plan 封存，再由 execution-router 在运行时选择 local/web backend。
 ---
 
 # Planner Ex
@@ -13,7 +13,7 @@ description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与
 - 不 commit/merge/push；
 - 不启动 executor；
 - 不在 `main` 写最终 plan 文件；
-- 最终 plan 交给本地 `stage-lifecycle bootstrap_plan` 写入并 commit。
+- 最终 plan 交给共用 `stage-lifecycle bootstrap_plan` 写入并 commit；该 lifecycle 可由 Web GPT + CodexPro 或 Local Codex 执行。
 
 planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `git worktree list` / branch / log 等只读状态，但不得进入已有 stage worktree 继续规划，也不得创建、删除、移动或修改任何 worktree/branch。
 
@@ -125,7 +125,7 @@ SINGLE 时 `single_class == complexity`；`independent_workstreams` 填实际数
 
 MULTI 时 `single_class: null`；candidate 数量必须等于 `independent_workstreams`，每项含唯一 `id`、互不重叠 `steps`、互不重叠 tracked `write_scope`。candidate 只是证据，executor 仍按实际代码复核。
 
-planner-ex 不写模型名/effort；single 映射只由 execution-router 维护。
+planner-ex 不写模型名/effort，也不选择 execution backend。`backend=local|web` 只由 execution-router 在每次 implementation/repair 调用时消费；sealed routing 只描述任务本身。single 模型映射只由 execution-router 维护。
 
 ## 输出与 handoff
 
@@ -134,7 +134,7 @@ planner-ex 不写模型名/effort；single 映射只由 execution-router 维护�
 1. 自检 schema、范围、验收与 stage metadata；
 2. 不写入 main 的 `ai-work/planner/`；
 3. handoff 前再次确认 `main HEAD == planning_base_commit`，且 `git worktree list` / stage branch 集合与规划开始时一致；若 planner 运行期间出现新的 branch/worktree 或 primary HEAD 改变，返回 `PLANNER_GIT_STATE_CHANGED`，不要发布可执行 handoff；
-4. 优先通过 CodexPro handoff 把完整正文交给本地 Codex，并明确下一步：`$stage-lifecycle bootstrap_plan`；
+4. 优先通过 CodexPro handoff 发布完整正文，并明确下一步：`$stage-lifecycle bootstrap_plan`；调用方可在当前 Web GPT + CodexPro 或 Local Codex 中执行同一个 lifecycle skill；
 5. 若只能文本返回，必须同时返回 `stage_id / planning_base_commit / branch / worktree / final plan path`，供 bootstrap 使用。
 
 `stage-lifecycle` commit 完 plan 后，execution-router 才能消费；未 seal 的 handoff plan 不可执行。

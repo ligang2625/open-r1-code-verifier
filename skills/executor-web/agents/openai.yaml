@@ -1,0 +1,4 @@
+interface:
+  display_name: "Executor Web"
+  short_description: "Web GPT + CodexPro routed execution with serialized MULTI"
+  default_prompt: "Use $executor-web only after $execution-router selected backend=web. Open the exact stage worktree, preserve sealed source routing, execute SINGLE directly or MULTI as serialized_multi, write the normal v2 execution_record, and do not invoke Local Codex execution agents or review/finalize."

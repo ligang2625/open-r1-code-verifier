@@ -1,4 +1,4 @@
 interface:
   display_name: "Executor Ex"
-  short_description: "Single-agent implementation or exact routed repair with execution provenance"
-  default_prompt: "Use $executor-ex for the router-provided task_kind only, preserve exact provenance/scope, commit code first, then append a structured execution_record and report."
+  short_description: "Local SINGLE execution for execution-router backend=local"
+  default_prompt: "Use $executor-ex only for execution-router backend=local with source_mode=single. Preserve exact routed provenance/scope, commit code first, then append the shared v2 execution_record with local_codex/single audit metadata."

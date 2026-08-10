@@ -33,6 +33,8 @@ execution_record:
   source_review_commit: null
   repair_issue_ids: []
   result_code_commit: <sha>
+  execution_backend: local_codex
+  effective_execution_mode: multi
   status: completed
 ```
 

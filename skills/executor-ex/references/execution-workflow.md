@@ -31,6 +31,8 @@ execution_record:
   source_review_commit: null
   repair_issue_ids: []
   result_code_commit: <sha>
+  execution_backend: local_codex
+  effective_execution_mode: single
   status: completed
 ```
 
@@ -47,6 +49,8 @@ execution_record:
   source_review_commit: <sha>
   repair_issue_ids: [R1-M1]
   result_code_commit: <sha>
+  execution_backend: local_codex
+  effective_execution_mode: single
   status: completed
 ```
 

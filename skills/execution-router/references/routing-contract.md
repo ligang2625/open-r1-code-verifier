@@ -1,6 +1,6 @@
 # Execution + Repair Routing / Workflow State Contract v2
 
-## 1. Stage identity
+## 1. Stage identity and artifact ownership
 
 完整 `stage_id` 是阶段 artifact 唯一键，例如 `WP5-b`：
 
@@ -9,21 +9,50 @@
 - review `ai-work/reviewer/{stage_id}-review.md`
 - plan metadata 必须记录 `planning_base_commit`，即 planner-ex 实际规划时读取的 `main HEAD`
 
-不同 stage 不共用 execution/review 文件。`bootstrap_plan` 与 `finalize` 都要求 primary HEAD 仍等于该 planning base；正常流程不自动换基线或 rebase。
+不同 stage 不共用 execution/review 文件。`bootstrap_plan` 与 `finalize` 都要求 primary HEAD 仍等于 planning base；正常流程不自动换基线或 rebase。
 
-### Canonical handoff / worktree ownership
+Canonical ownership：
 
-- `planner-ex`：只在 primary repo root 做只读规划；唯一可写输出是 transport handoff `.ai-bridge/current-plan.md`，不得创建/修改 branch/worktree。
-- `stage-lifecycle bootstrap_plan`：唯一负责创建 stage branch/worktree，并把 handoff payload 写成 stage worktree 内的 sealed plan；成功后消费 `current-plan.md`。
-- `execution-router`：从 primary root 作为 control plane 定位 stage worktree；不写业务文件。
-- `executor-ex` / `executor`：所有实现、测试、execution report 与 commit 都在 stage worktree。
-- `reviewer-ex`：可从 primary root 被调用，但必须先打开准确 stage worktree；所有 review 读取、测试和 review artifact 写入都在 stage worktree，不 commit。
-- `stage-lifecycle checkpoint_review`：从 primary root 定位 stage worktree，验证并提交 review。
-- `stage-lifecycle finalize`：从 primary root 校验 stage + primary，merge 后在 primary 更新 proceedings/finalization，再清理 stage worktree/branch。
+- `planner-ex`：Web/CodexPro planning producer；在 primary root 只读规划，唯一传输输出是 `.ai-bridge/current-plan.md`；不得创建/修改 branch/worktree。
+- `stage-lifecycle`：Web/Local 共用 Git lifecycle control plane；`bootstrap_plan` 是 v2 中唯一创建 stage branch/worktree 的 owner，`checkpoint_review` 提交 review，`finalize` merge + proceedings/finalization + cleanup。无 backend 参数。
+- `execution-router`：从 primary root 推导 stage/provenance，并在运行时选择 `backend=local|web`；不修改 source routing。
+- `executor-ex` / `executor`：Local backend 的 SINGLE/MULTI execution。
+- `executor-web`：Web backend execution；source SINGLE → `single`，source MULTI → `serialized_multi`。
+- `reviewer-ex`：Web reviewer；必须审查准确 stage worktree，不因 execution backend/effective mode 改变审查标准。
 
-`.ai-bridge/current-plan.md` 只是 pending transport；stage plan seal 成功后，Git 中的 stage plan 是唯一 authoritative plan。
+`.ai-bridge/current-plan.md` 只是 pending transport；bootstrap seal 成功后，stage worktree 中的 committed plan 是唯一 authoritative plan。
 
-## 2. Plan routing
+## 2. Official workflows
+
+### Hybrid / Local execution
+
+`planner-ex (Web) → stage-lifecycle bootstrap_plan (Web or Local) → execution-router backend=local → executor-ex|executor (Local) → reviewer-ex (Web) → stage-lifecycle checkpoint_review (Web or Local) → ... → stage-lifecycle finalize (Web or Local)`
+
+### Full Web
+
+`planner-ex → stage-lifecycle bootstrap_plan → execution-router backend=web → executor-web → reviewer-ex → stage-lifecycle checkpoint_review → ... → stage-lifecycle finalize`
+
+这些步骤可在同一个 Web GPT + CodexPro 会话完成；web backend 不调用 Local Codex execution agent。
+
+### Mixed
+
+backend 按**每次 execution**选择，而不是按 stage/project 固定。因此 `E0=local, E1=web, E2=local` 合法；唯一必须连续的是 Git/provenance 链。
+
+## 3. Runtime execution backend
+
+backend 不写入 plan/review routing：
+
+- `backend=local`（默认）：SINGLE → executor-ex；MULTI → executor。
+- `backend=web`：当前 Web GPT + CodexPro → executor-web。
+
+Web effective mode：
+
+- source SINGLE → `single`
+- source MULTI → `serialized_multi`
+
+`backend=web + source MULTI` 的串行化是正式 backend 语义，不是 fallback。sealed `mode=multi`、workstream candidates 和 routing rationale 不得改写为 SINGLE。
+
+## 4. Plan routing
 
 ```yaml
 execution_routing:
@@ -38,50 +67,49 @@ execution_routing:
   workstream_candidates: []
 ```
 
-SINGLE：single_class==complexity；candidate=[]。MULTI：single_class=null、complexity!=very_simple、parallelizability=high、multi_benefit=high、workstreams>=2；candidate 数量相等且 steps/tracked write_scope 不重叠。
+SINGLE：single_class==complexity；candidate=[]。
 
-## 3. Execution record
+MULTI：single_class=null、complexity!=very_simple、parallelizability=high、multi_benefit=high、workstreams>=2；candidate 数量相等且 steps/tracked write_scope 不重叠。
 
-每次 implementation/repair 必须在 stage execution report 追加一个结构化记录：
+Planner 只描述任务本身，不选择 backend/model/effort。
+
+## 5. Execution record
+
+每次 routed implementation/repair 在 stage execution report 追加：
 
 ```yaml
 execution_record:
   version: 1
   stage_id: WP5-b
   execution_id: E0
-  task_kind: implementation  # implementation | repair
+  task_kind: implementation
   source_plan_commit: <plan seal commit>
   source_review_round: null
   source_review_commit: null
   repair_issue_ids: []
   result_code_commit: <HEAD after code/test commits, before report docs commit>
+  execution_backend: web_codexpro
+  effective_execution_mode: serialized_multi
   status: completed
 ```
 
-Repair 示例：
-
-```yaml
-execution_record:
-  version: 1
-  stage_id: WP5-b
-  execution_id: E1
-  task_kind: repair
-  source_plan_commit: <plan commit>
-  source_review_round: 1
-  source_review_commit: <committed R1 review commit>
-  repair_issue_ids: [R1-M1]
-  result_code_commit: <code HEAD>
-  status: completed
-```
+Repair：E1/E2/...；填写整数 source_review_round、committed source_review_commit、repair_issue_ids。
 
 规则：
-- execution_id 在 stage 内单调：implementation 固定 E0，repair 为 E1/E2/...；
-- code/test 修改先提交，再捕获 result_code_commit；随后追加 execution record 并用 docs commit 封存 report，避免 commit hash 自引用；
-- **`execution_report_commit` 不写进 record**，由 Git 历史定位“首次包含该 execution_record 的 docs commit”；reviewer 开始审查前必须 `HEAD == execution_report_commit`；
-- 同一 source_plan_commit 的 completed implementation 只能有一次；
-- 同一 source_review_commit 的 completed repair 只能有一次。
 
-## 4. Review record
+- E0 固定 implementation；repair 单调 E1/E2/...。
+- code/test/config 先 commit，再捕获 `result_code_commit`；随后 append report 并单独 docs commit。
+- `execution_report_commit` 不写进 record，由 Git 历史定位首次包含该 execution_record 的 docs commit；reviewer 开始前必须 `HEAD == execution_report_commit`。
+- 同一 source_plan_commit 的 completed implementation 只能一次。
+- 同一 source_review_commit 的 completed repair 只能一次。
+- 新 routed execution 应写 `execution_backend` 与 `effective_execution_mode`；二者只用于审计，不参与 provenance 判定。历史 record 缺失仍可读取。
+
+合法审计值：
+
+- `execution_backend`: `local_codex | web_codexpro`
+- `effective_execution_mode`: `single | multi | serialized_multi`
+
+## 6. Review record
 
 ```yaml
 review_record:
@@ -90,14 +118,16 @@ review_record:
   review_round: 1
   source_execution_id: E0
   reviewed_head_commit: <stage HEAD before editing review file>
-  conclusion: needs_repair  # needs_repair | pass
+  conclusion: needs_repair
 ```
 
-review_round 为正整数。R2+ 必须消费上一 review 后产生的新 completed repair execution。
+review_round 为正整数。R2+ 必须消费上一 review 后的新 completed repair execution。
+
+Reviewer 只依赖 Git/provenance/code/tests/spec；`execution_backend/effective_execution_mode` 不改变 review 标准或 conclusion。
 
 stage-lifecycle checkpoint_review 提交 review 时，review commit 的父提交必须等于 reviewed_head_commit。
 
-## 5. Repair routing
+## 7. Repair routing
 
 ```yaml
 repair_routing:
@@ -115,40 +145,43 @@ repair_routing:
   workstream_candidates: []
 ```
 
-- source_review_round 必须是整数且等于同轮 review_round。
-- `review_record.conclusion` 与 `repair_routing.required` 必须一致：`pass ⇔ false`，`needs_repair ⇔ true`。
-- required=false：mode/complexity/single_class/parallelizability/multi_benefit=null；workstreams=0；repair_issue_ids/candidates=[]。
-- required=true：repair_issue_ids 非空且唯一，并覆盖所有 reviewer 要求下一轮 executor 行动的 finding。
+- source_review_round 必须等于同轮 review_round。
+- `pass ⇔ required=false`，`needs_repair ⇔ required=true`。
+- required=false：routing 维度 null、workstreams=0、repair_issue_ids/candidates=[]。
+- required=true：repair_issue_ids 非空唯一，并覆盖 reviewer 要求下一轮 executor 行动的 findings。
 - Repair MULTI candidate：`id`、非空 `issue_ids`、tracked `write_scope`；issue/path 不重叠，所有 repair_issue_ids 恰好覆盖一次。
 
-## 6. Actionable issue invariant
+Web backend 对 repair MULTI 同样使用 `serialized_multi`，不改 repair_routing。
+
+## 8. Actionable issue invariant
 
 任何 failed plan step / acceptance / independent test / reviewer-required blocker-major-minor 都必须映射至少一个 stable issue ID，并进入 repair_issue_ids。非必修 suggestion 可以不进入。
 
-## 7. State machine
+## 9. State machine
 
-- PLANNED：plan seal committed，无 completed E0；plan 的 planning_base_commit 与当前 primary baseline 一致。
+- PLANNED：plan seal committed，无 completed E0；planning_base_commit 与 primary baseline 一致。
 - IMPLEMENTED：completed E0，尚无 committed R1。
-- REPAIR_REQUIRED：latest committed review conclusion=needs_repair 且 required=true，stage HEAD==review_commit，尚无 matching repair execution。
-- REPAIR_EXECUTED：存在 completed repair，source_review_commit==上一 review_commit，等待新 review。
-- PASSED：latest committed review conclusion=pass 且 required=false，stage HEAD==review_commit。
+- REPAIR_REQUIRED：latest committed review `needs_repair + required=true`，stage HEAD==review_commit，尚无 matching repair。
+- REPAIR_EXECUTED：存在 matching completed repair，等待新 review。
+- PASSED：latest committed review `pass + required=false`，stage HEAD==review_commit。
 - FINALIZED：stage-lifecycle merge + finalization docs + cleanup 完成。
 
-非法转移必须 fail closed。
+非法转移 fail closed。
 
-## 8. Idempotency / stale guards
+## 10. Idempotency / stale guards
 
 - completed E0 已存在 → `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED`
-- completed E0 不存在但 `HEAD != plan_commit` → `ROUTING_INCOMPLETE_IMPLEMENTATION`，不得自动重跑 plan
+- 无 completed E0 但 `HEAD != plan_commit` → `ROUTING_INCOMPLETE_IMPLEMENTATION`
 - latest review 尚未 commit → `ROUTING_REVIEW_NOT_COMMITTED`
-- 指定 round 不是 latest committed → `ROUTING_STALE_REVIEW`
+- 指定 round 非 latest committed → `ROUTING_STALE_REVIEW`
 - matching completed repair 已存在 → `ROUTING_REPAIR_ALREADY_EXECUTED`
 - required=false → `ROUTING_NO_REPAIR_REQUIRED`
 - HEAD/provenance 无法解释 → `ROUTING_STAGE_STATE_INVALID`
+- Web backend 能力不可用 → `ROUTING_WEB_BACKEND_UNAVAILABLE`，不得自动 local
 - reviewer 没有新 execution → `REVIEW_NO_NEW_EXECUTION`
 - checkpoint 时 HEAD != reviewed_head_commit → `STAGE_REVIEW_STALE`
 - finalize 时 stage HEAD != latest review_commit → `STAGE_FINALIZE_STALE`
 
-## 9. Version compatibility
+## 11. Version compatibility
 
-Router / executor / executor-ex / stage-lifecycle 当前 compatibility marker：`execution-routing-v2`。目标 worktree 缺失该 marker 时不得 routed execution。
+Router / executor / executor-ex / executor-web / stage-lifecycle 当前 compatibility marker：`execution-routing-v2`。目标 worktree 缺失所需 skill/marker 或 `.agents/skills` discovery entry 时不得开始 routed execution。

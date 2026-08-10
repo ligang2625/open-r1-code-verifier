@@ -1,6 +1,6 @@
 # 计划模板：{stage_id} Implementation Plan
 
-> `{stage_id}` 使用完整阶段标识，例如 `WP5`、`WP5-a`、`WP5-b`。planner-ex 只产出最终正文，不创建/提交 branch/worktree；本地 `stage-lifecycle bootstrap_plan` 负责把该正文写入并 seal 到阶段分支。
+> `{stage_id}` 使用完整阶段标识，例如 `WP5`、`WP5-a`、`WP5-b`。planner-ex 只产出最终正文，不创建/提交 branch/worktree；共用 `stage-lifecycle bootstrap_plan` 负责把该正文写入并 seal 到阶段分支，可由 Web GPT + CodexPro 或 Local Codex 执行。
 > 实施步骤面向只有文件读写与基础 shell 的 execution agent；不得依赖 Codex/MCP/其它 skill。`Execution Routing` 是 orchestration metadata。
 
 # {stage_id} 实施计划（[阶段名称]）
@@ -110,7 +110,7 @@ execution_routing:
 - `parallelizability`、`multi_benefit`: `low | medium | high`
 - SINGLE 可有多个独立 lane，但 `workstream_candidates: []`
 - MULTI 必须 `complexity != very_simple`、`parallelizability=high`、`multi_benefit=high`、至少 2 个 substantive lane；candidate 含唯一 `id`、互不重叠 `steps`、互不重叠 tracked `write_scope`
-- plan 不写具体 model/effort
+- plan/routing 不写具体 model/effort/backend；backend 由 execution-router 每次运行时选择
 
 ## 7. 风险与注意事项
 - ...
@@ -121,5 +121,5 @@ execution_routing:
 
 ## 9. Handoff
 
-- 下一步：本地运行 `$stage-lifecycle bootstrap_plan`，使用本计划正文创建/复用 proposed stage worktree 并 commit plan seal。
+- 下一步：运行 `$stage-lifecycle bootstrap_plan`，使用本计划正文创建/复用 proposed stage worktree 并 commit plan seal；同一个 lifecycle skill 可在 Web GPT + CodexPro 或 Local Codex 中执行。
 - 在 bootstrap 成功并得到 `plan_commit` 前，不得调用 execution-router。

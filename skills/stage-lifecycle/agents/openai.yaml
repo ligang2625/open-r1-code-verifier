@@ -1,4 +1,4 @@
 interface:
   display_name: "Stage Lifecycle"
-  short_description: "Local Git bootstrap, review checkpoint, and finalization for routed stages"
-  default_prompt: "Use $stage-lifecycle from the primary repo root for exactly one operation: bootstrap_plan, checkpoint_review, or finalize. For bootstrap_plan, parse only the handoff Plan payload, create/seal the exact stage worktree, then consume current-plan.md. Do not implement code, change routing, review code, or push."
+  short_description: "Shared Web/Local Git bootstrap, review checkpoint, and finalization"
+  default_prompt: "Use $stage-lifecycle from the primary repo root for exactly one operation: bootstrap_plan, checkpoint_review, or finalize. The same Git/provenance contract applies in Local Codex and Web GPT + CodexPro; no backend parameter is needed. Do not implement code, change routing, review code, invoke execution agents, or push."

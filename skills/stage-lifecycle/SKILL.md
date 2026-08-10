@@ -1,19 +1,19 @@
 ---
 name: stage-lifecycle
-description: 本地 Git 生命周期控制面。接收 planner-ex 的最终 plan handoff，创建/复用阶段 branch+worktree 并封存 plan；在 reviewer-ex 每轮审查后校验 provenance 并提交 review；审查通过后执行 merge、proceedings、finalization record 与 worktree/branch 清理。只做生命周期与 Git，不实现业务代码、不做 routing、不做 review。
+description: Git stage lifecycle control plane。可由 Local Codex 或 Web GPT + CodexPro 共用；负责 bootstrap_plan、checkpoint_review、finalize 的同一套 Git/provenance contract。无 backend 参数，不调用 execution agent、不实现业务代码、不做 routing/review。
 ---
 
 # Stage Lifecycle
 
 ## 目标
 
-本 skill 解决 Web planner/reviewer 与本地 Git mutation 的职责边界。它只在本地 Codex/具有 Git 写能力的环境中运行，支持三个互斥操作：
+本 skill 是 execution-environment-agnostic 的 Git lifecycle 控制面。只要当前环境能够读写仓库并执行所需 Git/worktree 操作，就可以由 Local Codex 或 Web GPT + CodexPro 运行；**不需要也不接受 backend/environment 参数**。支持三个互斥操作：
 
 1. `bootstrap_plan`：把 planner-ex 已完成的计划 handoff 封存为阶段分支上的最终 plan；
 2. `checkpoint_review`：把 reviewer-ex 已写好的最新审查轮次做 stale-check 后提交到阶段分支；
 3. `finalize`：仅在最新 review 通过后合并到 `main`、更新 proceedings/finalization record，最后清理 worktree/branch。
 
-本 skill **不实现业务代码、不修改 routing 决策、不执行 review、不创建 execution agent、不自动 push**。
+本 skill **不实现业务代码、不修改 routing 决策、不执行 review、不创建 execution agent、不自动 push**。三个 operation 在 Web/Local 环境中的输入、校验、Git mutation、错误码与输出必须完全相同。
 
 三个 operation 都以**主仓库 root checkout** 为 control-plane 起点。若调用发生在 linked stage worktree，先解析主仓库 root/primary checkout，再从 root 执行生命周期操作；不得在主 checkout `git switch` 到已被 worktree 占用的 stage branch。
 
@@ -51,7 +51,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 3. 验证 plan 中 `stage_id/planning_base_commit/branch/worktree/plan path` 互相一致；禁止按“最大 WP 编号”猜测。
 4. 从 `planning_base_commit` 对应的当前 `main` 创建或复用 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
 5. 只把上面解析出的 plan payload 写入阶段 worktree 的 `ai-work/planner/{stage_id}-plan.md`。
-6. 确认 worktree 中 `skills/execution-router/SKILL.md`、`skills/executor/SKILL.md`、`skills/executor-ex/SKILL.md`、`skills/reviewer-ex/SKILL.md`、`skills/stage-lifecycle/SKILL.md` 均存在且相应 v2 marker 可解析；同时 `.agents/skills/execution-router`、`.agents/skills/executor`、`.agents/skills/executor-ex`、`.agents/skills/stage-lifecycle` 必须能解析到这些 repo-local skills。任一缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
+6. 确认 worktree 中 `skills/execution-router/SKILL.md`、`skills/executor/SKILL.md`、`skills/executor-ex/SKILL.md`、`skills/executor-web/SKILL.md`、`skills/reviewer-ex/SKILL.md`、`skills/stage-lifecycle/SKILL.md` 均存在且相应 v2 marker 可解析；同时 `.agents/skills/execution-router`、`.agents/skills/executor`、`.agents/skills/executor-ex`、`.agents/skills/executor-web`、`.agents/skills/stage-lifecycle` 必须能解析到这些 repo-local skills。任一缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
 7. 仅暂存最终 plan 文件并提交：`docs: add {stage_id} plan`。该提交是 router 后续推导 `source_plan_commit` 的唯一 plan seal。
 8. 仅在 plan seal commit 成功后，若输入来自 `.ai-bridge/current-plan.md`，删除该 `current-plan.md`，表示 pending handoff 已消费；正式 plan 从此只以 stage worktree 中的 sealed artifact 为准。其它 `.ai-bridge` 文件不动。
 9. 报告 `stage_id`、`planning_base_commit`、branch、worktree 绝对路径、plan path、`plan_commit`。不修改 `.ai-bridge` 之外的主仓库文件。

@@ -1,6 +1,6 @@
 ---
 name: executor
-description: MULTI execution protocol。入口创建 Sol/medium coordinator，coordinator 按 routed task_kind 将 implementation steps 或 repair_issue_ids 拆给 Luna/max workers；要求至少 2 个真实独立 lane，提交集成后的代码并写结构化 execution_record。不得重判 routing、不得 review/finalize。
+description: Local Codex MULTI execution protocol。仅用于 execution-router backend=local；Sol/medium coordinator 将 routed implementation/repair 拆给 Luna/max workers，要求至少 2 个真实独立 lane，并写统一 v2 execution_record。不得重判 routing、不得 review/finalize。
 ---
 
 # Codex Executor
@@ -27,14 +27,14 @@ worker 不再创建 agent。模型配置不由 router 覆盖。
 
 本 skill 支持两种**互斥**入口：
 
-1. **Routed v2 mode（新 hybrid workflow）**：任务中同时存在 `routing_mode=multi`、`task_kind`、`stage_id`、`plan_commit`。后续全部 v2 provenance/idempotency 规则生效。
+1. **Routed v2 mode**：任务中同时存在 `source_mode=multi`、`backend=local`、`task_kind`、`stage_id`、`plan_commit`。后续全部 v2 provenance/idempotency 规则生效。
 2. **Legacy direct mode（保留 full-local `planner → executor → reviewer`）**：没有上述 router provenance。此时继续使用 legacy planner/reviewer 给出的 plan/review、branch/worktree 与报告路径；允许最终只有 1 个 subplan；repair 沿用 legacy reviewer 的问题范围/严重级别规则；不要求 `execution_record`、review_commit 或 stage-lifecycle，也**不得把 legacy artifact 当作 v2 router 已消费状态**。
 
 两种模式禁止混合：若只提供部分 v2 provenance，立即返回 `EXECUTOR_ROUTING_CONTEXT_INCOMPLETE`，不得降级成 legacy。
 
 ## Routed MULTI 前置
 
-在 routed v2 mode 中，router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`routing_mode=multi`。repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids。
+在 routed v2 mode 中，router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`。repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids。
 
 `task_kind` 两条路径互斥；repair 完成后不得继续 implementation。
 
@@ -105,12 +105,14 @@ execution_record:
   source_review_commit: null
   repair_issue_ids: []
   result_code_commit: <code HEAD>
+  execution_backend: local_codex
+  effective_execution_mode: multi
   status: completed
 ```
 
-Repair：E1/E2/...；填整数 source_review_round、source_review_commit、repair_issue_ids。
+Repair：E1/E2/...；填整数 source_review_round、source_review_commit、repair_issue_ids，并同样记录 `execution_backend: local_codex`、`effective_execution_mode: multi`。
 
-只有所有必须验收通过才标 completed。code commits 在前，report docs commit 在后。
+backend/effective mode 只用于审计，不参与 provenance 判定。只有所有必须验收通过才标 completed。code commits 在前，report docs commit 在后。
 
 ## 边界
 

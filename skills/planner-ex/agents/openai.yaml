@@ -1,4 +1,4 @@
 interface:
   display_name: "Planner Ex"
-  short_description: "Web stage planning + execution routing handoff; local lifecycle seals Git state"
-  default_prompt: "Use $planner-ex from the primary repo root to produce the next stage's complete function-level plan and execution_routing. Do not create or modify branches/worktrees/commits; verify Git worktree/branch state is unchanged, then hand the plan payload to local $stage-lifecycle bootstrap_plan."
+  short_description: "Web stage planning + routing handoff; shared lifecycle seals Git state"
+  default_prompt: "Use $planner-ex from the primary repo root to produce the next stage's complete function-level plan and execution_routing. Do not select an execution backend or mutate Git topology; publish the plan payload for shared $stage-lifecycle bootstrap_plan, which may run in Web GPT + CodexPro or Local Codex."

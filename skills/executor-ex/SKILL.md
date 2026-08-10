@@ -1,6 +1,6 @@
 ---
 name: executor-ex
-description: SINGLE execution protocol。由 execution-router 传入明确 task_kind 与 provenance，在 stage worktree 中执行一次 implementation 或一次 repair（严格二选一），提交代码/测试后写结构化 execution_record。不得 subagent、不得重新 routing、不得做 review/finalization。
+description: Local Codex SINGLE execution protocol。仅用于 execution-router backend=local；在 stage worktree 中执行一次 implementation 或 repair，提交代码/测试后写统一 v2 execution_record。不得 subagent、不得重新 routing、不得做 review/finalization。
 ---
 
 # Executor Ex
@@ -9,6 +9,7 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 单 agent 边界
 
+- 仅接受 router 明确传入的 `backend=local`、`source_mode=single`；其它 backend/mode 停止，不自行改路由。
 - 恰好一个 execution agent；不得 spawn/subagent。
 - 不重判 execution_routing/repair_routing，不改 model/effort。
 - `task_kind` 必须显式为 `implementation` 或 `repair`，两个流程**互斥**；repair 完成后绝不继续跑 implementation 流程。
@@ -16,7 +17,7 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 必需输入
 
-共同：`stage_id`、绝对 worktree、plan path、`plan_commit`、stage branch、task_kind。
+共同：`stage_id`、绝对 worktree、plan path、`plan_commit`、stage branch、task_kind、`backend=local`、`source_mode=single`。
 
 - implementation：plan `execution_routing` 只作为已由 router 消费的上游决策；本 skill 按完整 plan 实施。
 - repair：额外必须有 review path、整数 `source_review_round`、`review_commit`、`repair_issue_ids`；只处理这些 issue IDs。plan 只提供规格、禁止范围与总体验收约束。
@@ -56,10 +57,12 @@ execution_record:
   source_review_commit: null
   repair_issue_ids: []
   result_code_commit: <code HEAD before report docs commit>
+  execution_backend: local_codex
+  effective_execution_mode: single
   status: completed
 ```
 
-只有所有必须验收通过才写 `status: completed`。阻塞/失败可如实写 narrative/blocked attempt，但不得伪造 completed E0。
+只有所有必须验收通过才写 `status: completed`。`execution_backend/effective_execution_mode` 是审计 metadata，不参与 provenance 判定。阻塞/失败可如实写 narrative/blocked attempt，但不得伪造 completed E0。
 
 ## task_kind=repair
 
@@ -81,6 +84,8 @@ execution_record:
   source_review_commit: <review_commit>
   repair_issue_ids: [R1-M1]
   result_code_commit: <code HEAD>
+  execution_backend: local_codex
+  effective_execution_mode: single
   status: completed
 ```
 
