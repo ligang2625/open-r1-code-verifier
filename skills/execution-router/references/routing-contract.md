@@ -11,6 +11,8 @@
 
 不同 stage 不共用 execution/review 文件。`bootstrap_plan` 与 `finalize` 都要求 primary HEAD 仍等于 planning base；正常流程不自动换基线或 rebase。
 
+Existing-stage resolution 对 router、reviewer-ex、stage-lifecycle checkpoint/finalize 统一：显式 stage_id 优先；未提供时仅在恰好 1 个尚未合并 active stage worktree 时自动采用；0 个或多个候选均停止，禁止按编号/mtime/最近创建猜测。bootstrap_plan 始终以 handoff payload 的 stage metadata 为准。
+
 Canonical ownership：
 
 - `planner-ex`：Web/CodexPro planning producer；在 primary root 只读规划，唯一传输输出是 `.ai-bridge/current-plan.md`；不得创建/修改 branch/worktree。

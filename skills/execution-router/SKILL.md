@@ -141,7 +141,7 @@ router **不 spawn execution agent**。它把 stage/provenance 和完整 source 
 
 **`backend=web + source MULTI` 的串行化是正式执行语义，不是 fallback。** sealed plan/review 仍保持 `mode=multi` 及原 candidates；router 不改成 single，也不因无法并行而报 `ROUTING_MISMATCH`。executor-web 必须按原 workstreams/repair lanes 串行覆盖全部范围后统一验收。
 
-Web execution 完成并提交 execution report 后，本次 execution 对话必须停止在 execution 边界；**不得在同一 GPT conversation/context 中继续调用 reviewer-ex 审查自己刚完成的 execution**。下一步应在新的 Web GPT conversation 中连接同一 repo，并显式调用 `$reviewer-ex stage_id=<stage_id>`。review 所需状态全部从 Git/sealed artifacts 重建，不依赖 execution 对话上下文。
+Web execution 完成并提交 execution report 后，本次 execution 对话必须停止在 execution 边界；**不得在同一 GPT conversation/context 中继续调用 reviewer-ex 审查自己刚完成的 execution**。下一步应在新的 Web GPT conversation 中连接同一 repo 并调用 `$reviewer-ex`；可显式提供 stage_id，若只有一个 active stage 也可省略。review 所需状态全部从 Git/sealed artifacts 重建，不依赖 execution 对话上下文。
 
 ## Execution record backend metadata
 

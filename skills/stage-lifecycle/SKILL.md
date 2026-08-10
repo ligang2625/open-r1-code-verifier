@@ -33,6 +33,10 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 `WP3-a` 与 `WP3-b` 是不同 stage，绝不共用 execution/review artifact。
 
+### Existing-stage resolution
+
+`checkpoint_review` 与 `finalize` 使用与 execution-router/reviewer-ex 相同的 stage resolution：调用方显式提供 `stage_id` 时精确使用；未提供时，只在尚未合并的 active stage worktree **恰好 1 个**时自动采用。0 个候选返回 `STAGE_NOT_FOUND`；多个候选返回 `STAGE_AMBIGUOUS`。不得按最大编号、mtime、最近创建或文件排序猜 stage。`bootstrap_plan` 不使用这条自动解析规则，它始终以 handoff/plan payload 内的 stage metadata 为准。
+
 ## Operation A: bootstrap_plan
 
 输入：planner-ex 的完整最终计划正文（优先来自主仓库 root 的 `.ai-bridge/current-plan.md` handoff；也可由调用方直接提供），其中必须包含 `stage_id`、`planning_base_commit`、目标 branch、worktree、最终 plan path 与合法 `execution_routing.version: 1`。
@@ -58,7 +62,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 ## Operation B: checkpoint_review
 
-输入：stage_id。reviewer-ex 已在阶段 worktree 写好但**尚未提交**最新 review round。
+输入：可选 `stage_id`。reviewer-ex 已在阶段 worktree 写好但**尚未提交**最新 review round；若未提供 stage_id，按上面的 Existing-stage resolution 自动解析。
 
 步骤：
 
@@ -81,6 +85,8 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 11. `repair_routing.required=true` → 状态 `REPAIR_REQUIRED`；`required=false` 且 conclusion=pass → 状态 `PASSED`。
 
 ## Operation C: finalize
+
+输入：可选 `stage_id`；若未提供，按上面的 Existing-stage resolution 自动解析。
 
 仅在最新**已提交** review 同时满足 `conclusion=pass` **且** `repair_routing.required=false` 时执行；二者不一致时返回 `STAGE_REVIEW_CONTRACT_INVALID`。
 

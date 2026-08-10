@@ -25,11 +25,11 @@ reviewer-ex 是独立 Web-side reviewer：亲自读代码、核对 plan、重跑
 
 ## Stage identity 与输入
 
-必须显式定位唯一 `stage_id`，例如 `WP5-b`。不得按“最大 WP 编号”猜 stage。
+stage resolution 与 execution-router 使用同一规则：调用方显式提供 `stage_id` 时精确使用；未提供时，只在尚未合并的 active stage worktree **恰好 1 个**时自动采用该 stage。0 个候选返回 `REVIEW_STAGE_MISSING`；多个候选返回 `REVIEW_STAGE_AMBIGUOUS`。不得按最大编号、mtime、最近创建等猜 stage。
 
 reviewer-ex 可以从主仓库 root 的 CodexPro workspace 被调用，但**审查工作区必须切换到目标 stage worktree**：
 
-1. 根据显式 `stage_id`、项目 branch/worktree 命名规则与 `git worktree list --porcelain` 定位唯一候选；
+1. 根据已解析的 `stage_id`、项目 branch/worktree 命名规则与 `git worktree list --porcelain` 定位唯一候选；
 2. 得到绝对 stage worktree 后，若当前 CodexPro workspace 不是该路径，先使用 workspace 切换/打开能力进入该 worktree；
 3. 打开后读取 sealed plan，并再次验证 plan metadata 中的 stage_id/branch/worktree 与实际 Git worktree 完全一致；不一致返回 `REVIEW_WORKTREE_MISMATCH`；
 4. 从此之后所有代码读取、Git history、测试、临时状态检查以及 review artifact 写入都以该 stage worktree 为根。不得把 review 写到 primary checkout 的同名相对路径。
@@ -145,7 +145,7 @@ PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过�
 ## 自检
 
 - [ ] 当前是未参与 latest execution 的全新 Web GPT conversation/context；
-- [ ] stage_id 唯一明确，没有最大编号猜测；
+- [ ] stage_id 已显式提供，或未提供时仅因恰好 1 个 active stage 自动解析；没有编号/时间猜测；
 - [ ] 当前 CodexPro workspace 已绑定到 plan 指定的绝对 stage worktree，未在 primary checkout 写 review；
 - [ ] latest execution 是上一 review 之后的新 completed record，否则已返回 REVIEW_NO_NEW_EXECUTION；
 - [ ] recorded `reviewed_head_commit` 在审查期间未变化；
