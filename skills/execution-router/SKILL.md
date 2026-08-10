@@ -13,12 +13,12 @@ Routing compatibility marker: `execution-routing-v2`。
 
 每次 execution 都有一个**运行时** backend：
 
-- `backend=local`：默认。SINGLE → `executor-ex`；MULTI → `executor`。
-- `backend=web`：由当前 Web GPT + CodexPro 在同一对话中继续执行 `executor-web`；不得创建或调用 Local Codex execution agent。
+- `backend=local`：SINGLE → `executor-ex`；MULTI → `executor`。只允许在 **Local Codex runtime** 且具备 execution-agent 调用能力时使用；Local Codex 中未显式指定 backend 时默认 local。
+- `backend=web`：由当前 Web GPT + CodexPro 在同一对话中继续执行 `executor-web`；不得创建或调用 Local Codex execution agent。Web 环境必须显式指定 `backend=web`。
 
 backend 不是 plan/review routing 字段，不写回 sealed plan/review，不影响 plan 的 `mode/complexity/parallelizability/multi_benefit`，也不参与 provenance 合法性判断。implementation 与每轮 repair 可以分别选择不同 backend。
 
-若显式 `backend=web` 但当前环境没有可写 CodexPro workspace、Git 或所需验证命令能力，返回 `ROUTING_WEB_BACKEND_UNAVAILABLE`；不得自动切换 local。
+Web/CodexPro 环境请求 `backend=local`（或未指定 backend）时返回 `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`；Local Codex 缺少 execution-agent 能力时同样停止。若显式 `backend=web` 但当前环境没有可写 CodexPro workspace、Git 或所需验证命令能力，返回 `ROUTING_WEB_BACKEND_UNAVAILABLE`。两种情况都不得自动切 backend。
 
 ## Stage 定位
 
@@ -141,6 +141,8 @@ router **不 spawn execution agent**。它把 stage/provenance 和完整 source 
 
 **`backend=web + source MULTI` 的串行化是正式执行语义，不是 fallback。** sealed plan/review 仍保持 `mode=multi` 及原 candidates；router 不改成 single，也不因无法并行而报 `ROUTING_MISMATCH`。executor-web 必须按原 workstreams/repair lanes 串行覆盖全部范围后统一验收。
 
+Web execution 完成并提交 execution report 后，本次 execution 对话必须停止在 execution 边界；**不得在同一 GPT conversation/context 中继续调用 reviewer-ex 审查自己刚完成的 execution**。下一步应在新的 Web GPT conversation 中连接同一 repo，并显式调用 `$reviewer-ex stage_id=<stage_id>`。review 所需状态全部从 Git/sealed artifacts 重建，不依赖 execution 对话上下文。
+
 ## Execution record backend metadata
 
 Local/Web 共用同一 `execution_record.version: 1` provenance。新 routed execution 应额外记录：
@@ -168,6 +170,7 @@ effective_execution_mode: single    # single | multi | serialized_multi
 - `ROUTING_SKILL_VERSION_MISMATCH`
 - `ROUTING_CONTRACT_*` / `ROUTING_REPAIR_CONTRACT_*`
 - `ROUTING_MISMATCH`
+- `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`
 - `ROUTING_WEB_BACKEND_UNAVAILABLE`
 
 ## 禁止事项

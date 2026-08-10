@@ -19,6 +19,8 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 
 如果 CodexPro handoff 可用，优先把完整最终 plan 发布到 `.ai-bridge/current-plan.md`（例如 handoff_to_codex）；handoff 只是传输层，不是仓库 stage artifact。handoff 工具可以在 plan 外增加 `Updated/Workspace/Target agent/## Plan` 等 transport wrapper；真正 payload 始终是完整 plan 正文。若 handoff 不可用，返回完整 plan 正文与 stage descriptor，供调用方传给 `stage-lifecycle`。
 
+若规划开始时主仓库已经存在非空 `.ai-bridge/current-plan.md`，说明上一份 plan 仍待 bootstrap。默认返回 `PLANNER_PENDING_HANDOFF_EXISTS`，不要覆盖；只有用户明确要求替换这份 pending handoff 时才允许继续规划并覆盖它。
+
 ## 输入
 
 1. `PROJECT_SPEC_Open-R1_CodeVerifier.md`：至少精读目标 WP 相关章节、§20 WP 注册表、§21 Code Review、§19 测试、§29 默认决策。

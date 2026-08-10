@@ -16,7 +16,7 @@
 
 ## Report protocol
 
-同一 `{stage_id}` 使用 `ai-work/executor/{stage_id}-executor.md`，append-only。
+同一 `{stage_id}` 使用 `ai-work/executor/{stage_id}-executor.md`，append-only；已有 committed report 时旧内容必须保持不变，每次 execution docs commit 只在 EOF 追加恰好 1 个新 record + 摘要。
 
 ### Implementation E0
 

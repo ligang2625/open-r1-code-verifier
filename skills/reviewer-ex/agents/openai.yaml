@@ -1,4 +1,4 @@
 interface:
   display_name: "Reviewer Ex"
   short_description: "Backend-agnostic provenance review + repair routing"
-  default_prompt: "Use $reviewer-ex for one explicit stage_id. Open the exact stage worktree, review the latest completed execution with the same standard regardless of local_codex/web_codexpro or effective mode, append review_record and repair_routing, then stop for shared $stage-lifecycle checkpoint_review."
+  default_prompt: "Use $reviewer-ex only in a fresh Web GPT conversation that did not implement the latest execution. For one explicit stage_id, open the exact stage worktree, rebuild state from Git/sealed artifacts, review with the same standard regardless of backend/effective mode, append review_record and repair_routing, then stop for shared $stage-lifecycle checkpoint_review."

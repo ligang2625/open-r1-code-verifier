@@ -44,14 +44,14 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 - `Workspace` 若存在，必须解析为当前主仓库 root，否则返回 `STAGE_HANDOFF_WORKSPACE_MISMATCH`；
 - 找不到非空 plan payload、或 payload 缺少所需 metadata/routing 时返回 `STAGE_HANDOFF_INVALID`。
 
-步骤：
+步骤分为只读 preflight 和 Git mutation；**preflight 全部通过前不得创建 branch/worktree**：
 
-1. 确认主仓库 `main` 的 tracked working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`，不 stash、不自动换基线。
-2. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`；若正是同一 stage，仅允许显式 replan 且它仍处于纯 PLANNED 状态：没有 completed E0，并且 `HEAD` 恰好等于当前 plan seal commit。plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。
-3. 验证 plan 中 `stage_id/planning_base_commit/branch/worktree/plan path` 互相一致；禁止按“最大 WP 编号”猜测。
-4. 从 `planning_base_commit` 对应的当前 `main` 创建或复用 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
-5. 只把上面解析出的 plan payload 写入阶段 worktree 的 `ai-work/planner/{stage_id}-plan.md`。
-6. 确认 worktree 中 `skills/execution-router/SKILL.md`、`skills/executor/SKILL.md`、`skills/executor-ex/SKILL.md`、`skills/executor-web/SKILL.md`、`skills/reviewer-ex/SKILL.md`、`skills/stage-lifecycle/SKILL.md` 均存在且相应 v2 marker 可解析；同时 `.agents/skills/execution-router`、`.agents/skills/executor`、`.agents/skills/executor-ex`、`.agents/skills/executor-web`、`.agents/skills/stage-lifecycle` 必须能解析到这些 repo-local skills。任一缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
+1. 完整校验 plan payload：`stage_id/planning_base_commit/branch/worktree/plan path` 必须互相一致；`execution_routing.version: 1` 的 mode/complexity/single_class/workstreams/candidates 必须满足 execution-router 的基础 schema。非法返回 `STAGE_HANDOFF_INVALID`，不得先创建 stage。
+2. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
+3. 确认主仓库 `main` 的 tracked working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`，不 stash、不自动换基线。
+4. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`；若正是同一 stage，仅允许显式 replan 且它仍处于纯 PLANNED 状态：没有 completed E0，并且 `HEAD` 恰好等于当前 plan seal commit。plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。
+5. preflight 全部通过后，才从 `planning_base_commit` 对应的当前 `main` 创建或复用 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
+6. 只把上面解析出的 plan payload 写入阶段 worktree 的 `ai-work/planner/{stage_id}-plan.md`，并快速确认 worktree 中上述 v2 skill/discovery 仍可解析；异常则停止，不继续 commit。
 7. 仅暂存最终 plan 文件并提交：`docs: add {stage_id} plan`。该提交是 router 后续推导 `source_plan_commit` 的唯一 plan seal。
 8. 仅在 plan seal commit 成功后，若输入来自 `.ai-bridge/current-plan.md`，删除该 `current-plan.md`，表示 pending handoff 已消费；正式 plan 从此只以 stage worktree 中的 sealed artifact 为准。其它 `.ai-bridge` 文件不动。
 9. 报告 `stage_id`、`planning_base_commit`、branch、worktree 绝对路径、plan path、`plan_commit`。不修改 `.ai-bridge` 之外的主仓库文件。
@@ -63,21 +63,22 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 步骤：
 
 1. 从主仓库 root 的 `git worktree list` 定位唯一 stage worktree，并验证其 branch 与 sealed plan metadata 一致；再定位 `ai-work/reviewer/{stage_id}-review.md`。不存在或有歧义则停止。
-2. 解析最新 review record，要求至少有：
+2. 验证 review history append-only：若已有上一轮 committed review，则当前文件必须以该 committed 文件内容作为**字节级完整前缀**，只允许在 EOF 追加一轮新内容；不得改写/删除旧轮次。违反返回 `STAGE_REVIEW_HISTORY_REWRITTEN`。本次追加必须恰好包含 1 个新的 `review_record` 和同轮 1 个 `repair_routing`。
+3. 解析最新 review record，要求至少有：
    - `review_record.version: 1`
    - `review_round`（正整数）
    - `source_execution_id`
    - `reviewed_head_commit`
    - `conclusion`
    - 同轮 `repair_routing.version: 1`
-3. reviewer 开始审查时记录的 `reviewed_head_commit` 必须等于**当前阶段 HEAD（提交 review 前）**。若不相等，说明审查期间代码/报告发生变化，返回 `STAGE_REVIEW_STALE`；不得提交该 review。
-4. 除 review 文件外不得存在其它 tracked 修改或非忽略 untracked 文件；若存在返回 `STAGE_REVIEW_DIRTY_SCOPE`。reviewer 的一次性验证应放仓库外临时目录，不能把临时脚本/产物混入 stage。
-5. `source_execution_id` 必须等于 execution report 最新 completed record 的 execution_id，且 `reviewed_head_commit` 必须等于提交该 record 的 `execution_report_commit`。
-6. review 状态必须一致：`conclusion=pass` 当且仅当 `repair_routing.required=false`；`conclusion=needs_repair` 当且仅当 `required=true`。required=true 时 `repair_issue_ids` 必须非空；required=false 时必须为空。否则返回 `STAGE_REVIEW_CONTRACT_INVALID`。
-7. `review_round` 必须比已提交的上一轮恰好 +1；R2+ 的最新 execution 必须是 completed repair，且其 `source_review_round/source_review_commit` 精确指向上一轮 review。否则返回 `STAGE_REVIEW_SEQUENCE_INVALID`。
-8. 仅暂存 review 文件并提交：`docs: add {stage_id} review round r{review_round}`。
-9. 记录/报告 `review_commit=HEAD`。不要把 `review_commit` 自引用写回同一个 review record；router 通过 Git 历史推导它。
-10. `repair_routing.required=true` → 状态 `REPAIR_REQUIRED`；`required=false` 且 conclusion=pass → 状态 `PASSED`。
+4. reviewer 开始审查时记录的 `reviewed_head_commit` 必须等于**当前阶段 HEAD（提交 review 前）**。若不相等，说明审查期间代码/报告发生变化，返回 `STAGE_REVIEW_STALE`；不得提交该 review。
+5. 除 review 文件外不得存在其它 tracked 修改或非忽略 untracked 文件；若存在返回 `STAGE_REVIEW_DIRTY_SCOPE`。reviewer 的一次性验证应放仓库外临时目录，不能把临时脚本/产物混入 stage。
+6. `source_execution_id` 必须等于 execution report 最新 completed record 的 execution_id，且 `reviewed_head_commit` 必须等于提交该 record 的 `execution_report_commit`。
+7. 完整校验同轮 repair contract：`repair_routing.source_review_round == review_round`；`conclusion=pass ⇔ required=false`，`conclusion=needs_repair ⇔ required=true`。required=false 时 routing 维度必须为 null、workstreams=0、issues/candidates=[]；required=true 时 `repair_issue_ids` 非空唯一，且 SINGLE/MULTI schema 满足 execution-router contract。否则返回 `STAGE_REVIEW_CONTRACT_INVALID`。
+8. `review_round` 必须比已提交的上一轮恰好 +1；R2+ 的最新 execution 必须是 completed repair，且其 `source_review_round/source_review_commit` 精确指向上一轮 review。否则返回 `STAGE_REVIEW_SEQUENCE_INVALID`。
+9. 仅暂存 review 文件并提交：`docs: add {stage_id} review round r{review_round}`。
+10. 记录/报告 `review_commit=HEAD`。不要把 `review_commit` 自引用写回同一个 review record；router 通过 Git 历史推导它。
+11. `repair_routing.required=true` → 状态 `REPAIR_REQUIRED`；`required=false` 且 conclusion=pass → 状态 `PASSED`。
 
 ## Operation C: finalize
 

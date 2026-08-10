@@ -20,8 +20,10 @@ Repair：依次执行每个 repair candidate；candidate issue_ids 必须完整�
 1. code/test/config commits
 2. global acceptance
 3. capture `result_code_commit=HEAD`
-4. append normal stage execution report
-5. docs commit report
+4. verify prior committed execution report history is unchanged
+5. append exactly one new execution record + summary at EOF
+6. docs commit only that report append
+7. stop this Web execution conversation; reviewer-ex runs in a fresh Web conversation
 
 New routed Web records include audit metadata:
 

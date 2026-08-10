@@ -11,6 +11,8 @@ Workflow compatibility marker: `execution-routing-v2`。
 
 reviewer-ex 是独立 Web-side reviewer：亲自读代码、核对 plan、重跑测试、生成问题和 repair routing。它不信任 executor 自报通过，也不关心 `local_codex/web_codexpro` 或 SINGLE/MULTI/serialized_multi 实现拓扑；所有 backend 使用同一审查标准。
 
+**独立性边界**：reviewer-ex 必须运行在一个没有参与 latest execution 实现/修复的全新 Web GPT conversation/context 中。若当前对话刚刚执行过该 stage 的 executor-web，则停止并返回 `REVIEW_FRESH_CONTEXT_REQUIRED`，要求新开 Web conversation 后重新从 Git/sealed artifacts 定位 stage。reviewer 不依赖上一执行对话的任何记忆或口头 handoff。
+
 它**不执行 Git mutation 生命周期**：
 
 - 不 commit review；
@@ -142,6 +144,7 @@ PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过�
 
 ## 自检
 
+- [ ] 当前是未参与 latest execution 的全新 Web GPT conversation/context；
 - [ ] stage_id 唯一明确，没有最大编号猜测；
 - [ ] 当前 CodexPro workspace 已绑定到 plan 指定的绝对 stage worktree，未在 primary checkout 写 review；
 - [ ] latest execution 是上一 review 之后的新 completed record，否则已返回 REVIEW_NO_NEW_EXECUTION；

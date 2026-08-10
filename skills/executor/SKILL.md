@@ -25,20 +25,15 @@ worker 不再创建 agent。模型配置不由 router 覆盖。
 
 ## Invocation mode
 
-本 skill 支持两种**互斥**入口：
-
-1. **Routed v2 mode**：任务中同时存在 `source_mode=multi`、`backend=local`、`task_kind`、`stage_id`、`plan_commit`。后续全部 v2 provenance/idempotency 规则生效。
-2. **Legacy direct mode（保留 full-local `planner → executor → reviewer`）**：没有上述 router provenance。此时继续使用 legacy planner/reviewer 给出的 plan/review、branch/worktree 与报告路径；允许最终只有 1 个 subplan；repair 沿用 legacy reviewer 的问题范围/严重级别规则；不要求 `execution_record`、review_commit 或 stage-lifecycle，也**不得把 legacy artifact 当作 v2 router 已消费状态**。
-
-两种模式禁止混合：若只提供部分 v2 provenance，立即返回 `EXECUTOR_ROUTING_CONTEXT_INCOMPLETE`，不得降级成 legacy。
+本 skill **只支持 routed v2**。调用必须同时包含 `source_mode=multi`、`backend=local`、`task_kind`、`stage_id`、`plan_commit`；缺少任一项返回 `EXECUTOR_ROUTING_CONTEXT_INCOMPLETE`。不提供 legacy direct mode，也不自行从文件名/当前分支猜 execution source。
 
 ## Routed MULTI 前置
 
-在 routed v2 mode 中，router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`。repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids。
+router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`。repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids。
 
 `task_kind` 两条路径互斥；repair 完成后不得继续 implementation。
 
-main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source。
+main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source。execution report 必须保持 append-only：若已有 committed report，本次只能在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
 
 ## Anti-fake-parallel hard guard
 
@@ -48,17 +43,6 @@ routed MULTI 必须基于真实代码形成 ≥2 个 mutually independent subpla
 
 - implementation：复核 plan candidate `steps`。
 - repair：只复核/拆分 router 的 `repair_issue_ids`，worker issue 并集必须恰好等于这些 IDs。
-
-## Legacy direct mode
-
-仅当完全没有 v2 router provenance 时使用：
-
-- 完整读取 legacy planner 给出的 plan；若用户/legacy reviewer 明确要求修复则同时读取对应 review。
-- 仍由 Sol/medium coordinator 拆分并用 Luna/max workers；若真实依赖只能形成 1 个 subplan，legacy mode 允许 1 个 worker，保持旧 workflow 兼容。
-- implementation 按 legacy plan 完整执行；repair 按 legacy review 的问题规则处置，不使用 v2 `repair_issue_ids` gate。
-- 从 plan 文件名/元信息得到完整 `stage_id`（如 `WP3-c`）；legacy execution report 使用 `ai-work/executor/{stage_id}-executor.md`，对应 legacy reviewer 使用 `ai-work/reviewer/{stage_id}-review.md`，避免拆分 stage 互相覆盖。
-- 其它提交/复审路径按 legacy `planner/reviewer` skill 的约定；不要伪造 v2 `execution_record` 或让 execution-router 消费该结果。
-- legacy mode 不调用 stage-lifecycle；最终 merge/proceedings 仍由 legacy reviewer 负责。
 
 ## task_kind=implementation（仅 routed v2）
 

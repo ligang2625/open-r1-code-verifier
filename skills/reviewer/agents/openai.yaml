@@ -1,4 +1,0 @@
-interface:
-  display_name: "Codex Reviewer"
-  short_description: "Sol/medium internal agent independently reviews a WP"
-  default_prompt: "Use $reviewer to delegate the unchanged WP review workflow to the required Codex internal agent and report its evidence-backed result."

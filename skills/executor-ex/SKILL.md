@@ -27,7 +27,7 @@ Artifact：
 - execution report：`ai-work/executor/{stage_id}-executor.md`
 - review：`ai-work/reviewer/{stage_id}-review.md`（只读）
 
-同一 stage report append-only，不因“重跑”自动清空。
+同一 stage report append-only，不因“重跑”自动清空。若已有 committed execution report，本次执行开始时它必须与最新 committed 版本一致；写报告时只允许在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
 
 ## 前置校验
 

@@ -24,7 +24,7 @@ Routing compatibility marker: `execution-routing-v2`。
 - source_mode=multi → effective 必须为 `serialized_multi`
 - repair 额外必须有 review path、整数 source_review_round、review_commit、repair_issue_ids
 
-Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。
+Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 committed execution report，当前 report 内容必须与最新 committed 版本一致；本次 execution 只允许在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
 
 ## 前置校验
 
@@ -76,8 +76,9 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。
 所有代码/测试/config commits 完成且必须验收通过后：
 
 1. 捕获 `result_code_commit=HEAD`；
-2. append execution report 的下一 record 与人类可读摘要；
-3. 单独 docs commit report。
+2. append execution report 的下一 record 与人类可读摘要；追加前再次确认旧 report 历史未变化；
+3. 单独 docs commit report；该 commit 只包含本次 EOF append。
+4. execution report commit 成功后立即结束本次 execution 对话。下一步 reviewer-ex 必须在新的 Web GPT conversation/context 中运行；不要在当前对话自审。
 
 Implementation 示例：
 

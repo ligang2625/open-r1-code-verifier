@@ -26,24 +26,24 @@ Canonical ownership：
 
 ### Hybrid / Local execution
 
-`planner-ex (Web) → stage-lifecycle bootstrap_plan (Web or Local) → execution-router backend=local → executor-ex|executor (Local) → reviewer-ex (Web) → stage-lifecycle checkpoint_review (Web or Local) → ... → stage-lifecycle finalize (Web or Local)`
+`planner-ex (Web) → stage-lifecycle bootstrap_plan (Web or Local) → execution-router backend=local (Local Codex) → executor-ex|executor (Local) → reviewer-ex (fresh Web conversation) → stage-lifecycle checkpoint_review (Web or Local) → ... → stage-lifecycle finalize (Web or Local)`
 
 ### Full Web
 
-`planner-ex → stage-lifecycle bootstrap_plan → execution-router backend=web → executor-web → reviewer-ex → stage-lifecycle checkpoint_review → ... → stage-lifecycle finalize`
+`planner-ex → stage-lifecycle bootstrap_plan → execution-router backend=web → executor-web → [new Web conversation] → reviewer-ex → stage-lifecycle checkpoint_review → ... → stage-lifecycle finalize`
 
-这些步骤可在同一个 Web GPT + CodexPro 会话完成；web backend 不调用 Local Codex execution agent。
+Web execution 和 reviewer 不得共享同一个 GPT conversation/context。executor-web 完成 execution report commit 后停止；新的 reviewer conversation 只从 Git/sealed artifacts 重建状态。web backend 不调用 Local Codex execution agent。
 
 ### Mixed
 
-backend 按**每次 execution**选择，而不是按 stage/project 固定。因此 `E0=local, E1=web, E2=local` 合法；唯一必须连续的是 Git/provenance 链。
+backend 按**每次 execution**选择，而不是按 stage/project 固定。因此 `E0=local, E1=web, E2=local` 合法；唯一必须连续的是 Git/provenance 链。每次 Web execution 后仍使用新的 reviewer conversation。
 
 ## 3. Runtime execution backend
 
 backend 不写入 plan/review routing：
 
-- `backend=local`（默认）：SINGLE → executor-ex；MULTI → executor。
-- `backend=web`：当前 Web GPT + CodexPro → executor-web。
+- `backend=local`：SINGLE → executor-ex；MULTI → executor。只允许在 Local Codex runtime 使用；Local Codex 中未指定 backend 时默认 local。
+- `backend=web`：当前 Web GPT + CodexPro → executor-web。Web 环境必须显式选择 web；请求 local/未指定 backend 时停止并转到 Local Codex 执行。
 
 Web effective mode：
 
@@ -98,6 +98,7 @@ Repair：E1/E2/...；填写整数 source_review_round、committed source_review_
 规则：
 
 - E0 固定 implementation；repair 单调 E1/E2/...。
+- execution report append-only：已有 committed report 时，后续 execution 不得改写旧内容；每次 execution docs commit 只允许在 EOF 追加恰好 1 个新的 execution record 与对应摘要。
 - code/test/config 先 commit，再捕获 `result_code_commit`；随后 append report 并单独 docs commit。
 - `execution_report_commit` 不写进 record，由 Git 历史定位首次包含该 execution_record 的 docs commit；reviewer 开始前必须 `HEAD == execution_report_commit`。
 - 同一 source_plan_commit 的 completed implementation 只能一次。
@@ -123,9 +124,9 @@ review_record:
 
 review_round 为正整数。R2+ 必须消费上一 review 后的新 completed repair execution。
 
-Reviewer 只依赖 Git/provenance/code/tests/spec；`execution_backend/effective_execution_mode` 不改变 review 标准或 conclusion。
+Reviewer 只依赖 Git/provenance/code/tests/spec；`execution_backend/effective_execution_mode` 不改变 review 标准或 conclusion。reviewer-ex 必须运行在未参与 latest execution 的全新 Web conversation/context。
 
-stage-lifecycle checkpoint_review 提交 review 时，review commit 的父提交必须等于 reviewed_head_commit。
+review artifact append-only：已有 committed review history 时，新一轮只能在 EOF 追加恰好 1 个 `review_record` + 同轮 `repair_routing`，不得改写旧轮次。stage-lifecycle checkpoint_review 提交 review 时，review commit 的父提交必须等于 reviewed_head_commit。
 
 ## 7. Repair routing
 
@@ -177,7 +178,9 @@ Web backend 对 repair MULTI 同样使用 `serialized_multi`，不改 repair_rou
 - matching completed repair 已存在 → `ROUTING_REPAIR_ALREADY_EXECUTED`
 - required=false → `ROUTING_NO_REPAIR_REQUIRED`
 - HEAD/provenance 无法解释 → `ROUTING_STAGE_STATE_INVALID`
+- Web/CodexPro 请求 local backend（或未指定 backend）→ `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`
 - Web backend 能力不可用 → `ROUTING_WEB_BACKEND_UNAVAILABLE`，不得自动 local
+- reviewer conversation 参与过 latest Web execution → `REVIEW_FRESH_CONTEXT_REQUIRED`
 - reviewer 没有新 execution → `REVIEW_NO_NEW_EXECUTION`
 - checkpoint 时 HEAD != reviewed_head_commit → `STAGE_REVIEW_STALE`
 - finalize 时 stage HEAD != latest review_commit → `STAGE_FINALIZE_STALE`
