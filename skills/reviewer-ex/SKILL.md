@@ -135,7 +135,7 @@ repair_routing:
 
 reviewer 必须按 sealed plan 的 profile 审查，不能跨 profile 提高或降低验收门槛：
 
-- `stage_profile=development` / `evidence_class=engineering`：只要求 plan 规定的开发机工程证据。缺少 24GB GPU、正式规模训练数据、真实 B/C/D checkpoint 或研究数值本身**不是失败项**，也不得作为 blocker；相反，若 development plan 把真实 optimizer-based SFT/GRPO 作为 completed 前置，应视为 plan/spec 违反并要求重新规划，而不是要求 executor 去训练。fixture/mock/synthetic 可以作为工程 contract evidence，但必须确认没有被冒充为正式训练/数值结果。若 `development_terminal=true`，reviewer 必须独立确认 closeout 全局 gate（lint/test/GPU smoke/真实 Piston 0 failed 0 skipped/无关键 stub-TODO-fake implementation）全部通过，否则不得 PASS；PASS 后由 finalize 写 Development Complete Record。
+- `stage_profile=development` / `evidence_class=engineering`：只要求 plan 规定的开发机工程证据。缺少 24GB GPU、正式规模训练数据、真实 B/C/D checkpoint 或研究数值本身**不是失败项**，也不得作为 blocker；相反，若 development plan 把真实 optimizer-based SFT/GRPO 作为 completed 前置，应视为 plan/spec 违反并要求重新规划，而不是要求 executor 去训练。fixture/mock/synthetic 可以作为工程 contract evidence，但必须确认没有被冒充为正式训练/数值结果。若 `development_terminal=true`，reviewer 必须独立核验 Development Completion Inventory：WP0–WP8 恰好全部覆盖，`finalized` evidence 与 proceedings/Git 一致，`covered_by_this_stage` 确由本 stage 完成；`DEV-CLOSEOUT` 必须九项全为 finalized。随后还必须确认 closeout 全局 gate（lint/test/GPU smoke/真实 Piston 0 failed 0 skipped/无关键 stub-TODO-fake implementation）全部通过，否则不得 PASS。
 - `stage_profile=validation` / `evidence_class=real-training/numerical`：必须核验真实 24GB-class GPU/正式数据/真实 checkpoint/metrics/cost provenance，synthetic/mock/fake artifact 不能满足任何真实 gate；还必须确认 execution report 的绝对 `artifact_root` 位于 stage worktree 外、真实 checkpoint/result 当前仍存在且其 identity/provenance 可追溯。validation 中若顺手加入未计划的新功能或改变实验定义，也不得 PASS。
 - reviewer 不得因 development stage 在 1660 Ti 上触发预期的显存 fail-closed guard 而判失败；该 guard 只需证明没有开始真实训练且错误信息/边界符合计划。
 
@@ -144,6 +144,8 @@ reviewer 必须按 sealed plan 的 profile 审查，不能跨 profile 提高或�
 以下任何一项存在时不得 PASS：计划/验收未完成、独立测试失败、关键 spec/safety/leakage 违规、测试预期为迁就实现而改、execution report 与事实实质不符、仍存在必须修复 blocker/major/actionable issue。
 
 PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过”。它不是永久状态；`stage-lifecycle checkpoint_review/finalize` 会检查 review 后是否发生新 commit。
+
+`DEV-CLOSEOUT` 的 completed E0 允许没有业务代码 diff：`result_code_commit == plan_commit` 是合法且期望的。Reviewer 不得要求为了产生 diff 而修改代码；应审查真实 preflight/closeout evidence、completion inventory 与 report provenance。
 
 ## 输出后续
 
@@ -157,7 +159,7 @@ PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过�
 - [ ] 当前 CodexPro workspace 已绑定到 plan 指定的绝对 stage worktree，未在 primary checkout 写 review；
 - [ ] latest execution 是上一 review 之后的新 completed record，否则已返回 REVIEW_NO_NEW_EXECUTION；
 - [ ] recorded `reviewed_head_commit` 在审查期间未变化；
-- [ ] 已按 `stage_profile / target_hardware / evidence_class / development_terminal` 使用正确证据边界；terminal development 已独立核验 closeout gates，validation 已核验 worktree 外 persistent artifact provenance，且未接受 synthetic/mock 冒充真实 gate；
+- [ ] 已按 `stage_profile / target_hardware / evidence_class / development_terminal` 使用正确证据边界；terminal development 已独立核验 WP0–WP8 completion inventory 与 closeout gates，`DEV-CLOSEOUT` zero-code E0 未被误判，validation 已核验 worktree 外 persistent artifact provenance，且未接受 synthetic/mock 冒充真实 gate；
 - [ ] 全部结论有代码/命令/spec 证据；
 - [ ] 所有 actionable failed plan/acceptance/test finding 都映射到 repair_issue_ids；
 - [ ] conclusion 与 required 严格一致（pass=false / needs_repair=true）；

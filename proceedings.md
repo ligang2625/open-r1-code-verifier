@@ -428,7 +428,7 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 - 旧 `feat/wp6-b` 在 blocked execution 中已产生开发 commit：`c214d57`（SFT checkpoint identity）、`dc86e1f`（PEFT reload）、`44c262f`（SFT evaluate 接入）、`e8b2257`（文档/工程验证），随后 `eacfd31` 记录 blocked execution；没有 completed E0、没有 review/finalize、没有真实 SFT/checkpoint/B 数值。
 - 为避免旧 validation-heavy plan 继续触发 active-stage guard，原 branch/worktree 已退役；完整历史保存在 `archive/wp6-b-blocked-20260810`。该 archive 只是可审计/可复用的开发历史，**不代表这些代码已经被 main 接受**。
 - 后续 planner 应按新规则先规划 development stage。可以在独立 plan/review 下选择性复用上述 archive commit 的实现思路或 diff，但必须重新以当前 main/spec 为基线验收；不得把旧 blocked report 当作 completed execution。
-- 后续 planner 不得再因为 WP6 的 24GB/真实数据 gate 未完成而直接停在 validation；只要仍有 dependency-ready development 工作，应继续规划 development track。只有 proceedings 明确记录 development-complete 后，才切换到 4090 validation track。
+- 后续 planner 不得再因为 WP6 的 24GB/真实数据 gate 未完成而直接停在 validation；只要仍有 development deliverable 未完成，应继续规划 development track。validation 解锁条件以后续记录定义的严格 machine-readable completion block 为准。
 
 ---
 
@@ -441,7 +441,7 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 
 ### 解决的五个常见流程问题
 
-1. **Development Complete 生成机制**：最后一个 development stage 必须 `development_terminal: true` 并通过完整 closeout；若功能开发已经结束但 marker 缺失，则 planner 创建 `DEV-CLOSEOUT`。terminal stage 经 reviewer PASS 后，`stage-lifecycle finalize` 在 proceedings 写入唯一 `Development Complete Record`（`development_complete: true`），之后 validation 才允许 bootstrap。
+1. **Development Complete 生成机制（旧说明，已由后续规则收紧）**：最后一个 development stage 必须通过完整 closeout；validation 只能由 lifecycle finalize 写入的严格 machine-readable completion block 解锁。本文这样的自然语言说明本身不是 completion marker。
 2. **Incomplete execution 恢复**：每个 plan 增加首次业务修改/commit 前的 `Execution preflight`，提前检查可判定的 Piston/import/model-cache/CUDA 等 prerequisites。若仍在后续形成“已有部分 commit、无 completed E0/review”的 `INCOMPLETE` stage，使用显式 `stage-lifecycle retire_incomplete` 原样 archive branch、记录 retirement，再重新 planner；不自动重跑、不手工丢历史。
 3. **真实 artifact 持久化**：validation 的 checkpoint/metrics/results 必须位于 stage worktree 外。`execution-router` 将 `CODE_VERIFIER_ARTIFACT_ROOT` 解析为绝对持久目录；未设置时默认 primary checkout 的 `outputs/`。`evaluate` / `train-sft` 的默认输出已支持该环境变量，后续 `train-grpo` 必须沿用同一合同。
 4. **开发机依赖与训练行为分离**：GTX 1660 Ti 允许并推荐 `make install-train`，用于真实 pinned PEFT/TRL/Transformers/Accelerate API/import/integration 开发；这不授权 optimizer-based SFT/GRPO，训练仍由 validation profile 与运行时显存 guard 禁止在 1660 Ti 上启动。
@@ -457,3 +457,24 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 - PyTorch GPU 探测：`NVIDIA GeForce GTX 1660 Ti`，总显存约 `6143 MiB`；因此该开发机应被 validation router 正确拒绝，但仍可执行开发/GPU smoke。
 - 当前 shell 无 `nvidia-smi` 命令，但 PyTorch CUDA 可正常工作，因此 router 的硬件真值改为 pinned PyTorch runtime；`nvidia-smi` 仅作为可选审计信息。
 - 本次 workflow hardening **未运行 real `make test-piston`**；这不是本次规范变更的完成条件。真实 Piston 0 failed/0 skipped 被明确保留为 terminal development closeout 的强制 gate，不能由当前默认测试 skip 冒充。
+
+---
+
+## 流程加固：严格 completion marker、一次性 4090 交接、全量 inventory 与 zero-code closeout
+
+- **决定日期**：2026-08-13
+- **性质**：针对上一轮独立审查的四项 common-case 修复；不改变研究实验定义
+- **基线**：`48303412709bc99ddb13e87df847c6b990f1baac`
+
+### 新规则
+
+1. **Completion marker 防假阳性**：自然语言中出现 Development Complete 相关词句不再具有状态语义。只有 terminal PASS stage 的 `stage-lifecycle finalize` 才能在 proceedings 写精确标题加紧随 YAML 的 machine-readable completion block；validation planner/bootstrap 必须严格解析该结构，当前本文档中的流程说明不构成 marker。
+2. **一次性 1660 Ti → 4090 交接**：terminal finalize 的 finalization docs commit 成功后，把当前 `main HEAD` 作为 `development_complete_commit` 报告。1660 Ti 到此停止；用户只需把这个 exact main commit 通过正常 Git 同步到 4090，安装 pinned training environment，再从 4090 重新运行 planner-ex。validation plan/worktree 不从 1660 Ti 搬运，此后完整 validation track 都留在 4090。
+3. **Terminal 全量 inventory**：`development_terminal=true` 不再由“没有 dependency-ready 工作”决定。terminal plan 必须以 Development Completion Inventory 逐项覆盖 WP0–WP8；每项需有 finalized evidence 或由本 stage 明确完成。`DEV-CLOSEOUT` 只有在九项 development deliverables 都已经 finalized 时才合法，不能用于补开发缺口。
+4. **Zero-code DEV-CLOSEOUT**：`DEV-CLOSEOUT` 固定 SINGLE、verification-only。它不得为了产生 commit 修改业务代码/测试/config；closeout gates 全部通过时，允许 `result_code_commit == plan_commit`，然后只追加并提交 completed E0 execution report。reviewer 必须把“无业务 diff”视为该 stage 的合法预期状态。
+
+### 当前状态
+
+- 本记录只是 workflow 决策说明，**不是**项目开发完成证明。
+- 当前尚未产生 terminal development finalize 写出的 machine-readable completion block，因此 validation 仍保持锁定。
+- 上一轮独立审查实际执行 `make test-piston` 时本地 Piston service 不可达；在真实 terminal closeout 前必须先恢复 Piston 并取得 0 failed / 0 skipped。

@@ -48,7 +48,7 @@
 14. 不生成与当前任务无关的大量抽象层、框架或样板代码。
 15. 所有影响实验结果的随机过程必须支持设置 seed。
 16. **采用“开发优先、集中验证”的两阶段流程。** 在 GTX 1660 Ti 开发机上先完成项目所有能够独立实现的代码、配置、CLI、数据/奖励合同、checkpoint/恢复接口、评测与分析管道，并完成对应的单元测试、集成测试、真实沙箱测试和小模型 GPU 冒烟；不得因为尚未具备 24GB GPU、正式训练数据或真实 checkpoint 而阻塞后续可独立完成的开发工作。
-17. **真实 SFT/GRPO 训练与最终数值验收集中到开发完成之后。** 只有当相关生产代码和工程测试已经完成，才切换到 24GB GPU（如 RTX 4090）训练机，按依赖顺序执行真实 Base/SFT/GRPO、checkpoint 重载、统一评测、成本记录和最终结果聚合。
+17. **真实 SFT/GRPO 训练与最终数值验收集中到开发完成之后。** terminal development 必须先用 WP0–WP8 Development Completion Inventory 证明全部 development deliverables 已覆盖并完成 closeout。finalize 后以其报告的 exact `development_complete_commit` 做一次性 1660 Ti→4090 交接：同步该 main commit 到 4090、安装 pinned training environment，然后从 4090 重新开始 validation planner/bootstrap；此后 Base/SFT/GRPO/checkpoint 重载/统一评测/成本/最终聚合全部留在 4090。
 18. synthetic/mock/minimal fixture 可以用于验证代码合同、错误处理、artifact schema、resume/checkpoint wiring 和聚合逻辑；这些证据可以满足 development-stage 的工程验收，但**永远不能**冒充真实训练完成、正式 checkpoint、A–D 数值结果或 final research gate。
 19. validation 阶段原则上不再扩展功能。若 4090 真实运行暴露实现缺陷，应通过当前 validation stage 的正常 review/repair 闭环做最小修复，并重新通过适用的 development regression/gpu/piston 测试后再重跑受影响的真实 validation gate；不得借 repair 扩展功能或临时修改实验定义来绕过问题。
 
@@ -1626,12 +1626,13 @@ Work Package 的**开发依赖**仍按顺序组织，但“某个较早 WP 的�
 调度顺序固定为：
 
 1. **Development track**：优先完成所有 dependency-ready 的 development 工作，直到 SFT、GRPO、evaluation、aggregation/analysis 的生产代码和工程测试均已完成。每份 plan 必须列出 **Execution preflight**，把可在实施前发现的 Piston、依赖 import、模型缓存/CUDA 等常见环境 prerequisites 放到首次业务修改/commit 之前；preflight 失败时保持 `HEAD == plan_commit`，修复环境后直接重试 execution；
-2. **Development closeout**：最后一个 development stage 标记 `development_terminal: true`，必须通过 `make lint`、`make test`、`make test-gpu`、真实 `make test-piston`（0 failed/0 skipped）以及生产关键路径无 stub/TODO/fake implementation 的收口检查。若功能开发已经结束但还没有收口 marker，则 planner 创建唯一 `DEV-CLOSEOUT` stage。只有 terminal stage 经独立 review PASS 并由 `stage-lifecycle finalize` 写入 **Development Complete Record** 后，validation 才解锁；
-3. **Validation track**：迁移到 24GB-class GPU 后，`execution-router` 在 dispatch 前先确认可见 NVIDIA GPU 总显存 `>=22528 MiB`（22 GiB，用于识别 24GB-class 训练机），并解析/探测位于 stage worktree 外的持久 `artifact_root`；随后按真实依赖顺序完成 Base A → SFT B → Public/Hidden GRPO C/D → final aggregation/analysis。
+2. **Development closeout**：terminal 判定必须基于结构化 Development Completion Inventory，而不是“当前没有 dependency-ready 工作”。Inventory 必须逐项覆盖 WP0–WP8，每项状态为 `finalized` 或 `covered_by_this_stage` 并给出证据；`DEV-CLOSEOUT` 只允许九项全部已经 `finalized`。terminal stage 还必须通过 `make lint`、`make test`、`make test-gpu`、真实 `make test-piston`（0 failed/0 skipped）以及生产关键路径无 stub/TODO/fake implementation。只有独立 review PASS 后，`stage-lifecycle finalize` 才能写精确 `## Development Complete Record` + machine-readable YAML completion block；散文中的同名文字不构成 marker；
+3. **Machine transition**：terminal finalize 的 finalization commit 成功后，当前 `main HEAD` 记为 `development_complete_commit`。在 1660 Ti 上停止，不创建 validation plan/worktree；把这个 exact main commit 同步到 4090，安装 pinned training environment，并从 4090 重新调用 planner-ex。validation planner/bootstrap 都必须先确认 pinned PyTorch CUDA 可用且 total VRAM `>=22528 MiB`；
+4. **Validation track**：机器交接后整个 validation track 留在 4090。`execution-router` 在每次 dispatch 前仍确认 24GB-class GPU 与位于 stage worktree 外、可写的持久 `artifact_root`；随后按真实依赖顺序完成 Base A → SFT B → Public/Hidden GRPO C/D → final aggregation/analysis。
 
 因此，planner **不得**仅因为 WP6 的真实 SFT gate 尚未完成就阻止 WP7 的 GRPO integration/control-plane 开发，也不得仅因为 C/D checkpoint 不存在就阻止 WP8 的 aggregation/error-analysis tooling 使用 fixture schema 完成开发。反过来，synthetic/mock 证据只能关闭 development stage，不能关闭 validation stage。
 
-每个 stage 仍需单独 plan、execution、review 和 finalize；stage plan 必须明确标注 `stage_profile: development | validation`、`target_hardware`、`evidence_class` 与布尔 `development_terminal`。若 executor 在 preflight 之后已经提交部分实现，但在 completed E0 之前因常见 blocker 中止，则 stage 进入 `INCOMPLETE`：不得自动重跑，也不得手工删除；显式调用 `stage-lifecycle retire_incomplete`，把原 branch 原样重命名为 archive、记录 proceedings 后退出 active stage，再以新的 main HEAD 重新 planner-ex。已存在 completed E0 或 committed review 的 stage 不允许 retire，继续正常 review/repair/finalize。
+每个 stage 仍需单独 plan、execution、review 和 finalize；stage plan 必须明确标注 `stage_profile: development | validation`、`target_hardware`、`evidence_class` 与布尔 `development_terminal`。`DEV-CLOSEOUT` 固定为 SINGLE verification-only stage：不修改业务代码，所有 closeout gates 通过时允许 `result_code_commit == plan_commit` 并直接提交 completed E0 report，不得为了制造 code commit 改文件。若 executor 在 preflight 之后已经提交部分实现，但在 completed E0 之前因常见 blocker 中止，则 stage 进入 `INCOMPLETE`：不得自动重跑，也不得手工删除；显式调用 `stage-lifecycle retire_incomplete`，把原 branch 原样重命名为 archive、记录 proceedings 后退出 active stage，再以新的 main HEAD 重新 planner-ex。已存在 completed E0 或 committed review 的 stage 不允许 retire，继续正常 review/repair/finalize。
 
 ## WP0：项目脚手架
 

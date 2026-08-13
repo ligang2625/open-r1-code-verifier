@@ -42,8 +42,8 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 ### implementation
 
 1. 全文读取 plan/spec/相关代码。
-2. 按 plan steps 顺序执行“实现 → 定向测试 → 验证 → 修正”。
-3. 每个可独立步骤验证后显式暂存其文件并 commit；禁止 `git add -A`。
+2. 普通 stage 按 plan steps 顺序执行“实现 → 定向测试 → 验证 → 修正”。`DEV-CLOSEOUT` 是 verification-only：不得修改业务代码/配置/测试，只执行 preflight 与 closeout gates。
+3. 普通 stage 每个可独立步骤验证后显式暂存其文件并 commit；禁止 `git add -A`。`DEV-CLOSEOUT` 不制造 code commit。
 4. 运行 plan 全局 acceptance/gates。
 
 ### repair
@@ -76,9 +76,9 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 
 ## Execution record / commit ordering
 
-所有代码/测试/config commits 完成且必须验收通过后：
+所有代码/测试/config commits 完成且必须验收通过后；`DEV-CLOSEOUT` 可以没有任何 code/config/test commit：
 
-1. 捕获 `result_code_commit=HEAD`；
+1. 捕获 `result_code_commit=HEAD`；`DEV-CLOSEOUT` 要求此时 `HEAD == plan_commit`，因此 `result_code_commit=plan_commit` 合法；
 2. append execution report 的下一 record 与人类可读摘要；追加前再次确认旧 report 历史未变化；
 3. 单独 docs commit report；该 commit 只包含本次 EOF append。
 4. execution report commit 成功后立即结束本次 execution 对话。下一步 reviewer-ex 必须在新的 Web GPT conversation/context 中运行；不要在当前对话自审。
@@ -114,7 +114,7 @@ Repair 使用 E1/E2/... 并填 source_review_round/source_review_commit/repair_i
 - [ ] 当前 workspace 是准确 stage worktree；
 - [ ] 未调用 Local Codex execution agent；
 - [ ] source routing 未修改；MULTI 只在运行时 serialized；
-- [ ] implementation/repair 只执行一个 task_kind；
+- [ ] implementation/repair 只执行一个 task_kind；`DEV-CLOSEOUT` 如无业务 diff，已确认 `result_code_commit == plan_commit` 且没有人为制造 code commit；
 - [ ] Execution preflight 在首次业务修改前完成；失败时没有产生业务 commit/report；
 - [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] serialized_multi 覆盖全部 source candidates/repair_issue_ids；

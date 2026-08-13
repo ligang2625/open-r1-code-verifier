@@ -43,10 +43,10 @@ Artifact：
 ## task_kind=implementation
 
 1. 全文读 plan/spec/相关代码。
-2. 按 plan steps 顺序循环“实现 → 测试 → 验证 → 修正”；不修改测试预期迁就实现。
-3. 每个可独立步骤验证后显式暂存该步骤文件并 commit；禁止 `git add -A`。
+2. 普通 development/validation stage 按 plan steps 顺序循环“实现 → 测试 → 验证 → 修正”；不修改测试预期迁就实现。`DEV-CLOSEOUT` 是 verification-only：不得修改业务代码/配置/测试来制造 diff，只执行 plan preflight 与 closeout gates。
+3. 普通 stage 每个可独立步骤验证后显式暂存该步骤文件并 commit；禁止 `git add -A`。`DEV-CLOSEOUT` 不要求也不允许人为制造 code commit。
 4. 完整运行 plan 总体验收（至少 `make lint`、`make test` 与 stage 特有 gate）。
-5. 所有代码/测试提交完成后记录当前 HEAD 为 `result_code_commit`。
+5. 所有代码/测试提交完成后记录当前 HEAD 为 `result_code_commit`；对 `DEV-CLOSEOUT`，要求仍 `HEAD == plan_commit`，并合法记录 `result_code_commit = plan_commit`。
 6. 在 execution report 追加 E0 记录与人类可读摘要，再单独 docs commit report。E0：
 
 ```yaml
@@ -96,7 +96,7 @@ execution_record:
 
 ## 报告与提交
 
-- code/test commit 在先；report docs commit 在后，避免在同一 commit 中自引用 hash。
+- 普通 stage code/test commit 在先、report docs commit 在后；`DEV-CLOSEOUT` 是唯一 verification-only 例外，允许没有 code commit，直接以 `result_code_commit=plan_commit` 追加并提交 E0 report。不得为了满足提交顺序制造空改动。
 - report 包含真实 preflight 命令/结果、修改文件、issue/step 映射、偏差/阻塞；validation 还必须记录绝对 persistent `artifact_root` 以及产生/消费的 checkpoint/result 路径或 identity，确保它们不在 worktree 内。
 - 不自动 push；review 由 reviewer-ex；Git checkpoint/finalization 由 stage-lifecycle。
 
@@ -106,7 +106,7 @@ execution_record:
 - [ ] stage_id 与 report 路径使用完整 stage id；
 - [ ] Execution preflight 在首次业务修改前完成；失败时没有产生业务 commit/report；
 - [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
-- [ ] implementation source_plan_commit 正确且没有重复 completed E0；
+- [ ] implementation source_plan_commit 正确且没有重复 completed E0；`DEV-CLOSEOUT` 如无业务 diff，已确认 `result_code_commit == plan_commit` 且没有人为制造 code commit；
 - [ ] repair source_review_round/review_commit/issues 与 router 完全一致且没有扩大 scope；
 - [ ] repair 总体验收没有被误解释成“修所有 review 问题”；
 - [ ] result_code_commit 在 report docs commit 之前捕获；

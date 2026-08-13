@@ -58,6 +58,20 @@
 
 > 只放能够在实施前判断的非破坏性环境 prerequisites，例如 Piston 可达性、必要依赖 import、模型缓存/CUDA 可用性。validation 的 24GB GPU 与持久 artifact root 由 execution-router 另做统一 preflight。
 
+### Development Completion Inventory（仅 `development_terminal=true`）
+
+```yaml
+development_completion_inventory:
+  version: 1
+  items:
+    - work_package: WP0
+      status: finalized  # finalized | covered_by_this_stage
+      evidence: "proceedings/finalized stage or current plan step"
+    # ... WP1 through WP8，恰好各一项
+```
+
+> terminal plan 必须覆盖 WP0–WP8。`DEV-CLOSEOUT` 的所有项都必须是 `finalized`；如果仍有 `covered_by_this_stage` 或缺失 deliverable，应规划实际 development stage，而不是 closeout。
+
 ## 4. 实施步骤
 
 ### 步骤 N：<动作>
@@ -116,6 +130,8 @@ execution_routing:
     - "[为什么 single/multi 的净收益更合适]"
   workstream_candidates: []
 ```
+
+> `DEV-CLOSEOUT` 固定 `mode: single`，因为它是 verification-only stage；允许 execution 在不产生业务代码 commit 的情况下写 completed E0。
 
 约束：
 - `mode`: `single | multi`

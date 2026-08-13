@@ -58,10 +58,10 @@ Web effective mode：
 
 Profile contract：
 
-- development → `target_hardware=GTX 1660 Ti (6GB)`、`evidence_class=engineering`、`development_terminal=true|false`；不得把真实 SFT/GRPO 作为 completed E0 gate。
-- validation → `target_hardware=24GB GPU`、`evidence_class=real-training/numerical`、`development_terminal=false`；router dispatch 前必须通过 >=22 GiB visible NVIDIA GPU（24GB-class）preflight，并解析位于 stage worktree 外的 persistent `artifact_root`。
+- development → `target_hardware=GTX 1660 Ti (6GB)`、`evidence_class=engineering`、`development_terminal=true|false`；不得把真实 SFT/GRPO 作为 completed E0 gate。terminal=true 还必须有 WP0–WP8 Development Completion Inventory；`DEV-CLOSEOUT` inventory 全部 finalized、routing 固定 SINGLE，并允许 zero-code E0 (`result_code_commit==plan_commit`)。
+- validation → `target_hardware=24GB GPU`、`evidence_class=real-training/numerical`、`development_terminal=false`；validation plan/bootstrap 只能在一次性同步 `development_complete_commit` 后的 4090-class 机器上开始，router dispatch 前再通过 >=22 GiB GPU preflight，并解析位于 stage worktree 外的 persistent `artifact_root`。
 - 每份 plan 必须有 Execution preflight；executor 在首次业务修改前运行。implementation preflight 失败保持 `HEAD==plan_commit`，repair 保持 `HEAD==review_commit`，均不写 blocked commit/report。
-- terminal development PASS finalize 后写 Development Complete Record；没有该 record 时不得进入 validation。
+- terminal development PASS finalize 只通过 proceedings 中精确 `## Development Complete Record` + 合法 YAML block 写 marker；自然语言提及不算。terminal finalization docs commit 后的 main HEAD 是需要同步到 4090 的 `development_complete_commit`。
 
 ```yaml
 execution_routing:
@@ -108,7 +108,7 @@ Repair：E1/E2/...；填写整数 source_review_round、committed source_review_
 
 - E0 固定 implementation；repair 单调 E1/E2/...。
 - execution report append-only：已有 committed report 时，后续 execution 不得改写旧内容；每次 execution docs commit 只允许在 EOF 追加恰好 1 个新的 execution record 与对应摘要。
-- code/test/config 先 commit，再捕获 `result_code_commit`；随后 append report 并单独 docs commit。
+- 普通 stage 的 code/test/config 先 commit，再捕获 `result_code_commit`；随后 append report 并单独 docs commit。`DEV-CLOSEOUT` 是 verification-only 例外：不制造业务 diff，允许 `result_code_commit == plan_commit`，随后只提交 execution report。
 - `execution_report_commit` 不写进 record，由 Git 历史定位首次包含该 execution_record 的 docs commit；reviewer 开始前必须 `HEAD == execution_report_commit`。
 - 同一 source_plan_commit 的 completed implementation 只能一次。
 - 同一 source_review_commit 的 completed repair 只能一次。
