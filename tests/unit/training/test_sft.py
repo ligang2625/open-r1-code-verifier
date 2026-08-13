@@ -17,16 +17,123 @@ import code_verifier.training.sft as sft_module
 from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.sft import (
+    SFTCheckpointIdentity,
     SFTTrainingConfig,
     SFTTrainingError,
     _load_sft_runtime,
     _runtime_arguments,
     _SFTRuntime,
+    load_completed_sft_checkpoint,
     load_sft_training_config,
     run_sft_training,
     sft_training_config_from_mapping,
     validate_sft_training_hardware,
 )
+
+
+def _write_completed_sft_run(run_dir: Path) -> None:
+    run_dir.mkdir()
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir()
+    metadata = {
+        "status": "completed",
+        "run_id": "completed-run",
+        "model_id": "example/model",
+        "model_revision": "a" * 40,
+        "dataset_hash": "b" * 64,
+        "config_hash": "c" * 64,
+        "dependency_lock_hash": "d" * 64,
+        "seed": 42,
+    }
+    (run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (checkpoint_dir / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "example/model", "peft_type": "LORA"}),
+        encoding="utf-8",
+    )
+    (checkpoint_dir / "adapter_model.safetensors").write_bytes(b"fixture-adapter")
+    for name in ("resolved_config.yaml", "environment.json", "metrics.jsonl", "stdout.log", "stderr.log"):
+        (run_dir / name).touch()
+
+
+def test_load_completed_sft_checkpoint_accepts_completed_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "completed-run"
+    _write_completed_sft_run(run_dir)
+
+    identity = load_completed_sft_checkpoint(run_dir)
+
+    assert identity == SFTCheckpointIdentity(
+        run_dir=run_dir.resolve(),
+        checkpoint_dir=(run_dir / "checkpoints").resolve(),
+        run_id="completed-run",
+        model_id="example/model",
+        model_revision="a" * 40,
+        dataset_hash="b" * 64,
+        config_hash="c" * 64,
+        dependency_lock_hash="d" * 64,
+        seed=42,
+    )
+
+
+def test_load_completed_sft_checkpoint_rejects_non_completed_status(tmp_path: Path) -> None:
+    run_dir = tmp_path / "incomplete-run"
+    _write_completed_sft_run(run_dir)
+    metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    metadata["status"] = "running"
+    (run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(SFTTrainingError, match="completed run"):
+        load_completed_sft_checkpoint(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_id", ""),
+        ("model_id", None),
+        ("model_revision", ""),
+        ("dataset_hash", "not-a-hash"),
+        ("config_hash", None),
+        ("dependency_lock_hash", "e" * 63),
+        ("seed", True),
+    ],
+)
+def test_load_completed_sft_checkpoint_rejects_missing_or_invalid_identity(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    run_dir = tmp_path / "invalid-identity"
+    _write_completed_sft_run(run_dir)
+    metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    metadata[field] = value
+    (run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(SFTTrainingError, match=field):
+        load_completed_sft_checkpoint(run_dir)
+
+
+@pytest.mark.parametrize("artifact", ["adapter_config.json", "adapter_model.safetensors"])
+def test_load_completed_sft_checkpoint_rejects_missing_or_invalid_adapter_artifact(
+    tmp_path: Path,
+    artifact: str,
+) -> None:
+    run_dir = tmp_path / "invalid-adapter"
+    _write_completed_sft_run(run_dir)
+    (run_dir / "checkpoints" / artifact).unlink()
+
+    with pytest.raises(SFTTrainingError, match="PEFT adapter"):
+        load_completed_sft_checkpoint(run_dir)
+
+
+def test_load_completed_sft_checkpoint_binds_checkpoint_to_same_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "escaped-checkpoint"
+    _write_completed_sft_run(run_dir)
+    external_checkpoint = tmp_path / "external-checkpoint"
+    (run_dir / "checkpoints").rename(external_checkpoint)
+    (run_dir / "checkpoints").symlink_to(external_checkpoint, target_is_directory=True)
+
+    with pytest.raises(SFTTrainingError, match="directly"):
+        load_completed_sft_checkpoint(run_dir)
 
 
 def _config_mapping(tmp_path: Path) -> dict[str, object]:

@@ -73,6 +73,21 @@ class SFTTrainingSummary:
     gpu_hours: float
 
 
+@dataclass(frozen=True)
+class SFTCheckpointIdentity:
+    """Non-sensitive identity for one completed SFT adapter checkpoint."""
+
+    run_dir: Path
+    checkpoint_dir: Path
+    run_id: str
+    model_id: str
+    model_revision: str | None
+    dataset_hash: str
+    config_hash: str
+    dependency_lock_hash: str
+    seed: int
+
+
 class SFTTrainingError(RuntimeError):
     """Raised when SFT configuration, hardware, runtime, or artifacts fail closed."""
 
@@ -123,6 +138,16 @@ _RUNTIME_VERSIONS = {
     "peft": "0.14.0",
 }
 _MIN_TRAINING_CUDA_MEMORY_GB = 20.0
+_SFT_RUN_LAYOUT = {
+    "resolved_config.yaml",
+    "environment.json",
+    "run.json",
+    "metrics.jsonl",
+    "stdout.log",
+    "stderr.log",
+    "checkpoints",
+}
+_PEFT_ADAPTER_FILES = {"adapter_config.json", "adapter_model.safetensors"}
 
 
 def _exact_mapping(value: object) -> Mapping[str, object]:
@@ -273,6 +298,84 @@ def load_sft_training_config(path: Path) -> SFTTrainingConfig:
         return sft_training_config_from_mapping(load_yaml_mapping(path))
     except ConfigError as error:
         raise SFTTrainingError(str(error)) from None
+
+
+def _checkpoint_identity_string(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SFTTrainingError(f"completed SFT run has invalid {field_name}")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SFTTrainingError(f"completed SFT run has invalid {field_name}") from None
+    return value
+
+
+def _checkpoint_identity_hash(value: object, *, field_name: str) -> str:
+    text = _checkpoint_identity_string(value, field_name=field_name)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise SFTTrainingError(f"completed SFT run has invalid {field_name}")
+    return text
+
+
+def load_completed_sft_checkpoint(run_dir: Path) -> SFTCheckpointIdentity:
+    """Load the identity of one completed, directly contained PEFT SFT checkpoint."""
+    try:
+        resolved_run_dir = run_dir.resolve(strict=True)
+    except OSError:
+        raise SFTTrainingError("completed SFT run must be an existing directory") from None
+    if not resolved_run_dir.is_dir():
+        raise SFTTrainingError("completed SFT run must be an existing directory")
+    try:
+        if {path.name for path in resolved_run_dir.iterdir()} != _SFT_RUN_LAYOUT:
+            raise SFTTrainingError("completed SFT run does not match the strict artifact layout")
+        checkpoint_dir = (resolved_run_dir / "checkpoints").resolve(strict=True)
+        if not checkpoint_dir.is_dir() or checkpoint_dir.parent != resolved_run_dir:
+            raise SFTTrainingError("completed SFT checkpoint must belong directly to its SFT run")
+        metadata_value = json.loads((resolved_run_dir / "run.json").read_text(encoding="utf-8"))
+    except SFTTrainingError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise SFTTrainingError("completed SFT run metadata is unreadable") from None
+    if not isinstance(metadata_value, dict) or metadata_value.get("status") != "completed":
+        raise SFTTrainingError("SFT checkpoint loading requires a completed run")
+
+    adapter_paths = {name: checkpoint_dir / name for name in _PEFT_ADAPTER_FILES}
+    if any(not path.is_file() or path.is_symlink() for path in adapter_paths.values()):
+        raise SFTTrainingError("completed SFT run has an incomplete PEFT adapter artifact")
+    try:
+        adapter_config = json.loads(adapter_paths["adapter_config.json"].read_text(encoding="utf-8"))
+        adapter_size = adapter_paths["adapter_model.safetensors"].stat().st_size
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise SFTTrainingError("completed SFT run has an invalid PEFT adapter artifact") from None
+    if (
+        not isinstance(adapter_config, dict)
+        or not isinstance(adapter_config.get("base_model_name_or_path"), str)
+        or not adapter_config["base_model_name_or_path"].strip()
+        or not isinstance(adapter_config.get("peft_type"), str)
+        or not adapter_config["peft_type"].strip()
+        or adapter_size <= 0
+    ):
+        raise SFTTrainingError("completed SFT run has an invalid PEFT adapter artifact")
+
+    revision = metadata_value.get("model_revision")
+    if revision is not None:
+        revision = _checkpoint_identity_string(revision, field_name="model_revision")
+    seed = metadata_value.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise SFTTrainingError("completed SFT run has invalid seed")
+    return SFTCheckpointIdentity(
+        run_dir=resolved_run_dir,
+        checkpoint_dir=checkpoint_dir,
+        run_id=_checkpoint_identity_string(metadata_value.get("run_id"), field_name="run_id"),
+        model_id=_checkpoint_identity_string(metadata_value.get("model_id"), field_name="model_id"),
+        model_revision=revision,
+        dataset_hash=_checkpoint_identity_hash(metadata_value.get("dataset_hash"), field_name="dataset_hash"),
+        config_hash=_checkpoint_identity_hash(metadata_value.get("config_hash"), field_name="config_hash"),
+        dependency_lock_hash=_checkpoint_identity_hash(
+            metadata_value.get("dependency_lock_hash"), field_name="dependency_lock_hash"
+        ),
+        seed=seed,
+    )
 
 
 def _load_torch_runtime() -> ModuleType:
@@ -535,16 +638,7 @@ def _validate_resume_run(
     }
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         raise SFTTrainingError("existing SFT run identity does not match the requested resume")
-    required = {
-        "resolved_config.yaml",
-        "environment.json",
-        "run.json",
-        "metrics.jsonl",
-        "stdout.log",
-        "stderr.log",
-        "checkpoints",
-    }
-    if {path.name for path in run_dir.iterdir()} != required:
+    if {path.name for path in run_dir.iterdir()} != _SFT_RUN_LAYOUT:
         raise SFTTrainingError("existing SFT run does not match the strict artifact layout")
     if value.get("status") not in {"running", "failed"}:
         raise SFTTrainingError("only an interrupted or failed SFT run may be resumed")
