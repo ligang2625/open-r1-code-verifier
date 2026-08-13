@@ -29,6 +29,20 @@ description: Git stage lifecycle control plane。可由 Local Codex 或 Web GPT 
 
 Routing compatibility marker: `execution-routing-v2`。
 
+### Stage environment contract
+
+每个 linked stage worktree 都必须拥有自己的 `.venv/bin/python`，且 project editable source 必须指向**当前 stage worktree**，不能直接把 primary checkout 的 `.venv` 目录软链接进 stage。原因是 primary `.venv` 的 editable install 指向 `main` 源码，直接复用会导致 stage 测试实际执行错误 checkout 的代码。
+
+默认 bootstrap 使用仓库内 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --mode overlay`：
+
+- primary `.venv` 提供已经安装并验证过的 pinned 第三方依赖；
+- stage worktree 创建独立 lightweight `.venv`，通过只读 site-packages overlay 复用 primary dependencies；
+- `open-r1-code-verifier` 与 `third_party/open-r1` 在 stage `.venv` 中重新 editable-bind 到当前 worktree；
+- stage submodule 在环境创建前执行 `git submodule update --init --recursive third_party/open-r1`；
+- bootstrap 必须验证 `code_verifier.__file__` 与 `open_r1.__file__` 都位于当前 stage worktree 下。
+
+若某个 execution 实际修改 `pyproject.toml` 或 `uv.lock`，从该修改开始不得继续依赖 primary overlay；executor 必须在 stage 中运行同一 helper 的 `--mode full`，建立完整独立 pinned environment 后再继续测试。普通不改依赖的 stage 不重复下载/安装整套 CUDA/PyTorch 环境。
+
 ## 通用 stage identity
 
 Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
@@ -63,14 +77,16 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 1. 完整校验 plan payload：`stage_id/planning_base_commit/branch/worktree/plan path` 必须互相一致；`stage_profile/target_hardware/evidence_class/development_terminal` 必须存在并满足 development→GTX 1660 Ti (6GB)+engineering+boolean terminal、validation→24GB GPU+real-training/numerical+terminal=false；`DEV-CLOSEOUT` 只允许 `chore/dev-closeout` / `.worktrees/dev-closeout` / terminal=true，且 `execution_routing.mode` 必须为 `single`；`execution_routing.version: 1` 的其它字段必须满足 execution-router 基础 schema。terminal=true 时 plan 必须包含 `development_completion_inventory.version: 1`，WP0–WP8 恰好各一项、状态仅 `finalized|covered_by_this_stage` 且 evidence 非空；`DEV-CLOSEOUT` 的九项必须全部为 `finalized`。同时总体验收必须显式包含 `make lint`、`make test`、`make test-gpu`、`make test-piston` 及无 production-critical stub/TODO/fake implementation 检查。非法返回 `STAGE_HANDOFF_INVALID`，不得先创建 stage。
 2. 若 `stage_profile=validation`，在创建 branch/worktree 前严格解析 `proceedings.md`：只接受精确标题 `## Development Complete Record` 后紧随的 YAML fenced block，顶层 `development_complete_record` 必须满足 `version: 1`、`development_complete: true`、`completion_inventory_verified: true`，并具有非空 terminal_stage_id、40-hex review_commit、40-hex merge_commit 与 finalized_at；其它自然语言出现这些词句一律忽略。不存在合法 block 返回 `STAGE_DEVELOPMENT_NOT_COMPLETE`。随后使用项目 `.venv` pinned PyTorch 验证 CUDA 可用且 device 0 total memory >=22528 MiB；否则返回 `STAGE_VALIDATION_MACHINE_HANDOFF_REQUIRED`，**不得在 1660 Ti 上创建 validation branch/worktree**。
-3. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
-4. 按 **Primary checkout transport-dirty policy** 确认主仓库 `main` 在 `.ai-bridge/**` 之外 working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。仅 `.ai-bridge/**` transport 变化不阻塞 bootstrap；不 stash、不自动换基线。
-5. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`；若正是同一 stage，仅允许显式 replan 且它仍处于纯 PLANNED 状态：没有 completed E0，并且 `HEAD` 恰好等于当前 plan seal commit。plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。
-6. preflight 全部通过后，才从 `planning_base_commit` 对应的当前 `main` 创建或复用 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
-7. 只把上面解析出的 plan payload 写入阶段 worktree 的 `ai-work/planner/{stage_id}-plan.md`，并快速确认 worktree 中上述 v2 skill/discovery 仍可解析；异常则停止，不继续 commit。
-8. 仅暂存最终 plan 文件并提交：`docs: add {stage_id} plan`。该提交是 router 后续推导 `source_plan_commit` 的唯一 plan seal。
-9. 仅在 plan seal commit 成功后，若输入来自 `.ai-bridge/current-plan.md`，删除该 `current-plan.md`，表示 pending handoff 已消费；正式 plan 从此只以 stage worktree 中的 sealed artifact 为准。其它 `.ai-bridge` 文件不动。
-10. 报告 `stage_id`、`planning_base_commit`、branch、worktree 绝对路径、plan path、`plan_commit`。不修改 `.ai-bridge` 之外的主仓库文件。
+3. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。`skills/stage-lifecycle/scripts/bootstrap_stage_env.py` 也必须存在。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
+4. 校验 primary execution environment：`<primary>/.venv/bin/python` 必须存在且 `uv` 可执行。缺失返回 `STAGE_PRIMARY_ENV_UNAVAILABLE`；不得先创建 stage worktree。validation 的 24GB 检查继续使用这个 primary pinned runtime。
+5. 按 **Primary checkout transport-dirty policy** 确认主仓库 `main` 在 `.ai-bridge/**` 之外 working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。仅 `.ai-bridge/**` transport 变化不阻塞 bootstrap；不 stash、不自动换基线。
+6. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`。若正是同一 stage，仅允许**显式 pre-execution replan**且它仍处于纯 PLANNED 状态：没有 completed E0/review，stage tracked/untracked 状态干净，并且 `HEAD` 恰好等于当前 plan seal commit；plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。当新的 `planning_base_commit` 已前移时，这个窄场景允许 lifecycle 正常移除旧 worktree，并仅在再次确认旧 branch HEAD 就是旧 plan seal、没有其它提交后删除旧 stage branch，再从新 base 重建；这不是 incomplete-stage rollback，也不得用于已有 execution/review 的 stage。
+7. preflight 全部通过后，才从 `planning_base_commit` 对应的当前 `main` 创建 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
+8. **在写 plan/commit plan seal 之前**创建 stage environment：使用 primary `.venv/bin/python` 执行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode overlay`。必须成功初始化 pinned submodule、创建 worktree-local `.venv/bin/python`，并验证 `code_verifier` / `open_r1` source path 都位于 stage worktree。失败返回 `STAGE_ENV_BOOTSTRAP_FAILED`，不得写 plan seal；若 branch/worktree 是本次调用新建且仍无 tracked stage artifact/commit，允许正常移除该 worktree并删除这条尚未承载 stage history 的临时 branch，避免留下半初始化 active stage。
+9. 只把上面解析出的 plan payload 写入阶段 worktree的 `ai-work/planner/{stage_id}-plan.md`，并快速确认 worktree 中上述 v2 skill/discovery 仍可解析；异常则停止，不继续 commit。
+10. 仅暂存最终 plan 文件并提交：`docs: add {stage_id} plan`。该提交是 router 后续推导 `source_plan_commit` 的唯一 plan seal。
+11. 仅在 plan seal commit 成功后，若输入来自 `.ai-bridge/current-plan.md`，删除该 `current-plan.md`，表示 pending handoff 已消费；正式 plan 从此只以 stage worktree 中的 sealed artifact 为准。其它 `.ai-bridge` 文件不动。
+12. 报告 `stage_id`、`planning_base_commit`、branch、worktree 绝对路径、plan path、`plan_commit`，以及 stage `.venv/bin/python` 与 verified source bindings。不修改 `.ai-bridge` 之外的主仓库文件。
 
 ## Operation B: checkpoint_review
 
@@ -105,13 +121,17 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 1. 阶段 worktree 必须干净，且当前 stage HEAD 必须恰好等于 latest `review_commit`；其父提交必须等于该 review record 的 `reviewed_head_commit`。任何 review 后的新提交都返回 `STAGE_FINALIZE_STALE`。
 2. 按 **Primary checkout transport-dirty policy**，主仓库 `main` 在 `.ai-bridge/**` 之外必须干净，且 `main HEAD` 必须仍等于 plan 中的 `planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。仅 `.ai-bridge/**` transport 变化不阻塞 finalize；不 stash、不自动 rebase/换基线。
 3. 在主仓库执行 `git merge --no-ff <stage-branch> -m "feat: complete {stage_id} <标题>"`，捕获 `merge_commit`。
-4. 在 `main` 上：
+4. 合并后恢复 primary runtime 可直接执行的环境状态：
+   - 若 stage 相对 `planning_base_commit` 改变了 `third_party/open-r1` gitlink，先在 primary 执行 `git submodule update --init --recursive third_party/open-r1`；
+   - 若改变了 `pyproject.toml` 或 `uv.lock`，在 primary 执行 `uv sync --extra dev --extra gpu --extra training`，使主 `.venv` 与新 dependency contract 对齐；未改依赖时不得重复完整 sync；
+   - 验证 primary `.venv/bin/python` 导入的 `code_verifier.__file__` 与 `open_r1.__file__` 都位于 primary checkout，而不是已存在/将删除的 stage worktree。失败返回 `STAGE_PRIMARY_ENV_SYNC_FAILED` 并停止 finalization docs，不伪造环境已可运行。
+5. 在 `main` 上：
    - 按现有 Open-R1 proceedings 规则更新 `proceedings.md`；拆分 stage 先记录子阶段，最后一个子阶段再做 WP 聚合；
    - 若 sealed plan 为 `stage_profile=development` 且 `development_terminal=true`，再次确认 reviewer PASS 明确核验了完整 WP0–WP8 Development Completion Inventory 与 closeout gates，然后在 proceedings 追加唯一 machine-readable block：精确标题 `## Development Complete Record`，其后立即写 YAML fenced block，顶层 `development_complete_record` 至少包含 `version: 1`、`terminal_stage_id`、`review_commit`、`merge_commit`、`finalized_at`、`completion_inventory_verified: true`、`development_complete: true`。不得用其它标题/散文/示例代替，也不得由非 terminal stage 写 marker；
    - 在 `ai-work/reviewer/{stage_id}-review.md` 末尾追加 `Finalization Record`，至少写 `review_round`、`review_commit`、`merge_commit`、finalized_at/status；不改审查结论本身。
-5. 仅在 merge 成功后提交上述 finalization 文档：`docs: finalize {stage_id}`（若触发 WP 聚合可使用对应 consolidate message）。若这是 terminal development finalize，提交成功后的当前 `main HEAD` 即 `development_complete_commit`；必须报告该 exact commit，并明确：在 1660 Ti 上到此停止，不 bootstrap validation；先把该 commit 同步到 4090，再在 4090 安装 pinned training environment 并重新运行 planner-ex。lifecycle 不自动 push/传输代码。
-6. 再次确认 stage worktree 严格干净、且 main 按 **Primary checkout transport-dirty policy** 在 `.ai-bridge/**` 之外干净后，正常移除 worktree，再 `git branch -d <stage-branch>`；任一步失败就停止并报告当前状态，不自动 `--force`、rollback、rebase 或重试。
-7. 不自动 push。finalize 按正常 one-shot 流程执行，不额外设计自动恢复状态。
+6. 仅在 merge 成功后提交上述 finalization 文档：`docs: finalize {stage_id}`（若触发 WP 聚合可使用对应 consolidate message）。若这是 terminal development finalize，提交成功后的当前 `main HEAD` 即 `development_complete_commit`；必须报告该 exact commit，并明确：在 1660 Ti 上到此停止，不 bootstrap validation；先把该 commit 同步到 4090，再在 4090 安装 pinned training environment 并重新运行 planner-ex。lifecycle 不自动 push/传输代码。
+7. 再次确认 stage worktree 严格干净、且 main 按 **Primary checkout transport-dirty policy** 在 `.ai-bridge/**` 之外干净后，正常移除 worktree，再 `git branch -d <stage-branch>`；任一步失败就停止并报告当前状态，不自动 rollback、rebase 或重试。
+8. 不自动 push。finalize 按正常 one-shot 流程执行，不额外设计自动恢复状态。
 
 ## Operation D: retire_incomplete
 
@@ -157,5 +177,5 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 - 不修改 plan/review 的 routing 内容。
 - 不把未 checkpoint 的 review 交给 router。
 - 不在 PASS review 后有新 stage commit 的情况下继续 finalize。
-- 不自动 stash、rebase、force-delete branch、`--no-verify` 或 push。
+- 不自动 stash、rebase、`--no-verify` 或 push；仅 `bootstrap_plan` 已证明为纯 PLANNED、无 execution/review 的显式 pre-execution replan 可以删除旧 plan-only stage branch，其它场景仍禁止 force-delete。
 - 不通过文件时间戳、最大编号或“最近创建”猜 stage；有多个候选必须报歧义。

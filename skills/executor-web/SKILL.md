@@ -36,6 +36,7 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 6. 在任何业务文件修改或 commit **之前**完整执行 plan 的 `Execution preflight`；任一检查失败返回 `EXECUTION_PREFLIGHT_FAILED`，implementation 保持 `HEAD == plan_commit`、repair 保持 `HEAD == review_commit`，均不写 blocked commit/report，修复环境后可重新 router。
 7. validation：确认 router `artifact_root` 为绝对路径且位于 stage worktree 外；所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`，不得把 checkpoint/metrics/output 显式写回 worktree；synthetic/mock/fake artifact 不能满足真实 gate。
 8. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
+9. stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若本次 execution 修改 `pyproject.toml` 或 `uv.lock`，必须在继续依赖相关测试前运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，切换为完整 stage-local pinned environment；不能让 primary overlay 掩盖 dependency contract 的变化。
 
 ## source SINGLE
 

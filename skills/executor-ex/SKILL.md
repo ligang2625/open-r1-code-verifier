@@ -39,6 +39,7 @@ Artifact：
 6. 在任何业务文件修改或 commit **之前**，完整执行 plan 的 `Execution preflight`。任一检查失败时返回 `EXECUTION_PREFLIGHT_FAILED`，implementation 保持 `HEAD == plan_commit`、repair 保持 `HEAD == review_commit`，均不写 blocked commit/report；环境修复后可重新从 router 正常启动。
 7. validation：确认 router `artifact_root` 为绝对路径且不位于 stage worktree 内；对所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`，不得显式把 `--output-dir` 指回 worktree。development 不要求 artifact_root。
 8. 不修改 review、plan、proceedings、`third_party/open-r1/`。
+9. stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若本次 implementation/repair 修改 `pyproject.toml` 或 `uv.lock`，必须在继续任何依赖相关测试前运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；不能让 primary overlay 掩盖新增、删除或变更的依赖。
 
 ## task_kind=implementation
 

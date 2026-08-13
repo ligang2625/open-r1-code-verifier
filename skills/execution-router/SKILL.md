@@ -48,6 +48,16 @@ plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git
 
 Development stage 不运行上述 24GB preflight；其 plan-specific Piston/import/model-cache/CUDA prerequisites 由 plan 的 Execution preflight 在首次业务修改/commit 前执行。
 
+## Stage environment preflight
+
+任何 backend dispatch/executor 创建之前，router 都要验证 stage worktree 的 lifecycle environment contract：
+
+1. `<stage-worktree>/.venv/bin/python` 必须存在；
+2. 使用该 Python 导入 `code_verifier` 与 `open_r1`，二者 `__file__` 必须都解析到目标 stage worktree 下；
+3. 不允许 stage `.venv` 直接软链接为 primary `.venv`，也不允许 editable source 仍指向 primary checkout。
+
+任一条件失败返回 `ROUTING_STAGE_ENV_UNAVAILABLE`，在 dispatch 前停止。不要 spawn executor 后再让 plan preflight 因 `.venv` 缺失失败。环境由 `stage-lifecycle bootstrap_plan` 自动创建；若用户手工删除/破坏 ignored `.venv`，先按 lifecycle 的 stage-environment helper 恢复，再重新调用 router。
+
 ## 状态推导与 source precedence
 
 任何 dispatch 前 stage worktree 必须干净：
@@ -174,6 +184,7 @@ effective_execution_mode: single    # single | multi | serialized_multi
 
 - `ROUTING_PLAN_MISSING` / `ROUTING_PLAN_AMBIGUOUS` / `ROUTING_PLAN_NOT_SEALED` / `ROUTING_PLAN_PROFILE_INVALID`
 - `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE` / `ROUTING_VALIDATION_ARTIFACT_ROOT_UNAVAILABLE`
+- `ROUTING_STAGE_ENV_UNAVAILABLE`
 - `ROUTING_STAGE_DIRTY`
 - `ROUTING_REVIEW_NOT_COMMITTED` / `ROUTING_STALE_REVIEW`
 - `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED` / `ROUTING_INCOMPLETE_IMPLEMENTATION`

@@ -35,6 +35,8 @@ router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_
 
 main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / target_hardware / evidence_class / development_terminal`，与 router 输入逐项一致。development 必须是 GTX 1660 Ti (6GB)+engineering，且所有 workers/coordinator 都不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical+terminal=false，且 fixture/mock/synthetic 不得满足真实 gate。profile 不一致时在 spawn worker 前停止。随后在任何业务修改/worker spawn **之前**由 coordinator 串行执行 plan 的 `Execution preflight`；任一检查失败返回 `EXECUTION_PREFLIGHT_FAILED`，implementation 保持 `HEAD == plan_commit`、repair 保持 `HEAD == review_commit`，均不 spawn worker、不写 blocked commit/report。validation 还必须验证 router `artifact_root` 位于 worktree 外，并为所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`。execution report 必须保持 append-only：若已有 committed report，本次只能在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
 
+stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若任一 routed workstream 需要修改 `pyproject.toml` 或 `uv.lock`，必须由 coordinator 在 spawn 相关 worker/继续依赖测试前串行运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；之后全部 workers/tests 使用该 stage `.venv`，不能继续借 primary overlay 隐式满足依赖。
+
 ## Anti-fake-parallel hard guard
 
 routed MULTI 必须基于真实代码形成 ≥2 个 mutually independent subplans：tracked write file/symbol ownership 可分离、无未完成 public API 前置依赖、各自有独立测试。
