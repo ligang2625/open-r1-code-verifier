@@ -32,7 +32,8 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 2. plan 内容必须等于 plan_commit seal 版本。
 3. implementation：report 不得已有 matching completed E0，且开始修改前 `HEAD == plan_commit`。
 4. repair：开始修改前 `HEAD == review_commit`，latest committed review round/issues 与 dispatch 完全一致。
-5. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
+5. 解析 plan 的 `stage_profile / target_hardware / evidence_class`：development 必须是 GTX 1660 Ti (6GB)+engineering，且不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical，且 synthetic/mock/fake artifact 不能满足真实 gate。profile 不一致则停止。
+6. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
 
 ## source SINGLE
 

@@ -39,7 +39,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 ## Operation A: bootstrap_plan
 
-输入：planner-ex 的完整最终计划正文（优先来自主仓库 root 的 `.ai-bridge/current-plan.md` handoff；也可由调用方直接提供），其中必须包含 `stage_id`、`planning_base_commit`、目标 branch、worktree、最终 plan path 与合法 `execution_routing.version: 1`。
+输入：planner-ex 的完整最终计划正文（优先来自主仓库 root 的 `.ai-bridge/current-plan.md` handoff；也可由调用方直接提供），其中必须包含 `stage_id`、`planning_base_commit`、目标 branch、worktree、最终 plan path、`stage_profile`、`target_hardware`、`evidence_class` 与合法 `execution_routing.version: 1`。profile 三元组必须一致：development → GTX 1660 Ti (6GB) + engineering；validation → 24GB GPU + real-training/numerical。
 
 若来源是 `.ai-bridge/current-plan.md`，它是 transport envelope 而不是正式 plan：
 
@@ -50,7 +50,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 步骤分为只读 preflight 和 Git mutation；**preflight 全部通过前不得创建 branch/worktree**：
 
-1. 完整校验 plan payload：`stage_id/planning_base_commit/branch/worktree/plan path` 必须互相一致；`execution_routing.version: 1` 的 mode/complexity/single_class/workstreams/candidates 必须满足 execution-router 的基础 schema。非法返回 `STAGE_HANDOFF_INVALID`，不得先创建 stage。
+1. 完整校验 plan payload：`stage_id/planning_base_commit/branch/worktree/plan path` 必须互相一致；`stage_profile/target_hardware/evidence_class` 必须存在且满足 development→GTX 1660 Ti (6GB)+engineering、validation→24GB GPU+real-training/numerical 的唯一合法映射；`execution_routing.version: 1` 的 mode/complexity/single_class/workstreams/candidates 必须满足 execution-router 的基础 schema。非法返回 `STAGE_HANDOFF_INVALID`，不得先创建 stage。
 2. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
 3. 确认主仓库 `main` 的 tracked working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`，不 stash、不自动换基线。
 4. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`；若正是同一 stage，仅允许显式 replan 且它仍处于纯 PLANNED 状态：没有 completed E0，并且 `HEAD` 恰好等于当前 plan seal commit。plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。

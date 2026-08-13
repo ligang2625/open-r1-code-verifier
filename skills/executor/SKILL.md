@@ -33,7 +33,7 @@ router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_
 
 `task_kind` 两条路径互斥；repair 完成后不得继续 implementation。
 
-main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source。execution report 必须保持 append-only：若已有 committed report，本次只能在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
+main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / target_hardware / evidence_class`。development 必须是 GTX 1660 Ti (6GB)+engineering，且所有 workers/coordinator 都不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical，且 fixture/mock/synthetic 不得满足真实 gate。profile 不一致时在 spawn worker 前停止。execution report 必须保持 append-only：若已有 committed report，本次只能在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
 
 ## Anti-fake-parallel hard guard
 

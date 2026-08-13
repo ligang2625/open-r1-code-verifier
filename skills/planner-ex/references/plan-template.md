@@ -10,6 +10,9 @@
 | 项 | 值 |
 |---|---|
 | stage_id | `{stage_id}` |
+| stage_profile | `development` 或 `validation` |
+| target_hardware | `GTX 1660 Ti (6GB)` 或 `24GB GPU` |
+| evidence_class | `engineering` 或 `real-training/numerical` |
 | 目标 WP | `WP{n}`：[名称] |
 | 规格依据 | `PROJECT_SPEC_Open-R1_CodeVerifier.md` §[...] |
 | 前置状态 | `proceedings.md`：[...] |
@@ -78,7 +81,8 @@ make test
 ## 5. 总体验收与测试计划
 
 - 单元测试：...
-- 集成/真实 gate：...
+- Development integration（development stage）：说明 GTX 1660 Ti/CPU/Piston/GPU-smoke/fixture evidence；不得要求真实训练。
+- Real training/numerical gate（validation stage）：说明 24GB GPU、正式数据、真实 checkpoint/metrics；不得用 synthetic/mock 替代。
 - 数据泄漏/安全检查（如适用）：...
 - 最终标准：
   - [ ] 规格验收逐条通过

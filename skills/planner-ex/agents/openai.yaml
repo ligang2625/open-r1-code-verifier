@@ -1,4 +1,4 @@
 interface:
   display_name: "Planner Ex"
   short_description: "Web stage planning + routing handoff; shared lifecycle seals Git state"
-  default_prompt: "Use $planner-ex from the primary repo root to produce the next stage's complete function-level plan and execution_routing. Do not select an execution backend or mutate Git topology; publish the plan payload for shared $stage-lifecycle bootstrap_plan, which may run in Web GPT + CodexPro or Local Codex."
+  default_prompt: "Use $planner-ex from the primary repo root to produce the next stage's complete function-level plan and execution_routing. Follow the development-first policy: while any dependency-ready engineering work remains, plan a GTX 1660 Ti development stage and defer 24GB real-training/numerical gates until development-complete. Do not select an execution backend or mutate Git topology; publish the plan payload for shared $stage-lifecycle bootstrap_plan, which may run in Web GPT + CodexPro or Local Codex."

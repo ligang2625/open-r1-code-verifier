@@ -47,6 +47,10 @@
 13. 若规格存在歧义，优先采用本文件“默认决策”中的方案，并在实现说明中标注假设。
 14. 不生成与当前任务无关的大量抽象层、框架或样板代码。
 15. 所有影响实验结果的随机过程必须支持设置 seed。
+16. **采用“开发优先、集中验证”的两阶段流程。** 在 GTX 1660 Ti 开发机上先完成项目所有能够独立实现的代码、配置、CLI、数据/奖励合同、checkpoint/恢复接口、评测与分析管道，并完成对应的单元测试、集成测试、真实沙箱测试和小模型 GPU 冒烟；不得因为尚未具备 24GB GPU、正式训练数据或真实 checkpoint 而阻塞后续可独立完成的开发工作。
+17. **真实 SFT/GRPO 训练与最终数值验收集中到开发完成之后。** 只有当相关生产代码和工程测试已经完成，才切换到 24GB GPU（如 RTX 4090）训练机，按依赖顺序执行真实 Base/SFT/GRPO、checkpoint 重载、统一评测、成本记录和最终结果聚合。
+18. synthetic/mock/minimal fixture 可以用于验证代码合同、错误处理、artifact schema、resume/checkpoint wiring 和聚合逻辑；这些证据可以满足 development-stage 的工程验收，但**永远不能**冒充真实训练完成、正式 checkpoint、A–D 数值结果或 final research gate。
+19. validation 阶段原则上不再扩展功能。若 4090 真实运行暴露实现缺陷，应回到正常开发/repair 流程修复并重新通过开发机测试，再重跑受影响的 validation gate；不得在训练机上临时修改实验定义来绕过问题。
 
 ---
 
@@ -268,7 +272,7 @@ models:
 
 说明：
 
-- `debug_model` 用于接口开发、单元测试、短程 SFT/GRPO。
+- `debug_model` 用于接口开发、单元/集成测试和小模型生成/评测冒烟；真实 optimizer-based SFT/GRPO（即使只有 1–2 step）仍属于 24GB validation track，不在 1660 Ti 开发机执行。
 - `main_model` 用于最终 B、C、D 实验。
 - 模型 ID 必须配置化。
 - 若模型许可证、下载或兼容性存在问题，可更换为同量级开源代码模型，但必须记录原因。
@@ -283,8 +287,11 @@ models:
 - 开启 gradient checkpointing；
 - 主实验不使用量化权重训练，除非 24GB 显存无法运行；
 - 若必须使用 QLoRA，C 和 D 必须保持完全相同的量化与 LoRA 配置；
-- 开发与冒烟测试硬件：单张 NVIDIA GeForce GTX 1660 Ti（6GB VRAM，Turing/sm_75）。项目从无 GPU 机器迁移后，日常开发、构建和 smoke test 在该机器上进行；1660 Ti 不承担 SFT/GRPO 训练，训练仍在 24GB GPU（4090）机器上执行；
-- 6GB 冒烟约束：smoke 生成/评测默认使用 fp16（Turing 不支持 bf16）与 0.5B debug 模型；冒烟测试 OOM 时降低 batch 或序列长度，不修改训练配置。
+- 开发与冒烟测试硬件：单张 NVIDIA GeForce GTX 1660 Ti（6GB VRAM，Turing/sm_75）。日常开发、构建、CPU/GPU 单元与集成测试、真实 Piston 验证、小模型生成/评测、训练控制面与 checkpoint/评测 wiring 的工程验证都应优先在该机器完成；
+- **1660 Ti 不执行任何真实 optimizer-based SFT/GRPO training。** `train-sft` / 后续 `train-grpo` 的真实训练入口必须在模型加载前保留显存 guard；在 1660 Ti 上触发该 fail-closed guard 属于开发期硬件保护测试，不表示开发阶段失败；
+- 6GB 冒烟约束：生成/评测默认使用 fp16（Turing 不支持 bf16）与 0.5B debug 模型；冒烟 OOM 时降低 batch 或序列长度，不修改最终训练配置；
+- 24GB GPU（4090）只在 development-complete 之后承担真实训练与 numerical validation。缺少 24GB GPU、正式训练样本或真实 checkpoint 不得被 planner/reviewer 视为 development-stage blocker；
+- 真实训练阶段必须复用开发阶段已经冻结并通过测试的代码与配置，不边训练边设计新功能或改动实验口径。
 
 ## 5.3 上游依赖
 
@@ -932,6 +939,8 @@ seed: 42
 
 ## 11.4 SFT 验收
 
+本节属于 **final training/numerical validation**，只在 development-complete 后的 24GB GPU 阶段执行；不得把这些真实训练条件反向作为 GTX 1660 Ti development stage 的完成前置。
+
 - 50 条数据 smoke test 可运行到结束；
 - loss 为有限值；
 - checkpoint 可重新加载；
@@ -1552,17 +1561,35 @@ outputs/{stage}/{run_id}/
 
 ## 19.2 集成测试
 
-必须提供：
+集成验收分为 **development integration** 与 **final training/numerical validation**，不得把两者绑定为同一个开发 stage 的 completed gate。
+
+### 19.2.1 Development integration（GTX 1660 Ti）
+
+在开发机必须提供并通过：
 
 1. 20 道题的数据准备；
 2. 真实沙箱执行；
-3. 小模型生成（GPU 可用时在 CUDA 上执行，见 §19.3 与 `make test-gpu`）；
+3. 0.5B 小模型生成/评测 GPU 冒烟（CUDA 可用时执行，见 §19.3 与 `make test-gpu`）；
 4. reward 函数批量调用；
-5. 1–2 step SFT；
-6. 1–2 step GRPO；
-7. checkpoint 重载；
-8. 统一评测；
-9. 结果聚合。
+5. SFT 数据映射、trainer/config/CLI、artifact/resume/hardware-guard 的非训练集成验证；
+6. GRPO adapter、reward wiring、config/CLI、rollout/reward artifact、resume/hardware-guard 的非训练集成验证；
+7. checkpoint identity/load/reload 接口使用最小 fixture 或 fake runtime 验证，不能把 fake checkpoint 记为正式 B/C/D；
+8. 统一评测和结果聚合使用 deterministic fixture/synthetic rows 验证 schema、计算与错误处理；
+9. 与阶段相关的 lint、strict type check、unit/integration、Piston 和 GPU smoke 全绿。
+
+development integration **不要求也不允许**在 GTX 1660 Ti 上真实跑 1–2 step SFT/GRPO。synthetic/mock 只证明工程路径可行，不产生正式训练或研究数值。
+
+### 19.2.2 Final training/numerical validation（24GB GPU）
+
+仅在 development-complete 后，在 24GB GPU（如 RTX 4090）与正式数据到位时执行：
+
+1. 真实 1–2 step SFT smoke 与正式 B checkpoint；
+2. B checkpoint 独立进程重载与统一 B 组评测；
+3. 从同一个真实 B checkpoint 启动 Public/Hidden GRPO，完成真实 1–2 step smoke 与 C/D checkpoints；
+4. C/D checkpoint 重载、统一评测、reward/rollout/cost evidence；
+5. 正式 A–D 结果聚合、bootstrap、gap、成本与错误分析。
+
+以上 validation evidence 必须来自真实运行；不得由 synthetic/mock/fixture 替代。
 
 ## 19.3 CI
 
@@ -1581,7 +1608,22 @@ GPU 生成冒烟自动检测 CUDA：目标开发机（GTX 1660 Ti）上 `make te
 
 # 20. Codex 任务拆分
 
-每个 Work Package 应单独完成并通过 review 后再进入下一项。
+## 20.0 Development-first 调度规则
+
+Work Package 的**开发依赖**仍按顺序组织，但“某个较早 WP 的真实训练/最终数值 gate 尚未完成”不再自动阻塞后续可独立完成的代码开发。Planner 必须把未完成项先分类：
+
+- `development`：能够在 GTX 1660 Ti/CPU + Piston + fixture/mock/synthetic 数据上完成代码实现和工程验收；
+- `validation`：必须依赖 24GB GPU、正式规模数据、真实训练 checkpoint 或最终 A–D 数值才能完成的 gate。
+
+调度顺序固定为：
+
+1. **Development track**：优先完成所有 dependency-ready 的 development 工作，直到 SFT、GRPO、evaluation、aggregation/analysis 的生产代码和工程测试均已完成；
+2. **Development-complete gate**：`make lint`、`make test`、相关 `make test-piston`/`make test-gpu` 与阶段特定 integration 全绿，生产关键路径无 stub/TODO/fake implementation，训练入口在 1660 Ti 上按设计 fail closed；
+3. **Validation track**：再迁移到 24GB GPU，按真实依赖顺序完成 Base A → SFT B → Public/Hidden GRPO C/D → final aggregation/analysis。
+
+因此，planner **不得**仅因为 WP6 的真实 SFT gate 尚未完成就阻止 WP7 的 GRPO integration/control-plane 开发，也不得仅因为 C/D checkpoint 不存在就阻止 WP8 的 aggregation/error-analysis tooling 使用 fixture schema 完成开发。反过来，synthetic/mock 证据只能关闭 development stage，不能关闭 validation stage。
+
+每个 stage 仍需单独 plan、execution、review 和 finalize；stage plan 必须明确标注 `stage_profile: development | validation`、目标硬件与本阶段能够合法使用的 evidence 类型。
 
 ## WP0：项目脚手架
 
@@ -1742,11 +1784,21 @@ python -m code_verifier.cli --help
 
 ### 验收
 
-- smoke SFT 通过；
-- checkpoint 可加载；
+**Development acceptance（先在 1660 Ti 完成）**：
+
+- SFT visible-only 数据映射、LoRA config、训练 CLI/runtime、artifact/resume/hardware guard 完整并通过工程测试；
+- completed-run/checkpoint identity、PEFT reload 与 B 组统一评测接入可通过 fixture/fake runtime 验证；
+- Base 与 SFT 评测共用同一 evaluator/aggregator contract；
+- hidden/reference payload 不泄漏；
+- 不要求产生真实 SFT checkpoint，不要求真实 loss/B 数值。
+
+**Validation acceptance（development-complete 后在 24GB GPU 完成）**：
+
+- 真实 smoke SFT 通过；
+- 真实 checkpoint 可加载；
 - 训练无 NaN；
-- 评测管道与 Base 完全相同；
-- 保存成本数据。
+- 真实 B 组评测管道与 Base 完全相同；
+- 保存真实成本数据。
 
 ## WP7：GRPO 集成
 
@@ -1765,18 +1817,30 @@ python -m code_verifier.cli --help
 
 ### 验收
 
-- smoke GRPO 通过；
-- C/D 从同一 B checkpoint 初始化；
+**Development acceptance（先在 1660 Ti 完成）**：
+
+- Open-R1/TRL GRPO adapter、Public/Hidden reward wiring、两组 config、CLI、rollout/reward 日志、resume 与 hardware guard 均实现；
+- 使用 fixture/mock checkpoint identity 验证 C/D 初始化合同与除 reward 来源外的配置一致性；
+- reward 分量、错误路径、artifact schema 与 resume 可检查；
+- 无 `eval_hidden_tests` 泄漏；
+- 不要求真实 GRPO optimizer step，不要求真实 C/D checkpoint 或数值提升。
+
+**Validation acceptance（真实 B checkpoint 产生后在 24GB GPU 完成）**：
+
+- 真实 smoke GRPO 通过；
+- C/D 从同一个真实 B checkpoint 初始化；
 - 除 reward 测试来源外配置一致；
-- reward 分量可检查；
+- 真实 rollout/reward 分量与成本可检查；
 - 无 eval hidden 泄漏；
-- 可中断恢复。
+- checkpoint 可中断恢复并可统一评测。
 
 ## WP8：实验聚合与错误分析
 
 ### 目标
 
 形成可写入 README 和简历的结果。
+
+开发阶段先完成聚合、paired comparison、bootstrap、图表/报告输入、失败候选和人工标注模板等代码与 schema，并使用 deterministic fixture 或 synthetic result rows 验证；最终 A–D 数值、训练曲线、成本报告与人工案例结论只在 validation track 的真实运行完成后生成。
 
 ### 交付
 

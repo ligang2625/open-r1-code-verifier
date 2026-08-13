@@ -30,7 +30,7 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 
 ## Active-stage guard
 
-规划下一 stage 前先记录 `planning_base_commit = main HEAD`，并快照当前 `git worktree list` 与相关 stage branches。然后枚举尚未合并的 stage worktree/branch：
+规划下一 stage 前先记录 `planning_base_commit = main HEAD`，并快照当前 `git worktree list` 与相关 stage branches。然后枚举尚未合并的 stage worktree/branch。`archive/*` 这类无 linked worktree、仅用于保存已明确废弃/被新规格取代的历史 commit 的分支不是 active stage，不得因此阻塞规划；其它带 sealed stage plan 的未合并 worktree/branch 仍按 active stage 处理。
 
 - 0 个 active stage：允许规划下一 stage；
 - 1 个或多个 active stage：默认返回 `PLANNER_ACTIVE_STAGE_EXISTS`，不得规划后续 stage；
@@ -58,10 +58,29 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 
 ## 确定下一 stage
 
-1. 阅读 proceedings，按 §20 顺序找到第一个未完全完成 WP。
-2. 若该 WP 部分完成，计划只覆盖剩余交付。
-3. 若规模超过单 stage 上限，拆成连续 stage（如 `WP5-a`、`WP5-b`），但**不要仅因内部可并行而拆 stage**。
-4. 每个 stage 必须有独立验收边界。
+### Development-first stage selection
+
+先阅读 proceedings 与规格 §20.0，把所有未完成交付按证据依赖分类，而不是简单选择“编号最小的未完成 WP”：
+
+- `development`：生产代码、配置、CLI、adapter、artifact/checkpoint/resume、evaluation/aggregation/analysis 等能够在 GTX 1660 Ti/CPU + Piston + fixture/mock/synthetic evidence 上完成工程验收的工作；
+- `validation`：必须依赖 24GB GPU、正式规模数据、真实 SFT/GRPO optimizer run、真实 checkpoint 或最终 A–D 数值才能成立的 gate。
+
+选择规则：
+
+1. 只要还有 dependency-ready 的 `development` 工作，就**必须优先规划 development stage**。较早 WP 只剩 deferred validation gate 时，不得因为它“未完全完成”而阻塞较晚 WP 的可独立开发工作。
+2. 典型例子：WP6 真实 SFT/B 数值尚未完成时，仍可继续规划 WP7 的 GRPO adapter/reward/config/CLI/resume 开发；真实 B checkpoint 尚不存在时，仍可规划 WP8 的 aggregation/error-analysis tooling，并用 deterministic fixture 验证 schema/计算。
+3. development stage 的缺失 24GB GPU、正式训练数据、真实 checkpoint **不是 blocker**；plan 不得要求 executor 为了 completed E0 去运行真实 SFT/GRPO。对 `train-sft`/`train-grpo` 的 1660 Ti fail-closed hardware guard 可以作为开发测试证据。
+4. fixture/mock/synthetic 可以满足 development-stage contract test，但 plan 必须明确禁止把这些 artifact 记录为正式 B/C/D checkpoint、研究指标、训练成本或 final validation evidence。
+5. 只有 proceedings 明确记录 `development-complete`（所有计划内生产代码与开发机工程 gates 已完成）后，才允许规划 `validation` stage。validation 按真实依赖顺序执行：Base A（如仍需正式数值）→ SFT B → Public/Hidden GRPO C/D → final aggregation/analysis。
+6. validation stage 原则上只运行已冻结代码/配置并收集真实 evidence；若真实运行暴露实现缺陷，交给 repair/新的 development stage 修复，不在 validation plan 中顺手扩展功能或改变实验定义。
+7. 若一个 WP 同时包含 development 与 validation 内容，必须拆 stage，确保 development stage 可在 1660 Ti 上独立 completed；不得把 24GB gate 与开发代码绑定在同一个 E0 completion contract 中。
+8. 若规模超过单 stage 上限，继续拆成连续 stage（如 `WP5-a`、`WP5-b`），但**不要仅因内部可并行而拆 stage**；每个 stage 必须有独立验收边界。
+
+每份 plan 必须在元信息中明确：
+
+- `stage_profile: development | validation`
+- `target_hardware: GTX 1660 Ti (6GB) | 24GB GPU`
+- `evidence_class: engineering | real-training/numerical`
 
 规模约束：通常实施步骤 ≤10、新模块 ≤8；超过或无法在一次可靠执行/验收中完成时拆分。
 
@@ -145,6 +164,8 @@ planner-ex 不写模型名/effort，也不选择 execution backend。`backend=lo
 
 - [ ] 无 active stage，或本次是明确且允许的 pre-execution replan；
 - [ ] stage_id 唯一且完整，拆分 stage 使用 `WPn-a/b/...`；
+- [ ] 已明确 `stage_profile / target_hardware / evidence_class`，development stage 不包含 24GB 真实训练 gate，validation stage 不接受 synthetic/mock 作为完成证据；
+- [ ] 若仍有 dependency-ready development 工作，没有因为较早 WP 的 deferred validation gate 而错误规划 24GB stage；
 - [ ] 已记录 planning_base_commit，且与本次规划读取的 `main HEAD` 一致；
 - [ ] plan/execution/review artifact 都使用完整 stage_id；
 - [ ] 只覆盖一个可独立验收 stage；

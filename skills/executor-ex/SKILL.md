@@ -35,7 +35,8 @@ Artifact：
 2. plan 必须是 plan_commit 中 seal 的同一文件。
 3. implementation：report 不得已有 matching completed E0，且开始修改前 `HEAD` 必须精确等于 `plan_commit`；若 HEAD 已前进，视为不完整/未知 execution baseline，停止而不是重跑 plan。
 4. repair：开始修改前 stage HEAD 必须等于 router 传入的 `review_commit`；latest review round/issues 必须与任务消息完全一致；若不一致停止。
-5. 不修改 review、plan、proceedings、`third_party/open-r1/`。
+5. 解析 plan 的 `stage_profile / target_hardware / evidence_class` 并执行硬件/evidence guard：development 必须是 GTX 1660 Ti (6GB)+engineering，且不得为 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical，且不得用 fixture/mock/synthetic 替代真实 gate。profile 不一致直接停止并报告 plan contract error。
+6. 不修改 review、plan、proceedings、`third_party/open-r1/`。
 
 ## task_kind=implementation
 

@@ -41,6 +41,18 @@ make install-train
 
 Development and smoke tests run on a machine with a single NVIDIA GeForce GTX 1660 Ti (6GB VRAM, Turing/sm_75); SFT/GRPO training still runs on the 24GB GPU (e.g. RTX 4090) machine per the project spec. After `make install-gpu`, regenerate `environment.json` with `record-environment` to confirm `cuda_version` / `gpu_name` / `gpu_count` and the added `compute_capability` / `bf16_supported` fields. `bf16_supported` records native hardware support only (torch `is_bf16_supported(including_emulation=False)`): it is `false` on Turing even though torch can create emulated BF16 tensors, and the final RTX 4090 training design keeps BF16. The GPU smoke generator explicitly loads the 0.5B debug model in fp16 and asserts the loaded dtype; `configs/eval/pass1.yaml` uses `generation.dtype: float16` for 1660 Ti debug evaluation. The GPU smoke tests load the model with `local_files_only=True` (offline cached model): they never perform Hugging Face network retries when the model is cached and the network is unreachable, and they fail fast with a clear message if the model is not cached yet. `generation.dtype: auto` keeps the legacy Transformers default loading behavior (no `torch_dtype` override). PEFT remains separate from the inference-only install and is available through `make install-train`; the `train-sft` hardware guard rejects the 1660 Ti before tokenizer/model/trainer loading. DeepSpeed is installed as pinned Open-R1 metadata but its GPU training integration is not validated on the 1660 Ti, so GPU training-stack acceptance is deferred to the RTX 4090. The CPU-only workflow (`make install` + `make test`) remains valid on machines without a GPU, where GPU smoke tests auto-skip with an explicit reason.
 
+## Development-first workflow
+
+The project deliberately separates **engineering development** from **real training/numerical validation**:
+
+1. On the GTX 1660 Ti, finish all dependency-ready production code first: data/reward contracts, SFT/GRPO adapters and control planes, checkpoint/resume wiring, evaluation, aggregation, reporting, and analysis tooling.
+2. Validate those paths with unit/integration tests, real loopback Piston where applicable, 0.5B FP16 GPU inference smoke, and deterministic fixture/mock/synthetic artifacts. Synthetic evidence is valid only for engineering contracts; it is never a B/C/D checkpoint or research metric.
+3. Do not run optimizer-based SFT/GRPO on the 1660 Ti. The pre-model-load 20 GiB guard is intentional: seeing it fail closed on the development machine verifies the hardware boundary rather than blocking development.
+4. Only after the development-complete gate is recorded should the project move to the 24GB RTX 4090 machine for the real dependency chain: Base A numerical run as required, SFT B training/reload/evaluation, Public/Hidden GRPO C/D training/reload/evaluation, and final A–D aggregation/cost/error analysis.
+5. If a real 4090 run exposes an implementation bug, fix it through the normal development/review path and rerun the affected validation; do not redesign features or silently change experiment definitions on the training machine.
+
+A missing 24GB GPU, full-scale training data, or real checkpoint is therefore a **validation prerequisite**, not a reason to stop later code development that can be validated on the 1660 Ti.
+
 ## Quality checks
 
 ```bash
@@ -456,7 +468,7 @@ and becomes the resolved run identity.
 
 Each run uses `outputs/sft/<run-name>/` with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. `configs/sft/debug.yaml` is a short 0.5B/fp16 path with evaluation disabled. `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration and evaluates every 100 steps against the independent visible-only `training/sft_validation.jsonl` artifact. Both enforce a non-lowerable project minimum of 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
 
-WP6-a does not claim a real SFT checkpoint or B-group result. WP6-b must run on a 24GB GPU with at least 50 validated SFT examples and still complete the 1–2 step smoke, finite-loss check, checkpoint reload, unified deterministic pass@1 evaluation, and cost recording.
+WP6-a does not claim a real SFT checkpoint or B-group result. Under the development-first workflow, the remaining SFT checkpoint identity/reload/evaluation integration should be implemented and closed as engineering work on the development machine using strict fixture/fake-runtime contracts before any 24GB training gate is scheduled. The final SFT validation still requires a 24GB GPU with at least 50 validated SFT examples and must complete the real 1–2 step smoke, finite-loss check, checkpoint reload, unified deterministic pass@1 evaluation, and cost recording; that validation no longer blocks later dependency-ready code development.
 
 ## Current limitations
 

@@ -407,3 +407,25 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 
 - 修改：`pyproject.toml`（gpu extra）、`uv.lock`（新增）、`Makefile`（install-gpu）、`src/code_verifier/environment.py`、`src/code_verifier/evaluation/generate.py`（dtype=auto 兼容 + local_files_only）、`src/code_verifier/evaluation/evaluate.py`、`configs/eval/pass1.yaml`（dtype: float16）、`tests/unit/test_environment.py`、`tests/unit/evaluation/test_generate.py`、`tests/unit/evaluation/test_evaluate.py`、`tests/integration/test_wp5a_gpu_smoke.py`（local_files_only）、`README.md`、`AGENTS.md`、`environment.json`、`proceedings.md`
 - 上游：`third_party/open-r1/**` 未修改；固定 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`。
+
+---
+
+## 开发流程规范调整：1660 Ti development-first / 4090 final validation
+
+- **决定日期**：2026-08-13
+- **性质**：项目级流程/验收规范调整，不是新的功能 Work Package
+- **原因**：原先 WP6-b 把 checkpoint/evaluation 开发工作与“>=50 真实 SFT 数据 + 24GB GPU + 真实训练/数值验收”绑定在同一个 execution completion gate。实际执行证明前半部分代码能够在 GTX 1660 Ti 上完成并通过工程测试，但 stage 会因为最终训练 prerequisites 缺失而无法产生 completed E0，从而错误阻塞后续 WP7/WP8 的可独立代码开发。
+
+### 新流程
+
+1. **Development track（GTX 1660 Ti）**：先完成所有 dependency-ready 的生产代码，包括 SFT/GRPO adapter 与 control plane、checkpoint/resume、统一评测接入、aggregation/reporting/error-analysis tooling；使用 unit/integration、真实 Piston、小模型 FP16 GPU smoke 和严格 fixture/mock/synthetic evidence 验证代码可行性。开发阶段不执行 optimizer-based SFT/GRPO。
+2. **Development-complete gate**：开发代码、配置、CLI、artifact schema 与测试全部完成，`make lint` / `make test` / 适用的 `make test-piston` / `make test-gpu` 全绿，训练入口在 1660 Ti 上按硬件 guard 正确 fail closed。缺少 24GB GPU、正式规模数据或真实 checkpoint 不属于 development blocker。
+3. **Validation track（RTX 4090 / 24GB）**：开发完成后集中执行真实 Base A 数值、SFT B 训练/重载/评测、Public/Hidden GRPO C/D 训练/重载/评测，以及最终 A–D 聚合、成本和错误分析。synthetic/mock 不得替代任何真实训练或 numerical gate。
+4. 4090 真实运行若暴露实现 bug，返回正常 development/repair 流程修复并重新通过开发机测试，再重跑受影响的 validation；不边训练边扩展功能或改变实验定义。
+
+### 对原 WP6-b blocked stage 的处理
+
+- 旧 `feat/wp6-b` 在 blocked execution 中已产生开发 commit：`c214d57`（SFT checkpoint identity）、`dc86e1f`（PEFT reload）、`44c262f`（SFT evaluate 接入）、`e8b2257`（文档/工程验证），随后 `eacfd31` 记录 blocked execution；没有 completed E0、没有 review/finalize、没有真实 SFT/checkpoint/B 数值。
+- 为避免旧 validation-heavy plan 继续触发 active-stage guard，原 branch/worktree 已退役；完整历史保存在 `archive/wp6-b-blocked-20260810`。该 archive 只是可审计/可复用的开发历史，**不代表这些代码已经被 main 接受**。
+- 后续 planner 应按新规则先规划 development stage。可以在独立 plan/review 下选择性复用上述 archive commit 的实现思路或 diff，但必须重新以当前 main/spec 为基线验收；不得把旧 blocked report 当作 completed execution。
+- 后续 planner 不得再因为 WP6 的 24GB/真实数据 gate 未完成而直接停在 validation；只要仍有 dependency-ready development 工作，应继续规划 development track。只有 proceedings 明确记录 development-complete 后，才切换到 4090 validation track。
