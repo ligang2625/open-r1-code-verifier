@@ -59,7 +59,7 @@ reviewer 只能审查一个**新的 completed execution record**：
 
 ## 审查流程
 
-1. 全文读取 plan 和最新 execution record/report，并先解析 `stage_profile / target_hardware / evidence_class`。
+1. 全文读取 plan 和最新 execution record/report，并先解析 `stage_profile / target_hardware / evidence_class / development_terminal`。
 2. 对照 plan 每个实施步骤、交付、总体验收，核对实际 diff/代码。
 3. 精读适用 spec/审查清单；检查接口、范围、安全、数据泄漏、测试真实性等。
 4. 在 stage worktree 独立运行 `make lint`、`make test` 和 plan 特有验收；一次性验证脚本放仓库外临时目录，不污染 tracked/untracked stage artifact。
@@ -135,8 +135,8 @@ repair_routing:
 
 reviewer 必须按 sealed plan 的 profile 审查，不能跨 profile 提高或降低验收门槛：
 
-- `stage_profile=development` / `evidence_class=engineering`：只要求 plan 规定的开发机工程证据。缺少 24GB GPU、正式规模训练数据、真实 B/C/D checkpoint 或研究数值本身**不是失败项**，也不得作为 blocker；相反，若 development plan 把真实 optimizer-based SFT/GRPO 作为 completed 前置，应视为 plan/spec 违反并要求重新规划，而不是要求 executor 去训练。fixture/mock/synthetic 可以作为工程 contract evidence，但必须确认没有被冒充为正式训练/数值结果。
-- `stage_profile=validation` / `evidence_class=real-training/numerical`：必须核验真实 24GB GPU/正式数据/真实 checkpoint/metrics/cost provenance，synthetic/mock/fake artifact 不能满足任何真实 gate；validation 中若顺手加入未计划的新功能或改变实验定义，也不得 PASS。
+- `stage_profile=development` / `evidence_class=engineering`：只要求 plan 规定的开发机工程证据。缺少 24GB GPU、正式规模训练数据、真实 B/C/D checkpoint 或研究数值本身**不是失败项**，也不得作为 blocker；相反，若 development plan 把真实 optimizer-based SFT/GRPO 作为 completed 前置，应视为 plan/spec 违反并要求重新规划，而不是要求 executor 去训练。fixture/mock/synthetic 可以作为工程 contract evidence，但必须确认没有被冒充为正式训练/数值结果。若 `development_terminal=true`，reviewer 必须独立确认 closeout 全局 gate（lint/test/GPU smoke/真实 Piston 0 failed 0 skipped/无关键 stub-TODO-fake implementation）全部通过，否则不得 PASS；PASS 后由 finalize 写 Development Complete Record。
+- `stage_profile=validation` / `evidence_class=real-training/numerical`：必须核验真实 24GB-class GPU/正式数据/真实 checkpoint/metrics/cost provenance，synthetic/mock/fake artifact 不能满足任何真实 gate；还必须确认 execution report 的绝对 `artifact_root` 位于 stage worktree 外、真实 checkpoint/result 当前仍存在且其 identity/provenance 可追溯。validation 中若顺手加入未计划的新功能或改变实验定义，也不得 PASS。
 - reviewer 不得因 development stage 在 1660 Ti 上触发预期的显存 fail-closed guard 而判失败；该 guard 只需证明没有开始真实训练且错误信息/边界符合计划。
 
 ## 判定
@@ -157,7 +157,7 @@ PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过�
 - [ ] 当前 CodexPro workspace 已绑定到 plan 指定的绝对 stage worktree，未在 primary checkout 写 review；
 - [ ] latest execution 是上一 review 之后的新 completed record，否则已返回 REVIEW_NO_NEW_EXECUTION；
 - [ ] recorded `reviewed_head_commit` 在审查期间未变化；
-- [ ] 已按 `stage_profile / target_hardware / evidence_class` 使用正确证据边界；development 未因缺少 24GB/真实训练数值被误判失败，validation 未接受 synthetic/mock 冒充真实 gate；
+- [ ] 已按 `stage_profile / target_hardware / evidence_class / development_terminal` 使用正确证据边界；terminal development 已独立核验 closeout gates，validation 已核验 worktree 外 persistent artifact provenance，且未接受 synthetic/mock 冒充真实 gate；
 - [ ] 全部结论有代码/命令/spec 证据；
 - [ ] 所有 actionable failed plan/acceptance/test finding 都映射到 repair_issue_ids；
 - [ ] conclusion 与 required 严格一致（pass=false / needs_repair=true）；

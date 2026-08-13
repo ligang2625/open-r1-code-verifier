@@ -429,3 +429,31 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 - 为避免旧 validation-heavy plan 继续触发 active-stage guard，原 branch/worktree 已退役；完整历史保存在 `archive/wp6-b-blocked-20260810`。该 archive 只是可审计/可复用的开发历史，**不代表这些代码已经被 main 接受**。
 - 后续 planner 应按新规则先规划 development stage。可以在独立 plan/review 下选择性复用上述 archive commit 的实现思路或 diff，但必须重新以当前 main/spec 为基线验收；不得把旧 blocked report 当作 completed execution。
 - 后续 planner 不得再因为 WP6 的 24GB/真实数据 gate 未完成而直接停在 validation；只要仍有 dependency-ready development 工作，应继续规划 development track。只有 proceedings 明确记录 development-complete 后，才切换到 4090 validation track。
+
+---
+
+## 开发流程加固：closeout、incomplete recovery、persistent artifacts 与 validation preflight
+
+- **决定日期**：2026-08-13
+- **性质**：项目级 workflow hardening；细化上一条 development-first 决策，不改变研究问题、A–D 实验定义或指标口径
+- **基线**：`7c12c943ef1dc27871eb8364e80dc0c7db2a8505`
+- **适用范围**：后续所有新 stage；本记录中的新状态/marker 语义覆盖上一条记录中笼统的 `development-complete` 表述
+
+### 解决的五个常见流程问题
+
+1. **Development Complete 生成机制**：最后一个 development stage 必须 `development_terminal: true` 并通过完整 closeout；若功能开发已经结束但 marker 缺失，则 planner 创建 `DEV-CLOSEOUT`。terminal stage 经 reviewer PASS 后，`stage-lifecycle finalize` 在 proceedings 写入唯一 `Development Complete Record`（`development_complete: true`），之后 validation 才允许 bootstrap。
+2. **Incomplete execution 恢复**：每个 plan 增加首次业务修改/commit 前的 `Execution preflight`，提前检查可判定的 Piston/import/model-cache/CUDA 等 prerequisites。若仍在后续形成“已有部分 commit、无 completed E0/review”的 `INCOMPLETE` stage，使用显式 `stage-lifecycle retire_incomplete` 原样 archive branch、记录 retirement，再重新 planner；不自动重跑、不手工丢历史。
+3. **真实 artifact 持久化**：validation 的 checkpoint/metrics/results 必须位于 stage worktree 外。`execution-router` 将 `CODE_VERIFIER_ARTIFACT_ROOT` 解析为绝对持久目录；未设置时默认 primary checkout 的 `outputs/`。`evaluate` / `train-sft` 的默认输出已支持该环境变量，后续 `train-grpo` 必须沿用同一合同。
+4. **开发机依赖与训练行为分离**：GTX 1660 Ti 允许并推荐 `make install-train`，用于真实 pinned PEFT/TRL/Transformers/Accelerate API/import/integration 开发；这不授权 optimizer-based SFT/GRPO，训练仍由 validation profile 与运行时显存 guard 禁止在 1660 Ti 上启动。
+5. **Validation dispatch 硬件 preflight**：router 使用项目 pinned PyTorch 的 CUDA runtime（而非强依赖 `nvidia-smi`）读取 GPU identity/total memory；可见显存低于 `22528 MiB`（22 GiB）时在 dispatch 前拒绝 validation。训练入口原有 `>=20 GiB` guard 保留为第二层保护；同时 router 验证 persistent artifact root 可写且不在 stage worktree 内。
+
+### 本次工程验证
+
+- `.venv/bin/python -m pytest tests/unit/test_cli.py -q`：47 passed。
+- `make lint`：Ruff check / format / mypy strict 全部通过。
+- `make test`：714 passed、3 skipped；3 个 skip 均为需要显式启用的 real Piston tests。
+- `make test-gpu`：3 passed，真实 CUDA generation smoke 在 GTX 1660 Ti 上通过。
+- 训练依赖导入：PEFT `0.14.0`、TRL `0.18.0`、Transformers `4.52.3`、Accelerate `1.4.0`、torch `2.6.0+cu124` 全部成功。
+- PyTorch GPU 探测：`NVIDIA GeForce GTX 1660 Ti`，总显存约 `6143 MiB`；因此该开发机应被 validation router 正确拒绝，但仍可执行开发/GPU smoke。
+- 当前 shell 无 `nvidia-smi` 命令，但 PyTorch CUDA 可正常工作，因此 router 的硬件真值改为 pinned PyTorch runtime；`nvidia-smi` 仅作为可选审计信息。
+- 本次 workflow hardening **未运行 real `make test-piston`**；这不是本次规范变更的完成条件。真实 Piston 0 failed/0 skipped 被明确保留为 terminal development closeout 的强制 gate，不能由当前默认测试 skip 冒充。

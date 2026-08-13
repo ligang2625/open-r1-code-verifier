@@ -17,7 +17,7 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 必需输入
 
-共同：`stage_id`、绝对 worktree、plan path、`plan_commit`、stage branch、task_kind、`backend=local`、`source_mode=single`。
+共同：`stage_id`、绝对 worktree、plan path、`plan_commit`、stage branch、task_kind、`backend=local`、`source_mode=single`、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须有 router 解析出的绝对 `artifact_root`。
 
 - implementation：plan `execution_routing` 只作为已由 router 消费的上游决策；本 skill 按完整 plan 实施。
 - repair：额外必须有 review path、整数 `source_review_round`、`review_commit`、`repair_issue_ids`；只处理这些 issue IDs。plan 只提供规格、禁止范围与总体验收约束。
@@ -35,8 +35,10 @@ Artifact：
 2. plan 必须是 plan_commit 中 seal 的同一文件。
 3. implementation：report 不得已有 matching completed E0，且开始修改前 `HEAD` 必须精确等于 `plan_commit`；若 HEAD 已前进，视为不完整/未知 execution baseline，停止而不是重跑 plan。
 4. repair：开始修改前 stage HEAD 必须等于 router 传入的 `review_commit`；latest review round/issues 必须与任务消息完全一致；若不一致停止。
-5. 解析 plan 的 `stage_profile / target_hardware / evidence_class` 并执行硬件/evidence guard：development 必须是 GTX 1660 Ti (6GB)+engineering，且不得为 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical，且不得用 fixture/mock/synthetic 替代真实 gate。profile 不一致直接停止并报告 plan contract error。
-6. 不修改 review、plan、proceedings、`third_party/open-r1/`。
+5. 解析 plan 的 `stage_profile / target_hardware / evidence_class / development_terminal` 并与 router 输入逐项一致；development 必须是 GTX 1660 Ti (6GB)+engineering，且不得为 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical+terminal=false，且不得用 fixture/mock/synthetic 替代真实 gate。profile 不一致直接停止并报告 plan contract error。
+6. 在任何业务文件修改或 commit **之前**，完整执行 plan 的 `Execution preflight`。任一检查失败时返回 `EXECUTION_PREFLIGHT_FAILED`，implementation 保持 `HEAD == plan_commit`、repair 保持 `HEAD == review_commit`，均不写 blocked commit/report；环境修复后可重新从 router 正常启动。
+7. validation：确认 router `artifact_root` 为绝对路径且不位于 stage worktree 内；对所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`，不得显式把 `--output-dir` 指回 worktree。development 不要求 artifact_root。
+8. 不修改 review、plan、proceedings、`third_party/open-r1/`。
 
 ## task_kind=implementation
 
@@ -95,13 +97,15 @@ execution_record:
 ## 报告与提交
 
 - code/test commit 在先；report docs commit 在后，避免在同一 commit 中自引用 hash。
-- report 包含真实命令/结果、修改文件、issue/step 映射、偏差/阻塞。
+- report 包含真实 preflight 命令/结果、修改文件、issue/step 映射、偏差/阻塞；validation 还必须记录绝对 persistent `artifact_root` 以及产生/消费的 checkpoint/result 路径或 identity，确保它们不在 worktree 内。
 - 不自动 push；review 由 reviewer-ex；Git checkpoint/finalization 由 stage-lifecycle。
 
 ## 自检
 
 - [ ] task_kind 只执行了一个互斥流程；repair 后没有继续 implementation；
 - [ ] stage_id 与 report 路径使用完整 stage id；
+- [ ] Execution preflight 在首次业务修改前完成；失败时没有产生业务 commit/report；
+- [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] implementation source_plan_commit 正确且没有重复 completed E0；
 - [ ] repair source_review_round/review_commit/issues 与 router 完全一致且没有扩大 scope；
 - [ ] repair 总体验收没有被误解释成“修所有 review 问题”；

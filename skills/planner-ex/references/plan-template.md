@@ -13,12 +13,13 @@
 | stage_profile | `development` 或 `validation` |
 | target_hardware | `GTX 1660 Ti (6GB)` 或 `24GB GPU` |
 | evidence_class | `engineering` 或 `real-training/numerical` |
-| 目标 WP | `WP{n}`：[名称] |
+| development_terminal | `true` 或 `false`；validation 固定 `false` |
+| 目标 WP | `WP{n}`：[名称]；纯开发收口可为 `Development Closeout` |
 | 规格依据 | `PROJECT_SPEC_Open-R1_CodeVerifier.md` §[...] |
 | 前置状态 | `proceedings.md`：[...] |
 | `planning_base_commit` | `<main HEAD sha at planning time>` |
-| proposed branch | `feat/wp{n}` 或 `feat/wp{n}-{sub}` |
-| proposed worktree | `.worktrees/wp{n}` 或 `.worktrees/wp{n}-{sub}` |
+| proposed branch | `feat/wp{n}` / `feat/wp{n}-{sub}`；`DEV-CLOSEOUT` 用 `chore/dev-closeout` |
+| proposed worktree | `.worktrees/wp{n}` / `.worktrees/wp{n}-{sub}`；`DEV-CLOSEOUT` 用 `.worktrees/dev-closeout` |
 | final plan path | `ai-work/planner/{stage_id}-plan.md` |
 | execution report path | `ai-work/executor/{stage_id}-executor.md` |
 | review path | `ai-work/reviewer/{stage_id}-review.md` |
@@ -47,6 +48,15 @@
 - 不修改 `third_party/open-r1/`；Open-R1 访问仅经 adapter。
 - 外部接口/运行时不确定项：先验证，不能臆造。
 - 其它项目硬约束：...
+
+### Execution preflight（首次业务修改/commit 前）
+
+- 检查：...
+- 命令：`...`
+- 通过标准：...
+- 失败处理：停止本次 execution，保持 `HEAD == plan_commit`，修复环境后可重新调用 execution-router；不得先提交部分实现。
+
+> 只放能够在实施前判断的非破坏性环境 prerequisites，例如 Piston 可达性、必要依赖 import、模型缓存/CUDA 可用性。validation 的 24GB GPU 与持久 artifact root 由 execution-router 另做统一 preflight。
 
 ## 4. 实施步骤
 
@@ -81,8 +91,8 @@ make test
 ## 5. 总体验收与测试计划
 
 - 单元测试：...
-- Development integration（development stage）：说明 GTX 1660 Ti/CPU/Piston/GPU-smoke/fixture evidence；不得要求真实训练。
-- Real training/numerical gate（validation stage）：说明 24GB GPU、正式数据、真实 checkpoint/metrics；不得用 synthetic/mock 替代。
+- Development integration（development stage）：说明 GTX 1660 Ti/CPU/Piston/GPU-smoke/fixture evidence；不得要求真实训练。若 `development_terminal=true`，必须包含 `make lint`、`make test`、`make test-gpu`、真实 `make test-piston`（0 failed/0 skipped）和生产关键路径无 stub/TODO/fake implementation 的 closeout 检查。
+- Real training/numerical gate（validation stage）：说明 24GB GPU、正式数据、真实 checkpoint/metrics；不得用 synthetic/mock 替代。真实 artifacts 必须写入 execution-router 提供的持久 `artifact_root`，不得留在 stage worktree 内。
 - 数据泄漏/安全检查（如适用）：...
 - 最终标准：
   - [ ] 规格验收逐条通过

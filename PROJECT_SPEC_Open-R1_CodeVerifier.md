@@ -50,7 +50,7 @@
 16. **采用“开发优先、集中验证”的两阶段流程。** 在 GTX 1660 Ti 开发机上先完成项目所有能够独立实现的代码、配置、CLI、数据/奖励合同、checkpoint/恢复接口、评测与分析管道，并完成对应的单元测试、集成测试、真实沙箱测试和小模型 GPU 冒烟；不得因为尚未具备 24GB GPU、正式训练数据或真实 checkpoint 而阻塞后续可独立完成的开发工作。
 17. **真实 SFT/GRPO 训练与最终数值验收集中到开发完成之后。** 只有当相关生产代码和工程测试已经完成，才切换到 24GB GPU（如 RTX 4090）训练机，按依赖顺序执行真实 Base/SFT/GRPO、checkpoint 重载、统一评测、成本记录和最终结果聚合。
 18. synthetic/mock/minimal fixture 可以用于验证代码合同、错误处理、artifact schema、resume/checkpoint wiring 和聚合逻辑；这些证据可以满足 development-stage 的工程验收，但**永远不能**冒充真实训练完成、正式 checkpoint、A–D 数值结果或 final research gate。
-19. validation 阶段原则上不再扩展功能。若 4090 真实运行暴露实现缺陷，应回到正常开发/repair 流程修复并重新通过开发机测试，再重跑受影响的 validation gate；不得在训练机上临时修改实验定义来绕过问题。
+19. validation 阶段原则上不再扩展功能。若 4090 真实运行暴露实现缺陷，应通过当前 validation stage 的正常 review/repair 闭环做最小修复，并重新通过适用的 development regression/gpu/piston 测试后再重跑受影响的真实 validation gate；不得借 repair 扩展功能或临时修改实验定义来绕过问题。
 
 ---
 
@@ -290,7 +290,8 @@ models:
 - 开发与冒烟测试硬件：单张 NVIDIA GeForce GTX 1660 Ti（6GB VRAM，Turing/sm_75）。日常开发、构建、CPU/GPU 单元与集成测试、真实 Piston 验证、小模型生成/评测、训练控制面与 checkpoint/评测 wiring 的工程验证都应优先在该机器完成；
 - **1660 Ti 不执行任何真实 optimizer-based SFT/GRPO training。** `train-sft` / 后续 `train-grpo` 的真实训练入口必须在模型加载前保留显存 guard；在 1660 Ti 上触发该 fail-closed guard 属于开发期硬件保护测试，不表示开发阶段失败；
 - 6GB 冒烟约束：生成/评测默认使用 fp16（Turing 不支持 bf16）与 0.5B debug 模型；冒烟 OOM 时降低 batch 或序列长度，不修改最终训练配置；
-- 24GB GPU（4090）只在 development-complete 之后承担真实训练与 numerical validation。缺少 24GB GPU、正式训练样本或真实 checkpoint 不得被 planner/reviewer 视为 development-stage blocker；
+- 24GB GPU（4090）只在 Development Complete Record 之后承担真实训练与 numerical validation。缺少 24GB GPU、正式训练样本或真实 checkpoint 不得被 planner/reviewer 视为 development-stage blocker；
+- `make install-train` 只是安装固定的 PEFT/TRL/Open-R1 training-capable 依赖，允许并推荐在 GTX 1660 Ti 开发机上用于 API/import/integration 验证；**安装训练依赖不等于允许训练**，真实 optimizer-based SFT/GRPO 仍由运行时硬件 guard 和 validation profile 禁止在 1660 Ti 上启动；
 - 真实训练阶段必须复用开发阶段已经冻结并通过测试的代码与配置，不边训练边设计新功能或改动实验口径。
 
 ## 5.3 上游依赖
@@ -909,7 +910,6 @@ TRL 传入的数据通常按列组织，必须验证 batch 对齐关系。禁止
 
 ```yaml
 model_name_or_path: ${models.main_model}
-output_dir: outputs/sft/main
 bf16: true
 gradient_checkpointing: true
 
@@ -935,11 +935,11 @@ lora_target_modules: auto
 seed: 42
 ```
 
-这些是起始值，不是最终最优参数。Codex 不应自动开展大规模超参数搜索。
+这些是起始值，不是最终最优参数。Codex 不应自动开展大规模超参数搜索。真实 run 的物理输出根目录不在 SFT YAML 中硬编码，由 CLI `--output-dir` / `CODE_VERIFIER_ARTIFACT_ROOT` 和 §18.2 的 persistent artifact 规则统一控制。
 
 ## 11.4 SFT 验收
 
-本节属于 **final training/numerical validation**，只在 development-complete 后的 24GB GPU 阶段执行；不得把这些真实训练条件反向作为 GTX 1660 Ti development stage 的完成前置。
+本节属于 **final training/numerical validation**，只在 Development Complete Record 已存在后的 24GB GPU 阶段执行；不得把这些真实训练条件反向作为 GTX 1660 Ti development stage 的完成前置。
 
 - 50 条数据 smoke test 可运行到结束；
 - loss 为有限值；
@@ -979,8 +979,7 @@ D 使用 train_hidden_tests
 ## 12.2 默认 GRPO 配置
 
 ```yaml
-model_name_or_path: outputs/sft/main/final
-output_dir: outputs/grpo/${reward_mode}
+model_name_or_path: ${sft_checkpoint}
 
 reward_mode: public  # public | hidden
 num_generations: 4
@@ -1011,6 +1010,7 @@ seed: 42
 
 注意：
 
+- `${sft_checkpoint}` 必须解析为 persistent `artifact_root` 中真实 B checkpoint 的可追溯绝对路径/identity；GRPO 输出目录同样由 `CODE_VERIFIER_ARTIFACT_ROOT` / CLI `--output-dir` 控制，不在 YAML 中硬编码 stage-worktree 路径；
 - 首先运行 20 step smoke test；
 - 然后运行 50–100 step pilot；
 - reward 分布和生成行为正常后才运行完整训练；
@@ -1488,6 +1488,14 @@ outputs/{stage}/{run_id}/
 └── samples/
 ```
 
+真实 validation artifacts 的**物理根目录必须脱离 stage worktree 生命周期**。标准解析规则：
+
+- `execution-router` 在 validation dispatch 前解析绝对 `artifact_root`；若设置 `CODE_VERIFIER_ARTIFACT_ROOT` 则使用该目录，否则默认使用 primary checkout 的 `<repo>/outputs`；
+- `artifact_root` 必须位于 `.worktrees/<stage>/` 之外且可写；router 在 dispatch 前完成创建/临时写入探测；
+- validation executor 对真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`；`evaluate` / `train-sft` 的默认 `--output-dir` 会跟随该环境变量，后续 `train-grpo` 也必须复用同一规则；
+- 不得把真实 B/C/D checkpoint 的唯一副本写在 stage worktree 下，因为 `stage-lifecycle finalize` 会删除该 worktree；
+- execution/review 必须记录并核验真实 artifact 的绝对路径与 checkpoint/result identity，使后续 B → C/D 能在 stage finalize 后继续消费。
+
 ## 18.3 配置解析
 
 - 保存合并后的最终配置；
@@ -1581,7 +1589,7 @@ development integration **不要求也不允许**在 GTX 1660 Ti 上真实跑 1�
 
 ### 19.2.2 Final training/numerical validation（24GB GPU）
 
-仅在 development-complete 后，在 24GB GPU（如 RTX 4090）与正式数据到位时执行：
+仅在 Development Complete Record 已存在后，在 24GB GPU（如 RTX 4090）与正式数据到位时执行：
 
 1. 真实 1–2 step SFT smoke 与正式 B checkpoint；
 2. B checkpoint 独立进程重载与统一 B 组评测；
@@ -1617,13 +1625,13 @@ Work Package 的**开发依赖**仍按顺序组织，但“某个较早 WP 的�
 
 调度顺序固定为：
 
-1. **Development track**：优先完成所有 dependency-ready 的 development 工作，直到 SFT、GRPO、evaluation、aggregation/analysis 的生产代码和工程测试均已完成；
-2. **Development-complete gate**：`make lint`、`make test`、相关 `make test-piston`/`make test-gpu` 与阶段特定 integration 全绿，生产关键路径无 stub/TODO/fake implementation，训练入口在 1660 Ti 上按设计 fail closed；
-3. **Validation track**：再迁移到 24GB GPU，按真实依赖顺序完成 Base A → SFT B → Public/Hidden GRPO C/D → final aggregation/analysis。
+1. **Development track**：优先完成所有 dependency-ready 的 development 工作，直到 SFT、GRPO、evaluation、aggregation/analysis 的生产代码和工程测试均已完成。每份 plan 必须列出 **Execution preflight**，把可在实施前发现的 Piston、依赖 import、模型缓存/CUDA 等常见环境 prerequisites 放到首次业务修改/commit 之前；preflight 失败时保持 `HEAD == plan_commit`，修复环境后直接重试 execution；
+2. **Development closeout**：最后一个 development stage 标记 `development_terminal: true`，必须通过 `make lint`、`make test`、`make test-gpu`、真实 `make test-piston`（0 failed/0 skipped）以及生产关键路径无 stub/TODO/fake implementation 的收口检查。若功能开发已经结束但还没有收口 marker，则 planner 创建唯一 `DEV-CLOSEOUT` stage。只有 terminal stage 经独立 review PASS 并由 `stage-lifecycle finalize` 写入 **Development Complete Record** 后，validation 才解锁；
+3. **Validation track**：迁移到 24GB-class GPU 后，`execution-router` 在 dispatch 前先确认可见 NVIDIA GPU 总显存 `>=22528 MiB`（22 GiB，用于识别 24GB-class 训练机），并解析/探测位于 stage worktree 外的持久 `artifact_root`；随后按真实依赖顺序完成 Base A → SFT B → Public/Hidden GRPO C/D → final aggregation/analysis。
 
 因此，planner **不得**仅因为 WP6 的真实 SFT gate 尚未完成就阻止 WP7 的 GRPO integration/control-plane 开发，也不得仅因为 C/D checkpoint 不存在就阻止 WP8 的 aggregation/error-analysis tooling 使用 fixture schema 完成开发。反过来，synthetic/mock 证据只能关闭 development stage，不能关闭 validation stage。
 
-每个 stage 仍需单独 plan、execution、review 和 finalize；stage plan 必须明确标注 `stage_profile: development | validation`、目标硬件与本阶段能够合法使用的 evidence 类型。
+每个 stage 仍需单独 plan、execution、review 和 finalize；stage plan 必须明确标注 `stage_profile: development | validation`、`target_hardware`、`evidence_class` 与布尔 `development_terminal`。若 executor 在 preflight 之后已经提交部分实现，但在 completed E0 之前因常见 blocker 中止，则 stage 进入 `INCOMPLETE`：不得自动重跑，也不得手工删除；显式调用 `stage-lifecycle retire_incomplete`，把原 branch 原样重命名为 archive、记录 proceedings 后退出 active stage，再以新的 main HEAD 重新 planner-ex。已存在 completed E0 或 committed review 的 stage 不允许 retire，继续正常 review/repair/finalize。
 
 ## WP0：项目脚手架
 
@@ -1792,7 +1800,7 @@ python -m code_verifier.cli --help
 - hidden/reference payload 不泄漏；
 - 不要求产生真实 SFT checkpoint，不要求真实 loss/B 数值。
 
-**Validation acceptance（development-complete 后在 24GB GPU 完成）**：
+**Validation acceptance（Development Complete Record 后在 24GB GPU 完成）**：
 
 - 真实 smoke SFT 通过；
 - 真实 checkpoint 可加载；

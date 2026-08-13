@@ -18,7 +18,7 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 必需输入
 
-共同：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=web`、完整 source routing、source_mode、effective_execution_mode。
+共同：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=web`、完整 source routing、source_mode、effective_execution_mode、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须有 router 解析出的绝对 `artifact_root`。
 
 - source_mode=single → effective 必须为 `single`
 - source_mode=multi → effective 必须为 `serialized_multi`
@@ -32,8 +32,10 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 2. plan 内容必须等于 plan_commit seal 版本。
 3. implementation：report 不得已有 matching completed E0，且开始修改前 `HEAD == plan_commit`。
 4. repair：开始修改前 `HEAD == review_commit`，latest committed review round/issues 与 dispatch 完全一致。
-5. 解析 plan 的 `stage_profile / target_hardware / evidence_class`：development 必须是 GTX 1660 Ti (6GB)+engineering，且不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical，且 synthetic/mock/fake artifact 不能满足真实 gate。profile 不一致则停止。
-6. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
+5. 解析 plan 的 `stage_profile / target_hardware / evidence_class / development_terminal` 并与 router 输入逐项一致：development 必须是 GTX 1660 Ti (6GB)+engineering；validation 必须是 24GB GPU+real-training/numerical+terminal=false。profile 不一致则停止。
+6. 在任何业务文件修改或 commit **之前**完整执行 plan 的 `Execution preflight`；任一检查失败返回 `EXECUTION_PREFLIGHT_FAILED`，implementation 保持 `HEAD == plan_commit`、repair 保持 `HEAD == review_commit`，均不写 blocked commit/report，修复环境后可重新 router。
+7. validation：确认 router `artifact_root` 为绝对路径且位于 stage worktree 外；所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`，不得把 checkpoint/metrics/output 显式写回 worktree；synthetic/mock/fake artifact 不能满足真实 gate。
+8. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
 
 ## source SINGLE
 
@@ -113,6 +115,8 @@ Repair 使用 E1/E2/... 并填 source_review_round/source_review_commit/repair_i
 - [ ] 未调用 Local Codex execution agent；
 - [ ] source routing 未修改；MULTI 只在运行时 serialized；
 - [ ] implementation/repair 只执行一个 task_kind；
+- [ ] Execution preflight 在首次业务修改前完成；失败时没有产生业务 commit/report；
+- [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] serialized_multi 覆盖全部 source candidates/repair_issue_ids；
 - [ ] result_code_commit 在 report docs commit 之前捕获；
 - [ ] execution_record 使用统一 v2 provenance；

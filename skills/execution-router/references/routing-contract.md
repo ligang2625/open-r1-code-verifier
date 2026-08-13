@@ -7,7 +7,7 @@
 - plan `ai-work/planner/{stage_id}-plan.md`
 - execution `ai-work/executor/{stage_id}-executor.md`
 - review `ai-work/reviewer/{stage_id}-review.md`
-- plan metadata 必须记录 `planning_base_commit`，即 planner-ex 实际规划时读取的 `main HEAD`
+- plan metadata 必须记录 `planning_base_commit`，即 planner-ex 实际规划时读取的 `main HEAD`，并记录 `stage_profile / target_hardware / evidence_class / development_terminal`
 
 不同 stage 不共用 execution/review 文件。`bootstrap_plan` 与 `finalize` 都要求 primary HEAD 仍等于 planning base；正常流程不自动换基线或 rebase。
 
@@ -16,7 +16,7 @@ Existing-stage resolution 对 router、reviewer-ex、stage-lifecycle checkpoint/
 Canonical ownership：
 
 - `planner-ex`：Web/CodexPro planning producer；在 primary root 只读规划，唯一传输输出是 `.ai-bridge/current-plan.md`；不得创建/修改 branch/worktree。
-- `stage-lifecycle`：Web/Local 共用 Git lifecycle control plane；`bootstrap_plan` 是 v2 中唯一创建 stage branch/worktree 的 owner，`checkpoint_review` 提交 review，`finalize` merge + proceedings/finalization + cleanup。无 backend 参数。
+- `stage-lifecycle`：Web/Local 共用 Git lifecycle control plane；`bootstrap_plan` 是 v2 中唯一创建 stage branch/worktree 的 owner，`checkpoint_review` 提交 review，`finalize` merge + proceedings/finalization + cleanup（terminal development 同时写 Development Complete Record），`retire_incomplete` 只归档无 completed E0/review 的半截 stage。无 backend 参数。
 - `execution-router`：从 primary root 推导 stage/provenance，并在运行时选择 `backend=local|web`；不修改 source routing。
 - `executor-ex` / `executor`：Local backend 的 SINGLE/MULTI execution。
 - `executor-web`：Web backend execution；source SINGLE → `single`，source MULTI → `serialized_multi`。
@@ -54,7 +54,14 @@ Web effective mode：
 
 `backend=web + source MULTI` 的串行化是正式 backend 语义，不是 fallback。sealed `mode=multi`、workstream candidates 和 routing rationale 不得改写为 SINGLE。
 
-## 4. Plan routing
+## 4. Plan profile + routing
+
+Profile contract：
+
+- development → `target_hardware=GTX 1660 Ti (6GB)`、`evidence_class=engineering`、`development_terminal=true|false`；不得把真实 SFT/GRPO 作为 completed E0 gate。
+- validation → `target_hardware=24GB GPU`、`evidence_class=real-training/numerical`、`development_terminal=false`；router dispatch 前必须通过 >=22 GiB visible NVIDIA GPU（24GB-class）preflight，并解析位于 stage worktree 外的 persistent `artifact_root`。
+- 每份 plan 必须有 Execution preflight；executor 在首次业务修改前运行。implementation preflight 失败保持 `HEAD==plan_commit`，repair 保持 `HEAD==review_commit`，均不写 blocked commit/report。
+- terminal development PASS finalize 后写 Development Complete Record；没有该 record 时不得进入 validation。
 
 ```yaml
 execution_routing:
@@ -162,7 +169,8 @@ Web backend 对 repair MULTI 同样使用 `serialized_multi`，不改 repair_rou
 
 ## 9. State machine
 
-- PLANNED：plan seal committed，无 completed E0；planning_base_commit 与 primary baseline 一致。
+- PLANNED：plan seal committed，无 completed E0，且 stage `HEAD==plan_commit`。
+- INCOMPLETE：无 completed E0/review，但 `HEAD!=plan_commit`；router 不自动重跑，只有显式 `stage-lifecycle retire_incomplete(stage_id, reason)` 可以在保留 archive 历史后退出 active stage。
 - IMPLEMENTED：completed E0，尚无 committed R1。
 - REPAIR_REQUIRED：latest committed review `needs_repair + required=true`，stage HEAD==review_commit，尚无 matching repair。
 - REPAIR_EXECUTED：存在 matching completed repair，等待新 review。
@@ -174,7 +182,7 @@ Web backend 对 repair MULTI 同样使用 `serialized_multi`，不改 repair_rou
 ## 10. Idempotency / stale guards
 
 - completed E0 已存在 → `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED`
-- 无 completed E0 但 `HEAD != plan_commit` → `ROUTING_INCOMPLETE_IMPLEMENTATION`
+- 无 completed E0 但 `HEAD != plan_commit` → `ROUTING_INCOMPLETE_IMPLEMENTATION`；确认放弃当前半截 stage 时只允许显式 `retire_incomplete` archive 后 replan
 - latest review 尚未 commit → `ROUTING_REVIEW_NOT_COMMITTED`
 - 指定 round 非 latest committed → `ROUTING_STALE_REVIEW`
 - matching completed repair 已存在 → `ROUTING_REPAIR_ALREADY_EXECUTED`

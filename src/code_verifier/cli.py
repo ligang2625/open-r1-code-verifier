@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -86,6 +87,14 @@ EXECUTION_ERRORS = (
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
 TRAINING_ERRORS = (SFTDataError, SFTTrainingError)
+ARTIFACT_ROOT_ENV = "CODE_VERIFIER_ARTIFACT_ROOT"
+
+
+def _default_artifact_output(relative: str | None = None) -> Path:
+    """Resolve an optional persistent artifact root for commands with default outputs."""
+    configured = os.environ.get(ARTIFACT_ROOT_ENV)
+    root = Path(configured).expanduser() if configured else Path("outputs")
+    return root if relative is None else root / relative
 
 
 def _add_common_arguments(
@@ -113,7 +122,7 @@ def _add_common_arguments(
         type=Path,
         required=resolved_output_required,
         default=None if resolved_output_required else output_dir_default,
-        help="command output root; accepted by read-only commands for CLI consistency",
+        help=("command output root; commands with model/training defaults honor CODE_VERIFIER_ARTIFACT_ROOT when set"),
     )
     parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
 
@@ -470,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_arguments(
         evaluate_parser,
         config_required=True,
-        output_dir_default=Path("outputs"),
+        output_dir_default=_default_artifact_output(),
         output_dir_required=False,
     )
     evaluate_parser.set_defaults(handler=_evaluate)
@@ -488,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_arguments(
         train_sft_parser,
         config_required=True,
-        output_dir_default=Path("outputs/sft"),
+        output_dir_default=_default_artifact_output("sft"),
         output_dir_required=False,
         seed_default=None,
     )

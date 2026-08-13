@@ -349,7 +349,8 @@ def _evaluation_config(tmp_path: Path) -> EvaluationConfig:
     )
 
 
-def test_evaluate_parser_requires_identity_and_defaults_output_root() -> None:
+def test_evaluate_parser_requires_identity_and_defaults_output_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODE_VERIFIER_ARTIFACT_ROOT", raising=False)
     parser = build_parser()
     args = parser.parse_args(
         ["evaluate", "--config", "eval.yaml", "--model-id", "example/model", "--run-name", "base-debug"]
@@ -362,6 +363,38 @@ def test_evaluate_parser_requires_identity_and_defaults_output_root() -> None:
     with pytest.raises(SystemExit) as missing_run:
         parser.parse_args(["evaluate", "--config", "eval.yaml", "--model-id", "example/model"])
     assert missing_run.value.code == 2
+
+
+def test_persistent_artifact_root_changes_model_output_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "persistent-artifacts"
+    monkeypatch.setenv("CODE_VERIFIER_ARTIFACT_ROOT", str(artifact_root))
+    parser = build_parser()
+
+    evaluate_args = parser.parse_args(
+        ["evaluate", "--config", "eval.yaml", "--model-id", "example/model", "--run-name", "base-debug"]
+    )
+    sft_args = parser.parse_args(["train-sft", "--config", "sft.yaml"])
+    explicit_output = tmp_path / "explicit"
+    explicit_args = parser.parse_args(
+        [
+            "evaluate",
+            "--config",
+            "eval.yaml",
+            "--model-id",
+            "example/model",
+            "--run-name",
+            "base-explicit",
+            "--output-dir",
+            str(explicit_output),
+        ]
+    )
+
+    assert evaluate_args.output_dir == artifact_root
+    assert sft_args.output_dir == artifact_root / "sft"
+    assert explicit_args.output_dir == explicit_output
 
 
 @pytest.mark.parametrize("run_name", ["../escape", "nested/run", "a..b", "   "])

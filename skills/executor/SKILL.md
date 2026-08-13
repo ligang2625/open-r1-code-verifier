@@ -29,11 +29,11 @@ worker 不再创建 agent。模型配置不由 router 覆盖。
 
 ## Routed MULTI 前置
 
-router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`。repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids。
+router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须传绝对 `artifact_root`；repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids。
 
 `task_kind` 两条路径互斥；repair 完成后不得继续 implementation。
 
-main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / target_hardware / evidence_class`。development 必须是 GTX 1660 Ti (6GB)+engineering，且所有 workers/coordinator 都不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical，且 fixture/mock/synthetic 不得满足真实 gate。profile 不一致时在 spawn worker 前停止。execution report 必须保持 append-only：若已有 committed report，本次只能在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
+main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / target_hardware / evidence_class / development_terminal`，与 router 输入逐项一致。development 必须是 GTX 1660 Ti (6GB)+engineering，且所有 workers/coordinator 都不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical+terminal=false，且 fixture/mock/synthetic 不得满足真实 gate。profile 不一致时在 spawn worker 前停止。随后在任何业务修改/worker spawn **之前**由 coordinator 串行执行 plan 的 `Execution preflight`；任一检查失败返回 `EXECUTION_PREFLIGHT_FAILED`，implementation 保持 `HEAD == plan_commit`、repair 保持 `HEAD == review_commit`，均不 spawn worker、不写 blocked commit/report。validation 还必须验证 router `artifact_root` 位于 worktree 外，并为所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`。execution report 必须保持 append-only：若已有 committed report，本次只能在 EOF 追加恰好 1 个新的 execution record 与对应摘要，不得改写旧 E0/E1/... 历史。
 
 ## Anti-fake-parallel hard guard
 
@@ -107,6 +107,8 @@ backend/effective mode 只用于审计，不参与 provenance 判定。只有所
 ## 自检
 
 - [ ] task_kind 互斥；
+- [ ] Execution preflight 在首次业务修改/worker spawn 前完成；失败时没有产生业务 commit/report；
+- [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] routed MULTI ≥2 真实 subplans，否则已 ROUTING_MISMATCH；
 - [ ] repair worker issue 并集恰好等于 repair_issue_ids；
 - [ ] worker tracked write_scope/临时输出互不冲突；
