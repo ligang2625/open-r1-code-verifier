@@ -81,18 +81,20 @@ def bootstrap(primary_root: Path, stage_worktree: Path, mode: str) -> dict[str, 
     if uv is None:
         raise StageEnvError("uv is unavailable")
 
-    _run(
-        [
-            "git",
-            "-C",
-            str(stage_worktree),
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-            "third_party/open-r1",
-        ]
-    )
+    submodule_command = [
+        "git",
+        "-C",
+        str(stage_worktree),
+        "submodule",
+        "update",
+        "--init",
+        "--recursive",
+    ]
+    primary_open_r1 = primary_root / "third_party" / "open-r1"
+    if primary_open_r1.is_dir():
+        submodule_command.extend(["--reference", str(primary_open_r1)])
+    submodule_command.append("third_party/open-r1")
+    _run(submodule_command)
 
     stage_venv = stage_worktree / ".venv"
     _run([uv, "venv", "--clear", "--python", str(primary_python), str(stage_venv)])

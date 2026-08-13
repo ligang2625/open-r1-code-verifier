@@ -38,7 +38,7 @@ Routing compatibility marker: `execution-routing-v2`。
 - primary `.venv` 提供已经安装并验证过的 pinned 第三方依赖；
 - stage worktree 创建独立 lightweight `.venv`，通过只读 site-packages overlay 复用 primary dependencies；
 - `open-r1-code-verifier` 与 `third_party/open-r1` 在 stage `.venv` 中重新 editable-bind 到当前 worktree；
-- stage submodule 在环境创建前执行 `git submodule update --init --recursive third_party/open-r1`；
+- stage submodule 在环境创建前执行 `git submodule update --init --recursive third_party/open-r1`；primary submodule 可用时使用它作为本地 `--reference`，避免每个 stage 重复网络 clone；
 - bootstrap 必须验证 `code_verifier.__file__` 与 `open_r1.__file__` 都位于当前 stage worktree 下。
 
 若某个 execution 实际修改 `pyproject.toml` 或 `uv.lock`，从该修改开始不得继续依赖 primary overlay；executor 必须在 stage 中运行同一 helper 的 `--mode full`，建立完整独立 pinned environment 后再继续测试。普通不改依赖的 stage 不重复下载/安装整套 CUDA/PyTorch 环境。
