@@ -80,7 +80,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 3. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。`skills/stage-lifecycle/scripts/bootstrap_stage_env.py` 也必须存在。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
 4. 校验 primary execution environment：`<primary>/.venv/bin/python` 必须存在且 `uv` 可执行。缺失返回 `STAGE_PRIMARY_ENV_UNAVAILABLE`；不得先创建 stage worktree。validation 的 24GB 检查继续使用这个 primary pinned runtime。
 5. 按 **Primary checkout transport-dirty policy** 确认主仓库 `main` 在 `.ai-bridge/**` 之外 working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。仅 `.ai-bridge/**` transport 变化不阻塞 bootstrap；不 stash、不自动换基线。
-6. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`。若正是同一 stage，仅允许**显式 pre-execution replan**且它仍处于纯 PLANNED 状态：没有 completed E0/review，stage tracked/untracked 状态干净，并且 `HEAD` 恰好等于当前 plan seal commit；plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。当新的 `planning_base_commit` 已前移时，这个窄场景允许 lifecycle 正常移除旧 worktree，并仅在再次确认旧 branch HEAD 就是旧 plan seal、没有其它提交后删除旧 stage branch，再从新 base 重建；这不是 incomplete-stage rollback，也不得用于已有 execution/review 的 stage。
+6. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`。若正是同一 stage，仅允许**显式 pre-execution replan**且它仍处于纯 PLANNED 状态：没有 completed E0/review，stage tracked/untracked 状态干净，并且 `HEAD` 恰好等于当前 plan seal commit；plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。当新的 `planning_base_commit` 已前移时，这个窄场景允许 lifecycle 在确认 `third_party/open-r1` submodule 无本地修改后先正常 `git submodule deinit --all`，再正常移除旧 worktree；仅在再次确认旧 branch HEAD 就是旧 plan seal、没有其它提交后删除旧 stage branch，再从新 base 重建。这不是 incomplete-stage rollback，也不得用于已有 execution/review 的 stage。
 7. preflight 全部通过后，才从 `planning_base_commit` 对应的当前 `main` 创建 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
 8. **在写 plan/commit plan seal 之前**创建 stage environment：使用 primary `.venv/bin/python` 执行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode overlay`。必须成功初始化 pinned submodule、创建 worktree-local `.venv/bin/python`，并验证 `code_verifier` / `open_r1` source path 都位于 stage worktree。失败返回 `STAGE_ENV_BOOTSTRAP_FAILED`，不得写 plan seal；若 branch/worktree 是本次调用新建且仍无 tracked stage artifact/commit，允许正常移除该 worktree并删除这条尚未承载 stage history 的临时 branch，避免留下半初始化 active stage。
 9. 只把上面解析出的 plan payload 写入阶段 worktree的 `ai-work/planner/{stage_id}-plan.md`，并快速确认 worktree 中上述 v2 skill/discovery 仍可解析；异常则停止，不继续 commit。
@@ -130,7 +130,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
    - 若 sealed plan 为 `stage_profile=development` 且 `development_terminal=true`，再次确认 reviewer PASS 明确核验了完整 WP0–WP8 Development Completion Inventory 与 closeout gates，然后在 proceedings 追加唯一 machine-readable block：精确标题 `## Development Complete Record`，其后立即写 YAML fenced block，顶层 `development_complete_record` 至少包含 `version: 1`、`terminal_stage_id`、`review_commit`、`merge_commit`、`finalized_at`、`completion_inventory_verified: true`、`development_complete: true`。不得用其它标题/散文/示例代替，也不得由非 terminal stage 写 marker；
    - 在 `ai-work/reviewer/{stage_id}-review.md` 末尾追加 `Finalization Record`，至少写 `review_round`、`review_commit`、`merge_commit`、finalized_at/status；不改审查结论本身。
 6. 仅在 merge 成功后提交上述 finalization 文档：`docs: finalize {stage_id}`（若触发 WP 聚合可使用对应 consolidate message）。若这是 terminal development finalize，提交成功后的当前 `main HEAD` 即 `development_complete_commit`；必须报告该 exact commit，并明确：在 1660 Ti 上到此停止，不 bootstrap validation；先把该 commit 同步到 4090，再在 4090 安装 pinned training environment 并重新运行 planner-ex。lifecycle 不自动 push/传输代码。
-7. 再次确认 stage worktree 严格干净、且 main 按 **Primary checkout transport-dirty policy** 在 `.ai-bridge/**` 之外干净后，正常移除 worktree，再 `git branch -d <stage-branch>`；任一步失败就停止并报告当前状态，不自动 rollback、rebase 或重试。
+7. 再次确认 stage worktree 严格干净、`third_party/open-r1` submodule 无本地修改、且 main 按 **Primary checkout transport-dirty policy** 在 `.ai-bridge/**` 之外干净后，先在 stage worktree 正常执行 `git submodule deinit --all`，再正常移除 worktree，最后 `git branch -d <stage-branch>`；任一步失败就停止并报告当前状态，不自动 rollback、rebase 或重试。
 8. 不自动 push。finalize 按正常 one-shot 流程执行，不额外设计自动恢复状态。
 
 ## Operation D: retire_incomplete
@@ -151,7 +151,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 操作：
 
 1. 记录 `plan_commit`、当前 `archived_head=HEAD`、原 branch/worktree 与 reason；
-2. 正常移除 stage worktree，不使用 `--force`；失败则停止，不删除任何 branch；
+2. 确认 `third_party/open-r1` submodule 无本地修改后，先在 stage worktree 正常执行 `git submodule deinit --all`，再正常移除 stage worktree，不使用 `--force`；失败则停止，不删除任何 branch；
 3. 将原 stage branch直接重命名为 `archive/<stage-slug>-incomplete-<YYYYMMDD-HHMMSS>`，使 archive branch 精确指向 `archived_head`；不 cherry-pick、不 squash、不丢提交；
 4. 在 `main` 的 `proceedings.md` 追加简短 **Incomplete Stage Retirement Record**：stage_id、plan_commit、archived_head、archive branch、reason、retired_at，并注明没有 completed E0/review、这些提交未被 main 接受；
 5. 仅提交该 proceedings 更新：`docs: retire incomplete {stage_id}`；不合并 archive branch；
