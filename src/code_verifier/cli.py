@@ -63,6 +63,7 @@ from code_verifier.parsing import extract_python_code
 from code_verifier.training import (
     SFTDataError,
     SFTTrainingError,
+    load_completed_sft_checkpoint,
     load_sft_training_config,
     run_sft_training,
 )
@@ -333,18 +334,38 @@ def _nonempty_model_id(value: str) -> str:
 def _evaluate(args: argparse.Namespace) -> int:
     """Run one deterministic, resumable pass@1 evaluation."""
     config = load_evaluation_config(Path(str(args.config)))
+    if args.sft_run_dir is None:
+        checkpoint = None
+        model_id = str(args.model_id)
+    else:
+        checkpoint = load_completed_sft_checkpoint(Path(str(args.sft_run_dir)))
+        model_id = checkpoint.model_id
+        config = replace(
+            config,
+            model_revision=checkpoint.model_revision,
+            checkpoint=str(checkpoint.checkpoint_dir),
+        )
     piston_config = load_piston_executor_config(config.piston_config)
     executor = PistonExecutor(piston_config)
     executor.validate_runtime()
-    generator = TransformersCompletionGenerator.from_pretrained(
-        str(args.model_id),
-        model_revision=config.model_revision,
-        device=config.device,
-        config=config.generation,
-    )
+    if checkpoint is None:
+        generator = TransformersCompletionGenerator.from_pretrained(
+            model_id,
+            model_revision=config.model_revision,
+            device=config.device,
+            config=config.generation,
+        )
+    else:
+        generator = TransformersCompletionGenerator.from_peft_checkpoint(
+            base_model_id=checkpoint.model_id,
+            base_model_revision=checkpoint.model_revision,
+            adapter_dir=checkpoint.checkpoint_dir,
+            device=config.device,
+            config=config.generation,
+        )
     run_summary = run_pass1_evaluation(
         config=config,
-        model_id=str(args.model_id),
+        model_id=model_id,
         generator=generator,
         executor=executor,
         run_id=str(args.run_name),
@@ -474,7 +495,13 @@ def build_parser() -> argparse.ArgumentParser:
         "evaluate",
         help="run deterministic resumable pass@1 model evaluation",
     )
-    evaluate_parser.add_argument("--model-id", type=_nonempty_model_id, required=True, help="model or checkpoint id")
+    model_source = evaluate_parser.add_mutually_exclusive_group(required=True)
+    model_source.add_argument("--model-id", type=_nonempty_model_id, help="base model or checkpoint id")
+    model_source.add_argument(
+        "--sft-run-dir",
+        type=Path,
+        help="completed SFT run containing the PEFT checkpoint to evaluate",
+    )
     evaluate_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="safe evaluation run id")
     _add_common_arguments(
         evaluate_parser,
