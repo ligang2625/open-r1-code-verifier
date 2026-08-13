@@ -42,10 +42,12 @@ backend 按**每次 execution**选择，而不是按 stage/project 固定。因�
 
 ## 3. Runtime execution backend
 
-backend 不写入 plan/review routing：
+backend 不写入 plan/review routing，并按**实际 execution runtime 与 capability**判定，不按 control surface/transport 判定：
 
-- `backend=local`：SINGLE → executor-ex；MULTI → executor。只允许在 Local Codex runtime 使用；Local Codex 中未指定 backend 时默认 local。
-- `backend=web`：当前 Web GPT + CodexPro → executor-web。Web 环境必须显式选择 web；请求 local/未指定 backend 时停止并转到 Local Codex 执行。
+- `backend=local`：SINGLE → executor-ex；MULTI → executor。本机 Codex CLI/app-server 直接操作 repo/worktree 即属于 Local Codex；Happy mobile/web/remote control 只是控制界面，仍归类为 local。Local Codex 中未指定 backend 时默认 local。
+- `backend=web`：仅当前会话本身是 Web GPT，并通过 CodexPro workspace/tool 操作 repo 时使用 executor-web。Web 环境必须显式选择 web；不得因为 `remote`、mobile、browser、Happy 等 UI/transport 信号把 Local Codex 改判为 web。
+- Local MULTI 还要求 execution-agent 能力；缺失时报 `ROUTING_LOCAL_AGENT_CAPABILITY_UNAVAILABLE`，不得自动切 web，也不得把 capability 缺失误判成 runtime 类型变化。
+- 若当前 thread/tool surface 不足以可靠区分 Local Codex 与 Web GPT + CodexPro，返回 `ROUTING_RUNTIME_UNDETERMINED`；不得默认猜成 web。
 
 Web effective mode：
 
@@ -193,7 +195,9 @@ Environment checkpoint contract：checkpoint docs commit 必须只修改 executi
 - matching completed repair 已存在 → `ROUTING_REPAIR_ALREADY_EXECUTED`
 - required=false → `ROUTING_NO_REPAIR_REQUIRED`
 - HEAD/provenance 无法解释 → `ROUTING_STAGE_STATE_INVALID`
-- Web/CodexPro 请求 local backend（或未指定 backend）→ `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`
+- runtime/tool-surface 证据不足以区分 Local Codex 与 Web GPT + CodexPro → `ROUTING_RUNTIME_UNDETERMINED`，不得猜 backend
+- 真正的 Web GPT + CodexPro 请求 local backend（或未指定 backend）→ `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`
+- Local MULTI 缺少 execution-agent capability → `ROUTING_LOCAL_AGENT_CAPABILITY_UNAVAILABLE`，runtime 仍保持 local
 - Web backend 能力不可用 → `ROUTING_WEB_BACKEND_UNAVAILABLE`，不得自动 local
 - reviewer conversation 参与过 latest Web execution → `REVIEW_FRESH_CONTEXT_REQUIRED`
 - reviewer 没有新 execution → `REVIEW_NO_NEW_EXECUTION`

@@ -11,16 +11,24 @@ Routing compatibility marker: `execution-routing-v2`。
 
 标准入口是在**主仓库 root checkout** 调用。若从 linked stage worktree 调用，先解析 primary root，再基于 Git worktree 状态定位目标 stage；router 自己不在 primary checkout `git switch` stage branch。
 
-每次 execution 都有一个**运行时** backend：
+每次 execution 都有一个**运行时** backend。backend 必须按**实际执行 runtime 与可用 capability**判定，而不是按控制界面、连接方式或“remote/web”字样猜测：
 
-- `backend=local`：SINGLE → `executor-ex`；MULTI → `executor`。只允许在 **Local Codex runtime** 且具备 execution-agent 调用能力时使用；Local Codex 中未显式指定 backend 时默认 local。
-- `backend=web`：由当前 Web GPT + CodexPro 在同一对话中继续执行 `executor-web`；不得创建或调用 Local Codex execution agent。Web 环境必须显式指定 `backend=web`。
+- `backend=local`：SINGLE → `executor-ex`；MULTI → `executor`。适用于运行在本机 Codex `app-server` / Codex CLI 上、可直接访问本地 repo/worktree 并具备所需 Codex execution capability 的会话。通过 Happy mobile/web/remote control 连接到本机 Codex **仍属于 Local Codex runtime**；Happy 的 `remote` 只表示 control surface，不得据此判成 Web GPT。Local Codex 中未显式指定 backend 时默认 local。
+- `backend=web`：仅适用于当前会话本身是 **Web GPT + CodexPro**，由 Web GPT 通过 CodexPro workspace/tool 操作本地 repo 的情况；在同一对话中继续执行 `executor-web`，不得创建或调用 Local Codex execution agent。Web 环境必须显式指定 `backend=web`。
+
+runtime 判定遵循 common-case capability guard：
+
+1. 优先使用当前线程的实际 host/tool surface，而不是提示词中的环境描述：由 Codex CLI/app-server 承载、使用当前 Codex thread 的原生命令/文件/Git 工具直接操作 workspace → `local_codex`；当前模型会话是 Web GPT、repo 操作只通过 CodexPro MCP/tool surface 完成 → `web_codexpro`。
+2. Happy 只改变 control surface。只要底层仍是本机 Codex CLI/app-server，即使存在 Happy MCP、`--happy-starting-mode remote`、手机或浏览器控制，也仍判为 `local_codex`。
+3. Local SINGLE 至少要求可直接操作目标 worktree；Local MULTI 还要求当前 Codex runtime 具备 execution-agent/subagent 调用能力。缺少 MULTI 所需 agent capability 时停止并报告 `ROUTING_LOCAL_AGENT_CAPABILITY_UNAVAILABLE`，不得因此改判 `backend=web`。
+4. control surface 与 execution runtime 正交；不得使用 `remote`、mobile、browser、Happy 等 UI/transport 信号单独决定 backend。
+5. 若没有足够的 runtime/tool-surface 证据区分 `local_codex` 与 `web_codexpro`，返回 `ROUTING_RUNTIME_UNDETERMINED`；不得默认猜成 web，也不得为了继续执行静默切 backend。
 
 backend 不是 plan/review routing 字段，不写回 sealed plan/review，不影响 plan 的 `mode/complexity/parallelizability/multi_benefit`，也不参与 provenance 合法性判断。implementation 与每轮 repair 可以分别选择不同 backend。
 
 Router 还接受一个**显式恢复意图**：`resume`（例如 `$execution-router resume` 或等价明确指令）。`resume` 不是 routing 字段，也不能选择任意历史 commit；它只允许消费**当前 HEAD 对应的最新合法 environment interruption checkpoint**。普通调用遇到可恢复 checkpoint 时只返回 `ROUTING_RESUME_AVAILABLE`，不自动续跑；用户明确 resume 后才 dispatch。resume 继续消费原 plan/review 的 sealed routing，不重新规划、不改变 mode/backend。
 
-Web/CodexPro 环境请求 `backend=local`（或未指定 backend）时返回 `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`；Local Codex 缺少 execution-agent 能力时同样停止。若显式 `backend=web` 但当前环境没有可写 CodexPro workspace、Git 或所需验证命令能力，返回 `ROUTING_WEB_BACKEND_UNAVAILABLE`。两种情况都不得自动切 backend。
+真正的 Web GPT + CodexPro 环境请求 `backend=local`（或未指定 backend）时返回 `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`。Local Codex 的 MULTI execution 若缺少 execution-agent 能力则返回 `ROUTING_LOCAL_AGENT_CAPABILITY_UNAVAILABLE`；这不改变 runtime/backend 判定。若显式 `backend=web` 但当前环境不是 Web GPT + CodexPro，或没有可写 CodexPro workspace、Git、所需验证命令能力，则返回 `ROUTING_WEB_BACKEND_UNAVAILABLE`。以上情况都不得自动切 backend。
 
 ## Stage 定位
 
@@ -215,7 +223,9 @@ effective_execution_mode: single    # single | multi | serialized_multi
 - `ROUTING_SKILL_VERSION_MISMATCH`
 - `ROUTING_CONTRACT_*` / `ROUTING_REPAIR_CONTRACT_*`
 - `ROUTING_MISMATCH`
+- `ROUTING_RUNTIME_UNDETERMINED`
 - `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`
+- `ROUTING_LOCAL_AGENT_CAPABILITY_UNAVAILABLE`
 - `ROUTING_WEB_BACKEND_UNAVAILABLE`
 
 ## 禁止事项
