@@ -478,3 +478,13 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 - 本记录只是 workflow 决策说明，**不是**项目开发完成证明。
 - 当前尚未产生 terminal development finalize 写出的 machine-readable completion block，因此 validation 仍保持锁定。
 - 上一轮独立审查实际执行 `make test-piston` 时本地 Piston service 不可达；在真实 terminal closeout 前必须先恢复 Piston 并取得 0 failed / 0 skipped。
+
+## Incomplete Stage Retirement Record
+
+- stage_id: `WP6-c`
+- plan_commit: `fb14c8c0f5e534aff9838eb3b9e9d06f3dc58eae`
+- archived_head: `9b4fa5fa9d781a4f869b107ead1489e4f043bad6`
+- archive_branch: `archive/wp6-c-incomplete-20260813-192343`
+- reason: `ruff` 缺失导致总验收失败
+- retired_at: `2026-08-13T19:23:43+08:00`
+- stage 没有 completed E0，也没有 review；上述提交未被 `main` 接受。
