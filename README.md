@@ -476,7 +476,7 @@ WP6-a does not claim a real SFT checkpoint or B-group result. The final SFT vali
 
 ## WP6-c completed SFT checkpoint evaluation
 
-`evaluate` accepts exactly one explicit model source. `--model-id` keeps the Base path. `--sft-run-dir` loads only a strict SFT artifact with `run.json` status `completed`, a complete pinned PEFT adapter under its direct `checkpoints/` directory, and valid non-sensitive run identity. The adapter config's base model and revision must match the completed run before the model is loaded.
+`evaluate` accepts exactly one explicit model source. `--model-id` keeps the Base path. `--sft-run-dir` loads only a strict SFT artifact with `run.json` status `completed`, a complete pinned PEFT adapter under its direct `checkpoints/` directory, and valid non-sensitive run identity. The adapter config's base model must exactly match the completed run. Pinned TRL 0.18.0 / PEFT 0.14.0 normally leaves the adapter config revision unset, so the completed run's non-empty `model_revision` remains the source of truth for loading the base weights; if an adapter config does contain a revision, it must match that run metadata.
 
 After a real SFT run has completed on the 4090 validation machine, evaluate B with the same evaluation config, Piston executor, pass@1 evaluator, and aggregator used for Base:
 

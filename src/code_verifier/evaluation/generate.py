@@ -300,7 +300,7 @@ class TransformersCompletionGenerator:
         adapter_revision = getattr(adapter_config, "revision", None)
         if adapter_model_id != base_model_id:
             raise GenerationError("PEFT adapter base model identity does not match the selected SFT run")
-        if base_model_revision is not None and adapter_revision != base_model_revision:
+        if adapter_revision is not None and adapter_revision != base_model_revision:
             raise GenerationError("PEFT adapter base model revision does not match the selected SFT run")
         tokenizer, base_model = _load_base_transformers_model(
             torch_runtime=torch_runtime,

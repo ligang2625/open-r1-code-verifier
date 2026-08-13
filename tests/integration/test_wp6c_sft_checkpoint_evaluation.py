@@ -126,7 +126,7 @@ class _FakePeftConfig:
     @staticmethod
     def from_pretrained(adapter_dir: str, **kwargs: object) -> SimpleNamespace:
         del adapter_dir, kwargs
-        return SimpleNamespace(base_model_name_or_path="fixture/base-model", revision="a" * 40)
+        return SimpleNamespace(base_model_name_or_path="fixture/base-model", revision=None)
 
 
 class _FakePeftModel:
@@ -171,7 +171,6 @@ def _write_completed_fixture_run(run_dir: Path, *, run_id: str = "fixture-sft-ru
             {
                 "base_model_name_or_path": "fixture/base-model",
                 "peft_type": "LORA",
-                "revision": "a" * 40,
             }
         ),
         encoding="utf-8",

@@ -146,7 +146,7 @@ def _peft_runtime(
     monkeypatch: pytest.MonkeyPatch,
     *,
     adapter_model_id: str = "example/model",
-    adapter_revision: str | None = "revision-1",
+    adapter_revision: str | None = None,
     failure: Exception | None = None,
 ) -> tuple[Path, _FakeTokenizer, _FakeModel, _FakeTransformers, _FakePeftConfigLoader, _FakePeftModelLoader]:
     adapter_dir = tmp_path / "adapter"
@@ -370,6 +370,29 @@ def test_from_peft_checkpoint_loads_base_then_adapter_with_safe_options(
     assert model_loader.calls[0][2]["local_files_only"] is True
     assert model.eval_called is True
     assert model.to_device == "cpu"
+
+
+def test_from_peft_checkpoint_accepts_run_revision_when_adapter_revision_is_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_dir, _, _, runtime, _, model_loader = _peft_runtime(
+        tmp_path,
+        monkeypatch,
+        adapter_revision=None,
+    )
+
+    TransformersCompletionGenerator.from_peft_checkpoint(
+        base_model_id="example/model",
+        base_model_revision="revision-1",
+        adapter_dir=adapter_dir,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+    )
+
+    assert runtime.AutoTokenizer.calls[0][1]["revision"] == "revision-1"
+    assert runtime.AutoModelForCausalLM.calls[0][1]["revision"] == "revision-1"
+    assert model_loader.calls
 
 
 def test_from_peft_checkpoint_rejects_base_model_identity_mismatch(
