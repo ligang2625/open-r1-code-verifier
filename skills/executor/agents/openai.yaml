@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Executor"
   short_description: "Local Sol/Luna MULTI execution for backend=local"
-  default_prompt: "Use $executor only for routed backend=local with source_mode=multi. Require at least two real independent lanes, isolate worker writes, and append the shared v2 execution_record with local_codex/multi audit metadata after coordinator verification and commits."
+  default_prompt: "Use $executor only for routed backend=local with source_mode=multi. Require at least two real independent lanes and isolate worker writes. A tracked-clean partial execution blocked only by an external environment issue may append a resumable execution_checkpoint; explicit router resume skips completed_scope and continues remaining_scope without changing sealed MULTI routing. On completion append the shared v2 execution_record with local_codex/multi audit metadata after coordinator verification and commits."

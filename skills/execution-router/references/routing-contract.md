@@ -170,7 +170,8 @@ Web backend 对 repair MULTI 同样使用 `serialized_multi`，不改 repair_rou
 ## 9. State machine
 
 - PLANNED：plan seal committed，无 completed E0，且 stage `HEAD==plan_commit`。
-- INCOMPLETE：无 completed E0/review，但 `HEAD!=plan_commit`；router 不自动重跑，只有显式 `stage-lifecycle retire_incomplete(stage_id, reason)` 可以在保留 archive 历史后退出 active stage。
+- INTERRUPTED_ENV：latest current-head execution artifact 是合法 committed `execution_checkpoint(status=interrupted, interruption_class=environment, resume_allowed=true)`，且尚无同 source completed execution；普通 router 只提示 resume，用户显式 `execution-router resume` 后恢复原 task/routing。
+- INCOMPLETE_UNKNOWN：无 completed execution，但 HEAD 已超过 plan/review baseline，且不存在可证明当前 HEAD 的合法 resumable checkpoint；router 不自动继续。用户确认放弃时才走 `retire_incomplete`（在该 operation 合法范围内）或其它人工恢复流程。
 - IMPLEMENTED：completed E0，尚无 committed R1。
 - REPAIR_REQUIRED：latest committed review `needs_repair + required=true`，stage HEAD==review_commit，尚无 matching repair。
 - REPAIR_EXECUTED：存在 matching completed repair，等待新 review。
@@ -179,10 +180,14 @@ Web backend 对 repair MULTI 同样使用 `serialized_multi`，不改 repair_rou
 
 非法转移 fail closed。
 
+Environment checkpoint contract：checkpoint docs commit 必须只修改 execution report，parent 等于 `result_code_commit`；record 精确绑定 task/source provenance，`failed_command/blocker/remaining_scope` 非空，`interruption_class=environment`、`resume_allowed=true`、`status=interrupted`。修复需要 tracked 仓库修改的 lint/test/config/dependency failure 不能使用该 checkpoint。
+
 ## 10. Idempotency / stale guards
 
 - completed E0 已存在 → `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED`
-- 无 completed E0 但 `HEAD != plan_commit` → `ROUTING_INCOMPLETE_IMPLEMENTATION`；确认放弃当前半截 stage 时只允许显式 `retire_incomplete` archive 后 replan
+- latest current-head 合法 environment checkpoint + 普通调用 → `ROUTING_RESUME_AVAILABLE`
+- latest current-head 合法 environment checkpoint + 显式 resume → 消费原 plan/review routing，从 remaining_scope 继续；若指定 checkpoint_id 必须匹配 latest
+- 无 completed E0、`HEAD != plan_commit` 且无合法 checkpoint → `ROUTING_INCOMPLETE_IMPLEMENTATION` / INCOMPLETE_UNKNOWN；只有用户确认放弃时才提示 retire/replan
 - latest review 尚未 commit → `ROUTING_REVIEW_NOT_COMMITTED`
 - 指定 round 非 latest committed → `ROUTING_STALE_REVIEW`
 - matching completed repair 已存在 → `ROUTING_REPAIR_ALREADY_EXECUTED`

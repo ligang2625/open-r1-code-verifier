@@ -38,10 +38,23 @@ Routing compatibility marker: `execution-routing-v2`。
 - primary `.venv` 提供已经安装并验证过的 pinned 第三方依赖；
 - stage worktree 创建独立 lightweight `.venv`，通过只读 site-packages overlay 复用 primary dependencies；
 - `open-r1-code-verifier` 与 `third_party/open-r1` 在 stage `.venv` 中重新 editable-bind 到当前 worktree；
+- 对依赖 venv-local executable 的开发工具不能只靠 site-packages overlay。当前至少把 primary 中 pinned 的 `ruff` 版本以 `--no-deps` 安装进 stage `.venv`，并验证 `python -m ruff`、`python -m mypy`、`python -m pytest` 都能从 stage runtime 启动；
 - stage submodule 在环境创建前执行 `git submodule update --init --recursive third_party/open-r1`；primary submodule 可用时使用它作为本地 `--reference`，避免每个 stage 重复网络 clone；
 - bootstrap 必须验证 `code_verifier.__file__` 与 `open_r1.__file__` 都位于当前 stage worktree 下。
 
 若某个 execution 实际修改 `pyproject.toml` 或 `uv.lock`，从该修改开始不得继续依赖 primary overlay；executor 必须在 stage 中运行同一 helper 的 `--mode full`，建立完整独立 pinned environment 后再继续测试。普通不改依赖的 stage 不重复下载/安装整套 CUDA/PyTorch 环境。
+
+### Environment-interrupted execution contract
+
+环境/基础设施故障不再自动等价于“必须退役 stage”。如果 execution 已经产生了有效的部分 code/test/config commits，随后因为**无需修改 tracked 仓库内容即可修复**的外部环境问题停止，executor 可以把当前进度封存为 committed `execution_checkpoint`；用户修好环境后，再显式要求 `$execution-router resume` 从该 checkpoint 继续。
+
+可判定为 `interruption_class=environment` 的常见情况包括：stage `.venv`/tool 安装缺失或损坏、外部 Piston/service 暂时不可达、CUDA/runtime/device 临时不可用、模型 cache/network/credential/artifact-root permission 等运行环境问题。以下情况**不是**环境中断：ruff/mypy/pytest 已正常运行后发现的源码 lint/type/test failure、tracked config 错误、当前实现引入的 dependency contract 错误、模型/指标结果不满足 acceptance。只要修复需要修改 tracked source/config/test/lockfile，就继续按正常 execution 修代码，不能伪装成 resumable environment checkpoint。
+
+`execution_checkpoint` 只允许在 stage tracked/untracked 状态已经 clean、所有准备保留的部分实现都已正常 commit 后写入 execution report，并单独 docs commit。它至少记录 `version/stage_id/checkpoint_id/task_kind/source_plan_commit/source_review_round/source_review_commit/repair_issue_ids/result_code_commit/interruption_class/resume_allowed/failed_command/blocker/completed_scope/remaining_scope/status`；其中 `interruption_class=environment`、`resume_allowed=true`、`status=interrupted`。checkpoint commit 本身由 Git 历史推导，不在 record 内自引用。
+
+- 若环境问题发生在任何业务 commit **之前**，保持原行为：HEAD 仍等于 plan/review baseline，不写 checkpoint；修好环境后普通重新调用 router 即可。
+- 若已有部分 commits，只有存在上述合法 committed checkpoint 时才进入 `INTERRUPTED_ENV`；未知 `HEAD` 前进仍是 `INCOMPLETE_UNKNOWN`。
+- `INTERRUPTED_ENV` 可以由用户显式 `execution-router resume` 恢复，也可以由用户明确放弃后 `retire_incomplete`；retire 是可选的 abandon path，不再是环境故障的强制恢复方式。
 
 ## 通用 stage identity
 
@@ -82,7 +95,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 5. 按 **Primary checkout transport-dirty policy** 确认主仓库 `main` 在 `.ai-bridge/**` 之外 working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。仅 `.ai-bridge/**` transport 变化不阻塞 bootstrap；不 stash、不自动换基线。
 6. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`。若正是同一 stage，仅允许**显式 pre-execution replan**且它仍处于纯 PLANNED 状态：没有 completed E0/review，stage tracked/untracked 状态干净，并且 `HEAD` 恰好等于当前 plan seal commit；plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。当新的 `planning_base_commit` 已前移时，这个窄场景允许 lifecycle 在确认 stage 与 `third_party/open-r1` submodule 都无本地修改后先执行 `git submodule deinit --all`，再使用 `git worktree remove --force <worktree>` 删除旧 worktree；这里的 `--force` 仅用于 Git 对“包含过 submodule 的 clean worktree”强制要求的删除语义，不允许跳过 cleanliness guard。仅在再次确认旧 branch HEAD 就是旧 plan seal、没有其它提交后删除旧 stage branch，再从新 base 重建。这不是 incomplete-stage rollback，也不得用于已有 execution/review 的 stage。
 7. preflight 全部通过后，才从 `planning_base_commit` 对应的当前 `main` 创建 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
-8. **在写 plan/commit plan seal 之前**创建 stage environment：使用 primary `.venv/bin/python` 执行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode overlay`。必须成功初始化 pinned submodule、创建 worktree-local `.venv/bin/python`，并验证 `code_verifier` / `open_r1` source path 都位于 stage worktree。失败返回 `STAGE_ENV_BOOTSTRAP_FAILED`，不得写 plan seal；若 branch/worktree 是本次调用新建且仍无 tracked stage artifact/commit，先尽力正常 deinit 已初始化 submodule，再在确认 worktree 仍无 tracked stage 修改后使用 `git worktree remove --force` 清理这个临时 worktree，并删除尚未承载 stage history 的临时 branch，避免留下半初始化 active stage。
+8. **在写 plan/commit plan seal 之前**创建 stage environment：使用 primary `.venv/bin/python` 执行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode overlay`。必须成功初始化 pinned submodule、创建 worktree-local `.venv/bin/python`，验证 `code_verifier` / `open_r1` source path 都位于 stage worktree，并确认 stage-local `ruff` executable 以及 `python -m ruff/mypy/pytest` 均可启动。失败返回 `STAGE_ENV_BOOTSTRAP_FAILED`，不得写 plan seal；若 branch/worktree 是本次调用新建且仍无 tracked stage artifact/commit，先尽力正常 deinit 已初始化 submodule，再在确认 worktree 仍无 tracked stage 修改后使用 `git worktree remove --force` 清理这个临时 worktree，并删除尚未承载 stage history 的临时 branch，避免留下半初始化 active stage。
 9. 只把上面解析出的 plan payload 写入阶段 worktree的 `ai-work/planner/{stage_id}-plan.md`，并快速确认 worktree 中上述 v2 skill/discovery 仍可解析；异常则停止，不继续 commit。
 10. 仅暂存最终 plan 文件并提交：`docs: add {stage_id} plan`。该提交是 router 后续推导 `source_plan_commit` 的唯一 plan seal。
 11. 仅在 plan seal commit 成功后，若输入来自 `.ai-bridge/current-plan.md`，删除该 `current-plan.md`，表示 pending handoff 已消费；正式 plan 从此只以 stage worktree 中的 sealed artifact 为准。其它 `.ai-bridge` 文件不动。
@@ -135,7 +148,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 ## Operation D: retire_incomplete
 
-用途：处理最常见的“executor 已提交部分实现，但在 completed E0 之前因环境/测试 blocker 停止”的 stage。它不是通用 rollback，也不恢复执行进度；目标是**保留所有历史并退出 active-stage 状态，再由 planner 重新规划**。
+用途：当用户明确决定**放弃**一个 plan seal 后已有部分提交、但尚未完成对应 execution/review 的 stage 时，保留完整历史并退出 active-stage 状态，再由 planner 重新规划。它不是通用 rollback，也不是环境故障的默认恢复方式；合法 `INTERRUPTED_ENV` 优先允许用户修复环境后显式 resume，只有用户决定不继续该 stage 时才 retire。
 
 输入：必须显式提供 `stage_id` 和一条简短 `reason`，不得自动猜 stage。
 
@@ -162,7 +175,8 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 ## 状态守卫
 
 - `PLANNED`：plan 已由 `bootstrap_plan` commit，尚无 completed implementation execution，且 HEAD 仍等于 plan_commit。
-- `INCOMPLETE`：无 completed E0/review，但 HEAD 已超过 plan_commit；只能显式 `retire_incomplete`，不能由 router 自动重跑整份 plan。
+- `INTERRUPTED_ENV`：尚无对应 completed execution/review，最新 committed execution artifact 是合法 `execution_checkpoint(status=interrupted, interruption_class=environment, resume_allowed=true)`，当前 HEAD 恰好等于提交该 checkpoint 的 docs commit；可由用户显式 `$execution-router resume` 继续，也可显式 `retire_incomplete` 放弃。
+- `INCOMPLETE_UNKNOWN`：无 completed E0/review，HEAD 已超过 plan/review baseline，但不存在可证明当前 HEAD 的合法 resumable checkpoint；router 不自动继续，只能人工确认后 retire/replan。
 - `IMPLEMENTED`：execution report 已有 completed implementation record，等待 reviewer-ex。
 - `REPAIR_REQUIRED`：最新 review 已 checkpoint，required=true，且该 review 尚未被 repair execution 消费。
 - `REPAIR_EXECUTED`：execution report 已有 completed repair record，其 `source_review_commit` 指向上一轮 review commit，等待下一轮 reviewer-ex。

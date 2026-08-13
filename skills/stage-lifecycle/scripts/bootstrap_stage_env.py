@@ -43,6 +43,28 @@ def _site_packages(python: Path) -> Path:
     return path
 
 
+def _package_version(python: Path, package: str) -> str:
+    return _capture(
+        [
+            str(python),
+            "-c",
+            (f"import importlib.metadata as metadata; print(metadata.version({package!r}))"),
+        ]
+    )
+
+
+def _verify_overlay_tools(stage_python: Path, stage_venv: Path) -> dict[str, str]:
+    ruff_bin = stage_venv / "bin" / "ruff"
+    if not ruff_bin.is_file():
+        raise StageEnvError("stage-local ruff executable is unavailable")
+    checks = {
+        "ruff": [str(stage_python), "-m", "ruff", "--version"],
+        "mypy": [str(stage_python), "-m", "mypy", "--version"],
+        "pytest": [str(stage_python), "-m", "pytest", "--version"],
+    }
+    return {name: _capture(command) for name, command in checks.items()}
+
+
 def _verify_sources(stage_python: Path, stage_root: Path) -> dict[str, str]:
     output = _capture(
         [
@@ -103,8 +125,18 @@ def bootstrap(primary_root: Path, stage_worktree: Path, mode: str) -> dict[str, 
     if mode == "overlay":
         primary_site = _site_packages(primary_python)
         stage_site = _site_packages(stage_python)
-        (stage_site / "_primary_runtime_deps.pth").write_text(
-            f"{primary_site}\n", encoding="utf-8"
+        (stage_site / "_primary_runtime_deps.pth").write_text(f"{primary_site}\n", encoding="utf-8")
+        ruff_version = _package_version(primary_python, "ruff")
+        _run(
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(stage_python),
+                "--no-deps",
+                f"ruff=={ruff_version}",
+            ]
         )
         _run(
             [
@@ -138,6 +170,8 @@ def bootstrap(primary_root: Path, stage_worktree: Path, mode: str) -> dict[str, 
         raise StageEnvError(f"unsupported mode: {mode}")
 
     payload = _verify_sources(stage_python, stage_worktree)
+    if mode == "overlay":
+        payload["tools"] = _verify_overlay_tools(stage_python, stage_venv)
     payload["mode"] = mode
     payload["stage_python"] = str(stage_python)
     return payload

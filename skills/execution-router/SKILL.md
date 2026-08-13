@@ -18,6 +18,8 @@ Routing compatibility marker: `execution-routing-v2`。
 
 backend 不是 plan/review routing 字段，不写回 sealed plan/review，不影响 plan 的 `mode/complexity/parallelizability/multi_benefit`，也不参与 provenance 合法性判断。implementation 与每轮 repair 可以分别选择不同 backend。
 
+Router 还接受一个**显式恢复意图**：`resume`（例如 `$execution-router resume` 或等价明确指令）。`resume` 不是 routing 字段，也不能选择任意历史 commit；它只允许消费**当前 HEAD 对应的最新合法 environment interruption checkpoint**。普通调用遇到可恢复 checkpoint 时只返回 `ROUTING_RESUME_AVAILABLE`，不自动续跑；用户明确 resume 后才 dispatch。resume 继续消费原 plan/review 的 sealed routing，不重新规划、不改变 mode/backend。
+
 Web/CodexPro 环境请求 `backend=local`（或未指定 backend）时返回 `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`；Local Codex 缺少 execution-agent 能力时同样停止。若显式 `backend=web` 但当前环境没有可写 CodexPro workspace、Git 或所需验证命令能力，返回 `ROUTING_WEB_BACKEND_UNAVAILABLE`。两种情况都不得自动切 backend。
 
 ## Stage 定位
@@ -54,9 +56,10 @@ Development stage 不运行上述 24GB preflight；其 plan-specific Piston/impo
 
 1. `<stage-worktree>/.venv/bin/python` 必须存在；
 2. 使用该 Python 导入 `code_verifier` 与 `open_r1`，二者 `__file__` 必须都解析到目标 stage worktree 下；
-3. 不允许 stage `.venv` 直接软链接为 primary `.venv`，也不允许 editable source 仍指向 primary checkout。
+3. 不允许 stage `.venv` 直接软链接为 primary `.venv`，也不允许 editable source 仍指向 primary checkout；
+4. `stage/.venv/bin/ruff` 必须存在，并且 stage Python 的 `-m ruff --version`、`-m mypy --version`、`-m pytest --version` 都必须成功。这样能在 dispatch 前捕获“site-packages 可见但 venv-local executable 缺失”的 overlay 错误。
 
-任一条件失败返回 `ROUTING_STAGE_ENV_UNAVAILABLE`，在 dispatch 前停止。不要 spawn executor 后再让 plan preflight 因 `.venv` 缺失失败。环境由 `stage-lifecycle bootstrap_plan` 自动创建；若用户手工删除/破坏 ignored `.venv`，先按 lifecycle 的 stage-environment helper 恢复，再重新调用 router。
+任一条件失败返回 `ROUTING_STAGE_ENV_UNAVAILABLE`，在 dispatch 前停止。不要 spawn executor 后再让 plan preflight 因 `.venv`/tool 缺失失败。环境由 `stage-lifecycle bootstrap_plan` 自动创建；若用户手工删除/破坏 ignored `.venv`，先按 lifecycle 的 stage-environment helper 恢复，再重新调用 router。
 
 ## 状态推导与 source precedence
 
@@ -67,11 +70,26 @@ Development stage 不运行上述 24GB preflight；其 plan-specific Piston/impo
 
 不得在未知 dirty baseline 上启动 execution。
 
+### Resumable environment checkpoint
+
+Router 只把 execution report 中**最新 committed**、且提交该 checkpoint 的 docs commit 恰好等于当前 stage HEAD 的 `execution_checkpoint` 视为 resumable。必须同时满足：
+
+- `version: 1`、非空唯一 `checkpoint_id`、`status: interrupted`、`interruption_class: environment`、`resume_allowed: true`；
+- `stage_id/task_kind/source_plan_commit` 与当前 stage 精确一致；implementation 的 `source_review_round/source_review_commit` 必须为 null、`repair_issue_ids=[]`；repair 必须精确绑定 latest committed review round/commit/issues；
+- `result_code_commit` 必须是提交 checkpoint 前的 parent HEAD，checkpoint docs commit 只允许改 execution report；
+- `failed_command`、`blocker`、`remaining_scope` 非空；`completed_scope` 记录已经 commit、恢复时不得重复实现的范围；
+- 当前不存在同一 source 的 completed execution，也不存在 checkpoint 之后的其它 commit。
+
+普通 router 调用命中该状态返回 `ROUTING_RESUME_AVAILABLE`，报告 checkpoint_id、checkpoint commit、result_code_commit、failed_command/blocker/remaining_scope，并提示用户修复环境后显式 `$execution-router resume`。只有显式 resume 才继续；若用户还指定 checkpoint_id，它必须等于当前 HEAD 的 latest checkpoint，不能选择 stale checkpoint。用户显式要求 resume 但当前 HEAD 不存在合法 checkpoint、checkpoint provenance 不匹配或环境中断之后又有其它 commit 时返回 `ROUTING_RESUME_INVALID`，不得猜断点或自动 retire。
+
+显式 resume 时先重新执行 Stage environment preflight；通过后按原 plan/review routing dispatch，并额外传 `resume=true`、`resume_checkpoint_id`、`resume_checkpoint_commit`、`resume_from_code_commit`、`completed_scope`、`remaining_scope`。executor 必须从 checkpoint 继续，不重做 completed_scope；允许重新跑 preflight、定向测试和全局 acceptance，因为这些是验证而不是重复实现。
+
 ### A. 尚无 committed review
 
 - 已有 `task_kind=implementation,status=completed,source_plan_commit=<plan_commit>` → `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED`，等待 reviewer-ex。
 - 无 completed E0 且 `HEAD == plan_commit` → `task_kind=implementation`，消费 plan `execution_routing`。
-- 无 completed E0 但 `HEAD != plan_commit` → `ROUTING_INCOMPLETE_IMPLEMENTATION`；不得自动重跑整份 plan。若这是确认要放弃当前半截 stage 的常见 blocker，提示调用 `$stage-lifecycle retire_incomplete` 并显式提供 stage_id/reason；archive 后重新 planner-ex。
+- 无 completed E0、`HEAD != plan_commit`，但当前 HEAD 是合法 implementation environment checkpoint → 普通调用返回 `ROUTING_RESUME_AVAILABLE`；显式 resume 后 `task_kind=implementation`，消费原 plan `execution_routing` 并传 resume context。
+- 无 completed E0 且 `HEAD != plan_commit`，又不存在合法 current-head checkpoint → `ROUTING_INCOMPLETE_IMPLEMENTATION` / `INCOMPLETE_UNKNOWN`；不得自动重跑整份 plan。只有用户明确放弃当前半截 stage 时才提示 `$stage-lifecycle retire_incomplete stage_id/reason`，archive 后重新 planner-ex。
 
 ### B. 已有 committed review
 
@@ -89,7 +107,8 @@ Development stage 不运行上述 24GB preflight；其 plan-specific Piston/impo
   1. 从 Git 推导 latest `review_commit`；
   2. `HEAD == review_commit` 且尚无 matching completed repair (`source_review_round` + `source_review_commit`) → `task_kind=repair`；
   3. 已有 matching completed repair → `ROUTING_REPAIR_ALREADY_EXECUTED`；
-  4. 其它不可解释状态 → `ROUTING_STAGE_STATE_INVALID`。
+  4. 尚无 matching completed repair，且当前 HEAD 是精确绑定该 latest review 的合法 repair environment checkpoint → 普通调用返回 `ROUTING_RESUME_AVAILABLE`；显式 resume 后 `task_kind=repair`，消费原 `repair_routing` 并传 resume context；
+  5. 其它不可解释状态 → `ROUTING_STAGE_STATE_INVALID`。
 
 Router 永不消费未 checkpoint review。
 
@@ -126,14 +145,14 @@ Router 永不消费未 checkpoint review。
 1. 目标 worktree `skills/executor-ex/SKILL.md` 必须含 `execution-routing-v2`，否则 `ROUTING_SKILL_VERSION_MISMATCH`。
 2. 创建恰好 1 个 execution agent。
 3. 传：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=local`、`source_mode=single`、single_class，以及 `stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`。
-4. repair 再传 review path、source_review_round、review_commit、repair_issue_ids。
+4. repair 再传 review path、source_review_round、review_commit、repair_issue_ids；resume 再传 `resume=true`、resume_checkpoint_id/commit、resume_from_code_commit、completed_scope、remaining_scope。
 5. agent 必须先进入 stage worktree；不得 subagent。
 6. single 实际无法可靠完成时返回证据；router 不自动改 MULTI。
 
 ### MULTI
 
 1. 目标 worktree `skills/executor/SKILL.md` 必须含 v2 marker。
-2. 调用 `$executor`，传 stage/provenance、`backend=local`、`source_mode=multi`、`stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`；repair 同样传 review provenance/issues。
+2. 调用 `$executor`，传 stage/provenance、`backend=local`、`source_mode=multi`、`stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`；repair 同样传 review provenance/issues；resume 同样传 resume checkpoint context。
 3. coordinator 必须基于真实代码复核 ≥2 个独立 subplans；不足 → `ROUTING_MISMATCH`，不得假并行或退化单 worker。
 4. multi 模型/effort 继续由 executor 管理。
 
@@ -155,6 +174,7 @@ router **不 spawn execution agent**。它把 stage/provenance 和完整 source 
 - `stage_profile/target_hardware/evidence_class/development_terminal`；validation 另带绝对 `artifact_root`
 - source routing 的完整结构和 `source_mode`
 - repair 时：review path、source_review_round、review_commit、repair_issue_ids
+- resume 时：`resume=true`、resume_checkpoint_id、resume_checkpoint_commit、resume_from_code_commit、completed_scope、remaining_scope
 
 运行时 effective mode：
 
@@ -178,13 +198,14 @@ effective_execution_mode: single    # single | multi | serialized_multi
 
 ## 输出
 
-报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、stage profile；validation 额外报告实际 GPU identity/total VRAM 与绝对 persistent `artifact_root`；repair 再报告 review_round/review_commit/repair_issue_ids；local SINGLE 报实际 model/effort。
+报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、stage profile；validation 额外报告实际 GPU identity/total VRAM 与绝对 persistent `artifact_root`；repair 再报告 review_round/review_commit/repair_issue_ids；resume 再报告 resume_checkpoint_id/commit、resume_from_code_commit 与 remaining_scope；local SINGLE 报实际 model/effort。
 
 ## 关键错误
 
 - `ROUTING_PLAN_MISSING` / `ROUTING_PLAN_AMBIGUOUS` / `ROUTING_PLAN_NOT_SEALED` / `ROUTING_PLAN_PROFILE_INVALID`
 - `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE` / `ROUTING_VALIDATION_ARTIFACT_ROOT_UNAVAILABLE`
 - `ROUTING_STAGE_ENV_UNAVAILABLE`
+- `ROUTING_RESUME_AVAILABLE` / `ROUTING_RESUME_INVALID`
 - `ROUTING_STAGE_DIRTY`
 - `ROUTING_REVIEW_NOT_COMMITTED` / `ROUTING_STALE_REVIEW`
 - `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED` / `ROUTING_INCOMPLETE_IMPLEMENTATION`
