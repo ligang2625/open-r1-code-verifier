@@ -65,6 +65,8 @@ from code_verifier.training import (
     GRPOTrainingError,
     SFTDataError,
     SFTTrainingError,
+    grpo_evaluation_checkpoint_id,
+    load_completed_grpo_checkpoint,
     load_completed_sft_checkpoint,
     load_grpo_training_config,
     load_sft_training_config,
@@ -338,32 +340,51 @@ def _nonempty_model_id(value: str) -> str:
 def _evaluate(args: argparse.Namespace) -> int:
     """Run one deterministic, resumable pass@1 evaluation."""
     config = load_evaluation_config(Path(str(args.config)))
-    if args.sft_run_dir is None:
-        checkpoint = None
+    sft_checkpoint = None
+    grpo_checkpoint = None
+    if args.model_id is not None:
         model_id = str(args.model_id)
-    else:
-        checkpoint = load_completed_sft_checkpoint(Path(str(args.sft_run_dir)))
-        model_id = checkpoint.model_id
+    elif args.sft_run_dir is not None:
+        sft_checkpoint = load_completed_sft_checkpoint(Path(str(args.sft_run_dir)))
+        model_id = sft_checkpoint.model_id
         config = replace(
             config,
-            model_revision=checkpoint.model_revision,
-            checkpoint=str(checkpoint.checkpoint_dir),
+            model_revision=sft_checkpoint.model_revision,
+            checkpoint=str(sft_checkpoint.checkpoint_dir),
+        )
+    else:
+        grpo_checkpoint = load_completed_grpo_checkpoint(Path(str(args.grpo_run_dir)))
+        model_id = grpo_checkpoint.parent_sft.model_id
+        config = replace(
+            config,
+            model_revision=grpo_checkpoint.parent_sft.model_revision,
+            checkpoint=grpo_evaluation_checkpoint_id(grpo_checkpoint),
         )
     piston_config = load_piston_executor_config(config.piston_config)
     executor = PistonExecutor(piston_config)
     executor.validate_runtime()
-    if checkpoint is None:
+    if sft_checkpoint is None and grpo_checkpoint is None:
         generator = TransformersCompletionGenerator.from_pretrained(
             model_id,
             model_revision=config.model_revision,
             device=config.device,
             config=config.generation,
         )
-    else:
+    elif sft_checkpoint is not None:
         generator = TransformersCompletionGenerator.from_peft_checkpoint(
-            base_model_id=checkpoint.model_id,
-            base_model_revision=checkpoint.model_revision,
-            adapter_dir=checkpoint.checkpoint_dir,
+            base_model_id=sft_checkpoint.model_id,
+            base_model_revision=sft_checkpoint.model_revision,
+            adapter_dir=sft_checkpoint.checkpoint_dir,
+            device=config.device,
+            config=config.generation,
+        )
+    else:
+        assert grpo_checkpoint is not None
+        generator = TransformersCompletionGenerator.from_grpo_checkpoint(
+            base_model_id=grpo_checkpoint.parent_sft.model_id,
+            base_model_revision=grpo_checkpoint.parent_sft.model_revision,
+            parent_sft_adapter_dir=grpo_checkpoint.parent_sft.checkpoint_dir,
+            grpo_adapter_dir=grpo_checkpoint.checkpoint_dir,
             device=config.device,
             config=config.generation,
         )
@@ -538,6 +559,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--sft-run-dir",
         type=Path,
         help="completed SFT run containing the PEFT checkpoint to evaluate",
+    )
+    model_source.add_argument(
+        "--grpo-run-dir",
+        type=Path,
+        help="completed GRPO run containing the C/D PEFT checkpoint to evaluate",
     )
     evaluate_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="safe evaluation run id")
     _add_common_arguments(

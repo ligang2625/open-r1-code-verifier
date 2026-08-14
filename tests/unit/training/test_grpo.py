@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,7 @@ import code_verifier.training.grpo as grpo_module
 from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.grpo import (
+    GRPOCheckpointIdentity,
     GRPOTrainingConfig,
     GRPOTrainingError,
     _GRPORuntime,
@@ -23,7 +25,9 @@ from code_verifier.training.grpo import (
     _load_merged_sft_policy,
     _runtime_arguments,
     build_grpo_reward_callback,
+    grpo_evaluation_checkpoint_id,
     grpo_training_config_from_mapping,
+    load_completed_grpo_checkpoint,
     load_grpo_training_config,
     run_grpo_training,
     validate_grpo_artifact_pair,
@@ -609,6 +613,204 @@ def _write_completed_sft_run(run_dir: Path, *, dataset_hash: str = "b" * 64) -> 
     (checkpoint_dir / "adapter_model.safetensors").write_bytes(b"fixture-adapter")
     for name in ("resolved_config.yaml", "environment.json", "metrics.jsonl", "stdout.log", "stderr.log"):
         (run_dir / name).touch()
+
+
+def _write_completed_grpo_run(
+    run_dir: Path,
+    parent_run_dir: Path,
+    *,
+    reward_mode: str = "public",
+) -> None:
+    parent = SFTCheckpointIdentity(
+        run_dir=parent_run_dir.resolve(),
+        checkpoint_dir=(parent_run_dir / "checkpoints").resolve(),
+        run_id="completed-b",
+        model_id="example/model",
+        model_revision="a" * 40,
+        dataset_hash="b" * 64,
+        config_hash="c" * 64,
+        dependency_lock_hash="d" * 64,
+        seed=42,
+    )
+    run_dir.mkdir()
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir()
+    metadata = {
+        "status": "completed",
+        "run_id": f"completed-{reward_mode}",
+        "reward_mode": reward_mode,
+        "dataset_hash": "1" * 64,
+        "config_hash": "2" * 64,
+        "dependency_lock_hash": "3" * 64,
+        "seed": 7,
+        "parent_sft_run_id": parent.run_id,
+        "parent_sft_model_id": parent.model_id,
+        "parent_sft_model_revision": parent.model_revision,
+        "parent_sft_dataset_hash": parent.dataset_hash,
+        "parent_sft_config_hash": parent.config_hash,
+        "parent_sft_dependency_lock_hash": parent.dependency_lock_hash,
+        "parent_sft_seed": parent.seed,
+        "parent_sft_run_path": str(parent.run_dir),
+        "parent_sft_checkpoint_path": str(parent.checkpoint_dir),
+    }
+    (run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (checkpoint_dir / "adapter_config.json").write_text(
+        json.dumps(
+            {
+                "base_model_name_or_path": parent.model_id,
+                "revision": parent.model_revision,
+                "peft_type": "LORA",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (checkpoint_dir / "adapter_model.safetensors").write_bytes(b"fixture-grpo-adapter")
+    (checkpoint_dir / "checkpoint-1").mkdir()
+    for name in (
+        "resolved_config.yaml",
+        "environment.json",
+        "metrics.jsonl",
+        "rollouts.jsonl",
+        "rewards.jsonl",
+        "group_metrics.jsonl",
+        "stdout.log",
+        "stderr.log",
+    ):
+        (run_dir / name).touch()
+
+
+def test_load_completed_grpo_checkpoint_accepts_completed_run_and_parent_identity(tmp_path: Path) -> None:
+    parent_run = tmp_path / "sft-run"
+    grpo_run = tmp_path / "grpo-run"
+    _write_completed_sft_run(parent_run)
+    _write_completed_grpo_run(grpo_run, parent_run)
+
+    identity = load_completed_grpo_checkpoint(grpo_run)
+
+    assert identity == GRPOCheckpointIdentity(
+        run_dir=grpo_run.resolve(),
+        checkpoint_dir=(grpo_run / "checkpoints").resolve(),
+        run_id="completed-public",
+        reward_mode="public",
+        dataset_hash="1" * 64,
+        config_hash="2" * 64,
+        dependency_lock_hash="3" * 64,
+        seed=7,
+        parent_sft=SFTCheckpointIdentity(
+            run_dir=parent_run.resolve(),
+            checkpoint_dir=(parent_run / "checkpoints").resolve(),
+            run_id="completed-b",
+            model_id="example/model",
+            model_revision="a" * 40,
+            dataset_hash="b" * 64,
+            config_hash="c" * 64,
+            dependency_lock_hash="d" * 64,
+            seed=42,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "running"),
+        ("run_id", ""),
+        ("reward_mode", "eval"),
+        ("dataset_hash", "invalid"),
+        ("config_hash", None),
+        ("dependency_lock_hash", "f" * 63),
+        ("seed", True),
+    ],
+)
+def test_load_completed_grpo_checkpoint_rejects_running_failed_or_invalid_metadata(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    parent_run = tmp_path / "sft-run"
+    grpo_run = tmp_path / "grpo-run"
+    _write_completed_sft_run(parent_run)
+    _write_completed_grpo_run(grpo_run, parent_run)
+    metadata = json.loads((grpo_run / "run.json").read_text(encoding="utf-8"))
+    metadata[field] = value
+    (grpo_run / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(GRPOTrainingError):
+        load_completed_grpo_checkpoint(grpo_run)
+
+
+@pytest.mark.parametrize("artifact", ["adapter_config.json", "adapter_model.safetensors"])
+def test_load_completed_grpo_checkpoint_rejects_missing_or_invalid_adapter_artifact(
+    tmp_path: Path,
+    artifact: str,
+) -> None:
+    parent_run = tmp_path / "sft-run"
+    grpo_run = tmp_path / "grpo-run"
+    _write_completed_sft_run(parent_run)
+    _write_completed_grpo_run(grpo_run, parent_run)
+    (grpo_run / "checkpoints" / artifact).unlink()
+
+    with pytest.raises(GRPOTrainingError, match="PEFT adapter"):
+        load_completed_grpo_checkpoint(grpo_run)
+
+
+@pytest.mark.parametrize("drift", ["metadata", "path"])
+def test_load_completed_grpo_checkpoint_rejects_parent_sft_identity_or_path_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    parent_run = tmp_path / "sft-run"
+    grpo_run = tmp_path / "grpo-run"
+    _write_completed_sft_run(parent_run)
+    _write_completed_grpo_run(grpo_run, parent_run)
+    metadata = json.loads((grpo_run / "run.json").read_text(encoding="utf-8"))
+    if drift == "metadata":
+        metadata["parent_sft_dataset_hash"] = "e" * 64
+    else:
+        metadata["parent_sft_run_path"] = str(tmp_path / "missing-parent")
+    (grpo_run / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(GRPOTrainingError, match="parent SFT"):
+        load_completed_grpo_checkpoint(grpo_run)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("base_model_name_or_path", "other/model"), ("revision", "e" * 40)],
+)
+def test_load_completed_grpo_checkpoint_rejects_adapter_base_or_revision_mismatch(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    parent_run = tmp_path / "sft-run"
+    grpo_run = tmp_path / "grpo-run"
+    _write_completed_sft_run(parent_run)
+    _write_completed_grpo_run(grpo_run, parent_run)
+    config_path = grpo_run / "checkpoints" / "adapter_config.json"
+    adapter_config = json.loads(config_path.read_text(encoding="utf-8"))
+    adapter_config[field] = value
+    config_path.write_text(json.dumps(adapter_config), encoding="utf-8")
+
+    with pytest.raises(GRPOTrainingError, match="does not match"):
+        load_completed_grpo_checkpoint(grpo_run)
+
+
+def test_grpo_evaluation_checkpoint_id_is_stable_and_binds_parent_and_reward_mode(tmp_path: Path) -> None:
+    parent_run = tmp_path / "sft-run"
+    grpo_run = tmp_path / "grpo-run"
+    _write_completed_sft_run(parent_run)
+    _write_completed_grpo_run(grpo_run, parent_run)
+    identity = load_completed_grpo_checkpoint(grpo_run)
+
+    checkpoint_id = grpo_evaluation_checkpoint_id(identity)
+
+    assert checkpoint_id == grpo_evaluation_checkpoint_id(identity)
+    assert checkpoint_id.startswith(f"{identity.checkpoint_dir}#identity=")
+    assert re.fullmatch(r"[0-9a-f]{64}", checkpoint_id.rsplit("=", 1)[1])
+    assert grpo_evaluation_checkpoint_id(replace(identity, reward_mode="hidden")) != checkpoint_id
+    changed_parent = replace(identity.parent_sft, dataset_hash="e" * 64)
+    assert grpo_evaluation_checkpoint_id(replace(identity, parent_sft=changed_parent)) != checkpoint_id
 
 
 def _write_grpo_artifact(path: Path, *, reward_mode: str = "public", sentinel: str = "VISIBLE_SENTINEL") -> None:

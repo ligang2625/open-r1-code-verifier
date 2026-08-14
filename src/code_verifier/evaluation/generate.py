@@ -204,6 +204,57 @@ def _initialize_inference_model(model: Any, *, device: str) -> Any:
     return model
 
 
+def _load_identity_checked_peft_config(
+    *,
+    peft_config_type: Any,
+    adapter_dir: Path,
+    base_model_id: str,
+    base_model_revision: str | None,
+    local_files_only: bool,
+    role: str,
+) -> tuple[Path, Any, dict[str, object]]:
+    try:
+        resolved_adapter_dir = adapter_dir.resolve(strict=True)
+    except (AttributeError, OSError):
+        raise GenerationError(f"{role} adapter directory must be an existing local directory") from None
+    if not resolved_adapter_dir.is_dir():
+        raise GenerationError(f"{role} adapter directory must be an existing local directory")
+    adapter_options: dict[str, object] = {}
+    if local_files_only:
+        adapter_options["local_files_only"] = True
+    try:
+        adapter_config = peft_config_type.from_pretrained(str(resolved_adapter_dir), **adapter_options)
+    except Exception as error:
+        raise GenerationError(f"could not load {role} adapter configuration: {type(error).__name__}") from None
+    if getattr(adapter_config, "base_model_name_or_path", None) != base_model_id:
+        raise GenerationError(f"{role} adapter base model identity does not match the selected run")
+    adapter_revision = getattr(adapter_config, "revision", None)
+    if adapter_revision is not None and adapter_revision != base_model_revision:
+        raise GenerationError(f"{role} adapter base model revision does not match the selected run")
+    return resolved_adapter_dir, adapter_config, adapter_options
+
+
+def _attach_peft_adapter(
+    *,
+    base_model: Any,
+    peft_model_type: Any,
+    adapter_dir: Path,
+    adapter_config: Any,
+    adapter_options: dict[str, object],
+    role: str,
+) -> Any:
+    try:
+        return peft_model_type.from_pretrained(
+            base_model,
+            str(adapter_dir),
+            is_trainable=False,
+            config=adapter_config,
+            **adapter_options,
+        )
+    except Exception as error:
+        raise GenerationError(f"could not load {role} adapter for inference: {type(error).__name__}") from None
+
+
 class TransformersCompletionGenerator:
     """Frozen deterministic Transformers backend for one-completion pass@1 evaluation."""
 
@@ -281,27 +332,16 @@ class TransformersCompletionGenerator:
             config=config,
             local_files_only=local_files_only,
         )
-        try:
-            resolved_adapter_dir = adapter_dir.resolve(strict=True)
-        except (AttributeError, OSError):
-            raise GenerationError("adapter_dir must be an existing local directory") from None
-        if not resolved_adapter_dir.is_dir():
-            raise GenerationError("adapter_dir must be an existing local directory")
         torch_runtime, transformers_runtime = _load_transformers_runtime()
         peft_config_type, peft_model_type = _load_peft_runtime()
-        adapter_options: dict[str, object] = {}
-        if local_files_only:
-            adapter_options["local_files_only"] = True
-        try:
-            adapter_config = peft_config_type.from_pretrained(str(resolved_adapter_dir), **adapter_options)
-        except Exception as error:
-            raise GenerationError(f"could not load PEFT adapter configuration: {type(error).__name__}") from None
-        adapter_model_id = getattr(adapter_config, "base_model_name_or_path", None)
-        adapter_revision = getattr(adapter_config, "revision", None)
-        if adapter_model_id != base_model_id:
-            raise GenerationError("PEFT adapter base model identity does not match the selected SFT run")
-        if adapter_revision is not None and adapter_revision != base_model_revision:
-            raise GenerationError("PEFT adapter base model revision does not match the selected SFT run")
+        resolved_adapter_dir, adapter_config, adapter_options = _load_identity_checked_peft_config(
+            peft_config_type=peft_config_type,
+            adapter_dir=adapter_dir,
+            base_model_id=base_model_id,
+            base_model_revision=base_model_revision,
+            local_files_only=local_files_only,
+            role="PEFT",
+        )
         tokenizer, base_model = _load_base_transformers_model(
             torch_runtime=torch_runtime,
             transformers_runtime=transformers_runtime,
@@ -311,16 +351,94 @@ class TransformersCompletionGenerator:
             config=config,
             local_files_only=local_files_only,
         )
+        model = _attach_peft_adapter(
+            base_model=base_model,
+            peft_model_type=peft_model_type,
+            adapter_dir=resolved_adapter_dir,
+            adapter_config=adapter_config,
+            adapter_options=adapter_options,
+            role="PEFT",
+        )
+        model = _initialize_inference_model(model, device=device)
+        return cls(
+            tokenizer=tokenizer,
+            model=model,
+            torch_runtime=torch_runtime,
+            transformers_runtime=transformers_runtime,
+            device=device,
+            config=config,
+        )
+
+    @classmethod
+    def from_grpo_checkpoint(
+        cls,
+        *,
+        base_model_id: str,
+        base_model_revision: str | None,
+        parent_sft_adapter_dir: Path,
+        grpo_adapter_dir: Path,
+        device: str,
+        config: GenerationConfig,
+        local_files_only: bool = False,
+    ) -> TransformersCompletionGenerator:
+        """Rebuild A, safe-merge completed B, then attach C/D read-only for inference."""
+        _validate_model_source(
+            model_id=base_model_id,
+            model_revision=base_model_revision,
+            device=device,
+            config=config,
+            local_files_only=local_files_only,
+        )
+        torch_runtime, transformers_runtime = _load_transformers_runtime()
+        peft_config_type, peft_model_type = _load_peft_runtime()
+        parent_dir, parent_config, parent_options = _load_identity_checked_peft_config(
+            peft_config_type=peft_config_type,
+            adapter_dir=parent_sft_adapter_dir,
+            base_model_id=base_model_id,
+            base_model_revision=base_model_revision,
+            local_files_only=local_files_only,
+            role="parent SFT",
+        )
+        grpo_dir, grpo_config, grpo_options = _load_identity_checked_peft_config(
+            peft_config_type=peft_config_type,
+            adapter_dir=grpo_adapter_dir,
+            base_model_id=base_model_id,
+            base_model_revision=base_model_revision,
+            local_files_only=local_files_only,
+            role="GRPO",
+        )
+        tokenizer, base_model = _load_base_transformers_model(
+            torch_runtime=torch_runtime,
+            transformers_runtime=transformers_runtime,
+            model_id=base_model_id,
+            model_revision=base_model_revision,
+            device=device,
+            config=config,
+            local_files_only=local_files_only,
+        )
+        parent_policy = _attach_peft_adapter(
+            base_model=base_model,
+            peft_model_type=peft_model_type,
+            adapter_dir=parent_dir,
+            adapter_config=parent_config,
+            adapter_options=parent_options,
+            role="parent SFT",
+        )
+        merge = getattr(parent_policy, "merge_and_unload", None)
+        if not callable(merge):
+            raise GenerationError("parent SFT adapter does not provide safe merge for GRPO inference")
         try:
-            model = peft_model_type.from_pretrained(
-                base_model,
-                str(resolved_adapter_dir),
-                is_trainable=False,
-                config=adapter_config,
-                **adapter_options,
-            )
+            merged_parent = merge(safe_merge=True)
         except Exception as error:
-            raise GenerationError(f"could not load PEFT adapter for inference: {type(error).__name__}") from None
+            raise GenerationError(f"could not safe-merge parent SFT adapter: {type(error).__name__}") from None
+        model = _attach_peft_adapter(
+            base_model=merged_parent,
+            peft_model_type=peft_model_type,
+            adapter_dir=grpo_dir,
+            adapter_config=grpo_config,
+            adapter_options=grpo_options,
+            role="GRPO",
+        )
         model = _initialize_inference_model(model, device=device)
         return cls(
             tokenizer=tokenizer,

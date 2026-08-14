@@ -33,7 +33,13 @@ from code_verifier.execution import (
     PistonExecutor,
 )
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
-from code_verifier.training import GRPOTrainingError, SFTCheckpointIdentity, SFTTrainingError
+from code_verifier.training import (
+    GRPOCheckpointIdentity,
+    GRPOTrainingError,
+    SFTCheckpointIdentity,
+    SFTTrainingError,
+    grpo_evaluation_checkpoint_id,
+)
 
 
 def test_help_lists_environment_command() -> None:
@@ -350,7 +356,34 @@ def _evaluation_config(tmp_path: Path) -> EvaluationConfig:
     )
 
 
-def test_evaluate_parser_requires_exactly_one_model_source_and_defaults_output_root(
+def _grpo_checkpoint_identity(tmp_path: Path, *, reward_mode: str = "public") -> GRPOCheckpointIdentity:
+    parent_run = tmp_path / "sft" / "completed-b"
+    parent = SFTCheckpointIdentity(
+        run_dir=parent_run,
+        checkpoint_dir=parent_run / "checkpoints",
+        run_id="completed-b",
+        model_id="example/sft-base",
+        model_revision="b" * 40,
+        dataset_hash="c" * 64,
+        config_hash="d" * 64,
+        dependency_lock_hash="e" * 64,
+        seed=7,
+    )
+    run_dir = tmp_path / "grpo" / f"completed-{reward_mode}"
+    return GRPOCheckpointIdentity(
+        run_dir=run_dir,
+        checkpoint_dir=run_dir / "checkpoints",
+        run_id=f"completed-{reward_mode}",
+        reward_mode=reward_mode,
+        dataset_hash="1" * 64,
+        config_hash="2" * 64,
+        dependency_lock_hash="3" * 64,
+        seed=11,
+        parent_sft=parent,
+    )
+
+
+def test_evaluate_parser_requires_exactly_one_of_base_sft_or_grpo_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CODE_VERIFIER_ARTIFACT_ROOT", raising=False)
@@ -383,6 +416,27 @@ def test_evaluate_parser_requires_exactly_one_model_source_and_defaults_output_r
     )
     assert sft_args.model_id is None
     assert sft_args.sft_run_dir == Path("completed-sft")
+    grpo_args = parser.parse_args(
+        ["evaluate", "--config", "eval.yaml", "--grpo-run-dir", "completed-grpo", "--run-name", "grpo-debug"]
+    )
+    assert grpo_args.model_id is None
+    assert grpo_args.sft_run_dir is None
+    assert grpo_args.grpo_run_dir == Path("completed-grpo")
+    with pytest.raises(SystemExit) as duplicate_grpo:
+        parser.parse_args(
+            [
+                "evaluate",
+                "--config",
+                "eval.yaml",
+                "--sft-run-dir",
+                "completed-sft",
+                "--grpo-run-dir",
+                "completed-grpo",
+                "--run-name",
+                "grpo-debug",
+            ]
+        )
+    assert duplicate_grpo.value.code == 2
     with pytest.raises(SystemExit) as missing_run:
         parser.parse_args(["evaluate", "--config", "eval.yaml", "--model-id", "example/model"])
     assert missing_run.value.code == 2
@@ -647,6 +701,184 @@ def test_evaluate_sft_run_rejects_incomplete_checkpoint_before_generation(
     output = capsys.readouterr()
     assert "requires a completed run" in output.err
     assert "Traceback" not in output.err
+
+
+def test_evaluate_grpo_run_binds_completed_cd_and_parent_b_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _evaluation_config(tmp_path)
+    checkpoint = _grpo_checkpoint_identity(tmp_path)
+    fake_generator = object()
+    seen: dict[str, object] = {}
+    results_path = tmp_path / "outputs/evaluation/grpo-debug/samples/results.jsonl"
+
+    class FakePistonExecutor:
+        def __init__(self, value: object) -> None:
+            seen["piston_config"] = value
+
+        def validate_runtime(self) -> str:
+            return "3.10.0"
+
+    class FakeGeneratorFactory:
+        @classmethod
+        def from_grpo_checkpoint(cls, **kwargs: object) -> object:
+            seen["generator_kwargs"] = kwargs
+            return fake_generator
+
+    def fake_run(**kwargs: object) -> EvaluationRunSummary:
+        seen["runner_kwargs"] = kwargs
+        return EvaluationRunSummary(
+            run_id="grpo-debug",
+            total_problems=1,
+            completed_before_run=0,
+            generated_this_run=1,
+            results_path=results_path,
+        )
+
+    def fake_aggregate(path: Path, *, bootstrap_seed: int) -> object:
+        seen["aggregate_args"] = (path, bootstrap_seed)
+        return SimpleNamespace(summary_path=path / "summary.json", main_results_path=path / "main_results.csv")
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "load_completed_grpo_checkpoint", lambda path: checkpoint)
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: "PISTON")
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "TransformersCompletionGenerator", FakeGeneratorFactory)
+    monkeypatch.setattr(cli_module, "run_pass1_evaluation", fake_run)
+    monkeypatch.setattr(cli_module, "aggregate_evaluation_run", fake_aggregate)
+
+    assert (
+        main(
+            [
+                "evaluate",
+                "--config",
+                "eval.yaml",
+                "--grpo-run-dir",
+                str(checkpoint.run_dir),
+                "--run-name",
+                "grpo-debug",
+                "--output-dir",
+                str(tmp_path / "outputs"),
+            ]
+        )
+        == 0
+    )
+
+    assert seen["generator_kwargs"] == {
+        "base_model_id": checkpoint.parent_sft.model_id,
+        "base_model_revision": checkpoint.parent_sft.model_revision,
+        "parent_sft_adapter_dir": checkpoint.parent_sft.checkpoint_dir,
+        "grpo_adapter_dir": checkpoint.checkpoint_dir,
+        "device": "cpu",
+        "config": config.generation,
+    }
+    effective_config = replace(
+        config,
+        model_revision=checkpoint.parent_sft.model_revision,
+        checkpoint=grpo_evaluation_checkpoint_id(checkpoint),
+    )
+    runner_kwargs = cast(dict[str, object], seen["runner_kwargs"])
+    assert runner_kwargs["config"] == effective_config
+    assert runner_kwargs["model_id"] == checkpoint.parent_sft.model_id
+    assert runner_kwargs["generator"] is fake_generator
+    assert seen["aggregate_args"] == (results_path.parent.parent, 42)
+
+
+def test_evaluate_grpo_run_rejects_incomplete_or_parent_drift_before_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: _evaluation_config(Path.cwd()))
+    monkeypatch.setattr(
+        cli_module,
+        "load_completed_grpo_checkpoint",
+        lambda path: (_ for _ in ()).throw(GRPOTrainingError("completed GRPO parent SFT identity is invalid")),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "load_piston_executor_config",
+        lambda path: pytest.fail("Piston must not initialize for an invalid GRPO run"),
+    )
+
+    assert (
+        main(
+            [
+                "evaluate",
+                "--config",
+                "eval.yaml",
+                "--grpo-run-dir",
+                "invalid-grpo",
+                "--run-name",
+                "grpo-debug",
+            ]
+        )
+        == 2
+    )
+    output = capsys.readouterr()
+    assert "parent SFT identity is invalid" in output.err
+    assert "Traceback" not in output.err
+
+
+def test_evaluate_grpo_identity_change_prevents_exact_prefix_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    config = _evaluation_config(tmp_path)
+    public = _grpo_checkpoint_identity(tmp_path, reward_mode="public")
+    hidden = _grpo_checkpoint_identity(tmp_path, reward_mode="hidden")
+    first_checkpoint: str | None = None
+    results_path = tmp_path / "outputs/evaluation/grpo-resume/samples/results.jsonl"
+
+    class FakePistonExecutor:
+        def __init__(self, value: object) -> None:
+            del value
+
+        def validate_runtime(self) -> str:
+            return "3.10.0"
+
+    class FakeGeneratorFactory:
+        @classmethod
+        def from_grpo_checkpoint(cls, **kwargs: object) -> object:
+            del kwargs
+            return object()
+
+    def fake_run(**kwargs: object) -> EvaluationRunSummary:
+        nonlocal first_checkpoint
+        effective = cast(EvaluationConfig, kwargs["config"])
+        if first_checkpoint is None:
+            first_checkpoint = effective.checkpoint
+        elif effective.checkpoint != first_checkpoint:
+            raise EvaluationError("resume identity mismatch: checkpoint")
+        return EvaluationRunSummary(
+            run_id="grpo-resume",
+            total_problems=1,
+            completed_before_run=0,
+            generated_this_run=1,
+            results_path=results_path,
+        )
+
+    identities = {str(public.run_dir): public, str(hidden.run_dir): hidden}
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "load_completed_grpo_checkpoint", lambda path: identities[str(path)])
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "TransformersCompletionGenerator", FakeGeneratorFactory)
+    monkeypatch.setattr(cli_module, "run_pass1_evaluation", fake_run)
+    monkeypatch.setattr(
+        cli_module,
+        "aggregate_evaluation_run",
+        lambda path, bootstrap_seed: SimpleNamespace(
+            summary_path=path / "summary.json",
+            main_results_path=path / "main_results.csv",
+        ),
+    )
+    base_args = ["evaluate", "--config", "eval.yaml", "--run-name", "grpo-resume"]
+
+    assert main([*base_args, "--grpo-run-dir", str(public.run_dir)]) == 0
+    assert main([*base_args, "--grpo-run-dir", str(hidden.run_dir)]) == 2
+    assert "resume identity mismatch: checkpoint" in capsys.readouterr().err
 
 
 def test_evaluate_cli_reaggregates_zero_generation_resume(

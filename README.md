@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through the WP7-a GRPO control-plane integration are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through the WP7-b GRPO checkpoint-evaluation integration are implemented.
 
-WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6 adds a visible-only SFT data contract, pinned LoRA/TRL/Open-R1 runtime construction, hardware protection, reproducible run artifacts, strict completed-run checkpoint identity, read-only PEFT reload, and B-group evaluation through the same `evaluate` pipeline. WP7-a adds Public/Hidden GRPO datasets and configs, verifier-backed TRL reward wiring, merged-B policy initialization, sanitized rollout/reward/group logs, strict resume, and the `train-grpo` CLI. Real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6 adds a visible-only SFT data contract, pinned LoRA/TRL/Open-R1 runtime construction, hardware protection, reproducible run artifacts, strict completed-run checkpoint identity, read-only PEFT reload, and B-group evaluation through the same `evaluate` pipeline. WP7 adds Public/Hidden GRPO datasets and configs, verifier-backed TRL reward wiring, merged-B policy initialization, sanitized rollout/reward/group logs, strict resume, completed C/D checkpoint identity, stacked inference reload, and unified C/D evaluation. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -522,7 +522,25 @@ The default output is `$CODE_VERIFIER_ARTIFACT_ROOT/grpo` or `outputs/grpo`. Res
 
 Policy construction is fixed: load base A, load completed B adapter read-only, validate its base/revision identity, safe-merge B into base weights, then let `GRPOTrainer` create a new trainable GRPO LoRA. Disabling the GRPO adapter therefore returns to B, not A. Quantization, remote code, vLLM, Hub push, and remote reporting remain disabled.
 
-The GTX 1660 Ti exercises production contracts through fake trainer/runtime integration and fails the non-lowerable 20 GiB guard before tokenizer/model loading. WP7-a produces no formal C/D checkpoint, metric, loss, or cost result. Real optimizer-based C/D training remains locked to the post-Development-Complete 24GB validation track; completed C/D reload and unified evaluation remain a later WP7 development stage.
+The GTX 1660 Ti exercises production contracts through fake trainer/runtime integration and fails the non-lowerable 20 GiB guard before tokenizer/model loading. WP7-a produces no formal C/D checkpoint, metric, loss, or cost result. Real optimizer-based C/D training remains locked to the post-Development-Complete 24GB validation track.
+
+## WP7-b completed GRPO checkpoint evaluation
+
+`evaluate` accepts exactly one of `--model-id`, `--sft-run-dir`, or `--grpo-run-dir`. The GRPO source must be a strict completed run. `load_completed_grpo_checkpoint()` validates its artifact layout and C/D adapter, reloads the recorded parent through `load_completed_sft_checkpoint()`, and rejects any copied parent metadata, path, base-model identity, or revision that has drifted.
+
+Evaluate a real C or D run only after the 4090 validation track has produced it:
+
+```bash
+.venv/bin/code-verifier evaluate \
+  --config configs/eval/base.yaml \
+  --grpo-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/grpo/<completed-c-or-d-run>" \
+  --run-name grpo-cd-main-r1 \
+  --seed 42
+```
+
+Inference reconstruction is fixed: load base A, attach completed B read-only, call `merge_and_unload(safe_merge=True)`, then attach the selected C/D adapter read-only. C and D use the same deterministic evaluator, three-layer verification, result schema, and aggregator as A and B; reward mode does not branch evaluation behavior. The evaluation checkpoint string binds both the C/D run and parent B identity, so exact-prefix resume fails closed if either changes.
+
+Development fixture adapters validate this identity, reload, resume, and payload-boundary contract on the GTX 1660 Ti. They are engineering evidence only and must never be reported as a real C/D checkpoint, metric, loss, cost, or validation result.
 
 ## Current limitations
 

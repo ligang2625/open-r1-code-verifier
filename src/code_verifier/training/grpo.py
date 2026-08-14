@@ -34,7 +34,7 @@ from code_verifier.execution.base import CodeExecutor
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.open_r1_adapter import import_open_r1_module
-from code_verifier.training.sft import SFTCheckpointIdentity, load_completed_sft_checkpoint
+from code_verifier.training.sft import SFTCheckpointIdentity, SFTTrainingError, load_completed_sft_checkpoint
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,21 @@ class GRPOTrainingSummary:
     train_loss: float
     train_samples: int
     gpu_hours: float
+
+
+@dataclass(frozen=True)
+class GRPOCheckpointIdentity:
+    """Non-sensitive identity for one completed GRPO adapter checkpoint."""
+
+    run_dir: Path
+    checkpoint_dir: Path
+    run_id: str
+    reward_mode: str
+    dataset_hash: str
+    config_hash: str
+    dependency_lock_hash: str
+    seed: int
+    parent_sft: SFTCheckpointIdentity
 
 
 class GRPOTrainingError(RuntimeError):
@@ -291,6 +306,125 @@ def load_grpo_training_config(path: Path) -> GRPOTrainingConfig:
         return grpo_training_config_from_mapping(load_yaml_mapping(path))
     except ConfigError as error:
         raise GRPOTrainingError(str(error)) from None
+
+
+def _checkpoint_identity_string(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise GRPOTrainingError(f"completed GRPO run has invalid {field_name}")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise GRPOTrainingError(f"completed GRPO run has invalid {field_name}") from None
+    return value
+
+
+def _checkpoint_identity_hash(value: object, *, field_name: str) -> str:
+    text = _checkpoint_identity_string(value, field_name=field_name)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise GRPOTrainingError(f"completed GRPO run has invalid {field_name}")
+    return text
+
+
+def load_completed_grpo_checkpoint(run_dir: Path) -> GRPOCheckpointIdentity:
+    """Load a completed GRPO adapter identity and revalidate its parent SFT run."""
+    try:
+        resolved_run_dir = run_dir.resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("completed GRPO run must be an existing directory") from None
+    if not resolved_run_dir.is_dir():
+        raise GRPOTrainingError("completed GRPO run must be an existing directory")
+    try:
+        if {path.name for path in resolved_run_dir.iterdir()} != _GRPO_RUN_LAYOUT:
+            raise GRPOTrainingError("completed GRPO run does not match the strict artifact layout")
+        checkpoint_path = resolved_run_dir / "checkpoints"
+        if checkpoint_path.is_symlink():
+            raise GRPOTrainingError("completed GRPO checkpoint must belong directly to its GRPO run")
+        checkpoint_dir = checkpoint_path.resolve(strict=True)
+        if not checkpoint_dir.is_dir() or checkpoint_dir.parent != resolved_run_dir:
+            raise GRPOTrainingError("completed GRPO checkpoint must belong directly to its GRPO run")
+        metadata_value = json.loads((resolved_run_dir / "run.json").read_text(encoding="utf-8"))
+    except GRPOTrainingError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise GRPOTrainingError("completed GRPO run metadata is unreadable") from None
+    if not isinstance(metadata_value, dict) or metadata_value.get("status") != "completed":
+        raise GRPOTrainingError("GRPO checkpoint loading requires a completed run")
+
+    adapter_paths = {name: checkpoint_dir / name for name in ("adapter_config.json", "adapter_model.safetensors")}
+    if any(not path.is_file() or path.is_symlink() for path in adapter_paths.values()):
+        raise GRPOTrainingError("completed GRPO run has an incomplete PEFT adapter artifact")
+    try:
+        adapter_config = json.loads(adapter_paths["adapter_config.json"].read_text(encoding="utf-8"))
+        adapter_size = adapter_paths["adapter_model.safetensors"].stat().st_size
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise GRPOTrainingError("completed GRPO run has an invalid PEFT adapter artifact") from None
+    if not isinstance(adapter_config, dict) or adapter_size <= 0:
+        raise GRPOTrainingError("completed GRPO run has an invalid PEFT adapter artifact")
+
+    parent_run_path = metadata_value.get("parent_sft_run_path")
+    if not isinstance(parent_run_path, str) or not parent_run_path.strip():
+        raise GRPOTrainingError("completed GRPO run has invalid parent_sft_run_path")
+    try:
+        parent_sft = load_completed_sft_checkpoint(Path(parent_run_path))
+    except SFTTrainingError as error:
+        raise GRPOTrainingError(f"completed GRPO parent SFT identity is invalid: {error}") from None
+    expected_parent = _parent_identity_mapping(parent_sft)
+    if any(metadata_value.get(field) != value for field, value in expected_parent.items()):
+        raise GRPOTrainingError("completed GRPO parent SFT identity does not match its completed run")
+
+    if adapter_config.get("base_model_name_or_path") != parent_sft.model_id:
+        raise GRPOTrainingError("GRPO adapter base model identity does not match the parent SFT run")
+    adapter_revision = adapter_config.get("revision")
+    if adapter_revision is not None and adapter_revision != parent_sft.model_revision:
+        raise GRPOTrainingError("GRPO adapter revision does not match the parent SFT run")
+    reward_mode = _checkpoint_identity_string(metadata_value.get("reward_mode"), field_name="reward_mode")
+    if reward_mode not in {"public", "hidden"}:
+        raise GRPOTrainingError("completed GRPO run has invalid reward_mode")
+    seed = metadata_value.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise GRPOTrainingError("completed GRPO run has invalid seed")
+    return GRPOCheckpointIdentity(
+        run_dir=resolved_run_dir,
+        checkpoint_dir=checkpoint_dir,
+        run_id=_checkpoint_identity_string(metadata_value.get("run_id"), field_name="run_id"),
+        reward_mode=reward_mode,
+        dataset_hash=_checkpoint_identity_hash(metadata_value.get("dataset_hash"), field_name="dataset_hash"),
+        config_hash=_checkpoint_identity_hash(metadata_value.get("config_hash"), field_name="config_hash"),
+        dependency_lock_hash=_checkpoint_identity_hash(
+            metadata_value.get("dependency_lock_hash"), field_name="dependency_lock_hash"
+        ),
+        seed=seed,
+        parent_sft=parent_sft,
+    )
+
+
+def grpo_evaluation_checkpoint_id(identity: GRPOCheckpointIdentity) -> str:
+    """Return a stable checkpoint string binding C/D and its completed parent B."""
+    parent = identity.parent_sft
+    canonical = {
+        "checkpoint_dir": str(identity.checkpoint_dir),
+        "config_hash": identity.config_hash,
+        "dataset_hash": identity.dataset_hash,
+        "dependency_lock_hash": identity.dependency_lock_hash,
+        "parent_sft": {
+            "checkpoint_dir": str(parent.checkpoint_dir),
+            "config_hash": parent.config_hash,
+            "dataset_hash": parent.dataset_hash,
+            "dependency_lock_hash": parent.dependency_lock_hash,
+            "model_id": parent.model_id,
+            "model_revision": parent.model_revision,
+            "run_dir": str(parent.run_dir),
+            "run_id": parent.run_id,
+            "seed": parent.seed,
+        },
+        "reward_mode": identity.reward_mode,
+        "run_dir": str(identity.run_dir),
+        "run_id": identity.run_id,
+        "seed": identity.seed,
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return f"{identity.checkpoint_dir}#identity={digest}"
 
 
 def validate_grpo_config_pair(public: GRPOTrainingConfig, hidden: GRPOTrainingConfig) -> None:
