@@ -1,8 +1,8 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through the WP6 SFT checkpoint evaluation integration are implemented.
+Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through the WP7-a GRPO control-plane integration are implemented.
 
-WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6 adds a visible-only SFT data contract, pinned LoRA/TRL/Open-R1 runtime construction, hardware protection, reproducible run artifacts, strict completed-run checkpoint identity, read-only PEFT reload, and B-group evaluation through the same `evaluate` pipeline. Real untrusted code may only be sent to an explicitly configured local Piston service.
+WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6 adds a visible-only SFT data contract, pinned LoRA/TRL/Open-R1 runtime construction, hardware protection, reproducible run artifacts, strict completed-run checkpoint identity, read-only PEFT reload, and B-group evaluation through the same `evaluate` pipeline. WP7-a adds Public/Hidden GRPO datasets and configs, verifier-backed TRL reward wiring, merged-B policy initialization, sanitized rollout/reward/group logs, strict resume, and the `train-grpo` CLI. Real untrusted code may only be sent to an explicitly configured local Piston service.
 
 ## Upstream dependency
 
@@ -491,6 +491,38 @@ After a real SFT run has completed on the 4090 validation machine, evaluate B wi
 The effective evaluation identity records the SFT run's base `model_id` and `model_revision` plus the resolved adapter `checkpoints/` path. Existing config hashing and exact-prefix resume therefore reject a different SFT run or checkpoint. The SFT path does not introduce a second evaluator, result schema, or metric definition.
 
 On the GTX 1660 Ti, fixture adapters and fake Transformers/PEFT runtimes validate this loader, CLI, resume, artifact, and aggregation contract without optimizer steps or model downloads. Those fixtures are engineering evidence only: they are not real B checkpoints, B metrics, loss, or cost evidence. A formal B result exists only after the 4090 validation track produces a real completed SFT run and evaluates it through the command above.
+
+## WP7-a GRPO control plane
+
+Public and Hidden GRPO use `configs/grpo/public.yaml` and `configs/grpo/hidden.yaml`. Their experiment settings are identical except `run_name`, `reward_mode`, and `dataset_path`; the paired datasets must keep problem order, prompt inputs, visible tests, and metadata identical. Public reward reads only `visible_tests`. Hidden reward reads only `train_hidden_tests`. Neither training path can load `eval_hidden_tests`.
+
+Every run consumes the complete ordered C/D definition pair before training. The preflight requires matching
+Public/Hidden configs and artifacts plus the same strict completed SFT B identity, then executes the selected reward
+mode:
+
+```bash
+export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/path/open-r1-code-verifier-outputs
+
+.venv/bin/code-verifier train-grpo \
+  --public-config configs/grpo/public.yaml \
+  --hidden-config configs/grpo/hidden.yaml \
+  --public-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --hidden-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --reward-mode public
+
+.venv/bin/code-verifier train-grpo \
+  --public-config configs/grpo/public.yaml \
+  --hidden-config configs/grpo/hidden.yaml \
+  --public-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --hidden-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --reward-mode hidden
+```
+
+The default output is `$CODE_VERIFIER_ARTIFACT_ROOT/grpo` or `outputs/grpo`. Resume requires a direct `<run>/checkpoints/checkpoint-N` child and exact parent-SFT, dataset, config, dependency, environment, seed, and reward-mode identity. Each run stores `rollouts.jsonl`, sanitized `rewards.jsonl`, `group_metrics.jsonl`, trainer metrics, and non-sensitive run metadata. Only rollout records contain completion text; reward/group/run/config/environment/stdout/stderr artifacts never contain test payloads.
+
+Policy construction is fixed: load base A, load completed B adapter read-only, validate its base/revision identity, safe-merge B into base weights, then let `GRPOTrainer` create a new trainable GRPO LoRA. Disabling the GRPO adapter therefore returns to B, not A. Quantization, remote code, vLLM, Hub push, and remote reporting remain disabled.
+
+The GTX 1660 Ti exercises production contracts through fake trainer/runtime integration and fails the non-lowerable 20 GiB guard before tokenizer/model loading. WP7-a produces no formal C/D checkpoint, metric, loss, or cost result. Real optimizer-based C/D training remains locked to the post-Development-Complete 24GB validation track; completed C/D reload and unified evaluation remain a later WP7 development stage.
 
 ## Current limitations
 

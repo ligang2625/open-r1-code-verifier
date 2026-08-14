@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from code_verifier.data.schema import CodeProblem, ProblemMetadata
 from code_verifier.data.schema import TestCase as CodeTestCase
-from code_verifier.prompting import build_code_prompt
+from code_verifier.data.schema import test_case_to_mapping as case_to_mapping
+from code_verifier.prompting import build_code_prompt, build_code_prompt_from_fields
 
 
 def _problem() -> CodeProblem:
@@ -59,3 +60,12 @@ def test_build_code_prompt_uses_visible_examples_only() -> None:
         "SFT_RESPONSE_SENTINEL",
     ):
         assert sentinel not in prompt
+
+
+def test_build_code_prompt_from_fields_matches_existing_problem_prompt() -> None:
+    problem = _problem()
+    assert build_code_prompt_from_fields(
+        problem.prompt,
+        problem.function_signature,
+        [case_to_mapping(test) for test in problem.visible_tests],
+    ) == build_code_prompt(problem)
