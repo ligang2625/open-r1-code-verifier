@@ -297,8 +297,14 @@ def load_manual_labels(
             raise AnalysisError("manual labels must uniquely reference known candidates")
         if normalized["run_id"] != candidate.run_id:
             raise AnalysisError("manual label run_id does not match its candidate")
+        if normalized["candidate_reasons"] != "|".join(candidate.candidate_reasons):
+            raise AnalysisError("manual label candidate_reasons does not match its candidate")
+        if normalized["auto_error_category"] != candidate.auto_error_category:
+            raise AnalysisError("manual label auto_error_category does not match its candidate")
         if normalized["manual_category"] not in _MANUAL_CATEGORIES:
             raise AnalysisError("manual_category is invalid")
+        if not normalized["source_results_path"].strip():
+            raise AnalysisError("manual label source_results_path must be non-empty")
         seen.add(key)
         validated.append(dict(normalized))
     return tuple(validated)
@@ -575,6 +581,8 @@ def _write_analysis_outputs(temp_dir: Path, inputs: AnalysisInputs) -> tuple[int
         if config.manual_labels_path is None
         else load_manual_labels(config.manual_labels_path, candidates=candidates)
     )
+    if config.manual_labels_path is not None and len(manual_labels) < 20:
+        raise AnalysisError("completed manual analysis must contain at least 20 unique candidate labels")
     auto_counts = [
         {"method": method, "auto_error_category": category, "count": count}
         for method in ("Base", "SFT", "Public-RLVR", "Hidden-RLVR")

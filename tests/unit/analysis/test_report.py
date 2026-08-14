@@ -210,6 +210,17 @@ def test_load_manual_labels_requires_unique_known_candidates(tmp_path: Path) -> 
         load_manual_labels(labels, candidates=[candidate])
 
 
+def test_load_manual_labels_rejects_candidate_metadata_drift(tmp_path: Path) -> None:
+    candidate = _candidate(1)
+    labels = tmp_path / "labels.csv"
+    _write_labels(labels, [candidate])
+    text = labels.read_text(encoding="utf-8").replace("visible_pass_eval_fail", "timeout")
+    labels.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AnalysisError, match="candidate_reasons"):
+        load_manual_labels(labels, candidates=[candidate])
+
+
 def test_manual_label_fixture_can_validate_twenty_case_contract_without_becoming_research_evidence(
     tmp_path: Path,
 ) -> None:
@@ -317,6 +328,18 @@ def test_manual_error_counts_remain_pending_without_human_labels(tmp_path: Path)
 
     assert report["manual_analysis_status"] == "pending"
     assert (output / "manual_error_counts.csv").read_text() == "method,manual_category,count\n"
+
+
+def test_completed_manual_analysis_requires_twenty_unique_labels(tmp_path: Path) -> None:
+    config = _analysis_fixture(tmp_path)
+    first_output = tmp_path / "analysis-template"
+    analyze_experiment(config, output_dir=first_output)
+    labels = tmp_path / "labels.csv"
+    text = (first_output / "manual_labels_template.csv").read_text(encoding="utf-8")
+    labels.write_text(text.replace(",,,", ",missed_edge_case,fixture,"), encoding="utf-8")
+
+    with pytest.raises(AnalysisError, match="at least 20"):
+        analyze_experiment(replace(config, manual_labels_path=labels), output_dir=tmp_path / "analysis-labeled")
 
 
 def test_existing_output_directory_fails_closed_without_partial_overwrite(tmp_path: Path) -> None:
