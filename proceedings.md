@@ -537,3 +537,27 @@ WP6-a 与 WP6-c 已覆盖当前 development track 的 SFT 数据/训练控制面
 ### WP7 development 状态
 
 WP7-a 已完成当前 development track 的 GRPO control-plane、reward wiring、artifact/resume 与 C/D fairness 工程合同。completed C/D checkpoint identity、从 merged B + C/D adapter 的独立 reload、统一 C/D evaluation/aggregation 接入等后续 WP7 development 工作仍未完成；真实 C/D optimizer run、正式 checkpoint/数值/成本继续属于 24GB validation track。当前 stage 的 `development_terminal=false`，因此本次 finalize **不会**写 `Development Complete Record`。
+
+---
+
+## WP7-b：GRPO checkpoint 重载与 C/D 统一评测开发
+
+- **完成日期**：2026-08-14
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP7-b-review.md` R1）
+- **执行计划**：`ai-work/planner/WP7-b-plan.md`
+- **实施范围**：完成 strict completed-GRPO checkpoint identity、parent completed-SFT B 重新验证与强绑定、`base A → B read-only → safe merge → C/D read-only` 的独立 inference reload、`evaluate --grpo-run-dir` 显式 C/D 入口、与 A/B 共用 deterministic evaluator/aggregator 的 exact-resume contract，以及 fixture/fake runtime 工程验证；本 stage 未执行 optimizer-based GRPO、未产生正式 C/D checkpoint、研究数值或成本。
+
+### 验收结论
+
+- completed GRPO run 仅在 `status=completed`、strict artifact layout、final adapter artifact、GRPO identity 与 parent B identity 全部有效时可加载；parent B 必须重新通过 `load_completed_sft_checkpoint()` 验证，并与 GRPO run 中记录的 parent metadata 逐字段一致。
+- C/D inference 严格重建为 `base A → attach completed B read-only → merge_and_unload(safe_merge=True) → attach C/D read-only`；不会把 C/D 直接挂到 A，也不会保留 B 作为 active PEFT adapter。
+- C/D evaluation 继续复用 `run_pass1_evaluation()` 与 `aggregate_evaluation_run()`；`EvaluationConfig.checkpoint` 的 canonical identity 同时绑定 C/D run/checkpoint 与 parent B identity，切换 C/D、parent B、data/config/seed 后 exact-prefix resume 均 fail closed。
+- prompt 与 non-sample artifacts 继续保持 hidden/reference/starter/SFT-response payload boundary；Public/Hidden fixture 仅作为 engineering evidence，不冒充正式 C/D checkpoint、metric、loss 或 cost。
+- R1 独立验收：WP7-b focused suite `160 passed`；`make lint` 全绿；`make test`：833 passed、3 个既有显式 real-Piston opt-in tests skipped；`make test-gpu`：3 passed；real loopback Piston validation 返回 `3.10.0`。
+- `third_party/open-r1/**`、`pyproject.toml`、`uv.lock` 未修改；没有依赖升级、实验定义变化或真实 GRPO 训练。
+- WP7-b merge commit：`adc0490f72d28e78b87f7cde9ae6bcb62e3d589e`。
+
+### WP7 development 聚合状态
+
+WP7-a 与 WP7-b 已覆盖当前 development track 的 GRPO control-plane/reward/artifact/resume/fairness，以及 completed C/D checkpoint identity、parent B binding、stacked inference reload 与统一 C/D evaluation/aggregation 接入。真实 C/D optimizer run、正式 checkpoint/研究数值/成本仍属于 Development Complete Record 之后的 24GB validation track，不能由本 development stage 视为完成。WP8 development 仍未完成；本 stage 的 `development_terminal=false`，因此本次 finalize **不会**写 `Development Complete Record`。

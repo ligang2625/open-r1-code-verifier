@@ -103,3 +103,14 @@ repair_routing:
 ### Conclusion
 
 **PASS.** The reviewed state at `d894f887c7fb77ce24338b4779655187b572e2d9` is acceptable as WP7-b development evidence. The next lifecycle operation is `$stage-lifecycle checkpoint_review`. After that review checkpoint is committed and remains current, the stage may proceed to `$stage-lifecycle finalize`.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  review_round: 1
+  review_commit: 95189360692bfee282f77cdac9a7a4c2b2b338eb
+  merge_commit: adc0490f72d28e78b87f7cde9ae6bcb62e3d589e
+  finalized_at: 2026-08-14T17:58:14+08:00
+  status: finalized
+```
