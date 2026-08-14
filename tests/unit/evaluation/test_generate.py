@@ -141,6 +141,60 @@ class _FakePeftModelLoader:
         return model
 
 
+class _FakeStackedPeftConfigLoader:
+    def __init__(self, values: dict[Path, object]) -> None:
+        self.values = values
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def from_pretrained(self, adapter_dir: str, **kwargs: object) -> object:
+        self.calls.append((adapter_dir, dict(kwargs)))
+        return self.values[Path(adapter_dir)]
+
+
+class _FakeParentPolicy:
+    def __init__(self, merged_model: _FakeModel, calls: list[object], *, merge_available: bool = True) -> None:
+        self.merged_model = merged_model
+        self.calls = calls
+        if not merge_available:
+            self.merge_and_unload = None  # type: ignore[assignment]
+
+    def merge_and_unload(self, *, safe_merge: bool) -> _FakeModel:
+        self.calls.append(("merge_b", safe_merge))
+        return self.merged_model
+
+
+class _FakeStackedPeftModelLoader:
+    def __init__(
+        self,
+        *,
+        parent_dir: Path,
+        grpo_dir: Path,
+        merged_model: _FakeModel,
+        final_model: _FakeModel,
+        calls: list[object],
+        merge_available: bool = True,
+        grpo_failure: Exception | None = None,
+    ) -> None:
+        self.parent_dir = parent_dir
+        self.grpo_dir = grpo_dir
+        self.merged_model = merged_model
+        self.final_model = final_model
+        self.calls = calls
+        self.merge_available = merge_available
+        self.grpo_failure = grpo_failure
+
+    def from_pretrained(self, model: object, adapter_dir: str, **kwargs: object) -> object:
+        path = Path(adapter_dir)
+        self.calls.append(("attach", path, model, dict(kwargs)))
+        if path == self.parent_dir:
+            return _FakeParentPolicy(self.merged_model, self.calls, merge_available=self.merge_available)
+        assert path == self.grpo_dir
+        assert model is self.merged_model
+        if self.grpo_failure is not None:
+            raise self.grpo_failure
+        return self.final_model
+
+
 def _peft_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -167,6 +221,56 @@ def _peft_runtime(
     )
     monkeypatch.setattr(generation_module, "_load_peft_runtime", lambda: (config_loader, model_loader))
     return adapter_dir, tokenizer, model, transformers_runtime, config_loader, model_loader
+
+
+def _stacked_peft_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    parent_model_id: str = "example/model",
+    grpo_model_id: str = "example/model",
+    parent_revision: str | None = "revision-1",
+    grpo_revision: str | None = "revision-1",
+    merge_available: bool = True,
+    grpo_failure: Exception | None = None,
+) -> tuple[
+    Path,
+    Path,
+    _FakeModel,
+    _FakeModel,
+    _FakeTransformers,
+    _FakeStackedPeftConfigLoader,
+    _FakeStackedPeftModelLoader,
+    list[object],
+]:
+    parent_dir = (tmp_path / "parent-b").resolve()
+    grpo_dir = (tmp_path / "grpo-cd").resolve()
+    parent_dir.mkdir()
+    grpo_dir.mkdir()
+    tokenizer = _FakeTokenizer()
+    base_model = _FakeModel()
+    merged_model = _FakeModel()
+    final_model = _FakeModel()
+    runtime = _FakeTransformers(tokenizer, base_model)
+    calls: list[object] = []
+    config_loader = _FakeStackedPeftConfigLoader(
+        {
+            parent_dir: SimpleNamespace(base_model_name_or_path=parent_model_id, revision=parent_revision),
+            grpo_dir: SimpleNamespace(base_model_name_or_path=grpo_model_id, revision=grpo_revision),
+        }
+    )
+    model_loader = _FakeStackedPeftModelLoader(
+        parent_dir=parent_dir,
+        grpo_dir=grpo_dir,
+        merged_model=merged_model,
+        final_model=final_model,
+        calls=calls,
+        merge_available=merge_available,
+        grpo_failure=grpo_failure,
+    )
+    monkeypatch.setattr(generation_module, "_load_transformers_runtime", lambda: (_FakeTorch(), runtime))
+    monkeypatch.setattr(generation_module, "_load_peft_runtime", lambda: (config_loader, model_loader))
+    return parent_dir, grpo_dir, merged_model, final_model, runtime, config_loader, model_loader, calls
 
 
 def _backend() -> tuple[TransformersCompletionGenerator, _FakeTokenizer, _FakeModel, _FakeTransformers]:
@@ -460,6 +564,160 @@ def test_from_peft_checkpoint_wraps_runtime_failure_without_payload(
 
     assert str(error.value) == "could not load PEFT adapter for inference: RuntimeError"
     assert "PRIVATE_PAYLOAD_SENTINEL" not in str(error.value)
+
+
+def test_from_grpo_checkpoint_loads_a_merges_b_then_loads_cd_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_dir, grpo_dir, merged, final, runtime, _, _, calls = _stacked_peft_runtime(tmp_path, monkeypatch)
+
+    generator = TransformersCompletionGenerator.from_grpo_checkpoint(
+        base_model_id="example/model",
+        base_model_revision="revision-1",
+        parent_sft_adapter_dir=parent_dir,
+        grpo_adapter_dir=grpo_dir,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+    )
+
+    assert isinstance(generator, TransformersCompletionGenerator)
+    assert runtime.AutoModelForCausalLM.calls[0][0] == "example/model"
+    assert calls[0][0:2] == ("attach", parent_dir)
+    assert calls[0][3]["is_trainable"] is False
+    assert calls[1] == ("merge_b", True)
+    assert calls[2][0:3] == ("attach", grpo_dir, merged)
+    assert calls[2][3]["is_trainable"] is False
+    assert final.eval_called is True
+
+
+def test_from_grpo_checkpoint_requires_safe_merge_before_cd_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_dir, grpo_dir, _, _, _, _, _, calls = _stacked_peft_runtime(
+        tmp_path,
+        monkeypatch,
+        merge_available=False,
+    )
+
+    with pytest.raises(GenerationError, match="safe merge"):
+        TransformersCompletionGenerator.from_grpo_checkpoint(
+            base_model_id="example/model",
+            base_model_revision="revision-1",
+            parent_sft_adapter_dir=parent_dir,
+            grpo_adapter_dir=grpo_dir,
+            device="cpu",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+        )
+
+    assert [call for call in calls if isinstance(call, tuple) and call[0] == "attach"] == [calls[0]]
+
+
+@pytest.mark.parametrize("role", ["parent", "grpo"])
+def test_from_grpo_checkpoint_rejects_parent_or_grpo_adapter_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+) -> None:
+    parent_dir, grpo_dir, _, _, runtime, _, _, _ = _stacked_peft_runtime(
+        tmp_path,
+        monkeypatch,
+        parent_model_id="other/model" if role == "parent" else "example/model",
+        grpo_model_id="other/model" if role == "grpo" else "example/model",
+    )
+
+    with pytest.raises(GenerationError, match="base model identity"):
+        TransformersCompletionGenerator.from_grpo_checkpoint(
+            base_model_id="example/model",
+            base_model_revision="revision-1",
+            parent_sft_adapter_dir=parent_dir,
+            grpo_adapter_dir=grpo_dir,
+            device="cpu",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+        )
+
+    assert runtime.AutoModelForCausalLM.calls == []
+
+
+def test_from_grpo_checkpoint_accepts_none_adapter_revision_under_pinned_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_dir, grpo_dir, _, final, _, _, _, _ = _stacked_peft_runtime(
+        tmp_path,
+        monkeypatch,
+        parent_revision=None,
+        grpo_revision=None,
+    )
+
+    TransformersCompletionGenerator.from_grpo_checkpoint(
+        base_model_id="example/model",
+        base_model_revision="revision-1",
+        parent_sft_adapter_dir=parent_dir,
+        grpo_adapter_dir=grpo_dir,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+    )
+
+    assert final.eval_called is True
+
+
+def test_from_grpo_checkpoint_preserves_dtype_device_local_only_and_eval_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_dir, grpo_dir, _, final, runtime, config_loader, _, calls = _stacked_peft_runtime(
+        tmp_path,
+        monkeypatch,
+    )
+
+    TransformersCompletionGenerator.from_grpo_checkpoint(
+        base_model_id="example/model",
+        base_model_revision="revision-1",
+        parent_sft_adapter_dir=parent_dir,
+        grpo_adapter_dir=grpo_dir,
+        device="cuda",
+        config=GenerationConfig(
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            max_new_tokens=8,
+            dtype="float16",
+        ),
+        local_files_only=True,
+    )
+
+    assert runtime.AutoModelForCausalLM.calls[0][1]["torch_dtype"] == "fake-float16"
+    assert runtime.AutoModelForCausalLM.calls[0][1]["local_files_only"] is True
+    assert all(options["local_files_only"] is True for _, options in config_loader.calls)
+    assert all(call[3]["local_files_only"] is True for call in calls if call[0] == "attach")
+    assert final.to_device == "cuda"
+    assert final.eval_called is True
+
+
+def test_from_grpo_checkpoint_wraps_runtime_failure_without_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_dir, grpo_dir, _, _, _, _, _, _ = _stacked_peft_runtime(
+        tmp_path,
+        monkeypatch,
+        grpo_failure=RuntimeError("PRIVATE_GRPO_PAYLOAD_SENTINEL"),
+    )
+
+    with pytest.raises(GenerationError) as error:
+        TransformersCompletionGenerator.from_grpo_checkpoint(
+            base_model_id="example/model",
+            base_model_revision="revision-1",
+            parent_sft_adapter_dir=parent_dir,
+            grpo_adapter_dir=grpo_dir,
+            device="cpu",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+        )
+
+    assert str(error.value) == "could not load GRPO adapter for inference: RuntimeError"
+    assert "PRIVATE_GRPO_PAYLOAD_SENTINEL" not in str(error.value)
 
 
 def test_transformers_generator_uses_user_chat_template() -> None:
