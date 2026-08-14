@@ -561,3 +561,37 @@ WP7-a 已完成当前 development track 的 GRPO control-plane、reward wiring�
 ### WP7 development 聚合状态
 
 WP7-a 与 WP7-b 已覆盖当前 development track 的 GRPO control-plane/reward/artifact/resume/fairness，以及 completed C/D checkpoint identity、parent B binding、stacked inference reload 与统一 C/D evaluation/aggregation 接入。真实 C/D optimizer run、正式 checkpoint/研究数值/成本仍属于 Development Complete Record 之后的 24GB validation track，不能由本 development stage 视为完成。WP8 development 仍未完成；本 stage 的 `development_terminal=false`，因此本次 finalize **不会**写 `Development Complete Record`。
+
+---
+
+## WP8：实验聚合、错误分析与 development closeout
+
+- **完成日期**：2026-08-14
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP8-review.md` R2）
+- **执行计划**：`ai-work/planner/WP8-plan.md`
+- **实施范围**：完成 project-owned reward/SFT scalar logging、严格 A–D analysis manifest/source identity/provenance 校验、problem-level paired comparison/bootstrap、failure candidate 与人工标注数据合同、training-curve/cost 汇总、原子化 report artifacts、`analyze-results` CLI 与 deterministic synthetic integration fixture，并执行 terminal development closeout；本 stage 未运行真实 SFT/GRPO optimizer，也未产生或宣称正式 A–D 研究数值、真实成本结论或人工案例结论。
+
+### 验收结论
+
+- R2 独立验收确认 R1 的 5 个 analysis contract 问题全部修复：resolved evaluation definition 重新绑定 canonical `config_hash`，A–D source provenance 写入 derived report，large public→eval gap candidate 被覆盖，train-hidden-specific reason 仅属于 Hidden-RLVR，fixture 输出显式标记为 synthetic engineering evidence。
+- WP8 focused gate：`227 passed`；`make lint` 全绿；`make test`：`881 passed`、3 个显式 real-Piston opt-in tests 按设计 skipped；`make test-gpu`：`3 passed`、0 skipped；`make test-piston`：`9 passed`、0 skipped。
+- production critical path 未发现 `TODO`、`FIXME`、`NotImplementedError`、`stub` 或 `fake` implementation；`pyproject.toml`、`uv.lock` 与 `third_party/open-r1` gitlink 未改变。
+- WP0–WP8 Development Completion Inventory 已由 R2 独立核验完整满足；真实 SFT/GRPO、正式 B/C/D checkpoints、最终 A–D 数值与成本/人工分析继续严格属于 24GB validation track。
+- WP8 merge commit：`b1d3eb45a60dc5462dc45e25c7bcf50b4e1d9c1a`。
+
+### Development track 聚合状态
+
+WP0–WP8 的 development track 已全部完成并通过当前工程验收。GTX 1660 Ti 上的开发到此结束；后续 validation 必须以本次 finalization 后的精确 `development_complete_commit` 为基线迁移到 24GB-class GPU，重新安装 pinned training environment，并重新运行 planner-ex 规划 validation stage。不得在当前 1660 Ti checkout 上直接 bootstrap validation。
+
+## Development Complete Record
+```yaml
+development_complete_record:
+  version: 1
+  terminal_stage_id: WP8
+  review_commit: 9003c953bbce2fcda7aefa535883ba22fbbe01d0
+  merge_commit: b1d3eb45a60dc5462dc45e25c7bcf50b4e1d9c1a
+  finalized_at: "2026-08-14T20:07:35+08:00"
+  completion_inventory_verified: true
+  development_complete: true
+```

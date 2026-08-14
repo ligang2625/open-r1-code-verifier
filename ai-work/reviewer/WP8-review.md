@@ -227,3 +227,14 @@ repair_routing:
 ### Conclusion
 
 **PASS.** The reviewed state at `defc6d40dffbd60cc65d878319ffaa3d25a7f83e` satisfies the sealed WP8 terminal-development plan and resolves all R1 findings. The next lifecycle operation is `$stage-lifecycle checkpoint_review`; if that checkpoint remains current, proceed with `$stage-lifecycle finalize` so lifecycle can merge WP8, write the terminal `Development Complete Record`, and report the exact `development_complete_commit` for the subsequent 1660 Ti → 4090 handoff.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  review_round: 2
+  review_commit: 9003c953bbce2fcda7aefa535883ba22fbbe01d0
+  merge_commit: b1d3eb45a60dc5462dc45e25c7bcf50b4e1d9c1a
+  finalized_at: "2026-08-14T20:07:35+08:00"
+  status: finalized
+```
