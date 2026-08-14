@@ -101,7 +101,6 @@ def test_select_failure_candidates_is_deterministic_and_payload_free() -> None:
     assert [candidate.problem_id for candidate in candidates] == ["p2"]
     assert candidates[0].candidate_reasons == (
         "visible_pass_eval_fail",
-        "train_hidden_pass_eval_fail",
         "partial_eval_hidden_failure",
     )
     assert "PRIVATE_COMPLETION" not in serialized
@@ -115,6 +114,17 @@ def test_reward_hacking_candidate_proxy_uses_one_definition_for_all_methods() ->
     result = _compare(hidden, public)
 
     assert result.reward_hacking_candidate_rate_delta == 0.0
+
+
+def test_select_failure_candidates_marks_large_public_eval_gap_and_hidden_train_reason() -> None:
+    large_gap = replace(
+        _record("p1", visible=0.75, train_hidden=0.0, eval_hidden=0.0),
+        error_category_auto="large_public_eval_gap",
+    )
+    hidden = _record("p2", visible=0.0, train_hidden=1.0, eval_hidden=0.0)
+
+    assert select_failure_candidates("Public-RLVR", [large_gap])[0].candidate_reasons == ("large_public_eval_gap",)
+    assert select_failure_candidates("Hidden-RLVR", [hidden])[0].candidate_reasons == ("train_hidden_pass_eval_fail",)
 
 
 def test_select_failure_candidates_maps_strict_status_and_parse_reasons() -> None:

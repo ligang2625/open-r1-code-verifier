@@ -305,6 +305,9 @@ def test_report_data_traces_every_method_to_source_results_hash(tmp_path: Path) 
 
     assert set(report["sources"]) == {"Base", "SFT", "Public-RLVR", "Hidden-RLVR"}
     assert all(len(source["results_sha256"]) == 64 for source in report["sources"].values())
+    assert all(source["project_commit"] == "fixture-project-commit" for source in report["sources"].values())
+    assert all(source["open_r1_commit"] == "fixture-open-r1-commit" for source in report["sources"].values())
+    assert all(source["dependency_lock_hash"] == "e" * 64 for source in report["sources"].values())
 
 
 def test_report_outputs_do_not_copy_completion_code_or_tests(tmp_path: Path) -> None:

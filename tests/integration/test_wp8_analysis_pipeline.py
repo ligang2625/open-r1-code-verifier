@@ -20,7 +20,11 @@ def _comparison_row(path: Path, left: str, right: str) -> dict[str, str]:
 def test_wp8_analysis_pipeline_generates_traceable_fixture_report(tmp_path: Path) -> None:
     config = _analysis_fixture(tmp_path)
 
-    summary = analyze_experiment(config, output_dir=tmp_path / "analysis")
+    summary = analyze_experiment(
+        config,
+        output_dir=tmp_path / "analysis",
+        evidence_class="engineering_fixture_synthetic",
+    )
     report = json.loads(summary.report_data_path.read_text(encoding="utf-8"))
     main_rows = list(csv.DictReader(summary.main_results_path.open(encoding="utf-8", newline="")))
 
@@ -71,12 +75,17 @@ def test_wp8_analysis_pipeline_rejects_identity_drift(tmp_path: Path, drift: str
 def test_wp8_fixture_outputs_never_claim_real_training_or_manual_evidence(tmp_path: Path) -> None:
     config = _analysis_fixture(tmp_path)
 
-    summary = analyze_experiment(config, output_dir=tmp_path / "analysis")
+    summary = analyze_experiment(
+        config,
+        output_dir=tmp_path / "analysis",
+        evidence_class="engineering_fixture_synthetic",
+    )
     report = json.loads(summary.report_data_path.read_text(encoding="utf-8"))
     derived = "\n".join(path.read_text(encoding="utf-8") for path in summary.output_dir.iterdir())
 
     assert report["manual_analysis_status"] == "pending"
     assert report["manual_label_count"] == 0
+    assert report["evidence_class"] == "engineering_fixture_synthetic"
     assert "formal_validation" not in derived
     assert "real_training_completed" not in derived
     assert "PRIVATE_COMPLETION" not in derived

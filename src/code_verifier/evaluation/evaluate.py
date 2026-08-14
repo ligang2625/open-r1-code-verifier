@@ -525,6 +525,21 @@ def evaluation_config_hash(config: EvaluationConfig, *, model_id: str, seed: int
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def resolved_evaluation_config_hash(value: object) -> str:
+    """Recompute the canonical identity of one persisted resolved evaluation config."""
+    root = _exact_mapping(value, _CONFIG_FIELDS | {"run_id", "model_id", "seed"}, field_name="resolved config")
+    seed = root["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise EvaluationError("resolved config seed must be an integer")
+    config = evaluation_config_from_mapping({field: root[field] for field in _CONFIG_FIELDS})
+    _nonempty_string(root["run_id"], field_name="run_id")
+    return evaluation_config_hash(
+        config,
+        model_id=_nonempty_string(root["model_id"], field_name="model_id"),
+        seed=seed,
+    )
+
+
 @dataclass(frozen=True)
 class _RunContext:
     run_dir: Path

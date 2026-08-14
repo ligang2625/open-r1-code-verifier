@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import yaml
 
@@ -476,6 +476,7 @@ def _manual_template_rows(inputs: AnalysisInputs, candidates: Sequence[FailureCa
 def _build_report_data(
     inputs: AnalysisInputs,
     *,
+    evidence_class: str,
     aggregates: Mapping[str, EvaluationAggregate],
     main_rows: Sequence[Mapping[str, object]],
     comparison_rows: Sequence[Mapping[str, object]],
@@ -495,12 +496,15 @@ def _build_report_data(
             "checkpoint": metadata["checkpoint"],
             "dataset_hash": metadata["dataset_hash"],
             "config_hash": metadata["config_hash"],
+            "project_commit": metadata["project_commit"],
+            "open_r1_commit": metadata["open_r1_commit"],
+            "dependency_lock_hash": metadata["dependency_lock_hash"],
             "results_path": str(results_path),
             "results_sha256": _sha256(results_path),
         }
     return {
         "schema_version": 1,
-        "evidence_class": "analysis_source_artifacts",
+        "evidence_class": evidence_class,
         "manifest_hash": _manifest_hash(inputs.config),
         "bootstrap": {
             "seed": inputs.config.bootstrap_seed,
@@ -525,7 +529,7 @@ def _build_report_data(
     }
 
 
-def _write_analysis_outputs(temp_dir: Path, inputs: AnalysisInputs) -> tuple[int, int, int]:
+def _write_analysis_outputs(temp_dir: Path, inputs: AnalysisInputs, *, evidence_class: str) -> tuple[int, int, int]:
     config = inputs.config
     aggregates = {
         method: aggregate_evaluation_records(
@@ -628,6 +632,7 @@ def _write_analysis_outputs(temp_dir: Path, inputs: AnalysisInputs) -> tuple[int
         temp_dir / "report_data.json",
         _build_report_data(
             inputs,
+            evidence_class=evidence_class,
             aggregates=aggregates,
             main_rows=main_rows,
             comparison_rows=comparison_rows,
@@ -649,6 +654,9 @@ def analyze_experiment(
     config: AnalysisConfig,
     *,
     output_dir: Path,
+    evidence_class: Literal[
+        "analysis_source_artifacts", "engineering_fixture_synthetic"
+    ] = "analysis_source_artifacts",
 ) -> AnalysisSummary:
     """Validate source identities and atomically generate all WP8 report inputs."""
     if output_dir.exists():
@@ -658,7 +666,11 @@ def analyze_experiment(
     temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=parent))
     try:
         inputs = load_analysis_inputs(config)
-        total, candidate_count, manual_count = _write_analysis_outputs(temporary, inputs)
+        total, candidate_count, manual_count = _write_analysis_outputs(
+            temporary,
+            inputs,
+            evidence_class=evidence_class,
+        )
         os.replace(temporary, output_dir)
     except AnalysisError:
         shutil.rmtree(temporary, ignore_errors=True)

@@ -14,7 +14,12 @@ import yaml
 
 from code_verifier.config import ConfigError, load_yaml_mapping
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
-from code_verifier.evaluation.evaluate import EvaluationError, EvaluationRecord, load_evaluation_records
+from code_verifier.evaluation.evaluate import (
+    EvaluationError,
+    EvaluationRecord,
+    load_evaluation_records,
+    resolved_evaluation_config_hash,
+)
 from code_verifier.training.grpo import (
     GRPOCheckpointIdentity,
     GRPOTrainingError,
@@ -175,6 +180,20 @@ def _load_evaluation_run(
         raise AnalysisError(f"{method} resolved evaluation config is invalid")
     if not records:
         raise AnalysisError(f"{method} evaluation must contain records")
+    try:
+        resolved_config_hash = resolved_evaluation_config_hash(resolved_value)
+    except EvaluationError:
+        raise AnalysisError(f"{method} resolved evaluation config identity is invalid") from None
+    if resolved_config_hash != metadata.get("config_hash"):
+        raise AnalysisError(f"{method} resolved evaluation config does not match config_hash")
+    for field in ("project_commit", "open_r1_commit"):
+        if field not in metadata or (
+            metadata[field] is not None and (not isinstance(metadata[field], str) or not metadata[field].strip())
+        ):
+            raise AnalysisError(f"{method} evaluation has invalid {field} provenance")
+    dependency_lock_hash = metadata.get("dependency_lock_hash")
+    if not isinstance(dependency_lock_hash, str) or not dependency_lock_hash.strip():
+        raise AnalysisError(f"{method} evaluation has invalid dependency_lock_hash provenance")
     problem_ids = [record.problem_id for record in records]
     if len(problem_ids) != len(set(problem_ids)):
         raise AnalysisError(f"{method} evaluation contains duplicate problem_id values")

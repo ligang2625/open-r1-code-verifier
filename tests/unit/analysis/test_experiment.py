@@ -10,17 +10,23 @@ import pytest
 import yaml
 
 from code_verifier.analysis.experiment import AnalysisConfig, AnalysisError, load_analysis_config, load_analysis_inputs
-from code_verifier.evaluation.evaluate import EvaluationRecord, evaluation_record_to_mapping
+from code_verifier.evaluation.evaluate import (
+    EvaluationRecord,
+    evaluation_record_to_mapping,
+    resolved_evaluation_config_hash,
+)
 from code_verifier.training import grpo_evaluation_checkpoint_id, load_completed_grpo_checkpoint
 
 
-def _record(*, run_id: str, checkpoint: str, problem_id: str, dataset_hash: str = "d" * 64) -> EvaluationRecord:
+def _record(
+    *, run_id: str, checkpoint: str, config_hash: str, problem_id: str, dataset_hash: str = "d" * 64
+) -> EvaluationRecord:
     return EvaluationRecord(
         run_id=run_id,
         model_id="example/model",
         checkpoint=checkpoint,
         dataset_hash=dataset_hash,
-        config_hash=(run_id[0] * 64),
+        config_hash=config_hash,
         problem_id=problem_id,
         prompt_hash=(problem_id[-1] * 64),
         completion="```python\ndef solve(x): return x\n```",
@@ -128,21 +134,6 @@ def _write_evaluation(
     seed: int = 42,
 ) -> None:
     (path / "samples").mkdir(parents=True)
-    records = [
-        _record(run_id=run_id, checkpoint=checkpoint, problem_id=item, dataset_hash=dataset_hash)
-        for item in problem_ids
-    ]
-    metadata = {
-        "status": "completed",
-        "run_id": run_id,
-        "model_id": "example/model",
-        "model_revision": "a" * 40,
-        "checkpoint": checkpoint,
-        "dataset_hash": dataset_hash,
-        "config_hash": records[0].config_hash,
-        "seed": seed,
-    }
-    (path / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
     resolved = {
         "dataset_dir": "/fixture/data",
         "split": "test",
@@ -161,6 +152,31 @@ def _write_evaluation(
         "model_id": "example/model",
         "seed": seed,
     }
+    config_hash = resolved_evaluation_config_hash(resolved)
+    records = [
+        _record(
+            run_id=run_id,
+            checkpoint=checkpoint,
+            config_hash=config_hash,
+            problem_id=item,
+            dataset_hash=dataset_hash,
+        )
+        for item in problem_ids
+    ]
+    metadata = {
+        "status": "completed",
+        "run_id": run_id,
+        "model_id": "example/model",
+        "model_revision": "a" * 40,
+        "checkpoint": checkpoint,
+        "dataset_hash": dataset_hash,
+        "config_hash": config_hash,
+        "seed": seed,
+        "project_commit": "fixture-project-commit",
+        "open_r1_commit": "fixture-open-r1-commit",
+        "dependency_lock_hash": "e" * 64,
+    }
+    (path / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
     (path / "resolved_config.yaml").write_text(yaml.safe_dump(resolved), encoding="utf-8")
     (path / "samples" / "results.jsonl").write_text(
         "".join(json.dumps(evaluation_record_to_mapping(record)) + "\n" for record in records), encoding="utf-8"
@@ -250,6 +266,37 @@ def test_load_analysis_inputs_rejects_decoding_or_seed_drift(tmp_path: Path) -> 
     metadata["seed"] = 9
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     with pytest.raises(AnalysisError, match="seed"):
+        load_analysis_inputs(config)
+
+
+@pytest.mark.parametrize("tamper", ["resolved_config", "piston_definition"])
+def test_load_analysis_inputs_rejects_resolved_evaluation_identity_tampering(tmp_path: Path, tamper: str) -> None:
+    config = _fixture(tmp_path)
+    if tamper == "resolved_config":
+        path = config.public_evaluation_run_dir / "resolved_config.yaml"
+        resolved = yaml.safe_load(path.read_text(encoding="utf-8"))
+        resolved["generation"]["max_new_tokens"] = 999
+        path.write_text(yaml.safe_dump(resolved), encoding="utf-8")
+    else:
+        (tmp_path / "piston.yaml").write_text("piston:\n  url: http://127.0.0.1:3000\n", encoding="utf-8")
+
+    with pytest.raises(AnalysisError, match="resolved evaluation config"):
+        load_analysis_inputs(config)
+
+
+@pytest.mark.parametrize(
+    "field,value", [("project_commit", ""), ("open_r1_commit", 7), ("dependency_lock_hash", None)]
+)
+def test_load_analysis_inputs_rejects_missing_or_malformed_source_provenance(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    config = _fixture(tmp_path)
+    metadata_path = config.base_evaluation_run_dir / "run.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata[field] = value
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(AnalysisError, match="provenance"):
         load_analysis_inputs(config)
 
 

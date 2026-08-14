@@ -122,12 +122,14 @@ def _has_status(record: EvaluationRecord, status: ExecutionStatus) -> bool:
     return record.execution_status == status.value or record.eval_hidden_failure_counts.get(status.value, 0) > 0
 
 
-def _candidate_reasons(record: EvaluationRecord) -> tuple[str, ...]:
+def _candidate_reasons(method: str, record: EvaluationRecord) -> tuple[str, ...]:
     reasons: list[str] = []
     if record.visible_pass_rate == 1.0 and record.eval_hidden_pass_rate < 1.0:
         reasons.append("visible_pass_eval_fail")
-    if record.train_hidden_pass_rate == 1.0 and record.eval_hidden_pass_rate < 1.0:
+    if method == "Hidden-RLVR" and record.train_hidden_pass_rate == 1.0 and record.eval_hidden_pass_rate < 1.0:
         reasons.append("train_hidden_pass_eval_fail")
+    if record.visible_pass_rate - record.eval_hidden_pass_rate > 0.5:
+        reasons.append("large_public_eval_gap")
     if 0.0 < record.eval_hidden_pass_rate < 1.0:
         reasons.append("partial_eval_hidden_failure")
     if _has_status(record, ExecutionStatus.SYNTAX_ERROR):
@@ -154,7 +156,7 @@ def select_failure_candidates(
         raise AnalysisError("candidate records contain duplicate problem_id values")
     candidates: list[FailureCandidate] = []
     for record in sorted(records, key=lambda item: item.problem_id):
-        reasons = _candidate_reasons(record)
+        reasons = _candidate_reasons(method, record)
         if not reasons:
             continue
         candidates.append(
