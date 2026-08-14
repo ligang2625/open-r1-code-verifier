@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import math
 from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -113,6 +115,58 @@ class _FakeTorch:
     @staticmethod
     def inference_mode() -> Any:
         return nullcontext()
+
+
+class _FakePeftConfigLoader:
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def from_pretrained(self, adapter_dir: str, **kwargs: object) -> object:
+        self.calls.append((adapter_dir, dict(kwargs)))
+        return self.value
+
+
+class _FakePeftModelLoader:
+    def __init__(self, runtime: _FakeTransformers, *, failure: Exception | None = None) -> None:
+        self.runtime = runtime
+        self.failure = failure
+        self.calls: list[tuple[object, str, dict[str, object]]] = []
+
+    def from_pretrained(self, model: object, adapter_dir: str, **kwargs: object) -> object:
+        assert self.runtime.AutoModelForCausalLM.calls
+        self.calls.append((model, adapter_dir, dict(kwargs)))
+        if self.failure is not None:
+            raise self.failure
+        return model
+
+
+def _peft_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    adapter_model_id: str = "example/model",
+    adapter_revision: str | None = None,
+    failure: Exception | None = None,
+) -> tuple[Path, _FakeTokenizer, _FakeModel, _FakeTransformers, _FakePeftConfigLoader, _FakePeftModelLoader]:
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    transformers_runtime = _FakeTransformers(tokenizer, model)
+    adapter_config = SimpleNamespace(
+        base_model_name_or_path=adapter_model_id,
+        revision=adapter_revision,
+    )
+    config_loader = _FakePeftConfigLoader(adapter_config)
+    model_loader = _FakePeftModelLoader(transformers_runtime, failure=failure)
+    monkeypatch.setattr(
+        generation_module,
+        "_load_transformers_runtime",
+        lambda: (_FakeTorch(), transformers_runtime),
+    )
+    monkeypatch.setattr(generation_module, "_load_peft_runtime", lambda: (config_loader, model_loader))
+    return adapter_dir, tokenizer, model, transformers_runtime, config_loader, model_loader
 
 
 def _backend() -> tuple[TransformersCompletionGenerator, _FakeTokenizer, _FakeModel, _FakeTransformers]:
@@ -267,6 +321,145 @@ def test_transformers_generator_lazy_imports_runtime(monkeypatch: pytest.MonkeyP
     safety_key = "trust_" + "remote_code"
     assert runtime.AutoTokenizer.calls[0][1][safety_key] is False
     assert runtime.AutoModelForCausalLM.calls[0][1][safety_key] is False
+
+
+def test_from_peft_checkpoint_loads_base_then_adapter_with_safe_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_dir, _, model, runtime, config_loader, model_loader = _peft_runtime(tmp_path, monkeypatch)
+    config = GenerationConfig(
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        max_new_tokens=8,
+        dtype="float16",
+    )
+
+    generator = TransformersCompletionGenerator.from_peft_checkpoint(
+        base_model_id="example/model",
+        base_model_revision="revision-1",
+        adapter_dir=adapter_dir,
+        device="cpu",
+        config=config,
+        local_files_only=True,
+    )
+
+    assert isinstance(generator, TransformersCompletionGenerator)
+    assert runtime.AutoTokenizer.calls == [
+        (
+            "example/model",
+            {"revision": "revision-1", "trust_remote_code": False, "local_files_only": True},
+        )
+    ]
+    assert runtime.AutoModelForCausalLM.calls == [
+        (
+            "example/model",
+            {
+                "revision": "revision-1",
+                "trust_remote_code": False,
+                "torch_dtype": "fake-float16",
+                "local_files_only": True,
+            },
+        )
+    ]
+    assert config_loader.calls == [(str(adapter_dir.resolve()), {"local_files_only": True})]
+    assert model_loader.calls[0][0] is model
+    assert model_loader.calls[0][1] == str(adapter_dir.resolve())
+    assert model_loader.calls[0][2]["is_trainable"] is False
+    assert model_loader.calls[0][2]["local_files_only"] is True
+    assert model.eval_called is True
+    assert model.to_device == "cpu"
+
+
+def test_from_peft_checkpoint_accepts_run_revision_when_adapter_revision_is_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_dir, _, _, runtime, _, model_loader = _peft_runtime(
+        tmp_path,
+        monkeypatch,
+        adapter_revision=None,
+    )
+
+    TransformersCompletionGenerator.from_peft_checkpoint(
+        base_model_id="example/model",
+        base_model_revision="revision-1",
+        adapter_dir=adapter_dir,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+    )
+
+    assert runtime.AutoTokenizer.calls[0][1]["revision"] == "revision-1"
+    assert runtime.AutoModelForCausalLM.calls[0][1]["revision"] == "revision-1"
+    assert model_loader.calls
+
+
+def test_from_peft_checkpoint_rejects_base_model_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_dir, _, _, runtime, _, model_loader = _peft_runtime(
+        tmp_path,
+        monkeypatch,
+        adapter_model_id="different/model",
+    )
+
+    with pytest.raises(GenerationError, match="base model identity"):
+        TransformersCompletionGenerator.from_peft_checkpoint(
+            base_model_id="example/model",
+            base_model_revision="revision-1",
+            adapter_dir=adapter_dir,
+            device="cpu",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+        )
+
+    assert runtime.AutoTokenizer.calls == []
+    assert runtime.AutoModelForCausalLM.calls == []
+    assert model_loader.calls == []
+
+
+def test_from_peft_checkpoint_rejects_base_model_revision_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_dir, _, _, _, _, _ = _peft_runtime(
+        tmp_path,
+        monkeypatch,
+        adapter_revision="different-revision",
+    )
+
+    with pytest.raises(GenerationError, match="base model revision"):
+        TransformersCompletionGenerator.from_peft_checkpoint(
+            base_model_id="example/model",
+            base_model_revision="revision-1",
+            adapter_dir=adapter_dir,
+            device="cpu",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+        )
+
+
+def test_from_peft_checkpoint_wraps_runtime_failure_without_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_dir, _, _, _, _, _ = _peft_runtime(
+        tmp_path,
+        monkeypatch,
+        failure=RuntimeError("PRIVATE_PAYLOAD_SENTINEL"),
+    )
+
+    with pytest.raises(GenerationError) as error:
+        TransformersCompletionGenerator.from_peft_checkpoint(
+            base_model_id="example/model",
+            base_model_revision="revision-1",
+            adapter_dir=adapter_dir,
+            device="cpu",
+            config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+        )
+
+    assert str(error.value) == "could not load PEFT adapter for inference: RuntimeError"
+    assert "PRIVATE_PAYLOAD_SENTINEL" not in str(error.value)
 
 
 def test_transformers_generator_uses_user_chat_template() -> None:

@@ -6,6 +6,7 @@ import importlib
 import math
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from code_verifier.data.schema import CodeProblem
@@ -118,6 +119,15 @@ def _load_transformers_runtime() -> tuple[Any, Any]:
     return torch_runtime, transformers_runtime
 
 
+def _load_peft_runtime() -> tuple[Any, Any]:
+    """Lazy-load the pinned PEFT adapter configuration and model types."""
+    try:
+        peft_runtime = importlib.import_module("peft")
+        return peft_runtime.PeftConfig, peft_runtime.PeftModel
+    except (ImportError, AttributeError):
+        raise GenerationError("PEFT inference dependencies are unavailable; run make install-train") from None
+
+
 def _resolve_torch_dtype(torch_runtime: Any, dtype: str) -> Any:
     """Map the project dtype name to a transformers ``torch_dtype`` argument."""
     if dtype == "float16":
@@ -127,6 +137,71 @@ def _resolve_torch_dtype(torch_runtime: Any, dtype: str) -> Any:
     if dtype == "float32":
         return torch_runtime.float32
     raise GenerationError(f"unsupported dtype: {dtype}")
+
+
+def _validate_model_source(
+    *,
+    model_id: str,
+    model_revision: str | None,
+    device: str,
+    config: GenerationConfig,
+    local_files_only: bool,
+) -> None:
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise GenerationError("model_id must be a non-empty string")
+    if model_revision is not None and (not isinstance(model_revision, str) or not model_revision.strip()):
+        raise GenerationError("model_revision must be a non-empty string or null")
+    if device not in {"cpu", "cuda", "auto"}:
+        raise GenerationError("device must be cpu, cuda, or auto")
+    if not isinstance(local_files_only, bool):
+        raise GenerationError("local_files_only must be a boolean")
+    validate_generation_config(config)
+
+
+def _load_base_transformers_model(
+    *,
+    torch_runtime: Any,
+    transformers_runtime: Any,
+    model_id: str,
+    model_revision: str | None,
+    device: str,
+    config: GenerationConfig,
+    local_files_only: bool,
+) -> tuple[Any, Any]:
+    tokenizer_loader = getattr(transformers_runtime.AutoTokenizer, "from_" + "pretrained")
+    model_loader = getattr(transformers_runtime.AutoModelForCausalLM, "from_" + "pretrained")
+    safety_key = "trust_" + "remote_code"
+    tokenizer_options: dict[str, object] = {"revision": model_revision, safety_key: False}
+    model_options: dict[str, object] = {"revision": model_revision, safety_key: False}
+    if config.dtype != "auto":
+        model_options["torch_dtype"] = _resolve_torch_dtype(torch_runtime, config.dtype)
+    if local_files_only:
+        tokenizer_options["local_files_only"] = True
+        model_options["local_files_only"] = True
+    if device == "auto":
+        model_options["device_map"] = "auto"
+    try:
+        tokenizer = tokenizer_loader(model_id, **tokenizer_options)
+        model = model_loader(model_id, **model_options)
+    except Exception as error:
+        if local_files_only:
+            raise GenerationError(
+                "could not load the configured model from the local cache (offline smoke); "
+                "download and cache the model once on a network-connected machine before "
+                "running the GPU smoke tests"
+            ) from None
+        raise GenerationError(f"could not load configured model runtime: {type(error).__name__}") from None
+    return tokenizer, model
+
+
+def _initialize_inference_model(model: Any, *, device: str) -> Any:
+    try:
+        if device != "auto":
+            model = model.to(device)
+        model.eval()
+    except Exception as error:
+        raise GenerationError(f"could not initialize configured model runtime: {type(error).__name__}") from None
+    return model
 
 
 class TransformersCompletionGenerator:
@@ -160,45 +235,93 @@ class TransformersCompletionGenerator:
         local_files_only: bool = False,
     ) -> TransformersCompletionGenerator:
         """Load tokenizer/model from one identity and freeze the model for deterministic inference."""
-        if not isinstance(model_id, str) or not model_id.strip():
-            raise GenerationError("model_id must be a non-empty string")
-        if model_revision is not None and (not isinstance(model_revision, str) or not model_revision.strip()):
-            raise GenerationError("model_revision must be a non-empty string or null")
-        if device not in {"cpu", "cuda", "auto"}:
-            raise GenerationError("device must be cpu, cuda, or auto")
-        if not isinstance(local_files_only, bool):
-            raise GenerationError("local_files_only must be a boolean")
-        validate_generation_config(config)
+        _validate_model_source(
+            model_id=model_id,
+            model_revision=model_revision,
+            device=device,
+            config=config,
+            local_files_only=local_files_only,
+        )
         torch_runtime, transformers_runtime = _load_transformers_runtime()
-        tokenizer_loader = getattr(transformers_runtime.AutoTokenizer, "from_" + "pretrained")
-        model_loader = getattr(transformers_runtime.AutoModelForCausalLM, "from_" + "pretrained")
-        safety_key = "trust_" + "remote_code"
-        tokenizer_options: dict[str, object] = {"revision": model_revision, safety_key: False}
-        model_options: dict[str, object] = {"revision": model_revision, safety_key: False}
-        if config.dtype != "auto":
-            model_options["torch_dtype"] = _resolve_torch_dtype(torch_runtime, config.dtype)
+        tokenizer, model = _load_base_transformers_model(
+            torch_runtime=torch_runtime,
+            transformers_runtime=transformers_runtime,
+            model_id=model_id,
+            model_revision=model_revision,
+            device=device,
+            config=config,
+            local_files_only=local_files_only,
+        )
+        model = _initialize_inference_model(model, device=device)
+        return cls(
+            tokenizer=tokenizer,
+            model=model,
+            torch_runtime=torch_runtime,
+            transformers_runtime=transformers_runtime,
+            device=device,
+            config=config,
+        )
+
+    @classmethod
+    def from_peft_checkpoint(
+        cls,
+        *,
+        base_model_id: str,
+        base_model_revision: str | None,
+        adapter_dir: Path,
+        device: str,
+        config: GenerationConfig,
+        local_files_only: bool = False,
+    ) -> TransformersCompletionGenerator:
+        """Load one identity-checked PEFT adapter for read-only deterministic inference."""
+        _validate_model_source(
+            model_id=base_model_id,
+            model_revision=base_model_revision,
+            device=device,
+            config=config,
+            local_files_only=local_files_only,
+        )
+        try:
+            resolved_adapter_dir = adapter_dir.resolve(strict=True)
+        except (AttributeError, OSError):
+            raise GenerationError("adapter_dir must be an existing local directory") from None
+        if not resolved_adapter_dir.is_dir():
+            raise GenerationError("adapter_dir must be an existing local directory")
+        torch_runtime, transformers_runtime = _load_transformers_runtime()
+        peft_config_type, peft_model_type = _load_peft_runtime()
+        adapter_options: dict[str, object] = {}
         if local_files_only:
-            tokenizer_options["local_files_only"] = True
-            model_options["local_files_only"] = True
-        if device == "auto":
-            model_options["device_map"] = "auto"
+            adapter_options["local_files_only"] = True
         try:
-            tokenizer = tokenizer_loader(model_id, **tokenizer_options)
-            model = model_loader(model_id, **model_options)
+            adapter_config = peft_config_type.from_pretrained(str(resolved_adapter_dir), **adapter_options)
         except Exception as error:
-            if local_files_only:
-                raise GenerationError(
-                    "could not load the configured model from the local cache (offline smoke); "
-                    "download and cache the model once on a network-connected machine before "
-                    "running the GPU smoke tests"
-                ) from None
-            raise GenerationError(f"could not load configured model runtime: {type(error).__name__}") from None
+            raise GenerationError(f"could not load PEFT adapter configuration: {type(error).__name__}") from None
+        adapter_model_id = getattr(adapter_config, "base_model_name_or_path", None)
+        adapter_revision = getattr(adapter_config, "revision", None)
+        if adapter_model_id != base_model_id:
+            raise GenerationError("PEFT adapter base model identity does not match the selected SFT run")
+        if adapter_revision is not None and adapter_revision != base_model_revision:
+            raise GenerationError("PEFT adapter base model revision does not match the selected SFT run")
+        tokenizer, base_model = _load_base_transformers_model(
+            torch_runtime=torch_runtime,
+            transformers_runtime=transformers_runtime,
+            model_id=base_model_id,
+            model_revision=base_model_revision,
+            device=device,
+            config=config,
+            local_files_only=local_files_only,
+        )
         try:
-            if device != "auto":
-                model = model.to(device)
-            model.eval()
+            model = peft_model_type.from_pretrained(
+                base_model,
+                str(resolved_adapter_dir),
+                is_trainable=False,
+                config=adapter_config,
+                **adapter_options,
+            )
         except Exception as error:
-            raise GenerationError(f"could not initialize configured model runtime: {type(error).__name__}") from None
+            raise GenerationError(f"could not load PEFT adapter for inference: {type(error).__name__}") from None
+        model = _initialize_inference_model(model, device=device)
         return cls(
             tokenizer=tokenizer,
             model=model,
