@@ -58,6 +58,10 @@ plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git
 
 Development stage 不运行上述 24GB preflight；其 plan-specific Piston/import/model-cache/CUDA prerequisites 由 plan 的 Execution preflight 在首次业务修改/commit 前执行。
 
+## Transport preflight
+
+任何 dispatch 前都确认 primary checkout 与目标 stage worktree 的 `git ls-files .ai-bridge` 均为空；`.ai-bridge/**` 只能是 ignored 本地 transport state。任一 checkout 存在 tracked transport path 时返回 `ROUTING_TRANSPORT_TRACKED`，不得把它当作普通 dirty state继续 dispatch，也不得依赖 executor/finalize 在后续提交或 merge 时过滤。
+
 ## Stage environment preflight
 
 任何 backend dispatch/executor 创建之前，router 都要验证 stage worktree 的 lifecycle environment contract：

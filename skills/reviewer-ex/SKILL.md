@@ -43,7 +43,7 @@ reviewer-ex 可以从主仓库 root 的 CodexPro workspace 被调用，但**审�
 - spec / proceedings / 当前 src/tests
 - `skills/execution-router/references/routing-contract.md`
 
-开始审查前要求当前 CodexPro workspace 已是上述 stage worktree，且 stage tracked working tree 干净；review 文件若存在，必须是该 stage 的 append-only 历史。
+开始审查前要求当前 CodexPro workspace 已是上述 stage worktree，`git ls-files .ai-bridge` 为空，且 stage 对所有非 ignored repository artifact 的 working tree 干净；transport 被 tracked 时返回 `REVIEW_TRANSPORT_TRACKED`。review 文件若存在，必须是该 stage 的 append-only 历史。
 
 ## Review/execution provenance guard
 
@@ -166,5 +166,6 @@ PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过�
 - [ ] review_round/source_review_round 都是整数且相等；
 - [ ] repair routing 只按本轮剩余问题重算；
 - [ ] review history append-only；
+- [ ] `.ai-bridge/**` 保持 ignored/untracked，没有 transport path 混入被审查 execution 或本轮 review staging；
 - [ ] reviewer-ex 未 commit/merge/update proceedings/cleanup；
 - [ ] 已明确下一步交给 stage-lifecycle checkpoint_review。

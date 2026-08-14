@@ -39,6 +39,8 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 8. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
 9. stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若本次 execution 修改 `pyproject.toml` 或 `uv.lock`，必须在继续依赖相关测试前运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，切换为完整 stage-local pinned environment；不能让 primary overlay 掩盖 dependency contract 的变化。
 
+**Transport hard guard**：开始任何业务修改前必须确认 `git ls-files .ai-bridge` 为空；否则返回 `WEB_EXECUTION_TRANSPORT_TRACKED`。`.ai-bridge/**` 只允许作为 ignored 本地 transport state。每个 code/test/config/report commit 都必须显式暂存目标文件，并在 commit 前确认 staged path 不包含 `.ai-bridge/**`。
+
 ## 环境中断 checkpoint / resume
 
 当已经有本次 task 的有效 commits、stage clean，之后遇到无需 tracked 仓库修改即可修复的环境/基础设施故障时，Web executor 可以暂停而不是要求 retire。源码 lint/type/test failure、tracked config/dependency bug、模型/acceptance 逻辑失败不是 environment interruption。
@@ -129,5 +131,6 @@ Repair 使用 E1/E2/... 并填 source_review_round/source_review_commit/repair_i
 - [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] serialized_multi 覆盖全部 source candidates/repair_issue_ids；
 - [ ] result_code_commit 在 report docs commit 之前捕获；
+- [ ] `.ai-bridge/**` 保持 ignored/untracked，所有 staged/committed path 都不包含 transport state；
 - [ ] execution_record 使用统一 v2 provenance；
 - [ ] 未修改 plan/review/proceedings/third_party，未 push/review/finalize。

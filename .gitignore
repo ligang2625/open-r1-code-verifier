@@ -8,6 +8,7 @@ build/
 dist/
 .worktrees/
 .codegraph/
+.ai-bridge/
 
 # Generated experiment artifacts.
 data/raw/

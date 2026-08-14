@@ -18,14 +18,14 @@ description: Git stage lifecycle control plane。可由 Local Codex 或 Web GPT 
 
 四个 operation 都以**主仓库 root checkout** 为 control-plane 起点。若调用发生在 linked stage worktree，先解析主仓库 root/primary checkout，再从 root 执行生命周期操作；不得在主 checkout `git switch` 到已被 worktree 占用的 stage branch。
 
-### Primary checkout transport-dirty policy
+### Transport-state policy
 
-主仓库 root 下的 `.ai-bridge/**` 是 Web/Local agent 之间的**传输层状态**，不是 stage/repository artifact。CodexPro handoff、status/log 更新可以在 lifecycle 调用前后修改其中的 tracked 或 untracked 文件。因此所有针对 primary checkout 的“working tree 必须干净”检查都按以下统一规则执行：
+主仓库与所有 stage worktree 下的 `.ai-bridge/**` 都是 Web/Local agent 之间的**本地传输层状态**，不是 stage/repository artifact。它们必须由 `.gitignore` 排除，并且所有 branch 上都必须保持 **zero tracked paths**。
 
-- 只要 `.ai-bridge/**` 之外存在 tracked 修改、staged 修改或非忽略 untracked 文件，仍视为 primary dirty，并返回原有 `STAGE_PRIMARY_DIRTY` / `STAGE_RETIRE_NOT_ALLOWED`；
-- **仅** `.ai-bridge/**` 内存在 tracked/untracked transport 变化时，不得把它们视为 primary dirty，也不得因此阻止 `bootstrap_plan`、`finalize` 或 `retire_incomplete`；
-- lifecycle 不自动 commit、stash、restore、reset 这些 transport 文件；除 `bootstrap_plan` seal 成功后消费 `.ai-bridge/current-plan.md` 外，其它 `.ai-bridge/**` 原样保留；
-- 该例外只适用于 primary checkout。stage worktree 的 cleanliness/provenance guard 仍按各 operation 的原规则严格执行，不能用 `.ai-bridge` 例外掩盖 stage 内业务或 review dirty state。
+- 每个 lifecycle operation 的 preflight 都先确认 primary checkout 的 `git ls-files .ai-bridge` 为空；涉及既有 stage worktree 时，同样确认该 stage 没有 tracked `.ai-bridge/**`。任一非空返回 `STAGE_TRANSPORT_TRACKED`，不得继续 Git mutation。
+- `.ai-bridge/**` 的 ignored 本地变化不参与 primary/stage cleanliness 判定；正常 `git status` 本就不会把它们计入 dirty scope。
+- lifecycle 永远不 stage/commit `.ai-bridge/**`，也不需要为 merge 对它们执行 stash/reset/restore。唯一允许的 lifecycle mutation 是 `bootstrap_plan` seal 成功后删除 ignored 的 `.ai-bridge/current-plan.md` 以消费 pending handoff；其它 transport 文件原样保留。
+- plan/execution/review/proceedings 等 authoritative provenance 只能位于其正式 repository artifact 路径。若 executor/reviewer 曾把 transport state 写入 Git history，应先修复该 workflow state，不能依赖 finalize 的 merge fallback 吞掉它。
 
 Routing compatibility marker: `execution-routing-v2`。
 
@@ -92,7 +92,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 2. 若 `stage_profile=validation`，在创建 branch/worktree 前严格解析 `proceedings.md`：只接受精确标题 `## Development Complete Record` 后紧随的 YAML fenced block，顶层 `development_complete_record` 必须满足 `version: 1`、`development_complete: true`、`completion_inventory_verified: true`，并具有非空 terminal_stage_id、40-hex review_commit、40-hex merge_commit 与 finalized_at；其它自然语言出现这些词句一律忽略。不存在合法 block 返回 `STAGE_DEVELOPMENT_NOT_COMPLETE`。随后使用项目 `.venv` pinned PyTorch 验证 CUDA 可用且 device 0 total memory >=22528 MiB；否则返回 `STAGE_VALIDATION_MACHINE_HANDOFF_REQUIRED`，**不得在 1660 Ti 上创建 validation branch/worktree**。
 3. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。`skills/stage-lifecycle/scripts/bootstrap_stage_env.py` 也必须存在。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
 4. 校验 primary execution environment：`<primary>/.venv/bin/python` 必须存在且 `uv` 可执行。缺失返回 `STAGE_PRIMARY_ENV_UNAVAILABLE`；不得先创建 stage worktree。validation 的 24GB 检查继续使用这个 primary pinned runtime。
-5. 按 **Primary checkout transport-dirty policy** 确认主仓库 `main` 在 `.ai-bridge/**` 之外 working tree 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。仅 `.ai-bridge/**` transport 变化不阻塞 bootstrap；不 stash、不自动换基线。
+5. 按 **Transport-state policy** 确认 primary 没有 tracked `.ai-bridge/**`，主仓库 `main` working tree 对所有非 ignored repository artifact 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_TRANSPORT_TRACKED`、`STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。ignored transport state 不阻塞 bootstrap；不 stash、不自动换基线。
 6. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`。若正是同一 stage，仅允许**显式 pre-execution replan**且它仍处于纯 PLANNED 状态：没有 completed E0/review，stage tracked/untracked 状态干净，并且 `HEAD` 恰好等于当前 plan seal commit；plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。当新的 `planning_base_commit` 已前移时，这个窄场景允许 lifecycle 在确认 stage 与 `third_party/open-r1` submodule 都无本地修改后先执行 `git submodule deinit --all`，再使用 `git worktree remove --force <worktree>` 删除旧 worktree；这里的 `--force` 仅用于 Git 对“包含过 submodule 的 clean worktree”强制要求的删除语义，不允许跳过 cleanliness guard。仅在再次确认旧 branch HEAD 就是旧 plan seal、没有其它提交后删除旧 stage branch，再从新 base 重建。这不是 incomplete-stage rollback，也不得用于已有 execution/review 的 stage。
 7. preflight 全部通过后，才从 `planning_base_commit` 对应的当前 `main` 创建 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
 8. **在写 plan/commit plan seal 之前**创建 stage environment：使用 primary `.venv/bin/python` 执行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode overlay`。必须成功初始化 pinned submodule、创建 worktree-local `.venv/bin/python`，验证 `code_verifier` / `open_r1` source path 都位于 stage worktree，并确认 stage-local `ruff` executable 以及 `python -m ruff/mypy/pytest` 均可启动。失败返回 `STAGE_ENV_BOOTSTRAP_FAILED`，不得写 plan seal；若 branch/worktree 是本次调用新建且仍无 tracked stage artifact/commit，先尽力正常 deinit 已初始化 submodule，再在确认 worktree 仍无 tracked stage 修改后使用 `git worktree remove --force` 清理这个临时 worktree，并删除尚未承载 stage history 的临时 branch，避免留下半初始化 active stage。
@@ -107,7 +107,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 步骤：
 
-1. 从主仓库 root 的 `git worktree list` 定位唯一 stage worktree，并验证其 branch 与 sealed plan metadata 一致；再定位 `ai-work/reviewer/{stage_id}-review.md`。不存在或有歧义则停止。
+1. 从主仓库 root 的 `git worktree list` 定位唯一 stage worktree，并验证其 branch 与 sealed plan metadata 一致；按 **Transport-state policy** 确认 primary/stage 都没有 tracked `.ai-bridge/**`；再定位 `ai-work/reviewer/{stage_id}-review.md`。不存在、有歧义或 transport 被 tracked 则停止。
 2. 验证 review history append-only：若已有上一轮 committed review，则当前文件必须以该 committed 文件内容作为**字节级完整前缀**，只允许在 EOF 追加一轮新内容；不得改写/删除旧轮次。违反返回 `STAGE_REVIEW_HISTORY_REWRITTEN`。本次追加必须恰好包含 1 个新的 `review_record` 和同轮 1 个 `repair_routing`。
 3. 解析最新 review record，要求至少有：
    - `review_record.version: 1`
@@ -132,7 +132,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 仅在最新**已提交** review 同时满足 `conclusion=pass` **且** `repair_routing.required=false` 时执行；二者不一致时返回 `STAGE_REVIEW_CONTRACT_INVALID`。
 
 1. 阶段 worktree 必须干净，且当前 stage HEAD 必须恰好等于 latest `review_commit`；其父提交必须等于该 review record 的 `reviewed_head_commit`。任何 review 后的新提交都返回 `STAGE_FINALIZE_STALE`。
-2. 按 **Primary checkout transport-dirty policy**，主仓库 `main` 在 `.ai-bridge/**` 之外必须干净，且 `main HEAD` 必须仍等于 plan 中的 `planning_base_commit`；否则返回 `STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。仅 `.ai-bridge/**` transport 变化不阻塞 finalize；不 stash、不自动 rebase/换基线。
+2. 按 **Transport-state policy** 确认 primary/stage 都没有 tracked `.ai-bridge/**`；主仓库 `main` 对所有非 ignored repository artifact 必须干净，且 `main HEAD` 必须仍等于 plan 中的 `planning_base_commit`；否则返回 `STAGE_TRANSPORT_TRACKED`、`STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。ignored transport state 不阻塞 finalize；不 stash、不自动 rebase/换基线。
 3. 在主仓库执行 `git merge --no-ff <stage-branch> -m "feat: complete {stage_id} <标题>"`，捕获 `merge_commit`。
 4. 合并后恢复 primary runtime 可直接执行的环境状态：
    - 若 stage 相对 `planning_base_commit` 改变了 `third_party/open-r1` gitlink，先在 primary 执行 `git submodule update --init --recursive third_party/open-r1`；
@@ -143,7 +143,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
    - 若 sealed plan 为 `stage_profile=development` 且 `development_terminal=true`，再次确认 reviewer PASS 明确核验了完整 WP0–WP8 Development Completion Inventory 与 closeout gates，然后在 proceedings 追加唯一 machine-readable block：精确标题 `## Development Complete Record`，其后立即写 YAML fenced block，顶层 `development_complete_record` 至少包含 `version: 1`、`terminal_stage_id`、`review_commit`、`merge_commit`、`finalized_at`、`completion_inventory_verified: true`、`development_complete: true`。不得用其它标题/散文/示例代替，也不得由非 terminal stage 写 marker；
    - 在 `ai-work/reviewer/{stage_id}-review.md` 末尾追加 `Finalization Record`，至少写 `review_round`、`review_commit`、`merge_commit`、finalized_at/status；不改审查结论本身。
 6. 仅在 merge 成功后提交上述 finalization 文档：`docs: finalize {stage_id}`（若触发 WP 聚合可使用对应 consolidate message）。若这是 terminal development finalize，提交成功后的当前 `main HEAD` 即 `development_complete_commit`；必须报告该 exact commit，并明确：在 1660 Ti 上到此停止，不 bootstrap validation；先把该 commit 同步到 4090，再在 4090 安装 pinned training environment 并重新运行 planner-ex。lifecycle 不自动 push/传输代码。
-7. 再次确认 stage worktree 严格干净、`third_party/open-r1` submodule 无本地修改、且 main 按 **Primary checkout transport-dirty policy** 在 `.ai-bridge/**` 之外干净后，先在 stage worktree 执行 `git submodule deinit --all`，再使用 `git worktree remove --force <worktree>` 删除这个已证明 clean、但包含过 submodule 的 worktree，最后 `git branch -d <stage-branch>`；这个 `--force` 不能替代任何 clean guard。任一步失败就停止并报告当前状态，不自动 rollback、rebase 或重试。
+7. 再次确认 primary/stage 均无 tracked `.ai-bridge/**`、stage worktree 对所有非 ignored repository artifact 严格干净、`third_party/open-r1` submodule 无本地修改、且 main 对所有非 ignored repository artifact 干净后，先在 stage worktree 执行 `git submodule deinit --all`，再使用 `git worktree remove --force <worktree>` 删除这个已证明 clean、但包含过 submodule 的 worktree，最后 `git branch -d <stage-branch>`；这个 `--force` 不能替代任何 clean guard。任一步失败就停止并报告当前状态，不自动 rollback、rebase 或重试。
 8. 不自动 push。finalize 按正常 one-shot 流程执行，不额外设计自动恢复状态。
 
 ## Operation D: retire_incomplete
@@ -158,7 +158,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 2. `HEAD != plan_commit`，说明确实已有 plan seal 后提交；若仍 `HEAD == plan_commit`，应使用允许的 pre-execution replan，不走 retire；
 3. execution report **不存在任何** `status=completed, task_kind=implementation` 的 E0；
 4. 不存在 committed review round；一旦已有 completed E0 或 review，必须继续正常 review/repair/finalize，不能 retire；
-5. stage worktree tracked 状态干净，且不存在非忽略 untracked 文件；主仓库 `main` 按 **Primary checkout transport-dirty policy** 在 `.ai-bridge/**` 之外必须干净；
+5. primary/stage 均无 tracked `.ai-bridge/**`；stage worktree 对所有非 ignored repository artifact 干净，且不存在非忽略 untracked 文件；主仓库 `main` 对所有非 ignored repository artifact 必须干净；
 6. 当前没有其它 active stage worktree。
 
 操作：
@@ -188,6 +188,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 ## 禁止事项
 
 - 不在 main 上实现阶段代码。
+- 不允许任何 branch track 或 commit `.ai-bridge/**`；发现即返回 `STAGE_TRANSPORT_TRACKED`，不要通过 merge strategy、stash 或 reset 隐藏它。
 - 不修改 plan/review 的 routing 内容。
 - 不把未 checkpoint 的 review 交给 router。
 - 不在 PASS review 后有新 stage commit 的情况下继续 finalize。

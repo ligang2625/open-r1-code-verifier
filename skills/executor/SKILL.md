@@ -37,6 +37,8 @@ main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码
 
 stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若任一 routed workstream 需要修改 `pyproject.toml` 或 `uv.lock`，必须由 coordinator 在 spawn 相关 worker/继续依赖测试前串行运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；之后全部 workers/tests 使用该 stage `.venv`，不能继续借 primary overlay 隐式满足依赖。
 
+**Transport hard guard**：coordinator 在 spawn worker 或业务修改前必须确认 `git ls-files .ai-bridge` 为空；否则返回 `EXECUTION_TRANSPORT_TRACKED`。`.ai-bridge/**` 不得进入 worker tracked write_scope。所有 coordinator code/test/config/report commits 都显式暂存目标文件，并在 commit 前确认 staged path 不包含 `.ai-bridge/**`。
+
 ## 环境中断 checkpoint / resume
 
 仅当 coordinator 已经集成并 commit 了可保留的部分 workstreams/repair，stage clean，随后遇到无需修改 tracked 仓库即可修复的环境/基础设施故障时，才允许暂停。源码 lint/type/test failure、tracked config/dependency bug 或 acceptance 逻辑失败不是 environment interruption。
@@ -124,5 +126,6 @@ backend/effective mode 只用于审计，不参与 reviewer provenance 判定。
 - [ ] worker tracked write_scope/临时输出互不冲突；
 - [ ] coordinator 亲自完成整体验收与 commits；
 - [ ] result_code_commit 在 report docs commit 前捕获；
+- [ ] `.ai-bridge/**` 保持 ignored/untracked，workers/coordinator 没有把 transport state 纳入 tracked write_scope、staging 或 commit；
 - [ ] completed execution_record provenance 完整；
 - [ ] 未改 plan/review/proceedings，未 push。

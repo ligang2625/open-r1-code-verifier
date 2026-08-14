@@ -42,6 +42,8 @@ Artifact：
 8. 不修改 review、plan、proceedings、`third_party/open-r1/`。
 9. stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若本次 implementation/repair 修改 `pyproject.toml` 或 `uv.lock`，必须在继续任何依赖相关测试前运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；不能让 primary overlay 掩盖新增、删除或变更的依赖。
 
+**Transport hard guard**：开始任何业务修改前必须确认 `git ls-files .ai-bridge` 为空；否则返回 `EXECUTION_TRANSPORT_TRACKED`。`.ai-bridge/**` 只允许作为 ignored 本地 transport state。每个 code/test/config commit、environment checkpoint report commit 和 completed execution report commit 都必须显式暂存目标文件，并在 commit 前确认 staged path 不包含 `.ai-bridge/**`。
+
 ## 环境中断 checkpoint / resume
 
 只有在已经存在本次 task 的有效部分 commits、stage 当前 clean、且失败可明确归因于**不需要 tracked 仓库修改即可修复**的环境/基础设施问题时，才允许暂停为 resumable checkpoint。源码 lint/type/test failure、tracked config/dependency bug、acceptance 逻辑失败都不是 environment interruption，必须继续正常修复代码。
@@ -147,5 +149,6 @@ execution_record:
 - [ ] repair source_review_round/review_commit/issues 与 router 完全一致且没有扩大 scope；
 - [ ] repair 总体验收没有被误解释成“修所有 review 问题”；
 - [ ] result_code_commit 在 report docs commit 之前捕获；
+- [ ] `.ai-bridge/**` 保持 ignored/untracked，所有 staged/committed path 都不包含 transport state；
 - [ ] completed execution_record schema 完整；
 - [ ] 未修改 plan/review/proceedings/third_party；未 push。

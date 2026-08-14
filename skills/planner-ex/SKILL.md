@@ -17,7 +17,7 @@ description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与
 
 planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `git worktree list` / branch / log 等只读状态，但不得进入已有 stage worktree 继续规划，也不得创建、删除、移动或修改任何 worktree/branch。
 
-如果 CodexPro handoff 可用，优先把完整最终 plan 发布到 `.ai-bridge/current-plan.md`（例如 handoff_to_codex）；handoff 只是传输层，不是仓库 stage artifact。handoff 工具可以在 plan 外增加 `Updated/Workspace/Target agent/## Plan` 等 transport wrapper；真正 payload 始终是完整 plan 正文。若 handoff 不可用，返回完整 plan 正文与 stage descriptor，供调用方传给 `stage-lifecycle`。
+如果 CodexPro handoff 可用，优先把完整最终 plan 发布到 `.ai-bridge/current-plan.md`（例如 handoff_to_codex）；`.ai-bridge/**` 必须是 gitignored、zero-tracked 的本地传输层，不是仓库 stage artifact。planner 开始时若 `git ls-files .ai-bridge` 非空，返回 `PLANNER_TRANSPORT_TRACKED`，先修复 workflow state，不继续发布 handoff。handoff 工具可以在 plan 外增加 `Updated/Workspace/Target agent/## Plan` 等 transport wrapper；真正 payload 始终是完整 plan 正文。若 handoff 不可用，返回完整 plan 正文与 stage descriptor，供调用方传给 `stage-lifecycle`。
 
 若规划开始时主仓库已经存在非空 `.ai-bridge/current-plan.md`，说明上一份 plan 仍待 bootstrap。默认返回 `PLANNER_PENDING_HANDOFF_EXISTS`，不要覆盖；只有用户明确要求替换这份 pending handoff 时才允许继续规划并覆盖它。
 
@@ -187,5 +187,6 @@ planner-ex 不写模型名/effort，也不选择 execution backend。`backend=lo
 - [ ] routing 三维独立评估，MULTI 通过 hard gate；
 - [ ] plan 未写模型/effort；
 - [ ] planner-ex 没有创建 worktree/branch、commit/merge/push，也没有在 main 写最终 plan；
+- [ ] `.ai-bridge/**` 是 ignored/untracked transport，planner 没有把它纳入任何 Git artifact；
 - [ ] planner-ex 前后的 primary HEAD、worktree 集合与 stage branch 集合一致；
 - [ ] 最终正文已准备交给 `stage-lifecycle bootstrap_plan`。

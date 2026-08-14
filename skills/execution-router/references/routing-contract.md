@@ -22,7 +22,7 @@ Canonical ownership：
 - `executor-web`：Web backend execution；source SINGLE → `single`，source MULTI → `serialized_multi`。
 - `reviewer-ex`：Web reviewer；必须审查准确 stage worktree，不因 execution backend/effective mode 改变审查标准。
 
-`.ai-bridge/current-plan.md` 只是 pending transport；bootstrap seal 成功后，stage worktree 中的 committed plan 是唯一 authoritative plan。
+`.ai-bridge/**` 是本地 gitignored transport namespace，不是 repository/stage artifact，任何 branch 上都必须保持 **zero tracked paths**。planner/router/executor/reviewer/lifecycle 可以读写所需 transport 文件，但不得 stage/commit 它们；若 `git ls-files .ai-bridge` 非空，先返回 workflow-state error，不继续 stage mutation。`.ai-bridge/current-plan.md` 只是 pending transport；bootstrap seal 成功后，stage worktree 中的 committed plan 是唯一 authoritative plan。
 
 ## 2. Official workflows
 
