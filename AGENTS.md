@@ -46,7 +46,7 @@ open-r1-code-verifier/
 │       └── training/
 │           ├── open_r1_adapter.py    # Open-R1 integration boundary
 │           ├── grpo_data.py          # WP7-a payload-minimal GRPO dataset mapping
-│           ├── grpo.py               # WP7-a GRPO config/runtime/reward/artifacts
+│           ├── grpo.py               # WP7 GRPO runtime/artifacts/checkpoint identity
 │           ├── sft_data.py           # WP6-a trajectory validation/dataset mapping
 │           └── sft.py                # WP6-a LoRA config/runtime/artifacts
 ├── tests/
@@ -61,7 +61,8 @@ open-r1-code-verifier/
 │   │   ├── test_wp5a_gpu_smoke.py
 │   │   ├── test_wp5b_metrics_pipeline.py
 │   │   ├── test_wp6a_sft_integration.py
-│   │   └── test_wp7a_grpo_integration.py
+│   │   ├── test_wp7a_grpo_integration.py
+│   │   └── test_wp7b_grpo_checkpoint_evaluation.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
@@ -199,6 +200,9 @@ Reviewers should treat unnecessary compatibility code, speculative abstraction, 
 - Fixture/fake SFT adapters may verify the development reload, resume, and artifact contracts, but must never be recorded as a real B checkpoint, metric, loss, cost, or validation result.
 - `train-grpo` must preflight both ordered Public/Hidden definitions before either run, reuse the config/artifact pair validators, bind both definitions to the same identity loaded through `load_completed_sft_checkpoint()`, and retain the pre-model-load 20 GiB guard. Never accept arbitrary adapter paths or bypass the guard on the GTX 1660 Ti.
 - GRPO policy construction is fixed: base A → completed B adapter loaded read-only → `merge_and_unload(safe_merge=True)` → new trainable GRPO LoRA. Never pass the unmerged B adapter as the active `GRPOTrainer` PEFT adapter; its disabled-adapter reference would incorrectly become A.
+- Completed C/D evaluation must obtain its identity through `load_completed_grpo_checkpoint()`. That loader must revalidate the unique parent B through `load_completed_sft_checkpoint()` and fail closed on copied parent metadata, path, base-model, revision, or adapter drift.
+- C/D evaluation must rebuild base A → completed B read-only → `merge_and_unload(safe_merge=True)` → C/D read-only, then reuse the existing deterministic evaluator and aggregator. Never accept an arbitrary C/D adapter path, attach C/D directly to A, or branch evaluation behavior on reward mode.
+- Fixture/fake C/D adapters may verify development identity, stacked reload, resume, artifact, and payload contracts, but must never be recorded as a real C/D checkpoint, metric, loss, cost, or validation result.
 - Public GRPO trainer rows contain visible tests only. Hidden rows add only train-hidden tests. `eval_hidden_tests`, reference solutions, starter code, and SFT responses must never enter GRPO datasets, callbacks, or logs.
 - GRPO `rewards.jsonl`, `group_metrics.jsonl`, trainer metrics, run/config/environment/stdout/stderr artifacts must remain finite, JSON-safe, and payload-free. Only `rollouts.jsonl` may contain completion text. Fixture/fake runs are engineering evidence, never formal C/D checkpoints, metrics, loss, or cost.
 - The WP4-a verifier accepts exactly one caller-selected non-empty test list, never a complete problem or test-layer selector. It must use `extract_python_code()` for parsing and `CodeExecutor` for execution, and sanitized mappings must not store completion, code, tests, function name, or metadata.
