@@ -542,6 +542,49 @@ Inference reconstruction is fixed: load base A, attach completed B read-only, ca
 
 Development fixture adapters validate this identity, reload, resume, and payload-boundary contract on the GTX 1660 Ti. They are engineering evidence only and must never be reported as a real C/D checkpoint, metric, loss, cost, or validation result.
 
+## WP8 result analysis
+
+`analyze-results` consumes a strict YAML manifest that names completed Base, SFT, Public-RLVR, and Hidden-RLVR
+evaluation runs plus their completed B/C/D training runs. The four evaluations must share the exact problem set, dataset
+hash, seed, split, deterministic generation settings, and Piston definition. B/C/D identities are reloaded through the
+strict checkpoint loaders; C and D must have the expected reward modes and the same B parent.
+
+```yaml
+base_evaluation_run_dir: /persistent/evaluation/base-a
+sft_evaluation_run_dir: /persistent/evaluation/sft-b
+public_evaluation_run_dir: /persistent/evaluation/public-c
+hidden_evaluation_run_dir: /persistent/evaluation/hidden-d
+sft_training_run_dir: /persistent/sft/b
+public_grpo_run_dir: /persistent/grpo/c
+hidden_grpo_run_dir: /persistent/grpo/d
+bootstrap:
+  seed: 42
+  resamples: 10000
+  confidence_level: 0.95
+cost:
+  gpu_hour_cost_usd: null
+manual_labels_path: null
+```
+
+Run the analysis into a new directory:
+
+```bash
+.venv/bin/code-verifier analyze-results \
+  --manifest analysis.yaml \
+  --output-dir "$CODE_VERIFIER_ARTIFACT_ROOT/analysis/main"
+```
+
+The fixed output layout contains `report_data.json`, main/comparison/error/curve/cost CSVs,
+`failure_candidates.jsonl`, a human-label template, and `resolved_analysis.yaml`. Comparisons are paired by
+`problem_id` and bootstrapped at problem level. The reward-hacking rate is explicitly an automated candidate proxy,
+not a human conclusion. Derived artifacts contain source hashes and scalar provenance but do not copy completion,
+extracted code, tests, reference solutions, starter code, or SFT responses. GPU-hour price is never inferred; a null
+rate keeps estimated cost null.
+
+Fixture and synthetic runs may exercise this pipeline during development, but their tables, curves, costs, and labels
+are engineering evidence only. Formal A-D numbers and the required human review of at least 20 unique cases are
+created only from real 4090 validation artifacts.
+
 ## Current limitations
 
 WP1 normalization uses deterministic Unicode and whitespace normalization plus SHA-256 hashing. It detects exact normalized prompt/signature, reference-solution, test-set, and matching-signature test-case overlap, but does not claim semantic or AST-level equivalence. The committed fixture is for structural and pipeline validation; its reference solutions are not executed by WP1 and are not evidence of model quality.

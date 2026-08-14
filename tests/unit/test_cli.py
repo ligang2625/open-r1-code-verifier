@@ -12,6 +12,7 @@ from typing import Any, cast
 import pytest
 
 from code_verifier import cli as cli_module
+from code_verifier.analysis import AnalysisError, AnalysisSummary
 from code_verifier.cli import build_parser, main
 from code_verifier.config import ConfigError
 from code_verifier.data.leakage_checks import TrainingArtifactKind
@@ -60,6 +61,10 @@ def test_root_help_lists_wp1_commands() -> None:
 def test_root_help_lists_wp2_parse_command() -> None:
     """The root help exposes the WP2 parser command."""
     assert "parse-code" in build_parser().format_help()
+
+
+def test_build_parser_exposes_analyze_results_command() -> None:
+    assert "analyze-results" in build_parser().format_help()
 
 
 def test_no_command_prints_help(capsys: Any) -> None:
@@ -1672,3 +1677,66 @@ def test_execute_batch_partial_write_failure_leaves_no_final_output(
         cli_module._write_batch_outputs(_cli_batch_result([ExecutionStatus.PASSED]), output)
     assert not output.exists()
     assert not list(tmp_path.glob(".output.*"))
+
+
+def test_analyze_results_cli_runs_fixture_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    manifest = tmp_path / "analysis.yaml"
+    output = tmp_path / "analysis-output"
+    config = object()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(cli_module, "load_analysis_config", lambda path: config)
+
+    def fake_analyze(received: object, *, output_dir: Path) -> AnalysisSummary:
+        seen["config"] = received
+        seen["output_dir"] = output_dir
+        return AnalysisSummary(
+            output_dir=output_dir,
+            total_problems=20,
+            candidate_count=4,
+            manual_label_count=0,
+            report_data_path=output_dir / "report_data.json",
+            main_results_path=output_dir / "main_results.csv",
+            paired_comparisons_path=output_dir / "paired_comparisons.csv",
+            cost_path=output_dir / "costs.csv",
+        )
+
+    monkeypatch.setattr(cli_module, "analyze_experiment", fake_analyze)
+
+    assert main(["analyze-results", "--manifest", str(manifest), "--output-dir", str(output)]) == 0
+    assert seen == {"config": config, "output_dir": output}
+    stdout = capsys.readouterr().out
+    assert f"report_data={output / 'report_data.json'}" in stdout
+    assert "candidates=4 manual_labels=0" in stdout
+
+
+def test_analyze_results_cli_reports_sanitized_analysis_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "load_analysis_config",
+        lambda path: (_ for _ in ()).throw(AnalysisError("analysis manifest is invalid")),
+    )
+
+    assert main(["analyze-results", "--manifest", "bad.yaml"]) == 2
+    output = capsys.readouterr()
+    assert "analysis manifest is invalid" in output.err
+    assert "Traceback" not in output.err
+
+
+def test_analyze_results_default_output_honors_artifact_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CODE_VERIFIER_ARTIFACT_ROOT", str(tmp_path / "persistent"))
+    parser = build_parser()
+
+    args = parser.parse_args(["analyze-results", "--manifest", "analysis.yaml"])
+
+    assert args.output_dir == tmp_path / "persistent" / "analysis"
