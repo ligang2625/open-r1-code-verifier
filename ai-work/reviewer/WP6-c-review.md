@@ -103,3 +103,75 @@ repair_routing:
 ### Next lifecycle step
 
 Run `$stage-lifecycle checkpoint_review` to commit this R1 review. After checkpointing, run `$execution-router` for the single `R1-M1` repair, then invoke `reviewer-ex` again on the new completed repair execution.
+
+## R2 — latest completed E1 repair
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP6-c
+  review_round: 2
+  source_execution_id: E1
+  reviewed_head_commit: 2a1fda08cecb86bc4679ade83e7b682733972596
+  conclusion: pass
+```
+
+### Provenance and repair scope
+
+- Latest completed execution is `E1`, `task_kind=repair`, execution-report commit / reviewed HEAD `2a1fda08cecb86bc4679ade83e7b682733972596`.
+- `E1.source_review_round=1` and `source_review_commit=a61af3a4956cf205f48d6c6fee707ac73f5241a8`, exactly consuming the committed R1 checkpoint.
+- `repair_issue_ids=[R1-M1]`; result code commit is `29be612ca4176761962ebbd67839f4c3e96181f7`.
+- The repair commit is limited to `src/code_verifier/evaluation/generate.py`, its unit/integration regression coverage, and the matching README wording. No dependency, plan, proceedings, third-party, evaluator, aggregator, or training behavior was changed.
+- Stage profile remains `development` / `engineering` on GTX 1660 Ti; no real B checkpoint or numerical result is required for this review.
+
+### R1-M1 resolution
+
+`R1-M1` is resolved.
+
+- `from_peft_checkpoint()` still requires exact `adapter_config.base_model_name_or_path == base_model_id`.
+- Adapter revision equality is now enforced only when the pinned adapter config actually contains a non-null revision.
+- A completed SFT run with a non-null run-metadata `model_revision` and pinned TRL/PEFT adapter `revision=None` is accepted; that run revision is still passed to both `AutoTokenizer.from_pretrained()` and `AutoModelForCausalLM.from_pretrained()`, so base-weight loading remains pinned.
+- A non-null adapter revision that differs from the completed-run revision still fails closed.
+- Unit coverage explicitly tests the realistic `adapter_revision=None` case and retains explicit revision-mismatch and base-model-identity rejection coverage.
+- The integration fixture now models the pinned runtime by omitting adapter revision while keeping the completed run's non-null revision.
+- README wording now accurately states the same pinned-runtime contract.
+
+Independent pinned-runtime verification reproduced the reason for the repair: TRL `0.18.0` `get_peft_config(ModelConfig(model_revision=...))` yields a PEFT config with `revision=None`. The repaired condition matches this actual runtime behavior and the sealed plan requirement to validate revision only when the pinned API can stably provide it.
+
+### Independent verification
+
+- Affected repair tests: `41 passed`.
+- Full WP6-c focused suite: `125 passed`.
+- `make lint`: PASS; Ruff check/format and strict Mypy all passed.
+- `make test`: PASS; `737 passed, 3 skipped`; the three skips remain the existing explicit real-Piston opt-in tests.
+- `make test-gpu`: PASS; `3 passed` on the GTX 1660 Ti.
+- Stage HEAD remained `2a1fda08cecb86bc4679ade83e7b682733972596` throughout review.
+
+### Plan / acceptance conclusion
+
+The previously failing PEFT inference reload acceptance is now satisfied. The completed-run identity loader, explicit Base/SFT CLI binding, unified evaluator/aggregator reuse, checkpoint-bound exact-prefix resume, payload boundaries, engineering-only evidence boundary, lint/default tests/GPU smoke, and pinned dependency constraints remain satisfied. No new blocker, major, minor, or actionable plan/acceptance failure was found.
+
+### Conclusion
+
+`pass`. `R1-M1` is resolved and the reviewed E1 HEAD satisfies the sealed WP6-c development acceptance under engineering evidence.
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 2
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "R1-M1 is resolved and independent focused, full, lint, pinned-runtime, and GPU verification found no remaining actionable issue."
+  workstream_candidates: []
+```
+
+### Next lifecycle step
+
+Run `$stage-lifecycle checkpoint_review` to seal this R2 PASS. After that checkpoint succeeds, run `$stage-lifecycle finalize` for WP6-c.
