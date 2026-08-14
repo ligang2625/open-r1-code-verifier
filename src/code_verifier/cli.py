@@ -61,10 +61,14 @@ from code_verifier.execution import (
 )
 from code_verifier.parsing import extract_python_code
 from code_verifier.training import (
+    GRPODataError,
+    GRPOTrainingError,
     SFTDataError,
     SFTTrainingError,
     load_completed_sft_checkpoint,
+    load_grpo_training_config,
     load_sft_training_config,
+    run_grpo_training,
     run_sft_training,
 )
 
@@ -87,7 +91,7 @@ EXECUTION_ERRORS = (
     UnicodeError,
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
-TRAINING_ERRORS = (SFTDataError, SFTTrainingError)
+TRAINING_ERRORS = (SFTDataError, SFTTrainingError, GRPODataError, GRPOTrainingError)
 ARTIFACT_ROOT_ENV = "CODE_VERIFIER_ARTIFACT_ROOT"
 
 
@@ -410,8 +414,36 @@ def _train_sft(args: argparse.Namespace) -> int:
     return 0
 
 
+def _train_grpo(args: argparse.Namespace) -> int:
+    """Run one strict GRPO workflow from a completed SFT B run."""
+    config = load_grpo_training_config(Path(str(args.config)))
+    cli_seed = None if args.seed is None else int(args.seed)
+    effective_seed = config.seed if cli_seed is None else cli_seed
+    if cli_seed is not None and cli_seed != config.seed:
+        print(f"override: seed: {config.seed} -> {cli_seed}", file=sys.stderr)
+    piston_config = load_piston_executor_config(config.piston_config)
+    executor = PistonExecutor(piston_config)
+    executor.validate_runtime()
+    resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
+    summary = run_grpo_training(
+        config,
+        sft_run_dir=Path(str(args.sft_run_dir)),
+        output_root=Path(str(args.output_dir)),
+        seed=effective_seed,
+        executor=executor,
+        resume_from_checkpoint=resume,
+    )
+    print(
+        f"trained {summary.train_samples} samples "
+        f"(train_loss={summary.train_loss:g}, reward_mode={summary.reward_mode})"
+    )
+    print(f"run_dir={summary.run_dir}")
+    print(f"checkpoint_dir={summary.checkpoint_dir}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0-WP6-a commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP7-a commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -529,6 +561,31 @@ def build_parser() -> argparse.ArgumentParser:
         seed_default=None,
     )
     train_sft_parser.set_defaults(handler=_train_sft)
+
+    train_grpo_parser = subparsers.add_parser(
+        "train-grpo",
+        help="run Public or Hidden GRPO from a completed SFT run",
+    )
+    train_grpo_parser.add_argument(
+        "--sft-run-dir",
+        type=Path,
+        required=True,
+        help="completed SFT B run used as the GRPO policy and reference",
+    )
+    train_grpo_parser.add_argument(
+        "--resume-from-checkpoint",
+        type=Path,
+        default=None,
+        help="explicit checkpoint directory to resume",
+    )
+    _add_common_arguments(
+        train_grpo_parser,
+        config_required=True,
+        output_dir_default=_default_artifact_output("grpo"),
+        output_dir_required=False,
+        seed_default=None,
+    )
+    train_grpo_parser.set_defaults(handler=_train_grpo)
     return parser
 
 
