@@ -512,3 +512,28 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 ### WP6 development 聚合状态
 
 WP6-a 与 WP6-c 已覆盖当前 development track 的 SFT 数据/训练控制面、completed checkpoint identity、PEFT reload 与统一 B 组评测接入。真实 SFT optimizer run、正式 B checkpoint/数值/成本仍属于后续 24GB validation track，不能由本 development stage 视为完成。当前 stage 的 `development_terminal=false`，因此本次 finalize **不会**写 `Development Complete Record`；项目仍需继续完成 WP7/WP8 development 与 terminal closeout 后才能解锁 validation。
+
+---
+
+## WP7-a：GRPO control-plane 与奖励日志开发
+
+- **完成日期**：2026-08-14
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP7-a-review.md` R1）
+- **执行计划**：`ai-work/planner/WP7-a-plan.md`
+- **实施范围**：完成 Public/Hidden GRPO 的共享 prompt 与 payload-minimal dataset、exact config 与 C/D fairness guard、pinned TRL reward callback、sanitized rollout/reward/group artifacts、completed B → merged policy → new GRPO LoRA 的 runtime construction、strict run/resume identity、20 GiB hardware guard 与 paired `train-grpo` CLI；本 stage 仅提供 engineering evidence，不执行 optimizer-based GRPO，也不产生正式 C/D checkpoint、研究数值或成本。
+
+### 验收结论
+
+- Public/Hidden trainer dataset 共用 §7.2 prompt；Public 仅携带 visible reward payload，Hidden 仅额外携带 `train_hidden_tests`，`eval_hidden_tests`、reference solution、starter code 与 SFT response 均被训练路径和日志边界拒绝。
+- C/D production preflight 在创建 selected run 或加载 trainer runtime 前同时验证两份 config、两份 completed-SFT B definition 与 ordered artifact pair；config drift、不同 B identity 或 artifact drift 均 fail closed。
+- pinned TRL `0.18.0` / PEFT `0.14.0` 路径严格执行 `base A → load completed B adapter read-only → safe merge B → new GRPO LoRA`，避免 reference policy 回退到 A；`num_generations` cross-field 约束与 pinned constructor error normalization 已纳入项目边界。
+- reward callback 继续复用 `compute_code_rewards()` / verifier / configured CodeExecutor，并产出可复算且不泄漏测试 payload 的 rollout、reward 与 group metrics artifacts。
+- strict resume 绑定 parent B、dataset/config、dependency/environment、seed、reward mode 与同一 run 下的 `checkpoint-N`；GTX 1660 Ti 在 model load 前因 20 GiB gate 正确 fail closed。
+- R1 独立验收：WP7-a focused suite `117 passed`；recovered-contract 定向检查 `7 passed`；`make lint` 全绿；`make test`：803 passed、3 个既有显式 real-Piston opt-in tests skipped；`make test-gpu`：3 passed；real loopback Piston validation 返回 `3.10.0`。
+- `third_party/open-r1/**`、`pyproject.toml`、`uv.lock` 未修改；没有依赖升级或真实 GRPO 训练。
+- WP7-a merge commit：`fee3cd3c883418ee2028519f41505db099c34145`。
+
+### WP7 development 状态
+
+WP7-a 已完成当前 development track 的 GRPO control-plane、reward wiring、artifact/resume 与 C/D fairness 工程合同。completed C/D checkpoint identity、从 merged B + C/D adapter 的独立 reload、统一 C/D evaluation/aggregation 接入等后续 WP7 development 工作仍未完成；真实 C/D optimizer run、正式 checkpoint/数值/成本继续属于 24GB validation track。当前 stage 的 `development_terminal=false`，因此本次 finalize **不会**写 `Development Complete Record`。
