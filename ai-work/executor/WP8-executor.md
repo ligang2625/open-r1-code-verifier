@@ -185,3 +185,85 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## Repair execution E1
+
+- Task: `repair`
+- Source review: round 1 at `2d447adfc079afc75ab6a7305fe8a3f41c5789a1`
+- Routed issues: `R1-M1`, `R1-M2`, `R1-M3`, `R1-m1`, `R1-m2`
+- Result code commit: `a55c36b0325254c2166836e7fbde8dd29027ccaa`
+- Backend/mode: `local_codex` / `single`
+- Subagents: none
+- Review/finalization: not performed
+
+### E1 baseline and preflight
+
+- Repair began with `HEAD` exactly equal to the routed review commit, branch `feat/wp8`, a clean worktree, and no
+  tracked `.ai-bridge` paths.
+- The sealed plan and committed review matched their routed commits; plan metadata matched development / GTX 1660 Ti
+  (6GB) / engineering / terminal true.
+- Before the first business modification, the complete plan preflight passed:
+  - pinned imports passed with torch `2.6.0+cu124`;
+  - `make test-gpu`: `3 passed`, 0 failed, 0 skipped;
+  - `make test-piston`: `9 passed`, 0 failed, 0 skipped (`2 deselected`);
+  - `make lint`: Ruff check/format and strict mypy passed;
+  - evaluation bootstrap smoke: `16 passed`.
+
+### E1 issue disposition
+
+- `R1-M1`: added canonical recomputation of persisted resolved evaluation config identity through the production
+  evaluation parser/hash rules; Analysis now rejects resolved config or Piston definition tampering. Added both tamper
+  tests.
+- `R1-M2`: completed evaluation sources now require valid `project_commit`, `open_r1_commit`, and
+  `dependency_lock_hash` provenance, and `report_data.json` retains all three per source. Added malformed/missing and
+  report-retention tests.
+- `R1-M3`: added the deterministic scalar-only `large_public_eval_gap` reason when
+  `visible_pass_rate - eval_hidden_pass_rate > 0.5`.
+- `R1-m1`: restricted `train_hidden_pass_eval_fail` to `Hidden-RLVR`; the shared visible-to-eval automated proxy is
+  unchanged.
+- `R1-m2`: fixture integration output now explicitly records `evidence_class: engineering_fixture_synthetic`; the
+  production CLI default remains `analysis_source_artifacts`, and the exact analysis manifest schema is unchanged.
+
+Changed production/test files:
+
+- `src/code_verifier/evaluation/evaluate.py`
+- `src/code_verifier/analysis/experiment.py`
+- `src/code_verifier/analysis/compare.py`
+- `src/code_verifier/analysis/report.py`
+- `tests/unit/analysis/test_experiment.py`
+- `tests/unit/analysis/test_compare.py`
+- `tests/unit/analysis/test_report.py`
+- `tests/integration/test_wp8_analysis_pipeline.py`
+
+### E1 validation and closeout
+
+- Initial routed focused tests: `40 passed`.
+- Plan focused WP8 gate: `227 passed`.
+- The first global lint run found one non-environment strict-mypy narrowing error. It was fixed in scope and committed;
+  no environment checkpoint was used.
+- Final `make lint`: Ruff check/format and strict mypy passed for 102 source files.
+- Final `make test`: `881 passed`, `3 skipped`, 0 failed. The skips were the expected opt-in Piston tests and were
+  replaced by the dedicated gate.
+- Final `make test-gpu`: `3 passed`, 0 failed, 0 skipped.
+- Final `make test-piston`: `9 passed`, 0 failed, 0 skipped (`2 deselected`).
+- Production critical-path scan found no `TODO`, `FIXME`, `NotImplementedError`, `stub`, or `fake` matches under
+  `src/code_verifier` or `configs`.
+- Plan/review/proceedings/`third_party/open-r1`/`.ai-bridge` remained unchanged; no dependency file changed, no real
+  optimizer-based training ran, and no fixture output was represented as validation evidence.
+- No unresolved blocker or deviation remains.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP8
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: c3b5337efdd43135087ea63a38efef1dc7e31ad2
+  source_review_round: 1
+  source_review_commit: 2d447adfc079afc75ab6a7305fe8a3f41c5789a1
+  repair_issue_ids: [R1-M1, R1-M2, R1-M3, R1-m1, R1-m2]
+  result_code_commit: a55c36b0325254c2166836e7fbde8dd29027ccaa
+  execution_backend: local_codex
+  effective_execution_mode: single
+  status: completed
+```
