@@ -488,3 +488,27 @@ native BF16: false（torch.cuda.is_bf16_supported(including_emulation=False)）
 - reason: `ruff` 缺失导致总验收失败
 - retired_at: `2026-08-13T19:23:43+08:00`
 - stage 没有 completed E0，也没有 review；上述提交未被 `main` 接受。
+
+---
+
+## WP6-c：SFT checkpoint 重载与 B 组统一评测开发
+
+- **完成日期**：2026-08-14
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP6-c-review.md` R2）
+- **执行计划**：`ai-work/planner/WP6-c-plan.md`
+- **实施范围**：完成 strict completed-SFT checkpoint identity、pinned PEFT inference reload、`evaluate --sft-run-dir` 显式 B 组入口、与 Base 共用 evaluator/aggregator 的 evaluation/resume contract，以及 fixture/fake runtime 工程验证；本 stage 未执行 optimizer-based SFT、未产生真实 B checkpoint/数值/成本。
+
+### 验收结论
+
+- completed SFT run 仅在 `status=completed`、artifact layout/identity/adapter 完整且 checkpoint 直接属于同一 run 时可加载；checkpoint identity 不携带训练 payload。
+- B 组通过现有 `run_pass1_evaluation()` 与 `aggregate_evaluation_run()`，并把 completed run 的 model revision 与实际 adapter checkpoint 路径纳入现有 evaluation identity / exact-prefix resume；Base 与 B 未复制 evaluator、aggregator 或结果 schema。
+- pinned TRL `0.18.0` / PEFT `0.14.0` 的真实语义已纳入合同：adapter config 可合法保持 `revision=None`，此时 completed run 的 non-null `model_revision` 继续作为 base tokenizer/model loading 的真值；若 adapter 显式携带 revision，则 mismatch 仍 fail closed；`base_model_name_or_path` 始终严格匹配。
+- prompt 与非-sample artifact 继续保持 hidden/reference/SFT-response payload boundary；fixture checkpoint 明确仅为 engineering evidence，不冒充正式 B evidence。
+- R2 独立验收：WP6-c focused suite `125 passed`；`make lint` 全绿；`make test`：737 passed、3 个既有显式 real-Piston opt-in tests skipped；`make test-gpu`：3 passed（GTX 1660 Ti）。
+- `third_party/open-r1/**`、`pyproject.toml`、`uv.lock` 未修改；没有依赖升级或真实训练。
+- WP6-c merge commit：`2f57e67911850861f73e247c09bc0a87612210d1`。
+
+### WP6 development 聚合状态
+
+WP6-a 与 WP6-c 已覆盖当前 development track 的 SFT 数据/训练控制面、completed checkpoint identity、PEFT reload 与统一 B 组评测接入。真实 SFT optimizer run、正式 B checkpoint/数值/成本仍属于后续 24GB validation track，不能由本 development stage 视为完成。当前 stage 的 `development_terminal=false`，因此本次 finalize **不会**写 `Development Complete Record`；项目仍需继续完成 WP7/WP8 development 与 terminal closeout 后才能解锁 validation。

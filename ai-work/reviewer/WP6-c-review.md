@@ -175,3 +175,13 @@ repair_routing:
 ### Next lifecycle step
 
 Run `$stage-lifecycle checkpoint_review` to seal this R2 PASS. After that checkpoint succeeds, run `$stage-lifecycle finalize` for WP6-c.
+
+---
+
+## Finalization Record
+
+- `review_round`: 2
+- `review_commit`: `2cd24ac048ee285ef89479af5a311443ed72051f`
+- `merge_commit`: `2f57e67911850861f73e247c09bc0a87612210d1`
+- `finalized_at`: `2026-08-14T13:19:12+08:00`
+- `status`: `FINALIZED`
