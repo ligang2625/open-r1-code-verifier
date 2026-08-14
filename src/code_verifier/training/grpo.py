@@ -2,25 +2,39 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import math
 import os
 import re
+import shutil
+import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
 
+import yaml
+
 from code_verifier.config import ConfigError, load_yaml_mapping
 from code_verifier.data.json_strict import json_values_equal
-from code_verifier.data.leakage_checks import LeakageError, TrainingArtifactKind, check_training_record
+from code_verifier.data.leakage_checks import (
+    LeakageError,
+    TrainingArtifactKind,
+    check_training_record,
+    load_training_artifact,
+)
+from code_verifier.environment import collect_environment
 from code_verifier.execution.base import CodeExecutor
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards
+from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.open_r1_adapter import import_open_r1_module
-from code_verifier.training.sft import SFTCheckpointIdentity
+from code_verifier.training.sft import SFTCheckpointIdentity, load_completed_sft_checkpoint
 
 
 @dataclass(frozen=True)
@@ -55,6 +69,18 @@ class GRPOTrainingConfig:
     eval_steps: int
     seed: int
     min_cuda_memory_gb: float
+
+
+@dataclass(frozen=True)
+class GRPOTrainingSummary:
+    """Non-sensitive completed GRPO training summary."""
+
+    run_dir: Path
+    checkpoint_dir: Path
+    reward_mode: str
+    train_loss: float
+    train_samples: int
+    gpu_hours: float
 
 
 class GRPOTrainingError(RuntimeError):
@@ -112,6 +138,18 @@ _RUNTIME_VERSIONS = {
     "transformers": "4.52.3",
     "accelerate": "1.4.0",
     "peft": "0.14.0",
+}
+_GRPO_RUN_LAYOUT = {
+    "resolved_config.yaml",
+    "environment.json",
+    "run.json",
+    "metrics.jsonl",
+    "rollouts.jsonl",
+    "rewards.jsonl",
+    "group_metrics.jsonl",
+    "stdout.log",
+    "stderr.log",
+    "checkpoints",
 }
 
 
@@ -605,3 +643,378 @@ def _load_merged_sft_policy(
         raise
     except Exception as error:
         raise GRPOTrainingError(f"could not construct merged SFT policy: {type(error).__name__}") from None
+
+
+def _resolved_config_mapping(config: GRPOTrainingConfig, *, effective_seed: int) -> dict[str, object]:
+    resolved = asdict(config)
+    resolved["dataset_path"] = str(config.dataset_path)
+    resolved["piston_config"] = str(config.piston_config)
+    resolved["seed"] = effective_seed
+    resolved["use_peft"] = True
+    resolved["use_vllm"] = False
+    resolved["report_to"] = []
+    resolved["push_to_hub"] = False
+    resolved["trust_remote_code"] = False
+    resolved["load_in_4bit"] = False
+    resolved["load_in_8bit"] = False
+    resolved["do_eval"] = False
+    resolved["eval_strategy"] = "no"
+    resolved["eval_steps_purpose"] = "external_checkpoint_evaluation_cadence"
+    return resolved
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
+def _write_json(path: Path, value: Mapping[str, object]) -> None:
+    _atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False, indent=2) + "\n")
+
+
+def _append_jsonl(path: Path, value: Mapping[str, object]) -> None:
+    _append_lines(path, [_jsonl_line(value)])
+
+
+def _file_hash(path: Path, *, description: str) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise GRPOTrainingError(f"could not read {description}: {type(error).__name__}") from None
+
+
+def _config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
+    encoded = json.dumps(
+        _resolved_config_mapping(config, effective_seed=seed),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _safe_run_dir(output_root: Path, run_name: str) -> Path:
+    root = output_root.resolve(strict=False)
+    if root == Path(root.anchor) or root == Path.cwd().resolve():
+        raise GRPOTrainingError("output_root must be a dedicated non-root directory")
+    run_dir = root / run_name
+    if root not in run_dir.parents:
+        raise GRPOTrainingError("resolved GRPO run directory escapes output_root")
+    return run_dir
+
+
+def _parent_identity_mapping(parent_sft: SFTCheckpointIdentity) -> dict[str, object]:
+    return {
+        "parent_sft_run_id": parent_sft.run_id,
+        "parent_sft_model_id": parent_sft.model_id,
+        "parent_sft_model_revision": parent_sft.model_revision,
+        "parent_sft_dataset_hash": parent_sft.dataset_hash,
+        "parent_sft_config_hash": parent_sft.config_hash,
+        "parent_sft_dependency_lock_hash": parent_sft.dependency_lock_hash,
+        "parent_sft_seed": parent_sft.seed,
+        "parent_sft_run_path": str(parent_sft.run_dir),
+        "parent_sft_checkpoint_path": str(parent_sft.checkpoint_dir),
+    }
+
+
+def _initialize_run(
+    *,
+    run_dir: Path,
+    config: GRPOTrainingConfig,
+    seed: int,
+    parent_sft: SFTCheckpointIdentity,
+    dataset_hash: str,
+    config_hash: str,
+    environment: Mapping[str, Any],
+) -> dict[str, object]:
+    run_dir.mkdir(parents=True, exist_ok=False)
+    (run_dir / "checkpoints").mkdir()
+    started = datetime.now(timezone.utc).isoformat()
+    packages = cast(Mapping[str, object], environment["packages"])
+    run_metadata: dict[str, object] = {
+        "run_id": config.run_name,
+        "reward_mode": config.reward_mode,
+        "timestamp": started,
+        "git_commit": environment["project_commit"],
+        "open_r1_commit": environment["open_r1_commit"],
+        "python_version": environment["python_version"],
+        "torch_version": packages["torch"],
+        "cuda_version": environment["cuda_version"],
+        "gpu_name": environment["gpu_name"],
+        "gpu_count": environment["gpu_count"],
+        "dependency_lock_hash": environment["dependency_lock_hash"],
+        "dataset_hash": dataset_hash,
+        "config_hash": config_hash,
+        "seed": seed,
+        "seed_override": None if seed == config.seed else {"config": config.seed, "cli": seed},
+        **_parent_identity_mapping(parent_sft),
+        "resume_from_checkpoint": None,
+        "command": "code-verifier train-grpo",
+        "start_time": started,
+        "end_time": None,
+        "gpu_hours": 0.0,
+        "status": "running",
+    }
+    _atomic_write(
+        run_dir / "resolved_config.yaml",
+        yaml.safe_dump(_resolved_config_mapping(config, effective_seed=seed), sort_keys=True, allow_unicode=True),
+    )
+    _write_json(run_dir / "environment.json", environment)
+    _write_json(run_dir / "run.json", run_metadata)
+    for name in (
+        "metrics.jsonl",
+        "rollouts.jsonl",
+        "rewards.jsonl",
+        "group_metrics.jsonl",
+        "stdout.log",
+        "stderr.log",
+    ):
+        (run_dir / name).touch(exist_ok=False)
+    return run_metadata
+
+
+def _resolve_resume_checkpoint(run_dir: Path, requested: Path) -> tuple[Path, str]:
+    try:
+        resolved_run = run_dir.resolve(strict=True)
+        checkpoint_root = (resolved_run / "checkpoints").resolve(strict=True)
+        resolved_checkpoint = requested.resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("resume_from_checkpoint must be an existing checkpoint directory") from None
+    if (
+        not resolved_checkpoint.is_dir()
+        or resolved_checkpoint.parent != checkpoint_root
+        or re.fullmatch(r"checkpoint-[1-9][0-9]*", resolved_checkpoint.name) is None
+    ):
+        raise GRPOTrainingError("resume_from_checkpoint must be a checkpoint-* directory from the same GRPO run")
+    return resolved_checkpoint, resolved_checkpoint.relative_to(resolved_run).as_posix()
+
+
+def _validate_resume_run(
+    *,
+    run_dir: Path,
+    config: GRPOTrainingConfig,
+    seed: int,
+    parent_sft: SFTCheckpointIdentity,
+    dataset_hash: str,
+    config_hash: str,
+    environment: Mapping[str, Any],
+    resume_source: str,
+) -> dict[str, object]:
+    try:
+        value = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise GRPOTrainingError("existing GRPO run metadata is unreadable") from None
+    if not isinstance(value, dict):
+        raise GRPOTrainingError("existing GRPO run metadata is invalid")
+    packages = cast(Mapping[str, object], environment["packages"])
+    expected: dict[str, object] = {
+        "run_id": config.run_name,
+        "reward_mode": config.reward_mode,
+        "dataset_hash": dataset_hash,
+        "config_hash": config_hash,
+        "seed": seed,
+        "git_commit": environment["project_commit"],
+        "open_r1_commit": environment["open_r1_commit"],
+        "dependency_lock_hash": environment["dependency_lock_hash"],
+        "python_version": environment["python_version"],
+        "torch_version": packages["torch"],
+        "cuda_version": environment["cuda_version"],
+        "gpu_name": environment["gpu_name"],
+        "gpu_count": environment["gpu_count"],
+        **_parent_identity_mapping(parent_sft),
+    }
+    if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+        raise GRPOTrainingError("existing GRPO run identity does not match the requested resume")
+    if {path.name for path in run_dir.iterdir()} != _GRPO_RUN_LAYOUT:
+        raise GRPOTrainingError("existing GRPO run does not match the strict artifact layout")
+    if value.get("status") not in {"running", "failed"}:
+        raise GRPOTrainingError("only an interrupted or failed GRPO run may be resumed")
+    previous_gpu_hours = value.get("gpu_hours")
+    if (
+        isinstance(previous_gpu_hours, bool)
+        or not isinstance(previous_gpu_hours, int | float)
+        or not math.isfinite(float(previous_gpu_hours))
+        or float(previous_gpu_hours) < 0.0
+    ):
+        raise GRPOTrainingError("existing GRPO run has invalid cumulative gpu_hours")
+    value["status"] = "running"
+    value["end_time"] = None
+    value["resume_from_checkpoint"] = resume_source
+    _write_json(run_dir / "run.json", value)
+    return cast(dict[str, object], value)
+
+
+def _append_trainer_metrics(path: Path, log_history: object) -> None:
+    if not isinstance(log_history, list):
+        raise GRPOTrainingError("GRPO trainer state must provide log_history")
+    for entry in log_history:
+        if not isinstance(entry, Mapping):
+            raise GRPOTrainingError("GRPO trainer log history entries must be mappings")
+        scalars: dict[str, object] = {"record_type": "trainer"}
+        for key, value in entry.items():
+            if not isinstance(key, str):
+                raise GRPOTrainingError("GRPO trainer metric names must be strings")
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            number = float(value)
+            if not math.isfinite(number):
+                raise GRPOTrainingError("GRPO trainer metrics must be finite")
+            scalars[key] = number
+        if len(scalars) > 1:
+            _append_jsonl(path, scalars)
+
+
+def run_grpo_training(
+    config: GRPOTrainingConfig,
+    *,
+    sft_run_dir: Path,
+    output_root: Path,
+    seed: int,
+    executor: CodeExecutor,
+    resume_from_checkpoint: Path | None = None,
+) -> GRPOTrainingSummary:
+    """Run one pinned GRPO lifecycle from a completed SFT B identity."""
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise GRPOTrainingError("seed must be an integer")
+    validate_grpo_training_hardware(config)
+    parent_sft = load_completed_sft_checkpoint(sft_run_dir)
+    run_dir = _safe_run_dir(output_root, config.run_name)
+    checkpoint_dir = run_dir / "checkpoints"
+    dataset_hash = _file_hash(config.dataset_path, description="GRPO dataset")
+    config_hash = _config_hash(config, seed=seed)
+    environment = collect_environment()
+    resume_path: str | None = None
+    if resume_from_checkpoint is not None:
+        if not run_dir.is_dir():
+            raise GRPOTrainingError("resume requires an existing GRPO run directory")
+        resolved_resume, resume_source = _resolve_resume_checkpoint(run_dir, resume_from_checkpoint)
+        resume_path = str(resolved_resume)
+        run_metadata = _validate_resume_run(
+            run_dir=run_dir,
+            config=config,
+            seed=seed,
+            parent_sft=parent_sft,
+            dataset_hash=dataset_hash,
+            config_hash=config_hash,
+            environment=environment,
+            resume_source=resume_source,
+        )
+    else:
+        if run_dir.exists():
+            raise GRPOTrainingError("GRPO run directory already exists; explicit resume is required")
+        try:
+            run_metadata = _initialize_run(
+                run_dir=run_dir,
+                config=config,
+                seed=seed,
+                parent_sft=parent_sft,
+                dataset_hash=dataset_hash,
+                config_hash=config_hash,
+                environment=environment,
+            )
+        except Exception:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise
+
+    previous_gpu_hours = float(cast(int | float, run_metadata["gpu_hours"]))
+    started = time.perf_counter()
+    try:
+        kind = TrainingArtifactKind.PUBLIC_GRPO if config.reward_mode == "public" else TrainingArtifactKind.HIDDEN_GRPO
+        records = load_training_artifact(config.dataset_path, kind=kind)
+        train_dataset = build_grpo_dataset(records, reward_mode=config.reward_mode)
+        runtime = _load_grpo_runtime()
+        model_args, training_args = _runtime_arguments(
+            config,
+            checkpoint_dir=checkpoint_dir,
+            parent_sft=parent_sft,
+            seed=seed,
+            runtime=runtime,
+        )
+        tokenizer = runtime.get_tokenizer(model_args, training_args)
+        model = _load_merged_sft_policy(
+            parent_sft=parent_sft,
+            model_args=model_args,
+            training_args=training_args,
+            runtime=runtime,
+        )
+        reward_callback = build_grpo_reward_callback(
+            reward_mode=config.reward_mode,
+            executor=executor,
+            rollout_log_path=run_dir / "rollouts.jsonl",
+            reward_log_path=run_dir / "rewards.jsonl",
+            group_metrics_log_path=run_dir / "group_metrics.jsonl",
+            num_generations=config.num_generations,
+            max_completion_length=config.max_completion_length,
+        )
+        trainer = runtime.trainer_type(
+            model=model,
+            reward_funcs=reward_callback,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=None,
+            processing_class=tokenizer,
+            peft_config=runtime.get_peft_config(model_args),
+        )
+        train_result = trainer.train(resume_from_checkpoint=resume_path)
+        raw_loss = getattr(train_result, "metrics", {}).get("train_loss")
+        if isinstance(raw_loss, bool) or not isinstance(raw_loss, int | float) or not math.isfinite(float(raw_loss)):
+            raise GRPOTrainingError("GRPO training must produce a finite train_loss")
+        train_loss = float(raw_loss)
+        trainer.save_state()
+        trainer.save_model(str(checkpoint_dir))
+        trainer_state = getattr(trainer, "state", None)
+        _append_trainer_metrics(run_dir / "metrics.jsonl", getattr(trainer_state, "log_history", None))
+        attempt_gpu_hours = (time.perf_counter() - started) / 3600.0
+        gpu_hours = previous_gpu_hours + attempt_gpu_hours
+        _append_jsonl(
+            run_dir / "metrics.jsonl",
+            {
+                "record_type": "summary",
+                "train_loss": train_loss,
+                "train_samples": len(train_dataset),
+                "attempt_gpu_hours": attempt_gpu_hours,
+                "gpu_hours": gpu_hours,
+            },
+        )
+        with (run_dir / "stdout.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"completed train_samples={len(train_dataset)} reward_mode={config.reward_mode}\n")
+        run_metadata["status"] = "completed"
+        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
+        run_metadata["gpu_hours"] = gpu_hours
+        _write_json(run_dir / "run.json", run_metadata)
+        return GRPOTrainingSummary(
+            run_dir=run_dir,
+            checkpoint_dir=checkpoint_dir,
+            reward_mode=config.reward_mode,
+            train_loss=train_loss,
+            train_samples=len(train_dataset),
+            gpu_hours=gpu_hours,
+        )
+    except Exception as error:
+        gpu_hours = previous_gpu_hours + (time.perf_counter() - started) / 3600.0
+        run_metadata["status"] = "failed"
+        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
+        run_metadata["gpu_hours"] = gpu_hours
+        _write_json(run_dir / "run.json", run_metadata)
+        with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{type(error).__name__}\n")
+        raise

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -24,6 +24,7 @@ from code_verifier.training.grpo import (
     build_grpo_reward_callback,
     grpo_training_config_from_mapping,
     load_grpo_training_config,
+    run_grpo_training,
     validate_grpo_artifact_pair,
     validate_grpo_config_pair,
     validate_grpo_training_hardware,
@@ -539,3 +540,326 @@ def test_sft_adapter_identity_mismatch_fails_before_base_load(tmp_path: Path, ad
             runtime=runtime,
         )
     assert base_loaded is False
+
+
+def _write_completed_sft_run(run_dir: Path, *, dataset_hash: str = "b" * 64) -> None:
+    run_dir.mkdir()
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "run_id": "completed-b",
+                "model_id": "example/model",
+                "model_revision": "a" * 40,
+                "dataset_hash": dataset_hash,
+                "config_hash": "c" * 64,
+                "dependency_lock_hash": "d" * 64,
+                "seed": 42,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (checkpoint_dir / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "example/model", "peft_type": "LORA"}),
+        encoding="utf-8",
+    )
+    (checkpoint_dir / "adapter_model.safetensors").write_bytes(b"fixture-adapter")
+    for name in ("resolved_config.yaml", "environment.json", "metrics.jsonl", "stdout.log", "stderr.log"):
+        (run_dir / name).touch()
+
+
+def _write_grpo_artifact(path: Path, *, reward_mode: str = "public", sentinel: str = "VISIBLE_SENTINEL") -> None:
+    record = _artifact_record(hidden=reward_mode == "hidden")
+    record["prompt"] = "PRIVATE_PROMPT_SENTINEL"
+    record["visible_tests"] = [{"input": sentinel, "expected": sentinel}]
+    if reward_mode == "hidden":
+        record["train_hidden_tests"] = [{"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}]
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+class _FakeMergedPolicy:
+    @staticmethod
+    def merge_and_unload(*, safe_merge: bool) -> str:
+        assert safe_merge is True
+        return "MERGED_B"
+
+
+class _FakePeftConfig:
+    @staticmethod
+    def from_pretrained(path: str) -> SimpleNamespace:
+        assert Path(path).name == "checkpoints"
+        return SimpleNamespace(base_model_name_or_path="example/model", revision="a" * 40)
+
+
+class _FakePeftModel:
+    @staticmethod
+    def from_pretrained(
+        model: object,
+        path: str,
+        *,
+        is_trainable: bool,
+        config: object,
+    ) -> _FakeMergedPolicy:
+        assert model == "BASE_A"
+        assert Path(path).name == "checkpoints"
+        assert is_trainable is False
+        assert config is not None
+        return _FakeMergedPolicy()
+
+
+class _FakeTrainer:
+    instances: ClassVar[list[_FakeTrainer]] = []
+    loss = 0.25
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = dict(kwargs)
+        self.resume_from_checkpoint: str | None = None
+        self.state = SimpleNamespace(log_history=[{"loss": 0.3, "step": 1, "ignored": "text"}])
+        self.__class__.instances.append(self)
+
+    def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
+        self.resume_from_checkpoint = resume_from_checkpoint
+        dataset = cast(Any, self.kwargs["train_dataset"])
+        row = cast(dict[str, object], dataset[0])
+        reward_func = cast(Callable[..., list[float]], self.kwargs["reward_funcs"])
+        columns = {key: [value] * 4 for key, value in row.items() if key != "prompt"}
+        reward_func(
+            prompts=[row["prompt"]] * 4,
+            completions=["```python\ndef solve(value):\n    return value\n```"] * 4,
+            completion_ids=[[1, 2]] * 4,
+            **columns,
+        )
+        return SimpleNamespace(metrics={"train_loss": self.loss})
+
+    @staticmethod
+    def save_state() -> None:
+        return None
+
+    @staticmethod
+    def save_model(path: str) -> None:
+        assert Path(path).name == "checkpoints"
+
+
+def _fake_grpo_runtime() -> _GRPORuntime:
+    return _GRPORuntime(
+        model_config_type=_Recorder(),
+        training_config_type=_Recorder(),
+        trainer_type=_FakeTrainer,
+        get_peft_config=lambda _: "NEW_GRPO_LORA",
+        get_tokenizer=lambda *_: "TOKENIZER",
+        get_model=lambda *_: "BASE_A",
+        peft_config_type=_FakePeftConfig,
+        peft_model_type=_FakePeftModel,
+    )
+
+
+def _prepare_fake_grpo_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reward_mode: str = "public",
+) -> tuple[object, Path, Path]:
+    config = grpo_training_config_from_mapping(_config_mapping(tmp_path, reward_mode=reward_mode))
+    _write_grpo_artifact(config.dataset_path, reward_mode=reward_mode)
+    config.piston_config.write_text("endpoint: fake\n", encoding="utf-8")
+    sft_run_dir = tmp_path / "sft-run"
+    _write_completed_sft_run(sft_run_dir)
+    _FakeTrainer.instances.clear()
+    _FakeTrainer.loss = 0.25
+    monkeypatch.setattr(grpo_module, "validate_grpo_training_hardware", lambda _: None)
+    monkeypatch.setattr(grpo_module, "_load_grpo_runtime", _fake_grpo_runtime)
+    return config, sft_run_dir, tmp_path / "outputs"
+
+
+def _passing_results(count: int) -> list[ExecutionResult]:
+    return [_execution_result(passed=True) for _ in range(count)]
+
+
+def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    config = cast(Any, config_value)
+    executor = MockExecutor(_passing_results(4))
+
+    summary = run_grpo_training(
+        config,
+        sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=executor,
+    )
+
+    assert summary.reward_mode == "public"
+    assert summary.train_loss == 0.25
+    assert summary.train_samples == 1
+    assert {path.name for path in summary.run_dir.iterdir()} == {
+        "resolved_config.yaml",
+        "environment.json",
+        "run.json",
+        "metrics.jsonl",
+        "rollouts.jsonl",
+        "rewards.jsonl",
+        "group_metrics.jsonl",
+        "stdout.log",
+        "stderr.log",
+        "checkpoints",
+    }
+    trainer = _FakeTrainer.instances[0]
+    assert trainer.kwargs["model"] == "MERGED_B"
+    assert trainer.kwargs["peft_config"] == "NEW_GRPO_LORA"
+    assert trainer.kwargs["eval_dataset"] is None
+    assert executor.calls[0].tests == [{"input": "VISIBLE_SENTINEL", "expected": "VISIBLE_SENTINEL"}]
+    assert len(_read_jsonl(summary.run_dir / "rollouts.jsonl")) == 4
+    assert len(_read_jsonl(summary.run_dir / "rewards.jsonl")) == 4
+    metrics = _read_jsonl(summary.run_dir / "metrics.jsonl")
+    assert [row["record_type"] for row in metrics] == ["trainer", "summary"]
+    run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_metadata["status"] == "completed"
+    assert run_metadata["parent_sft_run_id"] == "completed-b"
+    assert run_metadata["parent_sft_checkpoint_path"] == str((sft_run_dir / "checkpoints").resolve())
+    for name in (
+        "run.json",
+        "environment.json",
+        "resolved_config.yaml",
+        "metrics.jsonl",
+        "rewards.jsonl",
+        "group_metrics.jsonl",
+        "stdout.log",
+        "stderr.log",
+    ):
+        contents = (summary.run_dir / name).read_text(encoding="utf-8")
+        for forbidden in ("PRIVATE_PROMPT_SENTINEL", "VISIBLE_SENTINEL", "HIDDEN_SENTINEL"):
+            assert forbidden not in contents
+
+
+def test_grpo_run_failure_is_sanitized_and_requires_finite_loss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    config = cast(Any, config_value)
+    _FakeTrainer.loss = math.nan
+    with pytest.raises(GRPOTrainingError, match="finite train_loss"):
+        run_grpo_training(
+            config,
+            sft_run_dir=sft_run_dir,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor(_passing_results(4)),
+        )
+    run_dir = output_root / config.run_name
+    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
+    assert (run_dir / "stderr.log").read_text(encoding="utf-8") == "GRPOTrainingError\n"
+
+
+def test_grpo_resume_is_bound_and_appends_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    config = cast(Any, config_value)
+    summary = run_grpo_training(
+        config,
+        sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=7,
+        executor=MockExecutor(_passing_results(4)),
+    )
+    checkpoint = summary.checkpoint_dir / "checkpoint-1"
+    checkpoint.mkdir()
+    metadata_value = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    metadata_value["status"] = "failed"
+    metadata_value["gpu_hours"] = 1.25
+    (summary.run_dir / "run.json").write_text(json.dumps(metadata_value), encoding="utf-8")
+
+    resumed = run_grpo_training(
+        config,
+        sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=7,
+        executor=MockExecutor(_passing_results(4)),
+        resume_from_checkpoint=checkpoint,
+    )
+
+    assert _FakeTrainer.instances[-1].resume_from_checkpoint == str(checkpoint.resolve())
+    resumed_metadata = json.loads((resumed.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert resumed_metadata["resume_from_checkpoint"] == "checkpoints/checkpoint-1"
+    assert resumed_metadata["gpu_hours"] > 1.25
+    assert len(_read_jsonl(resumed.run_dir / "rollouts.jsonl")) == 8
+    assert len(_read_jsonl(resumed.run_dir / "metrics.jsonl")) == 4
+
+
+@pytest.mark.parametrize("drift", ["seed", "config", "dataset", "dependency", "parent"])
+def test_grpo_resume_rejects_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    config = cast(Any, config_value)
+    summary = run_grpo_training(
+        config,
+        sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+    checkpoint = summary.checkpoint_dir / "checkpoint-1"
+    checkpoint.mkdir()
+    run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    run_metadata["status"] = "failed"
+    if drift == "dependency":
+        run_metadata["dependency_lock_hash"] = "0" * 64
+    (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")
+    seed = 7 if drift == "seed" else 42
+    if drift == "config":
+        config = replace(config, temperature=0.7)
+    if drift == "dataset":
+        _write_grpo_artifact(config.dataset_path, sentinel="CHANGED_VISIBLE")
+    if drift == "parent":
+        sft_metadata = json.loads((sft_run_dir / "run.json").read_text(encoding="utf-8"))
+        sft_metadata["dataset_hash"] = "e" * 64
+        (sft_run_dir / "run.json").write_text(json.dumps(sft_metadata), encoding="utf-8")
+
+    with pytest.raises(GRPOTrainingError, match="identity"):
+        run_grpo_training(
+            config,
+            sft_run_dir=sft_run_dir,
+            output_root=output_root,
+            seed=seed,
+            executor=MockExecutor(_passing_results(4)),
+            resume_from_checkpoint=checkpoint,
+        )
+
+
+def test_grpo_hardware_guard_runs_before_parent_or_model_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = grpo_training_config_from_mapping(_config_mapping(tmp_path))
+    parent_loaded = False
+
+    def fail_hardware(value: object) -> None:
+        assert value == config
+        raise GRPOTrainingError("hardware blocked")
+
+    def load_parent(path: Path) -> object:
+        nonlocal parent_loaded
+        parent_loaded = True
+        return path
+
+    monkeypatch.setattr(grpo_module, "validate_grpo_training_hardware", fail_hardware)
+    monkeypatch.setattr(grpo_module, "load_completed_sft_checkpoint", load_parent)
+    with pytest.raises(GRPOTrainingError, match="hardware blocked"):
+        run_grpo_training(
+            config,
+            sft_run_dir=tmp_path / "sft",
+            output_root=tmp_path / "outputs",
+            seed=42,
+            executor=MockExecutor([]),
+        )
+    assert parent_loaded is False
