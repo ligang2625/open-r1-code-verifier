@@ -65,9 +65,7 @@ def test_build_grpo_dataset_hidden_adds_only_train_hidden_reward_payload() -> No
     ]
     for field in public.column_names:
         assert hidden[0][field] == public[0][field]
-    assert hidden[0]["train_hidden_tests"] == [
-        {"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}
-    ]
+    assert hidden[0]["train_hidden_tests"] == [{"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}]
 
 
 def test_build_grpo_dataset_rejects_duplicate_problem_ids() -> None:

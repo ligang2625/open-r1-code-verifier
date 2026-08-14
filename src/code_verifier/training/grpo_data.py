@@ -79,8 +79,7 @@ def build_grpo_dataset(
         visible_tests = _sequence(record["visible_tests"], field_name="visible_tests")
         metadata = _mapping(record["metadata"], field_name="metadata")
         visible_mappings = [
-            _mapping(test, field_name=f"visible_tests[{test_index}]")
-            for test_index, test in enumerate(visible_tests)
+            _mapping(test, field_name=f"visible_tests[{test_index}]") for test_index, test in enumerate(visible_tests)
         ]
         row: dict[str, Any] = {
             "prompt": [

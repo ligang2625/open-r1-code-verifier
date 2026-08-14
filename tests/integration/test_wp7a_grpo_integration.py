@@ -113,9 +113,9 @@ def _callback(tmp_path: Path, *, reward_mode: str, executor: MockExecutor) -> Ca
     return build_grpo_reward_callback(
         reward_mode=reward_mode,
         executor=executor,
-            rollout_log_path=tmp_path / reward_mode / "rollouts.jsonl",
-            reward_log_path=tmp_path / reward_mode / "rewards.jsonl",
-            group_metrics_log_path=tmp_path / reward_mode / "group_metrics.jsonl",
+        rollout_log_path=tmp_path / reward_mode / "rollouts.jsonl",
+        reward_log_path=tmp_path / reward_mode / "rewards.jsonl",
+        group_metrics_log_path=tmp_path / reward_mode / "group_metrics.jsonl",
         num_generations=1,
         max_completion_length=16,
     )
