@@ -7,7 +7,8 @@ import math
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -16,12 +17,18 @@ from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecut
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.grpo import (
     GRPOTrainingError,
+    _GRPORuntime,
+    _load_grpo_runtime,
+    _load_merged_sft_policy,
+    _runtime_arguments,
     build_grpo_reward_callback,
     grpo_training_config_from_mapping,
     load_grpo_training_config,
     validate_grpo_artifact_pair,
     validate_grpo_config_pair,
+    validate_grpo_training_hardware,
 )
+from code_verifier.training.sft import SFTCheckpointIdentity
 
 
 def _config_mapping(tmp_path: Path, *, reward_mode: str = "public") -> dict[str, object]:
@@ -309,3 +316,226 @@ def test_grpo_reward_callback_rejects_nonfinite_core_output(
             completion_ids=[[1], [1]],
             **_reward_columns(hidden=False),
         )
+
+
+class _FakeCuda:
+    def __init__(self, *, memory_gb: float, bf16: bool) -> None:
+        self.memory_gb = memory_gb
+        self.bf16 = bf16
+
+    @staticmethod
+    def is_available() -> bool:
+        return True
+
+    def get_device_properties(self, index: int) -> SimpleNamespace:
+        assert index == 0
+        return SimpleNamespace(total_memory=int(self.memory_gb * 1024**3))
+
+    def is_bf16_supported(self, *, including_emulation: bool) -> bool:
+        assert including_emulation is False
+        return self.bf16
+
+
+def test_grpo_hardware_guard_rejects_six_gb_and_accepts_mock_24gb(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = grpo_training_config_from_mapping(_config_mapping(tmp_path))
+    monkeypatch.setattr(
+        grpo_module,
+        "_load_torch_runtime",
+        lambda: SimpleNamespace(cuda=_FakeCuda(memory_gb=6.0, bf16=False)),
+    )
+    with pytest.raises(GRPOTrainingError, match="at least 20"):
+        validate_grpo_training_hardware(config)
+    with pytest.raises(GRPOTrainingError, match="at least 20"):
+        validate_grpo_training_hardware(replace(config, min_cuda_memory_gb=1.0))
+
+    monkeypatch.setattr(
+        grpo_module,
+        "_load_torch_runtime",
+        lambda: SimpleNamespace(cuda=_FakeCuda(memory_gb=24.0, bf16=True)),
+    )
+    validate_grpo_training_hardware(config)
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, **kwargs: object) -> SimpleNamespace:
+        self.calls.append(dict(kwargs))
+        return SimpleNamespace(**kwargs)
+
+
+def _parent_sft(tmp_path: Path) -> SFTCheckpointIdentity:
+    return SFTCheckpointIdentity(
+        run_dir=tmp_path / "sft-run",
+        checkpoint_dir=tmp_path / "sft-run" / "checkpoints",
+        run_id="sft-b",
+        model_id="example/model",
+        model_revision="a" * 40,
+        dataset_hash="b" * 64,
+        config_hash="c" * 64,
+        dependency_lock_hash="d" * 64,
+        seed=42,
+    )
+
+
+def _argument_runtime() -> tuple[_GRPORuntime, _Recorder, _Recorder]:
+    model_config = _Recorder()
+    training_config = _Recorder()
+    return (
+        _GRPORuntime(
+            model_config_type=model_config,
+            training_config_type=training_config,
+            trainer_type=object,
+            get_peft_config=lambda _: "NEW_LORA",
+            get_tokenizer=lambda *_: object(),
+            get_model=lambda *_: object(),
+            peft_config_type=object,
+            peft_model_type=object,
+        ),
+        model_config,
+        training_config,
+    )
+
+
+def test_grpo_runtime_arguments_bind_parent_model_and_frozen_invariants(tmp_path: Path) -> None:
+    runtime, model_config, training_config = _argument_runtime()
+    config = grpo_training_config_from_mapping(_config_mapping(tmp_path))
+    _runtime_arguments(
+        config,
+        checkpoint_dir=tmp_path / "checkpoints",
+        parent_sft=_parent_sft(tmp_path),
+        seed=7,
+        runtime=runtime,
+    )
+
+    model_kwargs = model_config.calls[0]
+    assert model_kwargs["model_name_or_path"] == "example/model"
+    assert model_kwargs["model_revision"] == "a" * 40
+    assert model_kwargs["use_peft"] is True
+    assert model_kwargs["trust_remote_code"] is False
+    assert model_kwargs["load_in_4bit"] is False
+    assert model_kwargs["load_in_8bit"] is False
+    training_kwargs = training_config.calls[0]
+    assert training_kwargs["do_eval"] is False
+    assert training_kwargs["eval_strategy"] == "no"
+    assert training_kwargs["use_vllm"] is False
+    assert training_kwargs["report_to"] == []
+    assert training_kwargs["push_to_hub"] is False
+    assert training_kwargs["seed"] == 7
+
+
+def test_pinned_grpo_runtime_contract() -> None:
+    runtime = _load_grpo_runtime()
+    for symbol in (
+        runtime.model_config_type,
+        runtime.training_config_type,
+        runtime.trainer_type,
+        runtime.get_peft_config,
+        runtime.get_tokenizer,
+        runtime.get_model,
+        runtime.peft_config_type,
+        runtime.peft_model_type,
+    ):
+        assert callable(symbol)
+
+
+def test_sft_adapter_is_loaded_read_only_and_safe_merged_before_grpo_lora(tmp_path: Path) -> None:
+    calls: list[Any] = []
+    adapter_config = SimpleNamespace(base_model_name_or_path="example/model", revision="a" * 40)
+
+    class _PeftConfig:
+        @staticmethod
+        def from_pretrained(path: str) -> object:
+            calls.append(("adapter_config", path))
+            return adapter_config
+
+    class _Policy:
+        def merge_and_unload(self, *, safe_merge: bool) -> str:
+            calls.append(("merge", safe_merge))
+            return "MERGED_B"
+
+    class _PeftModel:
+        @staticmethod
+        def from_pretrained(
+            model: object,
+            path: str,
+            *,
+            is_trainable: bool,
+            config: object,
+        ) -> _Policy:
+            calls.append(("attach_b", model, path, is_trainable, config))
+            return _Policy()
+
+    def get_model(*args: object) -> str:
+        assert args
+        calls.append("base_a")
+        return "BASE_A"
+
+    runtime = _GRPORuntime(
+        model_config_type=object,
+        training_config_type=object,
+        trainer_type=object,
+        get_peft_config=lambda _: object(),
+        get_tokenizer=lambda *_: object(),
+        get_model=get_model,
+        peft_config_type=_PeftConfig,
+        peft_model_type=_PeftModel,
+    )
+    merged = _load_merged_sft_policy(
+        parent_sft=_parent_sft(tmp_path),
+        model_args=object(),
+        training_args=object(),
+        runtime=runtime,
+    )
+
+    assert merged == "MERGED_B"
+    assert calls[0][0] == "adapter_config"
+    assert calls[1] == "base_a"
+    assert calls[2][0] == "attach_b"
+    assert calls[2][3] is False
+    assert calls[3] == ("merge", True)
+
+
+@pytest.mark.parametrize(
+    "adapter_config",
+    [
+        SimpleNamespace(base_model_name_or_path="other/model", revision="a" * 40),
+        SimpleNamespace(base_model_name_or_path="example/model", revision="e" * 40),
+    ],
+)
+def test_sft_adapter_identity_mismatch_fails_before_base_load(tmp_path: Path, adapter_config: object) -> None:
+    base_loaded = False
+
+    class _PeftConfig:
+        @staticmethod
+        def from_pretrained(path: str) -> object:
+            assert path
+            return adapter_config
+
+    def get_model(*args: object) -> object:
+        nonlocal base_loaded
+        base_loaded = True
+        return object()
+
+    runtime = _GRPORuntime(
+        model_config_type=object,
+        training_config_type=object,
+        trainer_type=object,
+        get_peft_config=lambda _: object(),
+        get_tokenizer=lambda *_: object(),
+        get_model=get_model,
+        peft_config_type=_PeftConfig,
+        peft_model_type=object,
+    )
+    with pytest.raises(GRPOTrainingError, match="does not match"):
+        _load_merged_sft_policy(
+            parent_sft=_parent_sft(tmp_path),
+            model_args=object(),
+            training_args=object(),
+            runtime=runtime,
+        )
+    assert base_loaded is False

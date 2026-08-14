@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from importlib import metadata
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 from code_verifier.config import ConfigError, load_yaml_mapping
@@ -16,6 +19,8 @@ from code_verifier.data.json_strict import json_values_equal
 from code_verifier.data.leakage_checks import LeakageError, TrainingArtifactKind, check_training_record
 from code_verifier.execution.base import CodeExecutor
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards
+from code_verifier.training.open_r1_adapter import import_open_r1_module
+from code_verifier.training.sft import SFTCheckpointIdentity
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,20 @@ class GRPOTrainingError(RuntimeError):
     """Raised when GRPO configuration, hardware, runtime, or artifacts fail closed."""
 
 
+@dataclass(frozen=True)
+class _GRPORuntime:
+    """Pinned runtime surface kept injectable for non-training engineering tests."""
+
+    model_config_type: Any
+    training_config_type: Any
+    trainer_type: Any
+    get_peft_config: Any
+    get_tokenizer: Any
+    get_model: Any
+    peft_config_type: Any
+    peft_model_type: Any
+
+
 _CONFIG_FIELDS = {
     "run_name",
     "reward_mode",
@@ -88,6 +107,12 @@ _CONFIG_FIELDS = {
 }
 _PAIR_DIFFERENCES = {"run_name", "reward_mode", "dataset_path"}
 _MIN_TRAINING_CUDA_MEMORY_GB = 20.0
+_RUNTIME_VERSIONS = {
+    "trl": "0.18.0",
+    "transformers": "4.52.3",
+    "accelerate": "1.4.0",
+    "peft": "0.14.0",
+}
 
 
 def _exact_mapping(value: object) -> Mapping[str, object]:
@@ -433,3 +458,150 @@ def build_grpo_reward_callback(
 
     reward_callback.__name__ = f"{reward_mode}_code_reward"
     return reward_callback
+
+
+def _load_torch_runtime() -> ModuleType:
+    try:
+        return importlib.import_module("torch")
+    except ImportError:
+        raise GRPOTrainingError("PyTorch training runtime is unavailable; run make install-train") from None
+
+
+def validate_grpo_training_hardware(config: GRPOTrainingConfig) -> None:
+    """Fail before model loading unless a compatible training-class CUDA GPU is available."""
+    torch_runtime = _load_torch_runtime()
+    try:
+        if not bool(torch_runtime.cuda.is_available()):
+            raise GRPOTrainingError("GRPO training requires a CUDA-capable 24GB-class GPU")
+        total_memory = float(torch_runtime.cuda.get_device_properties(0).total_memory) / (1024**3)
+        required_memory = max(config.min_cuda_memory_gb, _MIN_TRAINING_CUDA_MEMORY_GB)
+        if total_memory < required_memory:
+            raise GRPOTrainingError(
+                f"GRPO training requires at least {required_memory:g} GiB CUDA memory; detected {total_memory:.1f} GiB"
+            )
+        if config.bf16 and not bool(torch_runtime.cuda.is_bf16_supported(including_emulation=False)):
+            raise GRPOTrainingError("configured bf16 training requires native CUDA BF16 support")
+    except GRPOTrainingError:
+        raise
+    except Exception as error:
+        raise GRPOTrainingError(f"could not validate CUDA training hardware: {type(error).__name__}") from None
+
+
+def _load_grpo_runtime() -> _GRPORuntime:
+    """Lazy-load and verify the exact pinned TRL/Open-R1/PEFT runtime surface."""
+    for distribution, expected in _RUNTIME_VERSIONS.items():
+        try:
+            actual = metadata.version(distribution)
+        except metadata.PackageNotFoundError:
+            raise GRPOTrainingError(f"{distribution} is unavailable; run make install-train") from None
+        if actual != expected:
+            raise GRPOTrainingError(f"{distribution} must be exactly {expected}, found {actual}")
+    try:
+        peft_runtime = importlib.import_module("peft")
+        trl_runtime = importlib.import_module("trl")
+        configs_runtime = import_open_r1_module("open_r1.configs")
+        model_runtime = import_open_r1_module("open_r1.utils.model_utils")
+        return _GRPORuntime(
+            model_config_type=trl_runtime.ModelConfig,
+            training_config_type=configs_runtime.GRPOConfig,
+            trainer_type=trl_runtime.GRPOTrainer,
+            get_peft_config=trl_runtime.get_peft_config,
+            get_tokenizer=model_runtime.get_tokenizer,
+            get_model=model_runtime.get_model,
+            peft_config_type=peft_runtime.PeftConfig,
+            peft_model_type=peft_runtime.PeftModel,
+        )
+    except (ImportError, AttributeError) as error:
+        raise GRPOTrainingError(f"pinned GRPO runtime contract is unavailable: {type(error).__name__}") from None
+
+
+def _runtime_arguments(
+    config: GRPOTrainingConfig,
+    *,
+    checkpoint_dir: Path,
+    parent_sft: SFTCheckpointIdentity,
+    seed: int,
+    runtime: _GRPORuntime,
+) -> tuple[Any, Any]:
+    """Map frozen project settings to pinned TRL/Open-R1 argument objects."""
+    dtype = "bfloat16" if config.bf16 else "float16"
+    model_args = runtime.model_config_type(
+        model_name_or_path=parent_sft.model_id,
+        model_revision=parent_sft.model_revision or "main",
+        torch_dtype=dtype,
+        trust_remote_code=False,
+        use_peft=True,
+        lora_r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        lora_dropout=config.lora_dropout,
+        lora_target_modules=None,
+        load_in_4bit=False,
+        load_in_8bit=False,
+    )
+    training_args = runtime.training_config_type(
+        output_dir=str(checkpoint_dir),
+        run_name=config.run_name,
+        do_train=True,
+        do_eval=False,
+        eval_strategy="no",
+        num_generations=config.num_generations,
+        max_prompt_length=config.max_prompt_length,
+        max_completion_length=config.max_completion_length,
+        per_device_train_batch_size=config.per_device_train_batch_size,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        learning_rate=config.learning_rate,
+        num_train_epochs=config.num_train_epochs,
+        max_steps=config.max_steps,
+        warmup_ratio=config.warmup_ratio,
+        lr_scheduler_type=config.lr_scheduler_type,
+        temperature=config.temperature,
+        top_p=config.top_p,
+        beta=config.beta,
+        bf16=config.bf16,
+        fp16=config.fp16,
+        gradient_checkpointing=config.gradient_checkpointing,
+        logging_steps=config.logging_steps,
+        save_strategy="steps",
+        save_steps=config.save_steps,
+        seed=seed,
+        data_seed=seed,
+        use_vllm=False,
+        report_to=[],
+        push_to_hub=False,
+    )
+    return model_args, training_args
+
+
+def _load_merged_sft_policy(
+    *,
+    parent_sft: SFTCheckpointIdentity,
+    model_args: Any,
+    training_args: Any,
+    runtime: _GRPORuntime,
+) -> Any:
+    """Load base A, attach completed B read-only, then safe-merge B before GRPO LoRA."""
+    try:
+        adapter_config = runtime.peft_config_type.from_pretrained(str(parent_sft.checkpoint_dir))
+    except Exception as error:
+        raise GRPOTrainingError(f"could not load parent SFT adapter config: {type(error).__name__}") from None
+    if getattr(adapter_config, "base_model_name_or_path", None) != parent_sft.model_id:
+        raise GRPOTrainingError("parent SFT adapter base model identity does not match the completed SFT run")
+    adapter_revision = getattr(adapter_config, "revision", None)
+    if adapter_revision is not None and adapter_revision != parent_sft.model_revision:
+        raise GRPOTrainingError("parent SFT adapter revision does not match the completed SFT run")
+    try:
+        base_model = runtime.get_model(model_args, training_args)
+        parent_policy = runtime.peft_model_type.from_pretrained(
+            base_model,
+            str(parent_sft.checkpoint_dir),
+            is_trainable=False,
+            config=adapter_config,
+        )
+        merge = getattr(parent_policy, "merge_and_unload", None)
+        if not callable(merge):
+            raise GRPOTrainingError("parent SFT PEFT instance does not provide merge_and_unload")
+        return merge(safe_merge=True)
+    except GRPOTrainingError:
+        raise
+    except Exception as error:
+        raise GRPOTrainingError(f"could not construct merged SFT policy: {type(error).__name__}") from None
