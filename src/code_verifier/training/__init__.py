@@ -1,11 +1,14 @@
 """Training integration contracts for CodeVerifier."""
 
 from code_verifier.training.grpo import (
+    GRPOCheckpointIdentity,
     GRPOTrainingConfig,
     GRPOTrainingError,
     GRPOTrainingSummary,
     build_grpo_reward_callback,
+    grpo_evaluation_checkpoint_id,
     grpo_training_config_from_mapping,
+    load_completed_grpo_checkpoint,
     load_grpo_training_config,
     run_grpo_training,
     validate_grpo_artifact_pair,
@@ -26,6 +29,7 @@ from code_verifier.training.sft import (
 from code_verifier.training.sft_data import SFTDataError, SFTExample, build_sft_dataset, validate_sft_record
 
 __all__ = [
+    "GRPOCheckpointIdentity",
     "GRPODataError",
     "GRPOTrainingConfig",
     "GRPOTrainingError",
@@ -39,7 +43,9 @@ __all__ = [
     "build_grpo_dataset",
     "build_grpo_reward_callback",
     "build_sft_dataset",
+    "grpo_evaluation_checkpoint_id",
     "grpo_training_config_from_mapping",
+    "load_completed_grpo_checkpoint",
     "load_completed_sft_checkpoint",
     "load_grpo_training_config",
     "load_sft_training_config",
