@@ -142,3 +142,88 @@ repair_routing:
 **NEEDS REPAIR.** The reviewed state at `dc00d8ffe98710dd5b4687abf4bf926054c8e2bf` passes the terminal environment/test gates but does not yet satisfy the sealed WP8 analysis and traceability contract. In particular, resolved evaluation definitions are not bound back to the completed config identity, source provenance is incomplete in the derived report, and the failure-candidate/evidence semantics have uncovered gaps.
 
 The next lifecycle operation is `$stage-lifecycle checkpoint_review`. After that review checkpoint is committed, route a SINGLE repair execution for exactly `R1-M1`, `R1-M2`, `R1-M3`, `R1-m1`, and `R1-m2`, then run reviewer-ex again on the new completed repair execution.
+
+## Review round 2
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP8
+  review_round: 2
+  source_execution_id: E1
+  reviewed_head_commit: defc6d40dffbd60cc65d878319ffaa3d25a7f83e
+  conclusion: pass
+```
+
+### Scope and provenance
+
+- Reviewed the new completed `E1` repair execution. Its execution record is committed at stage HEAD `defc6d40dffbd60cc65d878319ffaa3d25a7f83e`; `result_code_commit=a55c36b0325254c2166836e7fbde8dd29027ccaa`.
+- E1 is correctly bound to committed R1 via `source_review_round=1` and `source_review_commit=2d447adfc079afc75ab6a7305fe8a3f41c5789a1`, and its `repair_issue_ids` exactly cover `R1-M1`, `R1-M2`, `R1-M3`, `R1-m1`, and `R1-m2`.
+- Review started with the stage worktree clean, branch `feat/wp8`, and `HEAD` exactly equal to the execution-report commit. `git ls-files .ai-bridge` remained empty.
+- The sealed profile remains `development` / `GTX 1660 Ti (6GB)` / `engineering` / `development_terminal=true`; no real optimizer training, formal A-D numerical evidence, or 24GB validation was required or accepted for this review.
+
+### R1 issue disposition
+
+- **R1-M1 — RESOLVED.** `resolved_evaluation_config_hash()` now re-parses the persisted resolved evaluation definition through the production `EvaluationConfig` schema and recomputes the canonical `evaluation_config_hash`, including the exact Piston YAML digest, model identity, and seed. `_load_evaluation_run()` requires this recomputed identity to equal the persisted completed-run `config_hash`. The original reviewer tamper scenario was independently repeated by rewriting all four fixture generation definitions after run creation; current code rejected the artifacts (`REJECTED_TAMPER`). Unit tests also cover resolved-config and Piston-definition tampering.
+- **R1-M2 — RESOLVED.** Analysis source loading now requires the persisted evaluation provenance fields and `report_data.json` retains `project_commit`, `open_r1_commit`, and `dependency_lock_hash` for every A-D source alongside run/model/checkpoint/dataset/config identity and source-results SHA-256. Tests verify malformed/missing provenance rejection and positive provenance retention.
+- **R1-M3 — RESOLVED.** Candidate selection now adds the scalar-only `large_public_eval_gap` reason when `visible_pass_rate - eval_hidden_pass_rate > 0.5`. The original `0.75 -> 0.0` probe now returns exactly that reason.
+- **R1-m1 — RESOLVED.** `train_hidden_pass_eval_fail` is now gated on `method == "Hidden-RLVR"`; an otherwise identical Public-RLVR sample yields no train-hidden-specific candidate while Hidden-RLVR yields the intended reason. The method-independent visible→eval reward-hacking proxy remains unchanged.
+- **R1-m2 — RESOLVED.** Fixture integration calls explicitly generate `report_data.json` with `evidence_class="engineering_fixture_synthetic"` and positively assert that marker. The production/default `analyze_experiment()` path remains `analysis_source_artifacts`, and the exact analysis manifest schema was not expanded or weakened.
+
+### Independent verification evidence
+
+- Repair-focused Analysis suite:
+  - `.venv/bin/python -m pytest tests/unit/analysis tests/integration/test_wp8_analysis_pipeline.py -q`
+  - Result: `40 passed`.
+- Exact WP8 focused gate:
+  - `.venv/bin/python -m pytest tests/unit/analysis tests/integration/test_wp8_analysis_pipeline.py tests/unit/rewards/test_common.py tests/unit/training/test_sft.py tests/unit/training/test_grpo.py tests/unit/test_cli.py -q`
+  - Result: `227 passed`.
+- Lint/type terminal gate:
+  - `make lint`
+  - Result: Ruff check PASS, Ruff format PASS (`102 files already formatted`), strict mypy PASS (`Success: no issues found in 102 source files`).
+- Full default terminal gate:
+  - `make test`
+  - Result: `881 passed, 3 skipped`; all three skips are the expected explicit Piston opt-in cases and are replaced by the dedicated real-Piston gate below.
+- GPU terminal gate:
+  - `make test-gpu`
+  - Result: `3 passed`, `0 failed`, `0 skipped`.
+- Real Piston terminal gate:
+  - `make test-piston`
+  - Result: `9 passed`, `0 failed`, `0 skipped` (`2 deselected` non-Piston cases).
+- Production critical-path review found no `TODO`, `FIXME`, `NotImplementedError`, `stub`, or `fake` production implementation marker under `src/code_verifier`; no `TODO` was found under `configs`.
+- Review commands and probes left the stage code state clean; `HEAD` remained `defc6d40dffbd60cc65d878319ffaa3d25a7f83e` throughout the read/test portion of R2.
+
+### Development Completion Inventory disposition
+
+- WP0, WP1, WP2, WP3, and WP4 remain recorded as completed/accepted in `proceedings.md` and match the sealed inventory.
+- WP5 remains covered by finalized WP5-a/WP5-b development evidence.
+- WP6 remains covered by finalized WP6-a/WP6-c development evidence; real SFT training correctly remains validation-only.
+- WP7 remains covered by finalized WP7-a/WP7-b development evidence; real GRPO training correctly remains validation-only.
+- WP8 is now covered by this stage: the Analysis Layer, strict A-D identity/provenance validation, paired comparison, candidate/manual tooling, training curves/costs, report generation, CLI/docs, deterministic integration fixture, and terminal engineering gates are all present and independently verified.
+- Therefore the sealed WP0-WP8 Development Completion Inventory is fully satisfied for this terminal development stage. This review does not itself write a `Development Complete Record`; that remains exclusively the responsibility of `stage-lifecycle finalize` after this PASS review is checkpointed.
+
+### Findings
+
+No blocker, major, minor, or other actionable issue remains in the reviewed E1 state. No new repair issue ID is required.
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 2
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "All five R1 repair issues are independently verified as resolved without weakening the sealed WP8 schemas, evidence boundary, or terminal acceptance criteria."
+    - "Focused, full, lint/type, GPU, real-Piston, tamper, candidate-taxonomy, provenance, fixture-evidence, and Development Completion Inventory checks pass; no actionable repair remains."
+  workstream_candidates: []
+```
+
+### Conclusion
+
+**PASS.** The reviewed state at `defc6d40dffbd60cc65d878319ffaa3d25a7f83e` satisfies the sealed WP8 terminal-development plan and resolves all R1 findings. The next lifecycle operation is `$stage-lifecycle checkpoint_review`; if that checkpoint remains current, proceed with `$stage-lifecycle finalize` so lifecycle can merge WP8, write the terminal `Development Complete Record`, and report the exact `development_complete_commit` for the subsequent 1660 Ti → 4090 handoff.
