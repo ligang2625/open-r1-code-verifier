@@ -187,8 +187,9 @@ def _load_evaluation_run(
     if resolved_config_hash != metadata.get("config_hash"):
         raise AnalysisError(f"{method} resolved evaluation config does not match config_hash")
     for field in ("project_commit", "open_r1_commit"):
+        provenance_value = metadata.get(field)
         if field not in metadata or (
-            metadata[field] is not None and (not isinstance(metadata[field], str) or not metadata[field].strip())
+            provenance_value is not None and (not isinstance(provenance_value, str) or not provenance_value.strip())
         ):
             raise AnalysisError(f"{method} evaluation has invalid {field} provenance")
     dependency_lock_hash = metadata.get("dependency_lock_hash")
