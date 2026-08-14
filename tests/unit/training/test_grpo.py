@@ -16,6 +16,7 @@ import code_verifier.training.grpo as grpo_module
 from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.grpo import (
+    GRPOTrainingConfig,
     GRPOTrainingError,
     _GRPORuntime,
     _load_grpo_runtime,
@@ -111,6 +112,22 @@ def test_checked_in_grpo_configs_match_spec_and_each_other() -> None:
     assert public.lora_alpha == 32
     assert public.lora_dropout == 0.05
     assert public.min_cuda_memory_gb == 20.0
+
+
+@pytest.mark.parametrize("num_generations", [1, 3])
+def test_grpo_config_rejects_pinned_generation_batch_mismatch(
+    tmp_path: Path,
+    num_generations: int,
+) -> None:
+    mapping = _config_mapping(tmp_path)
+    mapping["num_generations"] = num_generations
+    with pytest.raises(GRPOTrainingError, match="num_generations"):
+        grpo_training_config_from_mapping(mapping)
+
+
+def test_grpo_config_accepts_pinned_generation_batch_divisor_four(tmp_path: Path) -> None:
+    config = grpo_training_config_from_mapping(_config_mapping(tmp_path))
+    assert config.num_generations == 4
 
 
 def test_grpo_config_pair_rejects_experiment_drift(tmp_path: Path) -> None:
@@ -429,6 +446,30 @@ def test_grpo_runtime_arguments_bind_parent_model_and_frozen_invariants(tmp_path
     assert training_kwargs["seed"] == 7
 
 
+def test_grpo_runtime_arguments_normalize_pinned_constructor_value_error(tmp_path: Path) -> None:
+    def reject(**kwargs: object) -> object:
+        raise ValueError("raw pinned constructor detail")
+
+    runtime = _GRPORuntime(
+        model_config_type=_Recorder(),
+        training_config_type=reject,
+        trainer_type=object,
+        get_peft_config=lambda _: object(),
+        get_tokenizer=lambda *_: object(),
+        get_model=lambda *_: object(),
+        peft_config_type=object,
+        peft_model_type=object,
+    )
+    with pytest.raises(GRPOTrainingError, match="pinned GRPO argument constructor"):
+        _runtime_arguments(
+            grpo_training_config_from_mapping(_config_mapping(tmp_path)),
+            checkpoint_dir=tmp_path / "checkpoints",
+            parent_sft=_parent_sft(tmp_path),
+            seed=42,
+            runtime=runtime,
+        )
+
+
 def test_pinned_grpo_runtime_contract() -> None:
     runtime = _load_grpo_runtime()
     for symbol in (
@@ -658,19 +699,19 @@ def _fake_grpo_runtime() -> _GRPORuntime:
 def _prepare_fake_grpo_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    reward_mode: str = "public",
-) -> tuple[object, Path, Path]:
-    config = grpo_training_config_from_mapping(_config_mapping(tmp_path, reward_mode=reward_mode))
-    _write_grpo_artifact(config.dataset_path, reward_mode=reward_mode)
-    config.piston_config.write_text("endpoint: fake\n", encoding="utf-8")
+) -> tuple[GRPOTrainingConfig, GRPOTrainingConfig, Path, Path]:
+    public_config = grpo_training_config_from_mapping(_config_mapping(tmp_path))
+    hidden_config = grpo_training_config_from_mapping(_config_mapping(tmp_path, reward_mode="hidden"))
+    _write_grpo_artifact(public_config.dataset_path)
+    _write_grpo_artifact(hidden_config.dataset_path, reward_mode="hidden")
+    public_config.piston_config.write_text("endpoint: fake\n", encoding="utf-8")
     sft_run_dir = tmp_path / "sft-run"
     _write_completed_sft_run(sft_run_dir)
     _FakeTrainer.instances.clear()
     _FakeTrainer.loss = 0.25
     monkeypatch.setattr(grpo_module, "validate_grpo_training_hardware", lambda _: None)
     monkeypatch.setattr(grpo_module, "_load_grpo_runtime", _fake_grpo_runtime)
-    return config, sft_run_dir, tmp_path / "outputs"
+    return public_config, hidden_config, sft_run_dir, tmp_path / "outputs"
 
 
 def _passing_results(count: int) -> list[ExecutionResult]:
@@ -681,13 +722,15 @@ def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
-    config = cast(Any, config_value)
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
     executor = MockExecutor(_passing_results(4))
 
     summary = run_grpo_training(
-        config,
-        sft_run_dir=sft_run_dir,
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
         output_root=output_root,
         seed=42,
         executor=executor,
@@ -740,18 +783,20 @@ def test_grpo_run_failure_is_sanitized_and_requires_finite_loss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
-    config = cast(Any, config_value)
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
     _FakeTrainer.loss = math.nan
     with pytest.raises(GRPOTrainingError, match="finite train_loss"):
         run_grpo_training(
-            config,
-            sft_run_dir=sft_run_dir,
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=sft_run_dir,
+            hidden_sft_run_dir=sft_run_dir,
             output_root=output_root,
             seed=42,
             executor=MockExecutor(_passing_results(4)),
         )
-    run_dir = output_root / config.run_name
+    run_dir = output_root / public_config.run_name
     assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
     assert (run_dir / "stderr.log").read_text(encoding="utf-8") == "GRPOTrainingError\n"
 
@@ -760,11 +805,13 @@ def test_grpo_resume_is_bound_and_appends_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
-    config = cast(Any, config_value)
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
     summary = run_grpo_training(
-        config,
-        sft_run_dir=sft_run_dir,
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
         output_root=output_root,
         seed=7,
         executor=MockExecutor(_passing_results(4)),
@@ -777,8 +824,11 @@ def test_grpo_resume_is_bound_and_appends_logs(
     (summary.run_dir / "run.json").write_text(json.dumps(metadata_value), encoding="utf-8")
 
     resumed = run_grpo_training(
-        config,
-        sft_run_dir=sft_run_dir,
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
         output_root=output_root,
         seed=7,
         executor=MockExecutor(_passing_results(4)),
@@ -799,11 +849,13 @@ def test_grpo_resume_rejects_identity_drift(
     monkeypatch: pytest.MonkeyPatch,
     drift: str,
 ) -> None:
-    config_value, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
-    config = cast(Any, config_value)
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
     summary = run_grpo_training(
-        config,
-        sft_run_dir=sft_run_dir,
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
         output_root=output_root,
         seed=42,
         executor=MockExecutor(_passing_results(4)),
@@ -817,9 +869,11 @@ def test_grpo_resume_rejects_identity_drift(
     (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")
     seed = 7 if drift == "seed" else 42
     if drift == "config":
-        config = replace(config, temperature=0.7)
+        public_config = replace(public_config, temperature=0.7)
+        hidden_config = replace(hidden_config, temperature=0.7)
     if drift == "dataset":
-        _write_grpo_artifact(config.dataset_path, sentinel="CHANGED_VISIBLE")
+        _write_grpo_artifact(public_config.dataset_path, sentinel="CHANGED_VISIBLE")
+        _write_grpo_artifact(hidden_config.dataset_path, reward_mode="hidden", sentinel="CHANGED_VISIBLE")
     if drift == "parent":
         sft_metadata = json.loads((sft_run_dir / "run.json").read_text(encoding="utf-8"))
         sft_metadata["dataset_hash"] = "e" * 64
@@ -827,8 +881,11 @@ def test_grpo_resume_rejects_identity_drift(
 
     with pytest.raises(GRPOTrainingError, match="identity"):
         run_grpo_training(
-            config,
-            sft_run_dir=sft_run_dir,
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=sft_run_dir,
+            hidden_sft_run_dir=sft_run_dir,
             output_root=output_root,
             seed=seed,
             executor=MockExecutor(_passing_results(4)),
@@ -840,11 +897,12 @@ def test_grpo_hardware_guard_runs_before_parent_or_model_loading(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = grpo_training_config_from_mapping(_config_mapping(tmp_path))
+    public_config = grpo_training_config_from_mapping(_config_mapping(tmp_path))
+    hidden_config = grpo_training_config_from_mapping(_config_mapping(tmp_path, reward_mode="hidden"))
     parent_loaded = False
 
     def fail_hardware(value: object) -> None:
-        assert value == config
+        assert value == public_config
         raise GRPOTrainingError("hardware blocked")
 
     def load_parent(path: Path) -> object:
@@ -856,8 +914,11 @@ def test_grpo_hardware_guard_runs_before_parent_or_model_loading(
     monkeypatch.setattr(grpo_module, "load_completed_sft_checkpoint", load_parent)
     with pytest.raises(GRPOTrainingError, match="hardware blocked"):
         run_grpo_training(
-            config,
-            sft_run_dir=tmp_path / "sft",
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=tmp_path / "sft",
+            hidden_sft_run_dir=tmp_path / "sft",
             output_root=tmp_path / "outputs",
             seed=42,
             executor=MockExecutor([]),

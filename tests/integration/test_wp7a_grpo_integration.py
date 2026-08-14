@@ -269,7 +269,7 @@ def _runtime() -> _GRPORuntime:
     )
 
 
-def _write_sft_run(path: Path) -> None:
+def _write_sft_run(path: Path, *, run_id: str = "shared-b") -> None:
     path.mkdir()
     checkpoints = path / "checkpoints"
     checkpoints.mkdir()
@@ -277,7 +277,7 @@ def _write_sft_run(path: Path) -> None:
         json.dumps(
             {
                 "status": "completed",
-                "run_id": "shared-b",
+                "run_id": run_id,
                 "model_id": "example/model",
                 "model_revision": "a" * 40,
                 "dataset_hash": "b" * 64,
@@ -304,21 +304,27 @@ def _run_fixture(
     reward_mode: str,
     sft_run: Path,
 ) -> tuple[GRPOTrainingConfig, GRPOTrainingSummary, MockExecutor]:
-    config = _config(tmp_path, reward_mode=reward_mode)
-    config.dataset_path.write_text(json.dumps(_record(reward_mode=reward_mode)) + "\n", encoding="utf-8")
-    config.piston_config.write_text("fixture\n", encoding="utf-8")
+    public_config = _config(tmp_path, reward_mode="public")
+    hidden_config = _config(tmp_path, reward_mode="hidden")
+    public_config.dataset_path.write_text(json.dumps(_record(reward_mode="public")) + "\n", encoding="utf-8")
+    hidden_config.dataset_path.write_text(json.dumps(_record(reward_mode="hidden")) + "\n", encoding="utf-8")
+    public_config.piston_config.write_text("fixture\n", encoding="utf-8")
     _MergedPolicy.events.clear()
     _Trainer.instances.clear()
     monkeypatch.setattr(grpo_module, "validate_grpo_training_hardware", lambda _: None)
     monkeypatch.setattr(grpo_module, "_load_grpo_runtime", _runtime)
     executor = MockExecutor([_result(), _result(), _result(), _result()])
     summary = run_grpo_training(
-        config,
-        sft_run_dir=sft_run,
+        public_config,
+        hidden_config,
+        reward_mode=reward_mode,
+        public_sft_run_dir=sft_run,
+        hidden_sft_run_dir=sft_run,
         output_root=tmp_path / "outputs",
         seed=42,
         executor=executor,
     )
+    config = public_config if reward_mode == "public" else hidden_config
     return config, summary, executor
 
 
@@ -341,6 +347,42 @@ def test_wp7a_c_and_d_bind_the_same_completed_sft_identity(
         "parent_sft_checkpoint_path",
     ):
         assert public_run[field] == hidden_run[field]
+
+
+@pytest.mark.parametrize("drift", ["parent", "config", "artifact"])
+def test_wp7a_cd_preflight_rejects_fairness_drift_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    public_sft = tmp_path / "public-sft"
+    hidden_sft = tmp_path / "hidden-sft"
+    _write_sft_run(public_sft)
+    _write_sft_run(hidden_sft, run_id="other-b" if drift == "parent" else "shared-b")
+    public_config = _config(tmp_path, reward_mode="public")
+    hidden_config = _config(tmp_path, reward_mode="hidden")
+    if drift == "config":
+        hidden_config = replace(hidden_config, temperature=0.7)
+    public_record = _record(reward_mode="public")
+    hidden_record = _record(reward_mode="hidden")
+    if drift == "artifact":
+        hidden_record["prompt"] = "DRIFTED_PROMPT"
+    public_config.dataset_path.write_text(json.dumps(public_record) + "\n", encoding="utf-8")
+    hidden_config.dataset_path.write_text(json.dumps(hidden_record) + "\n", encoding="utf-8")
+    monkeypatch.setattr(grpo_module, "validate_grpo_training_hardware", lambda _: None)
+
+    with pytest.raises(GRPOTrainingError):
+        run_grpo_training(
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=public_sft,
+            hidden_sft_run_dir=hidden_sft,
+            output_root=tmp_path / "outputs",
+            seed=42,
+            executor=MockExecutor([]),
+        )
+    assert not (tmp_path / "outputs").exists()
 
 
 def test_wp7a_sft_adapter_is_merged_before_new_grpo_lora(
@@ -391,7 +433,10 @@ def test_wp7a_resume_requires_same_parent_sft_config_data_and_checkpoint(
     with pytest.raises(GRPOTrainingError, match="identity"):
         run_grpo_training(
             replace(config, temperature=0.7),
-            sft_run_dir=sft_run,
+            replace(_config(tmp_path, reward_mode="hidden"), temperature=0.7),
+            reward_mode="public",
+            public_sft_run_dir=sft_run,
+            hidden_sft_run_dir=sft_run,
             output_root=tmp_path / "outputs",
             seed=42,
             executor=MockExecutor([_result()] * 4),
@@ -402,7 +447,10 @@ def test_wp7a_resume_requires_same_parent_sft_config_data_and_checkpoint(
     with pytest.raises(GRPOTrainingError, match="same GRPO run"):
         run_grpo_training(
             config,
-            sft_run_dir=sft_run,
+            _config(tmp_path, reward_mode="hidden"),
+            reward_mode="public",
+            public_sft_run_dir=sft_run,
+            hidden_sft_run_dir=sft_run,
             output_root=tmp_path / "outputs",
             seed=42,
             executor=MockExecutor([_result()] * 4),
@@ -426,7 +474,10 @@ def test_wp7a_hardware_guard_fails_before_model_loading_on_1660(
     with pytest.raises(GRPOTrainingError, match="at least 20"):
         run_grpo_training(
             config,
-            sft_run_dir=tmp_path / "sft",
+            _config(tmp_path, reward_mode="hidden"),
+            reward_mode="public",
+            public_sft_run_dir=tmp_path / "sft",
+            hidden_sft_run_dir=tmp_path / "sft",
             output_root=tmp_path / "outputs",
             seed=42,
             executor=MockExecutor([]),

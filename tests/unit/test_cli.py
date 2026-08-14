@@ -891,8 +891,11 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
     assert error.value.code == 0
     help_text = capsys.readouterr().out
     for option in (
-        "--config",
-        "--sft-run-dir",
+        "--public-config",
+        "--hidden-config",
+        "--public-sft-run-dir",
+        "--hidden-sft-run-dir",
+        "--reward-mode",
         "--resume-from-checkpoint",
         "--seed",
         "--output-dir",
@@ -901,7 +904,7 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
         assert option in help_text
 
     with pytest.raises(SystemExit) as missing:
-        main(["train-grpo", "--config", "grpo.yaml"])
+        main(["train-grpo", "--public-config", "public.yaml"])
     assert missing.value.code == 2
 
 
@@ -910,7 +913,21 @@ def test_train_grpo_defaults_to_persistent_artifact_root(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv(cli_module.ARTIFACT_ROOT_ENV, str(tmp_path / "persistent"))
-    args = build_parser().parse_args(["train-grpo", "--config", "grpo.yaml", "--sft-run-dir", "completed-sft"])
+    args = build_parser().parse_args(
+        [
+            "train-grpo",
+            "--public-config",
+            "public.yaml",
+            "--hidden-config",
+            "hidden.yaml",
+            "--public-sft-run-dir",
+            "completed-sft",
+            "--hidden-sft-run-dir",
+            "completed-sft",
+            "--reward-mode",
+            "public",
+        ]
+    )
     assert args.output_dir == tmp_path / "persistent" / "grpo"
     assert not hasattr(args, "model_id")
 
@@ -936,8 +953,9 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
 
     seen: dict[str, object] = {}
 
-    def fake_run(config: object, **kwargs: object) -> SimpleNamespace:
-        seen["config"] = config
+    def fake_run(public_config: object, hidden_config: object, **kwargs: object) -> SimpleNamespace:
+        seen["public_config"] = public_config
+        seen["hidden_config"] = hidden_config
         seen.update(kwargs)
         return SimpleNamespace(
             train_samples=2,
@@ -947,7 +965,8 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
             checkpoint_dir=Path("outputs/grpo/public/checkpoints"),
         )
 
-    monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: FakeConfig())
+    configs = {Path("public.yaml"): FakeConfig(), Path("hidden.yaml"): FakeConfig()}
+    monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: configs[path])
     monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: "PISTON_CONFIG")
     monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
     monkeypatch.setattr(cli_module, "run_grpo_training", fake_run)
@@ -956,10 +975,16 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
         main(
             [
                 "train-grpo",
-                "--config",
-                "grpo.yaml",
-                "--sft-run-dir",
+                "--public-config",
+                "public.yaml",
+                "--hidden-config",
+                "hidden.yaml",
+                "--public-sft-run-dir",
                 "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
                 "--resume-from-checkpoint",
                 "outputs/grpo/public/checkpoints/checkpoint-1",
                 "--seed",
@@ -969,7 +994,9 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
         == 0
     )
     assert FakePistonExecutor.validated is True
-    assert seen["sft_run_dir"] == Path("completed-sft")
+    assert seen["public_sft_run_dir"] == Path("completed-sft")
+    assert seen["hidden_sft_run_dir"] == Path("completed-sft")
+    assert seen["reward_mode"] == "public"
     assert seen["seed"] == 11
     assert seen["resume_from_checkpoint"] == Path("outputs/grpo/public/checkpoints/checkpoint-1")
     output = capsys.readouterr()
@@ -986,7 +1013,24 @@ def test_train_grpo_error_returns_two_without_traceback(
         "load_grpo_training_config",
         lambda path: (_ for _ in ()).throw(GRPOTrainingError("GRPO hardware rejected")),
     )
-    assert main(["train-grpo", "--config", "grpo.yaml", "--sft-run-dir", "completed-sft"]) == 2
+    assert (
+        main(
+            [
+                "train-grpo",
+                "--public-config",
+                "public.yaml",
+                "--hidden-config",
+                "hidden.yaml",
+                "--public-sft-run-dir",
+                "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
+            ]
+        )
+        == 2
+    )
     output = capsys.readouterr()
     assert "GRPO hardware rejected" in output.err
     assert "Traceback" not in output.err

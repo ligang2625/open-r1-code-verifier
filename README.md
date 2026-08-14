@@ -496,18 +496,26 @@ On the GTX 1660 Ti, fixture adapters and fake Transformers/PEFT runtimes validat
 
 Public and Hidden GRPO use `configs/grpo/public.yaml` and `configs/grpo/hidden.yaml`. Their experiment settings are identical except `run_name`, `reward_mode`, and `dataset_path`; the paired datasets must keep problem order, prompt inputs, visible tests, and metadata identical. Public reward reads only `visible_tests`. Hidden reward reads only `train_hidden_tests`. Neither training path can load `eval_hidden_tests`.
 
-Both runs require the same strict completed SFT B run identity:
+Every run consumes the complete ordered C/D definition pair before training. The preflight requires matching
+Public/Hidden configs and artifacts plus the same strict completed SFT B identity, then executes the selected reward
+mode:
 
 ```bash
 export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/path/open-r1-code-verifier-outputs
 
 .venv/bin/code-verifier train-grpo \
-  --config configs/grpo/public.yaml \
-  --sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>"
+  --public-config configs/grpo/public.yaml \
+  --hidden-config configs/grpo/hidden.yaml \
+  --public-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --hidden-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --reward-mode public
 
 .venv/bin/code-verifier train-grpo \
-  --config configs/grpo/hidden.yaml \
-  --sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>"
+  --public-config configs/grpo/public.yaml \
+  --hidden-config configs/grpo/hidden.yaml \
+  --public-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --hidden-sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-b-run>" \
+  --reward-mode hidden
 ```
 
 The default output is `$CODE_VERIFIER_ARTIFACT_ROOT/grpo` or `outputs/grpo`. Resume requires a direct `<run>/checkpoints/checkpoint-N` child and exact parent-SFT, dataset, config, dependency, environment, seed, and reward-mode identity. Each run stores `rollouts.jsonl`, sanitized `rewards.jsonl`, `group_metrics.jsonl`, trainer metrics, and non-sensitive run metadata. Only rollout records contain completion text; reward/group/run/config/environment/stdout/stderr artifacts never contain test payloads.

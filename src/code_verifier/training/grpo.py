@@ -241,20 +241,28 @@ def grpo_training_config_from_mapping(value: object) -> GRPOTrainingConfig:
     min_memory = _finite_float(root["min_cuda_memory_gb"], field_name="min_cuda_memory_gb", positive=True)
     if min_memory < _MIN_TRAINING_CUDA_MEMORY_GB:
         raise GRPOTrainingError(f"min_cuda_memory_gb must be at least {_MIN_TRAINING_CUDA_MEMORY_GB:g} GiB")
+    num_generations = _positive_int(root["num_generations"], field_name="num_generations")
+    if num_generations < 2:
+        raise GRPOTrainingError("num_generations must be at least 2")
+    per_device_train_batch_size = _positive_int(
+        root["per_device_train_batch_size"], field_name="per_device_train_batch_size"
+    )
+    gradient_accumulation_steps = _positive_int(
+        root["gradient_accumulation_steps"], field_name="gradient_accumulation_steps"
+    )
+    generation_batch_size = per_device_train_batch_size * gradient_accumulation_steps
+    if generation_batch_size % num_generations != 0:
+        raise GRPOTrainingError("num_generations must evenly divide the single-GPU effective generation batch size")
     return GRPOTrainingConfig(
         run_name=run_name,
         reward_mode=reward_mode,
         dataset_path=_path(root["dataset_path"], field_name="dataset_path"),
         piston_config=_path(root["piston_config"], field_name="piston_config"),
-        num_generations=_positive_int(root["num_generations"], field_name="num_generations"),
+        num_generations=num_generations,
         max_prompt_length=_positive_int(root["max_prompt_length"], field_name="max_prompt_length"),
         max_completion_length=_positive_int(root["max_completion_length"], field_name="max_completion_length"),
-        per_device_train_batch_size=_positive_int(
-            root["per_device_train_batch_size"], field_name="per_device_train_batch_size"
-        ),
-        gradient_accumulation_steps=_positive_int(
-            root["gradient_accumulation_steps"], field_name="gradient_accumulation_steps"
-        ),
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
         num_train_epochs=epochs,
         max_steps=_positive_int(root["max_steps"], field_name="max_steps"),
@@ -563,50 +571,53 @@ def _runtime_arguments(
 ) -> tuple[Any, Any]:
     """Map frozen project settings to pinned TRL/Open-R1 argument objects."""
     dtype = "bfloat16" if config.bf16 else "float16"
-    model_args = runtime.model_config_type(
-        model_name_or_path=parent_sft.model_id,
-        model_revision=parent_sft.model_revision or "main",
-        torch_dtype=dtype,
-        trust_remote_code=False,
-        use_peft=True,
-        lora_r=config.lora_r,
-        lora_alpha=config.lora_alpha,
-        lora_dropout=config.lora_dropout,
-        lora_target_modules=None,
-        load_in_4bit=False,
-        load_in_8bit=False,
-    )
-    training_args = runtime.training_config_type(
-        output_dir=str(checkpoint_dir),
-        run_name=config.run_name,
-        do_train=True,
-        do_eval=False,
-        eval_strategy="no",
-        num_generations=config.num_generations,
-        max_prompt_length=config.max_prompt_length,
-        max_completion_length=config.max_completion_length,
-        per_device_train_batch_size=config.per_device_train_batch_size,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        learning_rate=config.learning_rate,
-        num_train_epochs=config.num_train_epochs,
-        max_steps=config.max_steps,
-        warmup_ratio=config.warmup_ratio,
-        lr_scheduler_type=config.lr_scheduler_type,
-        temperature=config.temperature,
-        top_p=config.top_p,
-        beta=config.beta,
-        bf16=config.bf16,
-        fp16=config.fp16,
-        gradient_checkpointing=config.gradient_checkpointing,
-        logging_steps=config.logging_steps,
-        save_strategy="steps",
-        save_steps=config.save_steps,
-        seed=seed,
-        data_seed=seed,
-        use_vllm=False,
-        report_to=[],
-        push_to_hub=False,
-    )
+    try:
+        model_args = runtime.model_config_type(
+            model_name_or_path=parent_sft.model_id,
+            model_revision=parent_sft.model_revision or "main",
+            torch_dtype=dtype,
+            trust_remote_code=False,
+            use_peft=True,
+            lora_r=config.lora_r,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
+            lora_target_modules=None,
+            load_in_4bit=False,
+            load_in_8bit=False,
+        )
+        training_args = runtime.training_config_type(
+            output_dir=str(checkpoint_dir),
+            run_name=config.run_name,
+            do_train=True,
+            do_eval=False,
+            eval_strategy="no",
+            num_generations=config.num_generations,
+            max_prompt_length=config.max_prompt_length,
+            max_completion_length=config.max_completion_length,
+            per_device_train_batch_size=config.per_device_train_batch_size,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            learning_rate=config.learning_rate,
+            num_train_epochs=config.num_train_epochs,
+            max_steps=config.max_steps,
+            warmup_ratio=config.warmup_ratio,
+            lr_scheduler_type=config.lr_scheduler_type,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            beta=config.beta,
+            bf16=config.bf16,
+            fp16=config.fp16,
+            gradient_checkpointing=config.gradient_checkpointing,
+            logging_steps=config.logging_steps,
+            save_strategy="steps",
+            save_steps=config.save_steps,
+            seed=seed,
+            data_seed=seed,
+            use_vllm=False,
+            report_to=[],
+            push_to_hub=False,
+        )
+    except ValueError:
+        raise GRPOTrainingError("pinned GRPO argument constructor rejected the resolved config") from None
     return model_args, training_args
 
 
@@ -884,19 +895,34 @@ def _append_trainer_metrics(path: Path, log_history: object) -> None:
 
 
 def run_grpo_training(
-    config: GRPOTrainingConfig,
+    public_config: GRPOTrainingConfig,
+    hidden_config: GRPOTrainingConfig,
     *,
-    sft_run_dir: Path,
+    reward_mode: str,
+    public_sft_run_dir: Path,
+    hidden_sft_run_dir: Path,
     output_root: Path,
     seed: int,
     executor: CodeExecutor,
     resume_from_checkpoint: Path | None = None,
 ) -> GRPOTrainingSummary:
-    """Run one pinned GRPO lifecycle from a completed SFT B identity."""
+    """Preflight one fair C/D pair, then run the selected reward mode."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise GRPOTrainingError("seed must be an integer")
+    validate_grpo_config_pair(public_config, hidden_config)
+    if reward_mode not in {"public", "hidden"}:
+        raise GRPOTrainingError("reward_mode must select public or hidden from the validated pair")
+    config = public_config if reward_mode == "public" else hidden_config
     validate_grpo_training_hardware(config)
-    parent_sft = load_completed_sft_checkpoint(sft_run_dir)
+    public_parent_sft = load_completed_sft_checkpoint(public_sft_run_dir)
+    hidden_parent_sft = load_completed_sft_checkpoint(hidden_sft_run_dir)
+    if public_parent_sft != hidden_parent_sft:
+        raise GRPOTrainingError("Public and Hidden GRPO runs must use the same completed SFT B identity")
+    public_records = load_training_artifact(public_config.dataset_path, kind=TrainingArtifactKind.PUBLIC_GRPO)
+    hidden_records = load_training_artifact(hidden_config.dataset_path, kind=TrainingArtifactKind.HIDDEN_GRPO)
+    validate_grpo_artifact_pair(public_records, hidden_records)
+    parent_sft = public_parent_sft
+    records = public_records if reward_mode == "public" else hidden_records
     run_dir = _safe_run_dir(output_root, config.run_name)
     checkpoint_dir = run_dir / "checkpoints"
     dataset_hash = _file_hash(config.dataset_path, description="GRPO dataset")
@@ -938,8 +964,6 @@ def run_grpo_training(
     previous_gpu_hours = float(cast(int | float, run_metadata["gpu_hours"]))
     started = time.perf_counter()
     try:
-        kind = TrainingArtifactKind.PUBLIC_GRPO if config.reward_mode == "public" else TrainingArtifactKind.HIDDEN_GRPO
-        records = load_training_artifact(config.dataset_path, kind=kind)
         train_dataset = build_grpo_dataset(records, reward_mode=config.reward_mode)
         runtime = _load_grpo_runtime()
         model_args, training_args = _runtime_arguments(

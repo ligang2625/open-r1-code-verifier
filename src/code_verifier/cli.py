@@ -415,19 +415,24 @@ def _train_sft(args: argparse.Namespace) -> int:
 
 
 def _train_grpo(args: argparse.Namespace) -> int:
-    """Run one strict GRPO workflow from a completed SFT B run."""
-    config = load_grpo_training_config(Path(str(args.config)))
+    """Validate one complete C/D definition pair, then run the selected mode."""
+    public_config = load_grpo_training_config(Path(str(args.public_config)))
+    hidden_config = load_grpo_training_config(Path(str(args.hidden_config)))
+    selected_config = public_config if args.reward_mode == "public" else hidden_config
     cli_seed = None if args.seed is None else int(args.seed)
-    effective_seed = config.seed if cli_seed is None else cli_seed
-    if cli_seed is not None and cli_seed != config.seed:
-        print(f"override: seed: {config.seed} -> {cli_seed}", file=sys.stderr)
-    piston_config = load_piston_executor_config(config.piston_config)
+    effective_seed = selected_config.seed if cli_seed is None else cli_seed
+    if cli_seed is not None and cli_seed != selected_config.seed:
+        print(f"override: seed: {selected_config.seed} -> {cli_seed}", file=sys.stderr)
+    piston_config = load_piston_executor_config(selected_config.piston_config)
     executor = PistonExecutor(piston_config)
     executor.validate_runtime()
     resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
     summary = run_grpo_training(
-        config,
-        sft_run_dir=Path(str(args.sft_run_dir)),
+        public_config,
+        hidden_config,
+        reward_mode=str(args.reward_mode),
+        public_sft_run_dir=Path(str(args.public_sft_run_dir)),
+        hidden_sft_run_dir=Path(str(args.hidden_sft_run_dir)),
         output_root=Path(str(args.output_dir)),
         seed=effective_seed,
         executor=executor,
@@ -564,13 +569,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_grpo_parser = subparsers.add_parser(
         "train-grpo",
-        help="run Public or Hidden GRPO from a completed SFT run",
+        help="validate a fair C/D pair and run one GRPO reward mode",
     )
     train_grpo_parser.add_argument(
-        "--sft-run-dir",
+        "--public-config",
         type=Path,
         required=True,
-        help="completed SFT B run used as the GRPO policy and reference",
+        help="Public GRPO YAML config path",
+    )
+    train_grpo_parser.add_argument(
+        "--hidden-config",
+        type=Path,
+        required=True,
+        help="Hidden GRPO YAML config path",
+    )
+    train_grpo_parser.add_argument(
+        "--public-sft-run-dir",
+        type=Path,
+        required=True,
+        help="completed SFT B run bound to the Public definition",
+    )
+    train_grpo_parser.add_argument(
+        "--hidden-sft-run-dir",
+        type=Path,
+        required=True,
+        help="completed SFT B run bound to the Hidden definition",
+    )
+    train_grpo_parser.add_argument(
+        "--reward-mode",
+        choices=("public", "hidden"),
+        required=True,
+        help="validated pair member to execute",
     )
     train_grpo_parser.add_argument(
         "--resume-from-checkpoint",
@@ -578,13 +607,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="explicit checkpoint directory to resume",
     )
-    _add_common_arguments(
-        train_grpo_parser,
-        config_required=True,
-        output_dir_default=_default_artifact_output("grpo"),
-        output_dir_required=False,
-        seed_default=None,
+    train_grpo_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="deterministic seed (default: paired config seed)",
     )
+    train_grpo_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=_default_artifact_output("grpo"),
+        help="command output root; defaults honor CODE_VERIFIER_ARTIFACT_ROOT",
+    )
+    train_grpo_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
     train_grpo_parser.set_defaults(handler=_train_grpo)
     return parser
 
