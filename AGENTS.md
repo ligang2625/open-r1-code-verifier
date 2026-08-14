@@ -38,6 +38,8 @@ open-r1-code-verifier/
 │       │   └── metrics.py             # WP5-b aggregate metrics and summary artifacts
 │       └── training/
 │           ├── open_r1_adapter.py    # Open-R1 integration boundary
+│           ├── grpo_data.py          # WP7-a payload-minimal GRPO dataset mapping
+│           ├── grpo.py               # WP7-a GRPO config/runtime/reward/artifacts
 │           ├── sft_data.py           # WP6-a trajectory validation/dataset mapping
 │           └── sft.py                # WP6-a LoRA config/runtime/artifacts
 ├── tests/
@@ -51,7 +53,8 @@ open-r1-code-verifier/
 │   │   ├── test_wp5a_evaluation_pipeline.py
 │   │   ├── test_wp5a_gpu_smoke.py
 │   │   ├── test_wp5b_metrics_pipeline.py
-│   │   └── test_wp6a_sft_integration.py
+│   │   ├── test_wp6a_sft_integration.py
+│   │   └── test_wp7a_grpo_integration.py
 │   └── unit/
 │       ├── data/
 │       ├── execution/
@@ -77,6 +80,8 @@ open-r1-code-verifier/
 │       │   ├── test_evaluate.py
 │       │   └── test_runner_resume.py
 │       ├── training/
+│       │   ├── test_grpo_data.py
+│       │   ├── test_grpo.py
 │       │   ├── test_sft_data.py
 │       │   └── test_sft.py
 │       ├── test_cli.py
@@ -90,9 +95,12 @@ open-r1-code-verifier/
 │   ├── eval/
 │   │   ├── pass1.yaml                 # WP5-a debug deterministic pass@1 config
 │   │   └── base.yaml                  # WP5-b immutable CUDA/FP16 Base config
-│   └── sft/
+│   ├── sft/
 │       ├── debug.yaml                 # WP6-a short 0.5B/fp16 config
 │       └── main.yaml                  # WP6-a frozen 1.5B/bf16 LoRA config
+│   └── grpo/
+│       ├── public.yaml                # WP7-a Public-RLVR config
+│       └── hidden.yaml                # WP7-a Hidden-RLVR config
 ├── docs/
 │   └── piston-local.md                # Local Piston deployment and safety runbook
 ├── third_party/
@@ -121,6 +129,7 @@ Source code lives in `src/code_verifier/`. The `third_party/open-r1/` submodule 
 | `.venv/bin/code-verifier --help` | Shows CLI help |
 | `.venv/bin/code-verifier evaluate --help` | Shows deterministic evaluation and aggregation options |
 | `.venv/bin/code-verifier train-sft --help` | Shows strict LoRA SFT and resume options |
+| `.venv/bin/code-verifier train-grpo --help` | Shows strict completed-B GRPO and resume options |
 
 ## Coding Style & Naming Conventions
 
@@ -181,6 +190,10 @@ Reviewers should treat unnecessary compatibility code, speculative abstraction, 
 - B evaluation must obtain its adapter identity through `load_completed_sft_checkpoint()` from an SFT run whose `run.json` status is `completed`; never accept an arbitrary adapter/checkpoint path or infer the model source from a directory.
 - PEFT evaluation reload must fail closed when the adapter base-model identity or pinned revision differs from the completed SFT run, remain inference-only, and reuse the existing deterministic evaluator and aggregator.
 - Fixture/fake SFT adapters may verify the development reload, resume, and artifact contracts, but must never be recorded as a real B checkpoint, metric, loss, cost, or validation result.
+- `train-grpo` must load its policy identity only through `load_completed_sft_checkpoint()`, keep Public/Hidden configs paired, and retain the pre-model-load 20 GiB guard. Never accept arbitrary adapter paths or bypass the guard on the GTX 1660 Ti.
+- GRPO policy construction is fixed: base A → completed B adapter loaded read-only → `merge_and_unload(safe_merge=True)` → new trainable GRPO LoRA. Never pass the unmerged B adapter as the active `GRPOTrainer` PEFT adapter; its disabled-adapter reference would incorrectly become A.
+- Public GRPO trainer rows contain visible tests only. Hidden rows add only train-hidden tests. `eval_hidden_tests`, reference solutions, starter code, and SFT responses must never enter GRPO datasets, callbacks, or logs.
+- GRPO `rewards.jsonl`, `group_metrics.jsonl`, trainer metrics, run/config/environment/stdout/stderr artifacts must remain finite, JSON-safe, and payload-free. Only `rollouts.jsonl` may contain completion text. Fixture/fake runs are engineering evidence, never formal C/D checkpoints, metrics, loss, or cost.
 - The WP4-a verifier accepts exactly one caller-selected non-empty test list, never a complete problem or test-layer selector. It must use `extract_python_code()` for parsing and `CodeExecutor` for execution, and sanitized mappings must not store completion, code, tests, function name, or metadata.
 - WP4 reward code must flow through `verify_completion()` and therefore through the configured `CodeExecutor`; reward modules must not parse or execute candidate code independently.
 - Public and Hidden reward wrappers must share `rewards/common.py`. Public may score only `visible_tests`; Hidden may score only `train_hidden_tests`; `eval_hidden_tests` must never enter either training reward path.
