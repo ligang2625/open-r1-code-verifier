@@ -482,6 +482,27 @@ def _append_jsonl(path: Path, value: Mapping[str, object]) -> None:
         os.fsync(handle.fileno())
 
 
+def _append_trainer_metrics(path: Path, log_history: object) -> None:
+    """Append finite numeric Trainer history entries without copying arbitrary metadata."""
+    if not isinstance(log_history, list):
+        raise SFTTrainingError("SFT trainer state must provide log_history")
+    for entry in log_history:
+        if not isinstance(entry, Mapping):
+            raise SFTTrainingError("SFT trainer log history entries must be mappings")
+        scalars: dict[str, object] = {"record_type": "trainer"}
+        for key, value in entry.items():
+            if not isinstance(key, str):
+                raise SFTTrainingError("SFT trainer metric names must be strings")
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            number = float(value)
+            if not math.isfinite(number):
+                raise SFTTrainingError("SFT trainer metrics must be finite")
+            scalars[key] = number
+        if len(scalars) > 1:
+            _append_jsonl(path, scalars)
+
+
 def _dataset_hash(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -804,9 +825,12 @@ def run_sft_training(
         train_loss = float(raw_loss)
         trainer.save_state()
         trainer.save_model(str(checkpoint_dir))
+        trainer_state = getattr(trainer, "state", None)
+        _append_trainer_metrics(run_dir / "metrics.jsonl", getattr(trainer_state, "log_history", None))
         attempt_gpu_hours = (time.perf_counter() - started) / 3600.0
         gpu_hours = previous_gpu_hours + attempt_gpu_hours
         metrics = {
+            "record_type": "summary",
             "train_loss": train_loss,
             "train_samples": len(train_dataset),
             "eval_samples": 0 if eval_dataset is None else len(eval_dataset),

@@ -290,6 +290,7 @@ def test_grpo_reward_callback_selects_only_configured_test_source_and_writes_san
         }
     ]
     component = reward_rows[0]
+    assert component["executor_runtime_ms"] == 1.0
     assert component["total_reward"] == pytest.approx(
         cast(float, component["test_reward"])
         + cast(float, component["executable_reward"])

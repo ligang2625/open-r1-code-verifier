@@ -384,6 +384,7 @@ class _FakeTrainer:
         self.resume_from_checkpoint: str | None = None
         self.state_saved = False
         self.model_saved_to: str | None = None
+        self.state = SimpleNamespace(log_history=[{"loss": 0.3, "step": 1, "ignored": "text"}])
         self.__class__.instances.append(self)
 
     def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
@@ -552,8 +553,50 @@ def test_eval_strategy_steps_builds_independent_payload_minimal_validation_datas
     assert "PRIVATE_PROMPT_SENTINEL" not in repr(eval_dataset[0])
     for forbidden in ("visible_tests", "function_name", "metadata"):
         assert forbidden not in repr(eval_dataset[0])
-    metrics = json.loads((summary.run_dir / "metrics.jsonl").read_text(encoding="utf-8"))
-    assert metrics["eval_samples"] == 1
+    metrics = [json.loads(line) for line in (summary.run_dir / "metrics.jsonl").read_text().splitlines()]
+    assert metrics[-1]["eval_samples"] == 1
+
+
+def test_run_sft_training_persists_finite_trainer_curve_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
+
+    summary = run_sft_training(
+        config,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor([_execution_result()]),
+    )
+
+    metrics = [json.loads(line) for line in (summary.run_dir / "metrics.jsonl").read_text().splitlines()]
+    assert metrics[0] == {"loss": 0.3, "record_type": "trainer", "step": 1.0}
+    assert metrics[1]["record_type"] == "summary"
+    assert metrics[1]["train_loss"] == 0.25
+    assert metrics[1]["train_samples"] == 1
+
+
+def test_sft_trainer_metrics_reject_non_finite_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
+    original_init = _FakeTrainer.__init__
+
+    def init_with_non_finite(self: _FakeTrainer, **kwargs: object) -> None:
+        original_init(self, **kwargs)
+        self.state = SimpleNamespace(log_history=[{"loss": math.nan}])
+
+    monkeypatch.setattr(_FakeTrainer, "__init__", init_with_non_finite)
+
+    with pytest.raises(SFTTrainingError, match="trainer metrics must be finite"):
+        run_sft_training(
+            config,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor([_execution_result()]),
+        )
 
 
 def test_resume_rejects_fresh_run_external_and_cross_run_checkpoints(

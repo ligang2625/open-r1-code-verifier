@@ -244,6 +244,33 @@ def test_parse_failure_has_invalid_format_penalty_and_no_executable_reward() -> 
     assert records[0]["status"] == ExecutionStatus.PARSE_ERROR.value
     assert records[0]["executable_reward"] == 0.0
     assert records[0]["invalid_format_penalty"] == -0.1
+    assert records[0]["executor_runtime_ms"] == 0.0
+
+
+def test_reward_component_records_include_executor_runtime_without_payload() -> None:
+    _, record, _ = _compute_one(
+        _execution_result(
+            status=ExecutionStatus.PASSED,
+            total_tests=1,
+            returned_statuses=[ExecutionStatus.PASSED],
+        )
+    )
+
+    assert record["executor_runtime_ms"] == 1.0
+    assert "execution_result" not in record
+
+
+def test_reward_component_runtime_is_zero_without_execution_result() -> None:
+    _, records = compute_code_rewards(
+        ["explanation only"],
+        [_tests(1)],
+        ["solve"],
+        [_metadata()],
+        MockExecutor([]),
+        "public",
+    )
+
+    assert records[0]["executor_runtime_ms"] == 0.0
 
 
 def test_missing_target_function_uses_same_invalid_format_penalty() -> None:
@@ -362,6 +389,7 @@ def test_all_reward_numbers_are_finite_and_component_total_matches_sum() -> None
         "timeout_penalty",
         "invalid_format_penalty",
         "total_reward",
+        "executor_runtime_ms",
     ]
     assert math.isfinite(reward)
     numeric_values: list[float] = []
@@ -371,8 +399,8 @@ def test_all_reward_numbers_are_finite_and_component_total_matches_sum() -> None
         assert isinstance(value, int | float)
         numeric_values.append(float(value))
     assert all(math.isfinite(value) for value in numeric_values)
-    component_sum = sum(numeric_values[:-1], 0.0)
-    assert numeric_values[-1] == pytest.approx(component_sum)
+    component_sum = sum(numeric_values[:4], 0.0)
+    assert numeric_values[4] == pytest.approx(component_sum)
 
 
 def test_component_record_is_json_safe_payload_free_and_aligned_with_rewards() -> None:
