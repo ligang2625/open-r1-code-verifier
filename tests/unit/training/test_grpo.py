@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import math
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+import code_verifier.training.grpo as grpo_module
+from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
+from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.grpo import (
     GRPOTrainingError,
+    build_grpo_reward_callback,
     grpo_training_config_from_mapping,
     load_grpo_training_config,
     validate_grpo_artifact_pair,
@@ -148,3 +155,157 @@ def test_grpo_artifact_pair_rejects_wrong_schema_or_length() -> None:
         validate_grpo_artifact_pair(public, hidden)
     with pytest.raises(GRPOTrainingError, match="equal non-zero"):
         validate_grpo_artifact_pair(public, [])
+
+
+def _execution_result(*, passed: bool) -> ExecutionResult:
+    status = ExecutionStatus.PASSED if passed else ExecutionStatus.WRONG_ANSWER
+    return ExecutionResult(
+        status=status,
+        passed_tests=int(passed),
+        total_tests=1,
+        pass_rate=float(passed),
+        runtime_ms=1.0,
+        test_results=[
+            ExecutionTestCaseResult(
+                status=status,
+                passed=passed,
+                runtime_ms=1.0,
+                stdout="",
+                stderr="",
+            )
+        ],
+    )
+
+
+def _callback(
+    tmp_path: Path,
+    *,
+    reward_mode: str,
+    executor: MockExecutor,
+    num_generations: int = 2,
+) -> Callable[..., list[float]]:
+    return build_grpo_reward_callback(
+        reward_mode=reward_mode,
+        executor=executor,
+        rollout_log_path=tmp_path / reward_mode / "rollouts.jsonl",
+        reward_log_path=tmp_path / reward_mode / "rewards.jsonl",
+        group_metrics_log_path=tmp_path / reward_mode / "group_metrics.jsonl",
+        num_generations=num_generations,
+        max_completion_length=3,
+    )
+
+
+def _reward_columns(*, hidden: bool) -> dict[str, object]:
+    metadata = {
+        "difficulty": "easy",
+        "category": ["unit"],
+        "time_limit_seconds": 1.0,
+        "memory_limit_mb": 128,
+        "license": "test",
+        "source_url_hash": None,
+    }
+    columns: dict[str, object] = {
+        "problem_id": ["problem-1", "problem-1"],
+        "function_name": ["solve", "solve"],
+        "metadata": [metadata, metadata],
+        "visible_tests": [
+            [{"input": "VISIBLE_ONE", "expected": "VISIBLE_ONE"}],
+            [{"input": "VISIBLE_TWO", "expected": "VISIBLE_TWO"}],
+        ],
+    }
+    if hidden:
+        columns["train_hidden_tests"] = [
+            [{"input": "HIDDEN_ONE", "expected": "HIDDEN_ONE"}],
+            [{"input": "HIDDEN_TWO", "expected": "HIDDEN_TWO"}],
+        ]
+    return columns
+
+
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.mark.parametrize("reward_mode", ["public", "hidden"])
+def test_grpo_reward_callback_selects_only_configured_test_source_and_writes_sanitized_logs(
+    tmp_path: Path,
+    reward_mode: str,
+) -> None:
+    executor = MockExecutor([_execution_result(passed=True), _execution_result(passed=False)])
+    callback = _callback(tmp_path, reward_mode=reward_mode, executor=executor)
+    columns = _reward_columns(hidden=reward_mode == "hidden")
+
+    rewards = callback(
+        prompts=[[{"role": "user", "content": "PROMPT_SENTINEL"}]] * 2,
+        completions=["```python\ndef solve(value): return value\n```"] * 2,
+        completion_ids=[[1, 2], [1, 2, 3]],
+        **columns,
+    )
+
+    selected = "VISIBLE_ONE" if reward_mode == "public" else "HIDDEN_ONE"
+    assert executor.calls[0].tests == [{"input": selected, "expected": selected}]
+    assert rewards == [1.1, 0.1]
+    assert callback.__name__ == f"{reward_mode}_code_reward"
+    rollouts = _read_jsonl(tmp_path / reward_mode / "rollouts.jsonl")
+    reward_rows = _read_jsonl(tmp_path / reward_mode / "rewards.jsonl")
+    groups = _read_jsonl(tmp_path / reward_mode / "group_metrics.jsonl")
+    assert [row["truncated"] for row in rollouts] == [False, True]
+    assert groups == [
+        {
+            "all_equal": False,
+            "group_index": 0,
+            "mean": pytest.approx(0.6),
+            "problem_id": "problem-1",
+            "reward_mode": reward_mode,
+            "sample_count": 2,
+            "std": pytest.approx(0.5),
+        }
+    ]
+    component = reward_rows[0]
+    assert component["total_reward"] == pytest.approx(
+        cast(float, component["test_reward"])
+        + cast(float, component["executable_reward"])
+        + cast(float, component["timeout_penalty"])
+        + cast(float, component["invalid_format_penalty"])
+    )
+    for path in (tmp_path / reward_mode / "rewards.jsonl", tmp_path / reward_mode / "group_metrics.jsonl"):
+        contents = path.read_text(encoding="utf-8")
+        for forbidden in ("PROMPT_SENTINEL", "VISIBLE_ONE", "HIDDEN_ONE", "completion", "function_name", "metadata"):
+            assert forbidden not in contents
+
+
+def test_grpo_reward_callback_rejects_batch_group_and_column_mismatch(tmp_path: Path) -> None:
+    executor = MockExecutor([_execution_result(passed=True), _execution_result(passed=True)])
+    callback = _callback(tmp_path, reward_mode="public", executor=executor)
+    columns = _reward_columns(hidden=False)
+    with pytest.raises(GRPOTrainingError, match="batch lengths"):
+        callback(prompts=[[]], completions=["one", "two"], completion_ids=[[1], [1]], **columns)
+    with pytest.raises(GRPOTrainingError, match="num_generations"):
+        callback(
+            prompts=[[], []],
+            completions=["one", "two"],
+            completion_ids=[[1], [1]],
+            **{**columns, "problem_id": ["one", "two"]},
+        )
+    with pytest.raises(GRPOTrainingError, match="unexpected or missing"):
+        callback(
+            prompts=[[], []],
+            completions=["one", "two"],
+            completion_ids=[[1], [1]],
+            **{**columns, "eval_hidden_tests": [[], []]},
+        )
+    assert executor.calls == ()
+
+
+def test_grpo_reward_callback_rejects_nonfinite_core_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = _callback(tmp_path, reward_mode="public", executor=MockExecutor([]))
+    monkeypatch.setattr(grpo_module, "compute_code_rewards", lambda *args, **kwargs: ([math.nan] * 2, [{}, {}]))
+    with pytest.raises(GRPOTrainingError, match="finite"):
+        callback(
+            prompts=[[], []],
+            completions=["one", "two"],
+            completion_ids=[[1], [1]],
+            **_reward_columns(hidden=False),
+        )

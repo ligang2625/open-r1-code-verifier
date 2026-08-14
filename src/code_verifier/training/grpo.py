@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from code_verifier.config import ConfigError, load_yaml_mapping
 from code_verifier.data.json_strict import json_values_equal
 from code_verifier.data.leakage_checks import LeakageError, TrainingArtifactKind, check_training_record
+from code_verifier.execution.base import CodeExecutor
+from code_verifier.rewards.common import RewardContractError, compute_code_rewards
 
 
 @dataclass(frozen=True)
@@ -247,3 +251,185 @@ def validate_grpo_artifact_pair(
             raise GRPOTrainingError(str(error)) from None
         if any(not json_values_equal(public[field], hidden[field]) for field in shared_fields):
             raise GRPOTrainingError(f"Public and Hidden GRPO artifact row {index} does not share identical inputs")
+
+
+def _batch_length(value: object, *, field_name: str) -> int:
+    if isinstance(value, str | bytes | bytearray) or not isinstance(value, Sequence):
+        raise GRPOTrainingError(f"{field_name} must be a non-string sequence")
+    return len(value)
+
+
+def _completion_text(item: object) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, bytes | bytearray | Mapping) or not isinstance(item, Sequence) or not item:
+        raise GRPOTrainingError("completion item must be a string or non-empty chat sequence")
+    message = item[-1]
+    if not isinstance(message, Mapping) or not isinstance(message.get("content"), str):
+        raise GRPOTrainingError("chat completion must end with string content")
+    return cast(str, message["content"])
+
+
+def _completion_token_count(value: object) -> int:
+    if isinstance(value, str | bytes | bytearray | Mapping):
+        raise GRPOTrainingError("completion_ids items must be token sequences")
+    try:
+        count = len(cast(Any, value))
+    except (TypeError, OverflowError):
+        raise GRPOTrainingError("completion_ids items must be token sequences") from None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise GRPOTrainingError("completion_ids items must have a valid length")
+    return count
+
+
+def _jsonl_line(value: Mapping[str, object]) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+    except (TypeError, ValueError, OverflowError):
+        raise GRPOTrainingError("GRPO log record must be finite and JSON safe") from None
+
+
+def _append_lines(path: Path, lines: Sequence[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.writelines(lines)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def build_grpo_reward_callback(
+    *,
+    reward_mode: str,
+    executor: CodeExecutor,
+    rollout_log_path: Path,
+    reward_log_path: Path,
+    group_metrics_log_path: Path,
+    num_generations: int,
+    max_completion_length: int,
+) -> Callable[..., list[float]]:
+    """Build one pinned-TRL reward function with strict alignment and sanitized logs."""
+    if reward_mode not in {"public", "hidden"}:
+        raise GRPOTrainingError("reward_mode must be public or hidden")
+    if isinstance(num_generations, bool) or not isinstance(num_generations, int) or num_generations <= 0:
+        raise GRPOTrainingError("num_generations must be a positive integer")
+    if (
+        isinstance(max_completion_length, bool)
+        or not isinstance(max_completion_length, int)
+        or max_completion_length <= 0
+    ):
+        raise GRPOTrainingError("max_completion_length must be a positive integer")
+
+    expected_columns = {"problem_id", "function_name", "metadata", "visible_tests"}
+    if reward_mode == "hidden":
+        expected_columns.add("train_hidden_tests")
+
+    def reward_callback(
+        *,
+        prompts: object,
+        completions: object,
+        completion_ids: object,
+        **columns: object,
+    ) -> list[float]:
+        if set(columns) != expected_columns:
+            raise GRPOTrainingError("GRPO reward callback received unexpected or missing dataset columns")
+        lengths = {
+            "prompts": _batch_length(prompts, field_name="prompts"),
+            "completions": _batch_length(completions, field_name="completions"),
+            "completion_ids": _batch_length(completion_ids, field_name="completion_ids"),
+        }
+        lengths.update({field: _batch_length(value, field_name=field) for field, value in columns.items()})
+        batch_size = lengths["completions"]
+        if batch_size == 0 or any(length != batch_size for length in lengths.values()):
+            details = ", ".join(f"{name}={length}" for name, length in sorted(lengths.items()))
+            raise GRPOTrainingError(f"GRPO reward batch lengths must match and be non-zero: {details}")
+
+        problem_ids = cast(Sequence[object], columns["problem_id"])
+        normalized_ids = [_nonempty_string(value, field_name="problem_id") for value in problem_ids]
+        groups: dict[str, list[int]] = {}
+        for index, problem_id in enumerate(normalized_ids):
+            groups.setdefault(problem_id, []).append(index)
+        if any(len(indices) != num_generations for indices in groups.values()):
+            raise GRPOTrainingError("each GRPO problem group must contain exactly num_generations completions")
+
+        selected_tests = columns["visible_tests"] if reward_mode == "public" else columns["train_hidden_tests"]
+        try:
+            rewards, component_records = compute_code_rewards(
+                completions,
+                selected_tests,
+                columns["function_name"],
+                columns["metadata"],
+                executor,
+                reward_mode,
+            )
+        except RewardContractError as error:
+            raise GRPOTrainingError(str(error)) from None
+        if len(rewards) != batch_size or len(component_records) != batch_size:
+            raise GRPOTrainingError("GRPO reward core returned a misaligned batch")
+        if any(not math.isfinite(reward) for reward in rewards):
+            raise GRPOTrainingError("GRPO rewards must be finite")
+
+        completion_values = cast(Sequence[object], completions)
+        completion_id_values = cast(Sequence[object], completion_ids)
+        group_index_by_item: dict[int, tuple[int, int]] = {}
+        group_lines: list[str] = []
+        for group_index, (problem_id, item_indices) in enumerate(groups.items()):
+            group_rewards = [rewards[item_index] for item_index in item_indices]
+            mean = sum(group_rewards) / len(group_rewards)
+            variance = sum((reward - mean) ** 2 for reward in group_rewards) / len(group_rewards)
+            std = math.sqrt(variance)
+            if not math.isfinite(mean) or not math.isfinite(std):
+                raise GRPOTrainingError("GRPO group metrics must be finite")
+            for group_item_index, item_index in enumerate(item_indices):
+                group_index_by_item[item_index] = (group_index, group_item_index)
+            group_lines.append(
+                _jsonl_line(
+                    {
+                        "group_index": group_index,
+                        "problem_id": problem_id,
+                        "reward_mode": reward_mode,
+                        "sample_count": len(group_rewards),
+                        "mean": mean,
+                        "std": std,
+                        "all_equal": all(reward == group_rewards[0] for reward in group_rewards),
+                    }
+                )
+            )
+
+        rollout_lines: list[str] = []
+        reward_lines: list[str] = []
+        for item_index in range(batch_size):
+            group_index, group_item_index = group_index_by_item[item_index]
+            token_count = _completion_token_count(completion_id_values[item_index])
+            rollout_lines.append(
+                _jsonl_line(
+                    {
+                        "item_index": item_index,
+                        "group_index": group_index,
+                        "group_item_index": group_item_index,
+                        "problem_id": normalized_ids[item_index],
+                        "reward_mode": reward_mode,
+                        "completion": _completion_text(completion_values[item_index]),
+                        "completion_token_count": token_count,
+                        "truncated": token_count >= max_completion_length,
+                        "total_reward": rewards[item_index],
+                    }
+                )
+            )
+            reward_lines.append(
+                _jsonl_line(
+                    {
+                        "item_index": item_index,
+                        "group_index": group_index,
+                        "group_item_index": group_item_index,
+                        "problem_id": normalized_ids[item_index],
+                        **component_records[item_index],
+                    }
+                )
+            )
+        _append_lines(rollout_log_path, rollout_lines)
+        _append_lines(reward_log_path, reward_lines)
+        _append_lines(group_metrics_log_path, group_lines)
+        return rewards
+
+    reward_callback.__name__ = f"{reward_mode}_code_reward"
+    return reward_callback
