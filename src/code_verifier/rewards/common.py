@@ -84,6 +84,7 @@ _COMPONENT_FIELDS = {
     "timeout_penalty",
     "invalid_format_penalty",
     "total_reward",
+    "executor_runtime_ms",
     "status",
     "parsed",
     "executed",
@@ -99,6 +100,7 @@ _NUMERIC_COMPONENT_FIELDS = {
     "timeout_penalty",
     "invalid_format_penalty",
     "total_reward",
+    "executor_runtime_ms",
 }
 
 
@@ -121,6 +123,7 @@ def _reward_components_from_verification(
     timeout_penalty = -0.2 if timed_out and not infrastructure_failure else 0.0
     invalid_format_penalty = -0.1 if result.status is ExecutionStatus.PARSE_ERROR else 0.0
     total_reward = test_reward + executable_reward + timeout_penalty + invalid_format_penalty
+    executor_runtime_ms = 0.0 if result.execution_result is None else float(result.execution_result.runtime_ms)
     record: dict[str, object] = {
         "mode": mode,
         "test_reward": test_reward,
@@ -128,6 +131,7 @@ def _reward_components_from_verification(
         "timeout_penalty": timeout_penalty,
         "invalid_format_penalty": invalid_format_penalty,
         "total_reward": total_reward,
+        "executor_runtime_ms": executor_runtime_ms,
         "status": result.status.value,
         "parsed": result.parsed,
         "executed": result.executed,
@@ -170,6 +174,8 @@ def _validate_component_record(record: Mapping[str, object]) -> None:
     )
     if not math.isclose(numeric_values["total_reward"], component_sum, rel_tol=0.0, abs_tol=1e-12):
         raise RewardContractError("total_reward must equal the sum of reward components")
+    if numeric_values["executor_runtime_ms"] < 0.0:
+        raise RewardContractError("executor_runtime_ms must be non-negative")
 
     status = record["status"]
     if not isinstance(status, str) or status not in {item.value for item in ExecutionStatus}:

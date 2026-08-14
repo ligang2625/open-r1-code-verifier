@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import cast
 
 from code_verifier import __version__
+from code_verifier.analysis import AnalysisError, analyze_experiment, load_analysis_config
 from code_verifier.config import ConfigError
 from code_verifier.data.adapters import InputAdapterError
 from code_verifier.data.deduplicate import DuplicateDataError
@@ -94,6 +95,7 @@ EXECUTION_ERRORS = (
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
 TRAINING_ERRORS = (SFTDataError, SFTTrainingError, GRPODataError, GRPOTrainingError)
+ANALYSIS_ERRORS = (AnalysisError,)
 ARTIFACT_ROOT_ENV = "CODE_VERIFIER_ARTIFACT_ROOT"
 
 
@@ -468,8 +470,21 @@ def _train_grpo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _analyze_results(args: argparse.Namespace) -> int:
+    """Generate strict traceable A-D report inputs from one analysis manifest."""
+    config = load_analysis_config(Path(str(args.manifest)))
+    summary = analyze_experiment(config, output_dir=Path(str(args.output_dir)))
+    print(f"analyzed {summary.total_problems} problems")
+    print(f"report_data={summary.report_data_path}")
+    print(f"main_results={summary.main_results_path}")
+    print(f"paired_comparisons={summary.paired_comparisons_path}")
+    print(f"costs={summary.cost_path}")
+    print(f"candidates={summary.candidate_count} manual_labels={summary.manual_label_count}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0-WP7-a commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP8 commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -647,6 +662,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_grpo_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
     train_grpo_parser.set_defaults(handler=_train_grpo)
+
+    analyze_parser = subparsers.add_parser(
+        "analyze-results",
+        help="validate A-D artifacts and generate traceable report inputs",
+    )
+    analyze_parser.add_argument("--manifest", type=Path, required=True, help="strict analysis YAML manifest")
+    analyze_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=_default_artifact_output("analysis"),
+        help="new analysis output directory; defaults honor CODE_VERIFIER_ARTIFACT_ROOT",
+    )
+    analyze_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
+    analyze_parser.set_defaults(handler=_analyze_results)
     return parser
 
 
@@ -668,7 +697,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return handler(args)
-    except DATA_ERRORS + EXECUTION_ERRORS + EVALUATION_ERRORS + TRAINING_ERRORS as error:
+    except DATA_ERRORS + EXECUTION_ERRORS + EVALUATION_ERRORS + TRAINING_ERRORS + ANALYSIS_ERRORS as error:
         print(f"error: {' '.join(str(error).splitlines())}", file=sys.stderr)
         return 2
 
