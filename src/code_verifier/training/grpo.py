@@ -350,9 +350,7 @@ def load_completed_grpo_checkpoint(run_dir: Path) -> GRPOCheckpointIdentity:
     if not isinstance(metadata_value, dict) or metadata_value.get("status") != "completed":
         raise GRPOTrainingError("GRPO checkpoint loading requires a completed run")
 
-    adapter_paths = {
-        name: checkpoint_dir / name for name in ("adapter_config.json", "adapter_model.safetensors")
-    }
+    adapter_paths = {name: checkpoint_dir / name for name in ("adapter_config.json", "adapter_model.safetensors")}
     if any(not path.is_file() or path.is_symlink() for path in adapter_paths.values()):
         raise GRPOTrainingError("completed GRPO run has an incomplete PEFT adapter artifact")
     try:

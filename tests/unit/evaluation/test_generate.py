@@ -152,7 +152,13 @@ class _FakeStackedPeftConfigLoader:
 
 
 class _FakeParentPolicy:
-    def __init__(self, merged_model: _FakeModel, calls: list[object], *, merge_available: bool = True) -> None:
+    def __init__(
+        self,
+        merged_model: _FakeModel,
+        calls: list[tuple[Any, ...]],
+        *,
+        merge_available: bool = True,
+    ) -> None:
         self.merged_model = merged_model
         self.calls = calls
         if not merge_available:
@@ -171,7 +177,7 @@ class _FakeStackedPeftModelLoader:
         grpo_dir: Path,
         merged_model: _FakeModel,
         final_model: _FakeModel,
-        calls: list[object],
+        calls: list[tuple[Any, ...]],
         merge_available: bool = True,
         grpo_failure: Exception | None = None,
     ) -> None:
@@ -241,7 +247,7 @@ def _stacked_peft_runtime(
     _FakeTransformers,
     _FakeStackedPeftConfigLoader,
     _FakeStackedPeftModelLoader,
-    list[object],
+    list[tuple[Any, ...]],
 ]:
     parent_dir = (tmp_path / "parent-b").resolve()
     grpo_dir = (tmp_path / "grpo-cd").resolve()
@@ -252,7 +258,7 @@ def _stacked_peft_runtime(
     merged_model = _FakeModel()
     final_model = _FakeModel()
     runtime = _FakeTransformers(tokenizer, base_model)
-    calls: list[object] = []
+    calls: list[tuple[Any, ...]] = []
     config_loader = _FakeStackedPeftConfigLoader(
         {
             parent_dir: SimpleNamespace(base_model_name_or_path=parent_model_id, revision=parent_revision),

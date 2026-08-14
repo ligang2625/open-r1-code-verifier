@@ -148,7 +148,7 @@ class _ParentPolicy:
 
 
 class _FakePeftModel:
-    calls: ClassVar[list[tuple[object, ...]]] = []
+    calls: ClassVar[list[tuple[Any, ...]]] = []
     parent_checkpoint: ClassVar[Path]
 
     @classmethod
