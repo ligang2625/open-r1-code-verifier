@@ -87,7 +87,7 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 - `evidence_class: engineering | real-training/numerical`
 - `development_terminal: true | false`
 
-每份 plan 还必须包含一个 **Execution preflight** 小节，列出在首次业务修改/commit 前即可完成的非破坏性环境检查及通过标准。至少覆盖本 stage 真正依赖的 Piston、必要 Python imports、模型缓存/CUDA（如适用）以及其它已知外部服务。preflight 失败时 executor 必须在 `HEAD == plan_commit` 的状态下停止，不得先提交部分实现；无法在实施前判定的逻辑/测试失败不强行塞入 preflight。
+每份 plan 还必须包含一个 **Execution preflight** 小节，列出在首次业务修改/commit 前即可完成的非破坏性环境检查及通过标准。至少覆盖本 stage 真正依赖的 Piston、必要 Python imports、模型缓存/CUDA（如适用）以及其它已知外部服务。对于 24GB validation 的普通 GPU 容器，Piston 可由独立 CPU 主机通过 SSH local forward 映射为 `127.0.0.1`；planner 只要求严格 loopback endpoint、exact runtime 与真实 Piston acceptance，不得把 GPU 节点本机 Docker/systemd/privileged capability 作为固定前提。preflight 失败时 executor 必须在 `HEAD == plan_commit` 的状态下停止，不得先提交部分实现；无法在实施前判定的逻辑/测试失败不强行塞入 preflight。
 
 `development_terminal: true` 的 plan 必须包含结构化 `Development Completion Inventory`，并额外把 development closeout 全局 gate 写入总体验收：`make lint`、`make test`、`make test-gpu`、`make test-piston`（项目配置的真实 loopback Piston，0 failed/0 skipped）以及生产关键路径无 stub/TODO/fake implementation 的检查。`DEV-CLOSEOUT` 仅运行这些收口检查并写 execution evidence，不新增功能；其 routing 固定为 SINGLE，且允许 zero-code E0。
 

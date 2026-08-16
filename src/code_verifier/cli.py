@@ -282,7 +282,7 @@ def _resolve_batch_options(
 
 
 def _execute_batch(args: argparse.Namespace) -> int:
-    """Run configured local Piston batch execution and emit non-sensitive artifacts."""
+    """Run configured loopback Piston batch execution and emit non-sensitive artifacts."""
     config = load_batch_execution_config(Path(str(args.config)))
     batch_config, workload_mode = _resolve_batch_options(args, config)
     requests = _load_batch_requests(Path(str(args.requests)))
@@ -414,7 +414,7 @@ def _evaluate(args: argparse.Namespace) -> int:
 
 
 def _train_sft(args: argparse.Namespace) -> int:
-    """Run one strict visible-only LoRA SFT workflow through local Piston validation."""
+    """Run one strict visible-only LoRA SFT workflow through loopback Piston validation."""
     config = load_sft_training_config(Path(str(args.config)))
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = config.seed if cli_seed is None else cli_seed
@@ -539,7 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     execute_parser = subparsers.add_parser(
         "execute-batch",
-        help="execute strict JSONL requests with bounded local Piston concurrency",
+        help="execute strict JSONL requests with bounded loopback Piston concurrency",
     )
     execute_parser.add_argument("--requests", type=Path, required=True, help="strict UTF-8 JSONL request path")
     execute_parser.add_argument(

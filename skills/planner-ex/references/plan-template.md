@@ -56,7 +56,7 @@
 - 通过标准：...
 - 失败处理：停止本次 execution，保持 `HEAD == plan_commit`，修复环境后可重新调用 execution-router；不得先提交部分实现。
 
-> 只放能够在实施前判断的非破坏性环境 prerequisites，例如 Piston 可达性、必要依赖 import、模型缓存/CUDA 可用性。validation 的 24GB GPU 与持久 artifact root 由 execution-router 另做统一 preflight。
+> 只放能够在实施前判断的非破坏性环境 prerequisites，例如 Piston 可达性、必要依赖 import、模型缓存/CUDA 可用性。validation 的 24GB GPU 与持久 artifact root 由 execution-router 另做统一 preflight。普通 GPU 容器允许通过 SSH local forward 使用独立 CPU Piston host；此时检查 loopback endpoint、exact runtime 与真实 Piston acceptance，不要求 GPU 节点本机 Docker/systemd/privileged capability。
 
 ### Development Completion Inventory（仅 `development_terminal=true`）
 

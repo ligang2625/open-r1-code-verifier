@@ -1,6 +1,13 @@
-# Local Piston deployment
+# Loopback Piston deployment
 
-Piston is an external local service. It is not a Git submodule or vendored dependency of this repository. The CodeVerifier process sends untrusted source text to Piston over a loopback-only HTTP boundary and must never execute model-generated code directly on the host.
+Piston is an external sandbox service. It is not a Git submodule or vendored dependency of this repository. The CodeVerifier process sends untrusted source text only to a loopback HTTP endpoint and must never execute model-generated code directly in the training/evaluation process.
+
+The loopback endpoint may be backed by either:
+
+1. a Piston service running on the same Linux host/VM; or
+2. the recommended cloud-GPU topology: a dedicated CPU Linux host/VM running Piston, reached from the GPU container through an SSH local forward.
+
+In both cases CodeVerifier still connects only to `http://127.0.0.1:2000`. Do not put a LAN/public Piston address in project configuration.
 
 ## Validated baseline
 
@@ -16,24 +23,50 @@ The WP3 single-request and batch acceptance suites were validated with the follo
 | Docker Compose | `5.3.1` |
 | Linux cgroup mode | cgroup v2 |
 
-The source reference and container digest are recorded independently because the published image does not contain Git metadata. Do not assume that a source checkout and a published image correspond unless the build provenance explicitly proves it. The execution artifact used for acceptance is the exact image digest above.
+The source reference and container digest are recorded independently because the published image does not contain Git metadata. Do not assume that a source checkout and a published image correspond unless build provenance explicitly proves it. The execution artifact used for acceptance is the exact image digest above.
+
+## Recommended RTX 4090 cloud topology
+
+Many GPU rental platforms expose Ubuntu as an ordinary non-privileged container. Such a GPU container may have no `systemd`, no Docker daemon/socket, and no capability to start a nested privileged container. That is a supported 4090 deployment for this project when Piston is separated from the GPU node.
+
+```text
+Dedicated CPU Linux host / VM
+  Docker + cgroup v2
+  pinned privileged Piston container
+  Piston API: 127.0.0.1:2000 only
+              |
+              | SSH local forward
+              v
+Ordinary RTX 4090 GPU container
+  127.0.0.1:2000  -> SSH tunnel
+  open-r1-code-verifier
+  PyTorch / CUDA / SFT / GRPO / evaluation
+  no Docker daemon required
+```
+
+Docker, `--privileged`, and Piston cgroup requirements belong to the dedicated Piston host in this topology. The 4090 container only needs the pinned training environment, GPU access, persistent storage, SSH client connectivity to the Piston host, and the loopback tunnel.
+
+Do not replace this topology with direct host execution of candidate code merely because the GPU container cannot run Docker.
 
 ## Security boundary
 
-The service must satisfy all of these requirements:
+The service and tunnel must satisfy all of these requirements:
 
-- publish port 2000 only on `127.0.0.1` or another loopback address;
-- never expose Piston to a LAN or the public internet;
-- use a dedicated development machine or VM because the Piston API container requires elevated privileges;
+- Piston publishes port 2000 only on `127.0.0.1` or another loopback address on the Piston host;
+- the GPU container reaches Piston only through an SSH local forward that itself binds `127.0.0.1` on the GPU side;
+- never expose Piston directly to a LAN or the public internet;
+- use a dedicated Piston Linux host/VM because the Piston API container requires elevated privileges;
 - do not mount the Docker socket, repository, home directory, credentials, or unrelated host paths into execution jobs;
 - keep networking disabled for sandbox jobs;
 - use an exact runtime version matching `configs/execution/piston-local.yaml`;
 - pin both the Piston source reference and the container image digest used for validation;
-- treat any failed safety probe as a release blocker.
+- treat any failed or skipped real safety probe as a release/validation blocker.
 
-The public Piston endpoint is not supported by this project. Do not add API tokens or remote endpoints to project configuration.
+The public Piston endpoint is not supported by this project. Do not add API tokens or remote endpoint addresses to project configuration.
 
-## Start a pinned loopback-only service
+## Piston host: start the pinned service
+
+Run these steps on the dedicated CPU Piston host (or on a same-host development VM when using the original local topology).
 
 Use a repository-external directory for an optional source checkout:
 
@@ -62,9 +95,9 @@ docker inspect --format '{{json .NetworkSettings.Ports}}' piston_wp3b
 
 The output for `2000/tcp` must show `HostIp` as `127.0.0.1`. Stop immediately if Docker publishes the port on `0.0.0.0`, `::`, a LAN address, or a public address.
 
-## Install the exact Python runtime
+## Piston host: install the exact Python runtime
 
-The service starts without language runtimes. Install Python `3.10.0` through the local package API:
+The service starts without language runtimes. Install Python `3.10.0` through the host-local package API:
 
 ```bash
 curl --fail --silent --show-error \
@@ -74,14 +107,53 @@ curl --fail --silent --show-error \
   http://127.0.0.1:2000/api/v2/packages
 ```
 
-Verify the installed runtime:
+Verify the installed runtime on the Piston host:
 
 ```bash
 curl --fail --silent --show-error \
   http://127.0.0.1:2000/api/v2/runtimes
 ```
 
-The response must contain exactly the configured Python version before running CodeVerifier acceptance tests.
+The response must contain exactly the configured Python version before the GPU node is allowed to use this service.
+
+## RTX 4090 container: establish the SSH loopback tunnel
+
+Run the tunnel from the 4090 GPU container. Replace `<PISTON_SSH_TARGET>` with the SSH target for the dedicated Piston host; add `-p <PORT>` when that host uses a non-default SSH port.
+
+```bash
+ssh -N -T \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:2000:127.0.0.1:2000 \
+  <PISTON_SSH_TARGET>
+```
+
+Keep this SSH session alive for the entire training/evaluation command that needs Piston. If the SSH process exits, CodeVerifier must fail closed on Piston transport errors rather than running candidate code locally.
+
+The project YAML remains unchanged:
+
+```yaml
+piston:
+  base_url: http://127.0.0.1:2000
+```
+
+Do not replace `base_url` with the Piston host's real IP/hostname.
+
+Before starting validation, check the tunneled endpoint from the 4090 container:
+
+```bash
+curl --fail --silent --show-error \
+  http://127.0.0.1:2000/api/v2/runtimes
+```
+
+Then validate it through the project API:
+
+```bash
+.venv/bin/python -c "from pathlib import Path; from code_verifier.execution import PistonExecutor, load_piston_executor_config; executor = PistonExecutor(load_piston_executor_config(Path('configs/execution/piston-local.yaml'))); print(executor.validate_runtime())"
+```
+
+The project API must report exactly `3.10.0`.
 
 ## Run health checks and acceptance tests
 
@@ -100,15 +172,35 @@ make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
 
 The real suite verifies correct, wrong-answer, syntax-error, runtime-error, timeout, memory-limit, and output-limit outcomes. It also probes disabled outbound networking, non-root execution, protected base filesystem writes, host-file invisibility, per-job temporary-state cleanup, PID containment, batch ordering, cache reuse, non-caching of sandbox failures, and service recovery after malicious workloads.
 
-A failed or skipped real test means WP3 is not accepted. Do not weaken assertions, switch to host execution, or bypass the sandbox/cache contracts until the behavior is understood and corrected.
+For the SSH-tunneled 4090 topology this exact suite must run from the 4090 container through the tunnel. A failed or skipped real test means the Piston boundary is not accepted. Do not weaken assertions, switch to direct GPU-container execution, or bypass the sandbox/cache contracts until the behavior is understood and corrected.
+
+## Validation provenance for a tunneled deployment
+
+The formal 4090 bootstrap/handoff artifacts must record that the loopback endpoint is backed by a remote Piston host. At minimum keep a `piston-runtime-identity.json` (outside the Git worktree, under the persistent machine/artifact records) with the following non-secret facts:
+
+```json
+{
+  "deployment_mode": "ssh_tunneled_remote",
+  "endpoint": "http://127.0.0.1:2000",
+  "piston_source_ref": "de2b365ac759670a3a0d13ea208a0869a92c7e64",
+  "piston_image_digest": "sha256:2f66b7456189c4d713aa986d98eccd0b6ee16d26c7ec5f21b30e942756fd127a",
+  "python_runtime": "3.10.0",
+  "piston_host_id": "<operator-defined-stable-non-secret-id>",
+  "real_piston_acceptance": "PASS"
+}
+```
+
+Do not store SSH private keys, passwords, tokens, or other credentials in this record. The formal migration bootstrap should write this record only after the exact runtime probe and full `make test-piston` acceptance pass.
+
+The existing experiment-level Piston config hash still represents the result-affecting executor configuration because CodeVerifier sees the same loopback endpoint and executor semantics. The separate machine record captures where that endpoint terminates operationally.
 
 ## Batch concurrency operations
 
-`max_concurrency` controls how many independent Piston executors can submit work at once. Each request can create multiple Piston jobs because every test remains isolated, so increasing the batch worker count increases pressure on Piston, Docker, cgroups, memory, file descriptors, and host scheduling.
+`max_concurrency` controls how many independent Piston executors can submit work at once. Each request can create multiple Piston jobs because every test remains isolated, so increasing the batch worker count increases pressure on Piston, Docker, cgroups, memory, file descriptors, host scheduling, and—when tunneled—SSH/network latency.
 
-Start with `max_concurrency: 1`, run the real acceptance suite and a representative workload, then increase gradually. After each change, check Piston logs, host resource pressure, timeout frequency, memory-limit behavior, and service recovery. Never remove the configured upper bound or share one `PistonExecutor`/transport instance across worker threads.
+Start with `max_concurrency: 1`, run the real acceptance suite and a representative workload, then increase gradually. After each change, check Piston logs, Piston-host resource pressure, tunnel stability, timeout frequency, memory-limit behavior, and service recovery. Never remove the configured upper bound or share one `PistonExecutor`/transport instance across worker threads.
 
-The local implementation is a bounded single-machine thread pool. It is not a distributed scheduler and does not imply linear speedup.
+The implementation remains a bounded single-machine thread pool on the CodeVerifier side. A remote Piston host does not turn it into a distributed scheduler and does not imply linear speedup. Prefer a Piston host with low network latency to the GPU rental region.
 
 ## Execution cache operations
 
@@ -127,7 +219,7 @@ Operational rules:
 
 ## Stop and remove the service
 
-Stop the API container without deleting installed runtimes:
+On the Piston host, stop the API container without deleting installed runtimes:
 
 ```bash
 docker stop piston_wp3b
@@ -145,6 +237,8 @@ Remove the container and its persisted runtime volume only when the environment 
 docker rm --force piston_wp3b
 docker volume rm piston_wp3b
 ```
+
+On the 4090 GPU container, stop the tunnel by terminating its foreground `ssh -N -T ...` process. Stopping the tunnel must not modify the Piston host or its volume.
 
 ## Known MVP limitation
 

@@ -638,6 +638,14 @@ test_no_problem_overlap_across_splits
 
 不建议把第三方付费沙箱作为唯一实现，以免复现依赖外部账户。
 
+对算力平台只提供普通非特权 GPU 容器的场景，`本地 Piston` 的安全边界按 CodeVerifier 进程可见的 loopback endpoint 定义，而不是要求 Piston 与 GPU 进程共享同一宿主机。允许把固定版本的 Piston 部署在独立 CPU Linux 主机/VM 上，并通过 SSH local forward 映射为 GPU 容器内的 `127.0.0.1` endpoint。此模式下：
+
+- GPU 容器不要求 Docker、`systemd`、`--privileged` 或 Docker socket；
+- Piston 主机仍必须满足既有 Docker/cgroup/特权容器安全验收，并保持 API 仅绑定其自身 loopback；
+- CodeVerifier 配置仍必须拒绝非 loopback URL，禁止直接配置公网/LAN Piston endpoint；
+- 正式 validation 前必须通过同一套 runtime pin、资源限制、网络/文件/PID/清理和 host-isolation 真实验收；
+- 不得因为 GPU 平台缺少 Docker 而回退到 GPU 容器内直接执行模型生成代码。
+
 ## 8.3 执行器接口
 
 ```python
@@ -2163,7 +2171,7 @@ python -m code_verifier.cli --help
 
 回退：
 
-- 优先复用 Open-R1 支持的 provider 或本地 Piston；
+- 优先复用 Open-R1 支持的 provider 或严格 loopback Piston；GPU 平台只提供普通容器时允许 SSH local forward 到独立 CPU Piston host；
 - 不自行实现完整沙箱内核；
 - 保留统一 Executor 接口，后续替换；
 - 不以直接宿主机执行作为正式训练方案。
@@ -2363,7 +2371,7 @@ Codex 遇到不影响研究问题的实现选择时，采用：
 | Max completion | 512 tokens |
 | 主指标 | Eval-Hidden Pass@1 |
 | 核心对照 | Public-RLVR vs Hidden-RLVR |
-| 沙箱 | Open-R1 provider / 本地 Piston / Docker |
+| 沙箱 | Open-R1 provider / strict loopback Piston（同机或 SSH-tunneled remote host）/ Docker |
 | 主评测 | Deterministic Pass@1 |
 | 统计 | Paired bootstrap 95% CI |
 | 实验追踪 | W&B 或等价本地 JSONL |

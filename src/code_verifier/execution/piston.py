@@ -1,4 +1,8 @@
-"""Loopback-only HTTP boundary for a self-hosted Piston executor."""
+"""Loopback-only HTTP boundary for a Piston executor.
+
+The backend may be local or reached through an SSH local forward. Project
+configuration intentionally accepts only loopback HTTP endpoints in either mode.
+"""
 
 from __future__ import annotations
 
@@ -44,7 +48,7 @@ PISTON_EXECUTOR_IMPLEMENTATION_VERSION = "piston-executor-v1"
 
 
 class PistonTransportError(RuntimeError):
-    """Raised when the local Piston HTTP boundary cannot return a valid bounded response."""
+    """Raised when the loopback Piston HTTP boundary cannot return a valid bounded response."""
 
 
 @dataclass(frozen=True)
@@ -93,7 +97,7 @@ class _RejectRedirects(HTTPRedirectHandler):
 
 
 class UrlLibPistonTransport:
-    """No-proxy, no-redirect urllib transport for one validated local endpoint."""
+    """No-proxy, no-redirect urllib transport for one validated loopback endpoint."""
 
     def __init__(self, base_url: str) -> None:
         """Create a no-proxy, no-redirect transport for one validated loopback Piston base URL."""
@@ -106,7 +110,7 @@ class UrlLibPistonTransport:
         timeout_seconds: float,
         max_response_bytes: int,
     ) -> object:
-        """GET the bounded local /api/v2/runtimes JSON value."""
+        """GET the bounded loopback /api/v2/runtimes JSON value."""
         request = Request(f"{self._base_url}/api/v2/runtimes", method="GET")
         return self._request_json(request, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
 
@@ -117,7 +121,7 @@ class UrlLibPistonTransport:
         timeout_seconds: float,
         max_response_bytes: int,
     ) -> object:
-        """POST one bounded local /api/v2/execute JSON request."""
+        """POST one bounded loopback /api/v2/execute JSON request."""
         try:
             body = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         except (TypeError, ValueError, RecursionError, UnicodeEncodeError):
@@ -203,7 +207,7 @@ def piston_executor_config_from_mapping(value: object) -> PistonExecutorConfig:
 
 
 def load_piston_executor_config(path: Path) -> PistonExecutorConfig:
-    """Load and strictly validate one local Piston YAML config."""
+    """Load and strictly validate one loopback Piston YAML config."""
     loaded = load_yaml_mapping(path)
     if set(loaded) != {"piston"}:
         raise ConfigError("Execution config must contain exactly the piston field")
@@ -384,7 +388,7 @@ class PistonExecutor:
         transport: PistonTransport | None = None,
         marker_factory: Callable[[], str] | None = None,
     ) -> None:
-        """Create a synchronous single-request executor backed by one local Piston service."""
+        """Create a synchronous single-request executor backed by one loopback Piston service."""
         self._config = config
         self._transport = transport if transport is not None else UrlLibPistonTransport(config.base_url)
         self._marker_factory = marker_factory if marker_factory is not None else lambda: secrets.token_hex(16)

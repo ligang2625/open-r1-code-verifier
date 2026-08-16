@@ -50,7 +50,7 @@ The project deliberately separates **engineering development** from **real train
 3. Do not run optimizer-based SFT/GRPO on the 1660 Ti. The pre-model-load 20 GiB guard is intentional: seeing it fail closed on the development machine verifies the hardware boundary rather than blocking development. Installing `make install-train` on the development machine is allowed because dependency availability and real training are separate concerns.
 4. A terminal development stage must carry a Development Completion Inventory that accounts for WP0–WP8; the absence of currently dependency-ready work is not enough. `DEV-CLOSEOUT` is valid only when all nine WP development deliverables are already finalized, and it is a SINGLE verification-only stage that may complete with `result_code_commit == plan_commit`. The terminal stage also must pass `make lint`, `make test`, `make test-gpu`, real `make test-piston` with no skips/failures, and the no-critical-stub/TODO/fake check.
 5. `stage-lifecycle finalize` is the only writer of the machine-readable completion block: an exact `## Development Complete Record` heading immediately followed by the required YAML record. After the finalization docs commit, lifecycle reports the exact `development_complete_commit` (`main HEAD`). Natural-language mentions of completion do not unlock validation.
-6. Perform one machine handoff: stop on the GTX 1660 Ti, sync that exact `main` commit to the RTX 4090, run `make install-train`, verify pinned PyTorch sees a >=22 GiB CUDA GPU, and restart with `planner-ex` on the 4090. Do not bootstrap a validation worktree on the 1660 Ti and copy it across machines.
+6. Perform one machine handoff: stop on the GTX 1660 Ti, sync that exact `main` commit to the RTX 4090, run `make install-train`, verify pinned PyTorch sees a >=22 GiB CUDA GPU, and restart with `planner-ex` on the 4090. The recommended cloud setup is an ordinary non-privileged 4090 container plus a separate CPU Piston host reached through an SSH local forward to `127.0.0.1:2000`; Docker is not required on the 4090 node in this topology. See [`docs/4090-remote-piston-handoff-amendment.md`](docs/4090-remote-piston-handoff-amendment.md) before regenerating the migration package. Do not bootstrap a validation worktree on the 1660 Ti and copy it across machines.
 7. Keep the entire validation track on the 4090: Base A, SFT B, Public/Hidden GRPO C/D, and final A–D aggregation/cost/error analysis. `execution-router` still verifies the 24GB-class GPU and a writable persistent artifact root before every validation execution. Real outputs default to the primary checkout's `outputs/` (outside `.worktrees/`) or to an absolute `CODE_VERIFIER_ARTIFACT_ROOT`; the only copy of a real checkpoint must never live inside a stage worktree.
 8. If a later blocker leaves commits but no completed E0/review, use `stage-lifecycle retire_incomplete` to archive the exact branch history and replan; do not manually delete the worktree/branch. If a real 4090 run exposes an implementation bug after E0/review, fix it through the normal validation review/repair loop and rerun the affected gate; do not redesign features or silently change experiment definitions on the training machine.
 
@@ -64,13 +64,13 @@ make test
 .venv/bin/python -m code_verifier.cli --help
 ```
 
-Default `make test` does not contact Piston. Run the real local-sandbox acceptance suite explicitly with:
+Default `make test` does not contact Piston. Run the real loopback-sandbox acceptance suite explicitly with:
 
 ```bash
 make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml
 ```
 
-The command requires a self-hosted Piston service bound only to loopback with the exact configured Python runtime. See [`docs/piston-local.md`](docs/piston-local.md).
+The command requires a pinned Piston service reachable only through the configured loopback endpoint with the exact Python runtime. The service may run locally or on a dedicated CPU host reached through an SSH local forward. See [`docs/piston-local.md`](docs/piston-local.md).
 
 GPU-required tests are detected automatically: on a machine with a CUDA-capable GPU and the full inference dependencies (`make install-gpu`), `make test` runs the complete suite including the CUDA generation smoke tests. On a machine without a GPU, those tests are skipped with an explicit message telling you they require a GPU, and only the CPU suite runs. To run just the GPU smoke subset:
 
@@ -220,9 +220,9 @@ result = executor.execute(
 
 Do not use `MockExecutor` as evidence that untrusted code can be run safely.
 
-## WP3-b local Piston executor
+## WP3-b loopback Piston executor
 
-WP3-b adds a synchronous `PistonExecutor` that accepts the same `CodeExecutor` request shape and sends each test to a separate job on a self-hosted loopback Piston service. The host process never imports, compiles, evaluates, or executes candidate code.
+WP3-b adds a synchronous `PistonExecutor` that accepts the same `CodeExecutor` request shape and sends each test to a separate job through a strict loopback-only HTTP endpoint. The Piston backend may be on the same host or on a dedicated CPU Linux host reached through an SSH local forward; the CodeVerifier process still sees only `127.0.0.1`. The host process never imports, compiles, evaluates, or executes candidate code.
 
 ```python
 import json
@@ -250,7 +250,7 @@ print(json.dumps(execution_result_to_mapping(result), allow_nan=False))
 
 Configuration rejects non-loopback URLs, redirects, proxies, runtime selectors, unknown fields, and unbounded responses. The real acceptance suite verifies result mapping, time, memory and output limits, disabled networking, non-root execution, filesystem isolation, host-file invisibility, per-job cleanup, PID containment, and service recovery.
 
-Do not configure a public Piston endpoint or place API credentials in project configuration. Deployment, runtime installation, fixed image metadata, health checks, and shutdown instructions are in [`docs/piston-local.md`](docs/piston-local.md).
+Do not configure a public/LAN Piston endpoint or place API credentials in project configuration. On ordinary cloud GPU containers, keep Docker on the separate Piston host and forward its loopback API over SSH instead of weakening the executor boundary. Deployment, runtime installation, tunnel setup, fixed image metadata, health checks, and shutdown instructions are in [`docs/piston-local.md`](docs/piston-local.md).
 
 ## WP3-c batch execution and cache
 
@@ -387,7 +387,7 @@ Component records contain only mode, reward components, sanitized verification s
 
 WP5-a evaluates a frozen model checkpoint one problem at a time using the fixed project prompt. The prompt contains only the problem statement, function signature, and visible examples. Generation is deterministic pass@1 (`do_sample: false`, `temperature: null`, `top_p: null`) and uses the tokenizer's configured chat template. Evaluation then sends the same parsed completion through the existing verifier three times, in visible → train-hidden → eval-hidden order. The top-level `execution_status` is always the eval-hidden status.
 
-Prepare a validated WP1 artifact first, start the loopback Piston service described in [`docs/piston-local.md`](docs/piston-local.md), and install the full inference dependencies before a real model run:
+Prepare a validated WP1 artifact first, make the pinned Piston service available at the loopback endpoint described in [`docs/piston-local.md`](docs/piston-local.md) (locally or through the recommended SSH tunnel), and install the full inference dependencies before a real model run:
 
 ```bash
 make install-gpu

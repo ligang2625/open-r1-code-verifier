@@ -595,3 +595,15 @@ development_complete_record:
   completion_inventory_verified: true
   development_complete: true
 ```
+
+## Post-development migration infrastructure amendment（2026-08-16）
+
+4090 算力平台实机确认其 Ubuntu 22.04 环境为普通非特权 Docker 容器：PID 1 为 `docker-init`，无宿主 Docker socket，且不能依赖 `systemd`/nested privileged Docker。为避免因为 GPU 平台拓扑重做 WP3–WP8，正式迁移基础设施调整为：
+
+- RTX 4090 节点允许使用普通非特权 GPU 容器；该节点不要求 Docker daemon、Docker socket、`systemd`、`--privileged` 或本地 Piston container；
+- 固定 Piston image/runtime 改在独立 CPU Linux 主机/VM 上运行，该主机继续承担 Docker/cgroup/特权容器安全边界；
+- Piston API 在 Piston 主机上仍仅绑定 `127.0.0.1:2000`，4090 容器通过 SSH local forward 将其映射为本机 `127.0.0.1:2000`；项目 YAML 与 `PistonExecutor` 的 strict loopback contract 不变；
+- 禁止把 Piston 公网/LAN 地址直接写入配置，也禁止因 4090 容器缺少 Docker 而回退到宿主 Python `exec`/`eval`/无约束 `subprocess`；
+- 4090 validation bootstrap 必须在 tunnel 建立后验证 exact Python `3.10.0`，并从 4090 容器通过 tunnel 完整运行真实 `make test-piston`，要求 0 failed / 0 skipped；
+- tunneled deployment 的机器级 provenance 需要在 persistent artifact root 记录 `piston-runtime-identity.json`，至少包含 deployment mode、loopback endpoint、固定 Piston source/image identity、Python runtime、非敏感 Piston host id 与 real-Piston acceptance 结果；
+- 该调整不改变 `CodeExecutor` 接口、Piston request/response 语义、executor version/hash、SFT/GRPO/evaluation 业务流程或 formal dataset/model identity，因此无需重做 WP3–WP8 development；但旧的 4090 migration manifest/bootstrap 若仍 pin 原 handoff commit 或假设 4090 本机 Docker，必须在正式传输前按本 amendment 重新生成/同步，不能直接作为新的 authoritative bootstrap 使用。
