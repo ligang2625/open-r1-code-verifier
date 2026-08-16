@@ -17,7 +17,7 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 必需输入
 
-共同：`stage_id`、绝对 worktree、plan path、`plan_commit`、stage branch、task_kind、`backend=local`、`source_mode=single`、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须有 router 解析出的绝对 `artifact_root`。
+共同：`stage_id`、绝对 worktree、plan path、`plan_commit`、stage branch、task_kind、`backend=local`、`source_mode=single`、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须有 router 解析出的绝对 `artifact_root`、`hf_home`、`formal_data_root`。
 
 - implementation：plan `execution_routing` 只作为已由 router 消费的上游决策；本 skill 按完整 plan 实施。
 - repair：额外必须有 review path、整数 `source_review_round`、`review_commit`、`repair_issue_ids`；只处理这些 issue IDs。plan 只提供规格、禁止范围与总体验收约束。
@@ -38,7 +38,7 @@ Artifact：
 4. repair：普通 execution 开始修改前 stage HEAD 必须等于 router 传入的 `review_commit`；resume 则必须 `HEAD == resume_checkpoint_commit`，且 checkpoint 精确绑定该 latest review/repair issues。若不一致停止。
 5. 解析 plan 的 `stage_profile / target_hardware / evidence_class / development_terminal` 并与 router 输入逐项一致；development 必须是 GTX 1660 Ti (6GB)+engineering，且不得为 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical+terminal=false，且不得用 fixture/mock/synthetic 替代真实 gate。profile 不一致直接停止并报告 plan contract error。
 6. 在任何新的业务文件修改或 commit **之前**，完整执行 plan 的 `Execution preflight`。普通 execution 若此时失败，implementation 保持 `HEAD == plan_commit`、repair 保持 `HEAD == review_commit`，不写 checkpoint/report；resume 若仍因环境失败则保持 `HEAD == resume_checkpoint_commit`，不追加重复 checkpoint。修好环境后可再次显式 resume。
-7. validation：确认 router `artifact_root` 为绝对路径且不位于 stage worktree 内；对所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`，不得显式把 `--output-dir` 指回 worktree。development 不要求 artifact_root。
+7. validation：确认 router `artifact_root / hf_home / formal_data_root` 均为绝对路径且不位于 stage worktree 内；对所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`、`HF_HOME=<hf_home>`、`CODE_VERIFIER_DATA_ROOT=<formal_data_root>`，不得显式把 `--output-dir` 指回 worktree，也不得用另一套模型 cache/data root。development 不要求这些 machine roots。
 8. 不修改 review、plan、proceedings、`third_party/open-r1/`。
 9. stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若本次 implementation/repair 修改 `pyproject.toml` 或 `uv.lock`，必须在继续任何依赖相关测试前运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；不能让 primary overlay 掩盖新增、删除或变更的依赖。
 

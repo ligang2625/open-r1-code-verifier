@@ -607,3 +607,14 @@ development_complete_record:
 - 4090 validation bootstrap 必须在 tunnel 建立后验证 exact Python `3.10.0`，并从 4090 容器通过 tunnel 完整运行真实 `make test-piston`，要求 0 failed / 0 skipped；
 - tunneled deployment 的机器级 provenance 需要在 persistent artifact root 记录 `piston-runtime-identity.json`，至少包含 deployment mode、loopback endpoint、固定 Piston source/image identity、Python runtime、非敏感 Piston host id 与 real-Piston acceptance 结果；
 - 该调整不改变 `CodeExecutor` 接口、Piston request/response 语义、executor version/hash、SFT/GRPO/evaluation 业务流程或 formal dataset/model identity，因此无需重做 WP3–WP8 development；但旧的 4090 migration manifest/bootstrap 若仍 pin 原 handoff commit 或假设 4090 本机 Docker，必须在正式传输前按本 amendment 重新生成/同步，不能直接作为新的 authoritative bootstrap 使用。
+
+## Validation machine-state hardening amendment（2026-08-16）
+
+第二轮迁移审查发现：仅在 `bootstrap-4090.sh` 子进程内 `export CODE_VERIFIER_ARTIFACT_ROOT/HF_HOME` 不能保证新 shell、Local Codex 或已运行的 Web/CodexPro connector 继续继承相同路径；若 router 退回 primary repo `outputs/`，会破坏 persistent validation artifact contract。为此进一步收紧为：
+
+- 成功的 4090 bootstrap 必须在 restored primary repo 写 gitignored `.ai-bridge/validation-machine.json`，记录 absolute `artifact_root`、`hf_home`、`formal_data_root`、READY/Piston identity record 路径以及 bootstrap commit/host identity；
+- `stage-lifecycle bootstrap_plan` 对 validation 在创建 branch/worktree 前必须验证该 machine record、persistent READY/Piston identity、bootstrap baseline 为当前 `main` 祖先以及 >=22528 MiB GPU；缺失或不一致 fail closed；
+- `execution-router` 每次 validation dispatch 重新读取同一 machine record，不再对 formal validation 静默回退 repo-local `outputs/`，并把 `artifact_root/hf_home/formal_data_root` 传给 executor；
+- validation executor 对真实命令显式设置 `CODE_VERIFIER_ARTIFACT_ROOT`、`HF_HOME`、`CODE_VERIFIER_DATA_ROOT`，因此 Web/Local workflow 不依赖调用进程是否继承用户 shell 的 export；
+- `.ai-bridge/validation-machine.json` 仍是 ignored machine-local runtime state，不是 stage provenance，不得 tracked/staged/commit；正式 stage provenance 仍只在 `ai-work/`；
+- 该 hardening 只修改迁移/workflow 控制面，不改变训练、评测、数据、模型、Piston executor/result semantics，因此同样无需重做 WP3–WP8。

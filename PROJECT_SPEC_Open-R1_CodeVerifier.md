@@ -1496,11 +1496,13 @@ outputs/{stage}/{run_id}/
 └── samples/
 ```
 
-真实 validation artifacts 的**物理根目录必须脱离 stage worktree 生命周期**。标准解析规则：
+真实 validation artifacts 的**物理根目录必须脱离 stage worktree 生命周期**。4090 正式 validation 的标准解析规则：
 
-- `execution-router` 在 validation dispatch 前解析绝对 `artifact_root`；若设置 `CODE_VERIFIER_ARTIFACT_ROOT` 则使用该目录，否则默认使用 primary checkout 的 `<repo>/outputs`；
-- `artifact_root` 必须位于 `.worktrees/<stage>/` 之外且可写；router 在 dispatch 前完成创建/临时写入探测；
-- validation executor 对真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`；`evaluate` / `train-sft` 的默认 `--output-dir` 会跟随该环境变量，后续 `train-grpo` 也必须复用同一规则；
+- migration bootstrap 在 primary checkout 的 gitignored `.ai-bridge/validation-machine.json` 写入绝对 `artifact_root`、`hf_home`、`formal_data_root`，以及 persistent `bootstrap-4090-readiness.json` / `piston-runtime-identity.json` 路径；该文件是本机 runtime pointer，不是 Git/stage provenance；
+- `stage-lifecycle bootstrap_plan` 在创建 validation branch/worktree 前必须验证 machine record、READY/Piston identity、bootstrap baseline 仍为当前 `main` 的祖先以及 >=22528 MiB GPU；缺失/不一致时 fail closed；
+- `execution-router` 在每次 validation dispatch 前重新读取 machine record；`artifact_root` 必须位于 `.worktrees/<stage>/` 之外且可写，`hf_home` / `formal_data_root` 必须是存在的绝对路径。若同名 shell 环境变量已设置，必须与 machine record 一致，不得覆盖成另一套目录；
+- validation executor 对真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`、`HF_HOME=<hf_home>`、`CODE_VERIFIER_DATA_ROOT=<formal_data_root>`；`evaluate` / `train-sft` / `train-grpo` 的输出继续遵循 `CODE_VERIFIER_ARTIFACT_ROOT`；
+- 正式 validation 不得在 machine record 缺失时回退到 primary checkout 的 `<repo>/outputs`。repository-local `outputs/` 仍可作为非正式 development/debug CLI 默认值，但不能替代 4090 persistent artifact root；
 - 不得把真实 B/C/D checkpoint 的唯一副本写在 stage worktree 下，因为 `stage-lifecycle finalize` 会删除该 worktree；
 - execution/review 必须记录并核验真实 artifact 的绝对路径与 checkpoint/result identity，使后续 B → C/D 能在 stage finalize 后继续消费。
 

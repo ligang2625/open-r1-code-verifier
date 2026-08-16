@@ -61,6 +61,7 @@ The GPU container owns:
 - exact project and Open-R1 commits;
 - formal data/model restore;
 - persistent `DATA_ROOT`, `CODE_VERIFIER_ARTIFACT_ROOT`, and `HF_HOME`;
+- a bootstrap-generated, gitignored primary-checkout machine pointer `.ai-bridge/validation-machine.json` so Web/Local workflow does not depend on shell exports surviving across sessions;
 - SSH client connectivity to the Piston host;
 - SSH local forward to `127.0.0.1:2000`;
 - project runtime probe against tunneled Piston;
@@ -118,7 +119,8 @@ Replace them with fail-closed gates:
 2. `http://127.0.0.1:2000` is reachable after the operator-established tunnel;
 3. project `PistonExecutor.validate_runtime()` returns exact Python `3.10.0`;
 4. full real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` runs from the 4090 container through the tunnel with 0 failed / 0 skipped;
-5. a machine-level Piston deployment identity record is written only after those gates pass.
+5. a machine-level Piston deployment identity record is written only after those gates pass;
+6. after all GPU/data/model/test gates pass, an ignored `<REPO_DIR>/.ai-bridge/validation-machine.json` is written atomically and points to the persistent machine records/roots used by lifecycle/router.
 
 The bootstrap must continue to perform the existing project/data/model/GPU/dependency/lint/test/test-gpu/check-data/readiness gates that are unrelated to local Docker.
 
@@ -147,6 +149,14 @@ Minimum non-secret content:
 Never record SSH private keys, passwords, tokens, or other credentials.
 
 `bootstrap-4090-readiness.json = READY_FOR_VALIDATION_PLANNER` is valid only if this Piston identity record exists and the tunneled real-Piston acceptance passed.
+
+The bootstrap must also write the following **ignored local machine pointer** under the restored primary repository:
+
+```text
+.ai-bridge/validation-machine.json
+```
+
+Minimum non-secret fields are `version: 1`, `machine_status: READY_FOR_VALIDATION_PLANNER`, `bootstrap_project_commit`, `open_r1_commit`, absolute `artifact_root`, `hf_home`, `formal_data_root`, `readiness_record`, `piston_identity_record`, `piston_endpoint`, and `piston_host_id`. The bootstrap must first confirm `.ai-bridge/validation-machine.json` is ignored/untracked. This file is deliberately not committed: it carries machine-local absolute paths so `stage-lifecycle`/`execution-router` can recover them even when a new shell or an already-running Web/CodexPro connector does not inherit operator `export` commands.
 
 ## 8. Required migration-package regeneration
 

@@ -104,7 +104,7 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 - 不确定外部 API/runtime 行为写入前置验证，不臆造；
 - 不修改 `third_party/open-r1/`；Open-R1 访问只经 adapter；
 - 实施步骤只依赖仓库文件、项目命令与执行 agent 自身文件/shell 能力，不依赖 MCP/其它 skill；
-- validation plan 的真实训练/评测命令不得硬编码 stage-worktree 内的 `outputs/...`；应省略 `--output-dir` 以使用 executor 注入的 `CODE_VERIFIER_ARTIFACT_ROOT` 默认值，或显式使用 `$CODE_VERIFIER_ARTIFACT_ROOT/...`。真实 checkpoint/result 的唯一副本不得位于 `.worktrees/...`。
+- validation plan 的真实训练/评测命令不得硬编码 stage-worktree 内的 `outputs/...` 或机器专属 `/data/...`；应使用 router/executor 从 `.ai-bridge/validation-machine.json` 注入的 `$CODE_VERIFIER_ARTIFACT_ROOT`、`$HF_HOME`、`$CODE_VERIFIER_DATA_ROOT`。数据命令使用 `$CODE_VERIFIER_DATA_ROOT/...`，输出省略 `--output-dir` 或显式使用 `$CODE_VERIFIER_ARTIFACT_ROOT/...`。真实 checkpoint/result 的唯一副本不得位于 `.worktrees/...`。
 
 ## Execution Routing Assessment
 

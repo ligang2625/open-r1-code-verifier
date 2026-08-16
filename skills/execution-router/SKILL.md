@@ -51,12 +51,12 @@ plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git
 
 只对 `stage_profile=validation` 执行，并且必须发生在 dispatch/executor 创建之前：
 
-1. 使用项目 `.venv` 的 pinned PyTorch runtime 检查 `torch.cuda.is_available()`，并通过 `torch.cuda.get_device_properties(0).total_memory` / `torch.cuda.get_device_name(0)` 读取目标 GPU。CUDA 不可用、torch/CUDA runtime 无法导入或总显存低于 `22528 MiB`（22 GiB）时返回 `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE`。这是用于识别 24GB-class training machine 的简单 common-case dispatch guard；训练入口原有 `>=20 GiB` fail-closed 继续作为第二层运行时保护，不做自动 GPU 调度。若 `nvidia-smi` 可用，可额外记录其 identity/VRAM 作为审计信息，但不得把它作为唯一硬件探测方式。
-2. 解析持久 artifact root：若环境变量 `CODE_VERIFIER_ARTIFACT_ROOT` 非空，使用其展开后的绝对路径；否则使用 `<primary_repo_root>/outputs`。最终路径必须是绝对路径，且不得位于目标 stage worktree 内。
-3. 创建 artifact root（若不存在）并做一次临时文件 create/delete writable probe；失败返回 `ROUTING_VALIDATION_ARTIFACT_ROOT_UNAVAILABLE`。该目录是 ignored/non-Git 的真实实验持久存储，不随 stage worktree finalize 删除。
-4. 将解析后的绝对 `artifact_root` 作为 dispatch 输入传给 executor；validation executor 必须对训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`，并拒绝把真实 checkpoint/metrics 写入 stage worktree。
+1. 读取 primary checkout 的 ignored `.ai-bridge/validation-machine.json`，并按 lifecycle 同一合同验证 `version: 1`、`machine_status: READY_FOR_VALIDATION_PLANNER`、bootstrap commit 为当前 `main` 祖先、persistent readiness/Piston identity 仍存在且一致；失败返回 `ROUTING_VALIDATION_MACHINE_NOT_READY`。从该 record 解析绝对 `artifact_root`、`hf_home`、`formal_data_root`。若调用环境已设置 `CODE_VERIFIER_ARTIFACT_ROOT` / `HF_HOME` / `CODE_VERIFIER_DATA_ROOT`，展开后必须与 record 对应路径完全一致，否则同样 fail closed；正式 validation 不再回退到 primary `<repo>/outputs`。
+2. 使用项目 `.venv` 的 pinned PyTorch runtime 检查 `torch.cuda.is_available()`，并通过 `torch.cuda.get_device_properties(0).total_memory` / `torch.cuda.get_device_name(0)` 读取目标 GPU。CUDA 不可用、torch/CUDA runtime 无法导入或总显存低于 `22528 MiB`（22 GiB）时返回 `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE`。这是用于识别 24GB-class training machine 的简单 common-case dispatch guard；训练入口原有 `>=20 GiB` fail-closed 继续作为第二层运行时保护，不做自动 GPU 调度。若 `nvidia-smi` 可用，可额外记录其 identity/VRAM 作为审计信息，但不得把它作为唯一硬件探测方式。
+3. `artifact_root` 不得位于目标 stage worktree 内；创建（若不存在）并做一次临时文件 create/delete writable probe。`hf_home` 与 `formal_data_root` 必须存在、可读，且三者均为 stage worktree 外的绝对路径；失败返回 `ROUTING_VALIDATION_STORAGE_UNAVAILABLE`。
+4. 将 `artifact_root`、`hf_home`、`formal_data_root` 作为 dispatch 输入传给 executor；validation executor 必须对所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`、`HF_HOME=<hf_home>`、`CODE_VERIFIER_DATA_ROOT=<formal_data_root>`，并拒绝把真实 checkpoint/metrics 写入 stage worktree。
 
-Development stage 不运行上述 24GB preflight；其 plan-specific Piston/import/model-cache/CUDA prerequisites 由 plan 的 Execution preflight 在首次业务修改/commit 前执行。
+Development stage 不运行上述 4090 machine/24GB preflight；其 plan-specific Piston/import/model-cache/CUDA prerequisites 由 plan 的 Execution preflight 在首次业务修改/commit 前执行。Validation 中某个 stage 若实际需要候选代码执行，plan 的 Execution preflight 仍必须验证当前 SSH-tunneled loopback Piston 可达/exact runtime；READY record 不是“隧道永远在线”的替代品。
 
 ## Transport preflight
 
@@ -156,7 +156,7 @@ Router 永不消费未 checkpoint review。
 
 1. 目标 worktree `skills/executor-ex/SKILL.md` 必须含 `execution-routing-v2`，否则 `ROUTING_SKILL_VERSION_MISMATCH`。
 2. 创建恰好 1 个 execution agent。
-3. 传：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=local`、`source_mode=single`、single_class，以及 `stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`。
+3. 传：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=local`、`source_mode=single`、single_class，以及 `stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`、`hf_home`、`formal_data_root`。
 4. repair 再传 review path、source_review_round、review_commit、repair_issue_ids；resume 再传 `resume=true`、resume_checkpoint_id/commit、resume_from_code_commit、completed_scope、remaining_scope。
 5. agent 必须先进入 stage worktree；不得 subagent。
 6. single 实际无法可靠完成时返回证据；router 不自动改 MULTI。
@@ -164,7 +164,7 @@ Router 永不消费未 checkpoint review。
 ### MULTI
 
 1. 目标 worktree `skills/executor/SKILL.md` 必须含 v2 marker。
-2. 调用 `$executor`，传 stage/provenance、`backend=local`、`source_mode=multi`、`stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`；repair 同样传 review provenance/issues；resume 同样传 resume checkpoint context。
+2. 调用 `$executor`，传 stage/provenance、`backend=local`、`source_mode=multi`、`stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`、`hf_home`、`formal_data_root`；repair 同样传 review provenance/issues；resume 同样传 resume checkpoint context。
 3. coordinator 必须基于真实代码复核 ≥2 个独立 subplans；不足 → `ROUTING_MISMATCH`，不得假并行或退化单 worker。
 4. multi 模型/effort 继续由 executor 管理。
 
@@ -183,7 +183,7 @@ router **不 spawn execution agent**。它把 stage/provenance 和完整 source 
 
 - stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind
 - `backend=web`
-- `stage_profile/target_hardware/evidence_class/development_terminal`；validation 另带绝对 `artifact_root`
+- `stage_profile/target_hardware/evidence_class/development_terminal`；validation 另带绝对 `artifact_root`、`hf_home`、`formal_data_root`
 - source routing 的完整结构和 `source_mode`
 - repair 时：review path、source_review_round、review_commit、repair_issue_ids
 - resume 时：`resume=true`、resume_checkpoint_id、resume_checkpoint_commit、resume_from_code_commit、completed_scope、remaining_scope
@@ -210,12 +210,12 @@ effective_execution_mode: single    # single | multi | serialized_multi
 
 ## 输出
 
-报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、stage profile；validation 额外报告实际 GPU identity/total VRAM 与绝对 persistent `artifact_root`；repair 再报告 review_round/review_commit/repair_issue_ids；resume 再报告 resume_checkpoint_id/commit、resume_from_code_commit 与 remaining_scope；local SINGLE 报实际 model/effort。
+报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、stage profile；validation 额外报告实际 GPU identity/total VRAM 与 machine-record `artifact_root`、`hf_home`、`formal_data_root`；repair 再报告 review_round/review_commit/repair_issue_ids；resume 再报告 resume_checkpoint_id/commit、resume_from_code_commit 与 remaining_scope；local SINGLE 报实际 model/effort。
 
 ## 关键错误
 
 - `ROUTING_PLAN_MISSING` / `ROUTING_PLAN_AMBIGUOUS` / `ROUTING_PLAN_NOT_SEALED` / `ROUTING_PLAN_PROFILE_INVALID`
-- `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE` / `ROUTING_VALIDATION_ARTIFACT_ROOT_UNAVAILABLE`
+- `ROUTING_VALIDATION_MACHINE_NOT_READY` / `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE` / `ROUTING_VALIDATION_STORAGE_UNAVAILABLE`
 - `ROUTING_STAGE_ENV_UNAVAILABLE`
 - `ROUTING_RESUME_AVAILABLE` / `ROUTING_RESUME_INVALID`
 - `ROUTING_STAGE_DIRTY`
