@@ -342,6 +342,10 @@ def _nonempty_model_id(value: str) -> str:
 def _evaluate(args: argparse.Namespace) -> int:
     """Run one deterministic, resumable pass@1 evaluation."""
     config = load_evaluation_config(Path(str(args.config)))
+    if args.dataset_dir is not None:
+        dataset_dir = Path(str(args.dataset_dir))
+        print(f"override: dataset_dir: {config.dataset_dir} -> {dataset_dir}", file=sys.stderr)
+        config = replace(config, dataset_dir=dataset_dir)
     sft_checkpoint = None
     grpo_checkpoint = None
     if args.model_id is not None:
@@ -579,6 +583,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--grpo-run-dir",
         type=Path,
         help="completed GRPO run containing the C/D PEFT checkpoint to evaluate",
+    )
+    evaluate_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override for this evaluation run",
     )
     evaluate_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="safe evaluation run id")
     _add_common_arguments(

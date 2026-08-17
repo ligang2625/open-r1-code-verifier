@@ -402,16 +402,20 @@ make install-gpu
 
 `configs/eval/pass1.yaml` sets `device: auto` and `generation.dtype: float16`; on the 1660 Ti development machine the frozen generator runs on CUDA when torch reports it available, loads the 0.5B debug model in FP16, and the run's `environment.json` records the CUDA/GPU identity so resume fails closed on hardware drift.
 
-`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal Base evaluation uses the immutable 1.5B revision, CUDA, FP16, and real Piston configuration:
+`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal Base evaluation uses the immutable 1.5B revision, CUDA, FP16, real Piston configuration, and an explicit prepared-dataset override so A/B/C/D share the same formal problem set. On the 4090 validation track the routed executor places this command in the SHA-bound operator-terminal `run.sh`; run that exact generated script rather than starting the long formal evaluation from the agent session:
 
 ```bash
+export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/open-r1-code-verifier-outputs
+export CODE_VERIFIER_DATA_ROOT=/absolute/persistent/open-r1-code-verifier-data-4090
 .venv/bin/code-verifier evaluate \
   --config configs/eval/base.yaml \
+  --dataset-dir "$CODE_VERIFIER_DATA_ROOT/prepared" \
   --model-id Qwen/Qwen2.5-Coder-1.5B-Instruct \
-  --run-name base-main-r1 \
-  --seed 42 \
-  --output-dir outputs
+  --run-name A-base-formal-seed42 \
+  --seed 42
 ```
+
+When `--dataset-dir` is supplied, the CLI prints the previous and effective dataset paths on stderr before model/Piston/evaluation setup. The resolved config, dataset hash, run identity, and exact-prefix resume checks then use that effective path normally; omitting the option preserves the YAML value. The operator script additionally fixes the machine roots, validates GPU/Piston/model/data/storage/Git identity, takes an exclusive lock, and atomically records terminal status before `execution-router resume` accepts the persistent artifacts.
 
 Each run is stored under `outputs/evaluation/<run-name>/`:
 

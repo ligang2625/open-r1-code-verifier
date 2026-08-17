@@ -447,6 +447,29 @@ def test_evaluate_parser_requires_exactly_one_of_base_sft_or_grpo_source(
     assert missing_run.value.code == 2
 
 
+def test_evaluate_parser_accepts_optional_dataset_dir_override() -> None:
+    parser = build_parser()
+    default_args = parser.parse_args(
+        ["evaluate", "--config", "eval.yaml", "--model-id", "example/model", "--run-name", "base-debug"]
+    )
+    override_args = parser.parse_args(
+        [
+            "evaluate",
+            "--config",
+            "eval.yaml",
+            "--model-id",
+            "example/model",
+            "--dataset-dir",
+            "/formal/prepared",
+            "--run-name",
+            "base-formal",
+        ]
+    )
+
+    assert default_args.dataset_dir is None
+    assert override_args.dataset_dir == Path("/formal/prepared")
+
+
 def test_persistent_artifact_root_changes_model_output_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -488,12 +511,13 @@ def test_evaluate_parser_rejects_unsafe_run_names(run_name: str) -> None:
     assert error.value.code == 2
 
 
-def test_evaluate_handler_wires_runtime_generator_and_runner(
+def test_evaluate_handler_applies_dataset_dir_override_before_runner_and_prints_it(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: Any,
 ) -> None:
     config = _evaluation_config(tmp_path)
+    formal_dataset = tmp_path / "formal" / "prepared"
     seen: dict[str, object] = {}
     fake_piston_config = object()
     fake_generator = object()
@@ -557,6 +581,8 @@ def test_evaluate_handler_wires_runtime_generator_and_runner(
                 str(tmp_path / "eval.yaml"),
                 "--model-id",
                 "example/model",
+                "--dataset-dir",
+                str(formal_dataset),
                 "--run-name",
                 "base-debug",
                 "--output-dir",
@@ -571,17 +597,18 @@ def test_evaluate_handler_wires_runtime_generator_and_runner(
     assert seen["runtime_validated"] is True
     assert seen["generator_args"] == ("example/model", "revision-1", "cpu", config.generation)
     runner_kwargs = cast(dict[str, object], seen["runner_kwargs"])
-    assert runner_kwargs["config"] == config
+    assert runner_kwargs["config"] == replace(config, dataset_dir=formal_dataset)
     assert runner_kwargs["model_id"] == "example/model"
     assert runner_kwargs["generator"] is fake_generator
     assert runner_kwargs["run_id"] == "base-debug"
     assert runner_kwargs["output_root"] == output_root
     assert runner_kwargs["seed"] == 17
     assert seen["aggregate_args"] == (results_path.parent.parent, 17)
-    output = capsys.readouterr().out
-    assert "evaluated 4 problems (resumed=1, generated=3)" in output
-    assert f"summary={results_path.parent.parent / 'summary.json'}" in output
-    assert f"main_results={results_path.parent.parent / 'main_results.csv'}" in output
+    output = capsys.readouterr()
+    assert output.err == f"override: dataset_dir: {config.dataset_dir} -> {formal_dataset}\n"
+    assert "evaluated 4 problems (resumed=1, generated=3)" in output.out
+    assert f"summary={results_path.parent.parent / 'summary.json'}" in output.out
+    assert f"main_results={results_path.parent.parent / 'main_results.csv'}" in output.out
 
 
 def test_evaluate_sft_run_binds_completed_checkpoint_and_reuses_evaluation_pipeline(
