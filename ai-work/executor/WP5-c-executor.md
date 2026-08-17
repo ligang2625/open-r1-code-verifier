@@ -113,3 +113,57 @@ execution_record:
 - `make test-piston` against the tunneled loopback service: PASS — 9 selected passed, 0 failed/skipped (`2 deselected`).
 - Formal artifact and summary/CSV strict readback: PASS.
 - No tracked plan/review/proceedings/third-party files were changed during resume; no formal result/checkpoint was copied into the stage worktree.
+
+## C1 — R1-M1 evaluation timing/cost provenance repair operator handoff
+
+Reviewer round R1 identified one blocking provenance defect: the formal evaluation contract did not persist the specification-required `start_time`, `end_time`, and `gpu_hours`. The repair implements an auditable exact-prefix-safe timing/cost contract, preserves the previous Base A run unchanged because its exact missing timing provenance cannot be reconstructed without fabrication, and prepares a fresh canonical Base A operator run under the repaired code.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C1
+  stage_id: WP5-c
+  task_kind: repair
+  source_plan_commit: 34c37aa0a8d8b432cc920aa9e130e986c7e0e27f
+  source_review_round: 1
+  source_review_commit: 0355f95085870179e9980fd1be1c303a3c5fa136
+  repair_issue_ids:
+    - R1-M1
+  result_code_commit: 717de9c550f759c3c36e68bbcbf7edefc8bbfbae
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: base-a-formal
+  operator_restart_policy: exact_rerun
+  operator_script: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP5-c/34c37aa0a8d8b432cc920aa9e130e986c7e0e27f/base-a-formal/C1/run.sh
+  operator_script_sha256: a24e029d39bcdf5a1d7de5a9595c06be316083a480a0af1d59717366e0b6ee81
+  operator_status_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP5-c/34c37aa0a8d8b432cc920aa9e130e986c7e0e27f/base-a-formal/C1/status
+  operator_log_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP5-c/34c37aa0a8d8b432cc920aa9e130e986c7e0e27f/base-a-formal/C1/terminal.log
+  expected_artifacts:
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42/run.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42/resolved_config.yaml
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42/environment.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42/samples/results.jsonl
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42/summary.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42/main_results.csv
+  completed_scope:
+    - "R1-M1 repair committed in 717de9c550f759c3c36e68bbcbf7edefc8bbfbae: evaluation run.json now records immutable start_time, completion-only end_time, finite non-negative gpu_hours, gpu_count_used, and fixed gpu_hours_semantics derived from persisted generation latency"
+    - focused fresh/interrupted/resumed timing tests passed; affected unit set 97 passed; make lint passed; full make test 884 passed with 3 expected Piston-opt-in skips; exact-revision GPU smoke 3/3 passed
+    - validation preflight passed on RTX 4090 with formal 3200/2500/300/400 data, exact offline model revision, and real tunneled Piston 9/9; the tunnel was slow but the final full suite completed with no failures/skips
+    - pre-repair Base A preserved unchanged at /root/sj-tmp/open-r1-code-verifier-outputs/quarantine/WP5-c/R1-M1/A-base-formal-seed42-pre-timing-provenance-cca9945d with results SHA256 cca9945d28962bcee241cfc69b38ec0c326862e15d9e74f2b5b0354cb01e277e; canonical run path is clear for the repaired fresh run
+    - base-a-formal C1 immutable operator script generated under persistent artifact_root, chmod 0555, bash syntax checked, and SHA256 bound
+  remaining_scope:
+    - operator runs the exact C1 run.sh in a normal terminal or tmux; executor must not run the 400-problem command
+    - explicit execution-router resume backend=web validates status/log and repaired Base A artifacts, including start_time/end_time/gpu_hours/gpu_count_used/gpu_hours_semantics against all persisted generation latencies
+    - completed-run exact-prefix quick resume must report resumed=400 generated=0 with unchanged results hash and unchanged run.json timing/cost metadata
+    - final executor-owned make lint, make test, make test-gpu, make test-piston and strict artifact/payload readback
+    - append completed repair E1 only after every R1-M1 and formal acceptance gate passes
+  status: awaiting_operator
+```
+
+### Repair evidence before C1 handoff
+
+- Routing source: committed R1 `repair_routing`, `mode=single`, `complexity=normal`, issue `R1-M1`; backend `web_codexpro`, effective mode `single`.
+- `gpu_hours` semantics are deliberately limited to auditable model-generation device time: sum of persisted per-problem `generation_latency_ms` multiplied by the evaluation GPU count used, divided by 3,600,000. Piston/CPU work, model loading, and interrupted generations that never yielded a durable result row are not guessed into this value.
+- Interrupted/resumed runs retain the original `start_time`, use `end_time: null` until full completion, and recompute derived GPU-hours from the durable prefix. A fully completed zero-generation exact-prefix resume returns without rewriting the timing/cost metadata.
+- The previous Base A results were not edited or backfilled. Because its first manual attempt was interrupted without a reliable terminal end marker, exact missing timing provenance could not be established without fabrication; the entire prior run was moved intact to the recorded quarantine path before creating C1.
+- The formal 400-problem evaluation has **not** been executed by Web GPT/CodexPro for C1.
