@@ -441,6 +441,8 @@ The committed 20-problem smoke fixture currently has four test-split problems. I
 
 Reusing the same run name performs strict prefix resume rather than overwrite or best-effort matching. Resume succeeds only when the resolved config, model/checkpoint identity, seed, dataset hash, prompt hashes/order, repository/submodule identity, dependency identity, and CUDA/GPU identity match the existing run. Already completed rows are not generated again. Corrupt, reordered, duplicated, non-finite, or identity-drifted rows cause a hard error.
 
+`run.json` also records the immutable `start_time`, completion-only `end_time`, finite non-negative `gpu_hours`, `gpu_count_used`, and a fixed `gpu_hours_semantics`. Evaluation GPU-hours are defined as the sum of `generation_latency_ms` for **persisted** result rows multiplied by the number of evaluation GPUs used, divided by 3,600,000. This measures auditable model-generation device time: Piston/CPU work, model loading, and an interrupted generation that never produced a durable result row are not guessed into the cost. On exact-prefix resume, previously persisted rows therefore contribute exactly once; a completed zero-generation resume leaves the timing/cost metadata unchanged. Interrupted runs retain the original `start_time`, keep `end_time: null`, and recompute the derived GPU-hours from the durable prefix before continuing.
+
 The evaluation path is read-only with respect to training: it does not modify the frozen checkpoint, invoke Public/Hidden training rewards, write eval-hidden tests into training artifacts, or add SFT/GRPO behavior. Those boundaries must remain intact during WP6+ work.
 
 ## WP6-a LoRA SFT control plane
