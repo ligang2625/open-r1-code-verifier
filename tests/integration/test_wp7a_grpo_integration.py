@@ -471,6 +471,12 @@ def test_wp7a_hardware_guard_fails_before_model_loading_on_1660(
         return path
 
     monkeypatch.setattr(grpo_module, "load_completed_sft_checkpoint", load_parent)
+    fake_cuda = SimpleNamespace(
+        is_available=lambda: True,
+        get_device_properties=lambda index: SimpleNamespace(total_memory=6 * 1024**3),
+        is_bf16_supported=lambda *, including_emulation: False,
+    )
+    monkeypatch.setattr(grpo_module, "_load_torch_runtime", lambda: SimpleNamespace(cuda=fake_cuda))
     with pytest.raises(GRPOTrainingError, match="at least 20"):
         run_grpo_training(
             config,
