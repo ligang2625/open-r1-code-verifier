@@ -44,17 +44,28 @@ Routing compatibility marker: `execution-routing-v2`。
 
 若某个 execution 实际修改 `pyproject.toml` 或 `uv.lock`，从该修改开始不得继续依赖 primary overlay；executor 必须在 stage 中运行同一 helper 的 `--mode full`，建立完整独立 pinned environment 后再继续测试。普通不改依赖的 stage 不重复下载/安装整套 CUDA/PyTorch 环境。
 
-### Environment-interrupted execution contract
+### Resumable execution checkpoint contract
+
+`execution_checkpoint` 支持两类明确、可恢复的暂停：**environment interruption** 与 **operator terminal handoff**。二者都要求 stage 对所有非 ignored repository artifact 已 clean，checkpoint 只追加到 execution report 并单独 docs commit；未知 HEAD 前进仍是 `INCOMPLETE_UNKNOWN`。
+
+#### Environment interruption
 
 环境/基础设施故障不再自动等价于“必须退役 stage”。如果 execution 已经产生了有效的部分 code/test/config commits，随后因为**无需修改 tracked 仓库内容即可修复**的外部环境问题停止，executor 可以把当前进度封存为 committed `execution_checkpoint`；用户修好环境后，再显式要求 `$execution-router resume` 从该 checkpoint 继续。
 
-可判定为 `interruption_class=environment` 的常见情况包括：stage `.venv`/tool 安装缺失或损坏、外部 Piston/service 暂时不可达、CUDA/runtime/device 临时不可用、模型 cache/network/credential/artifact-root permission 等运行环境问题。以下情况**不是**环境中断：ruff/mypy/pytest 已正常运行后发现的源码 lint/type/test failure、tracked config 错误、当前实现引入的 dependency contract 错误、模型/指标结果不满足 acceptance。只要修复需要修改 tracked source/config/test/lockfile，就继续按正常 execution 修代码，不能伪装成 resumable environment checkpoint。
+可判定为 `interruption_class=environment` 的常见情况包括：stage `.venv`/tool 安装缺失或损坏、外部 Piston/service 暂时不可达、CUDA/runtime/device 临时不可用、模型 cache/network/credential/artifact-root permission 等运行环境问题。以下情况**不是**环境中断：ruff/mypy/pytest 已正常运行后发现的源码 lint/type/test failure、tracked config 错误、当前实现引入的 dependency contract 错误、模型/指标结果不满足 acceptance。只要修复需要修改 tracked source/config/test/lockfile，就继续按正常 execution 修代码，不能伪装成 environment checkpoint。
 
-`execution_checkpoint` 只允许在 stage tracked/untracked 状态已经 clean、所有准备保留的部分实现都已正常 commit 后写入 execution report，并单独 docs commit。它至少记录 `version/stage_id/checkpoint_id/task_kind/source_plan_commit/source_review_round/source_review_commit/repair_issue_ids/result_code_commit/interruption_class/resume_allowed/failed_command/blocker/completed_scope/remaining_scope/status`；其中 `interruption_class=environment`、`resume_allowed=true`、`status=interrupted`。checkpoint commit 本身由 Git 历史推导，不在 record 内自引用。
+Environment checkpoint 至少记录 `version/stage_id/checkpoint_id/task_kind/source_plan_commit/source_review_round/source_review_commit/repair_issue_ids/result_code_commit/interruption_class/resume_allowed/failed_command/blocker/completed_scope/remaining_scope/status`；其中 `interruption_class=environment`、`resume_allowed=true`、`status=interrupted`，且 `failed_command/blocker/remaining_scope` 非空。它只允许在已经存在本次 task 的有效部分 code/test/config commit 后创建；若环境问题发生在任何业务 commit **之前**，HEAD 保持 plan/review baseline，不写 checkpoint，修好环境后普通重新调用 router 即可。
 
-- 若环境问题发生在任何业务 commit **之前**，保持原行为：HEAD 仍等于 plan/review baseline，不写 checkpoint；修好环境后普通重新调用 router 即可。
-- 若已有部分 commits，只有存在上述合法 committed checkpoint 时才进入 `INTERRUPTED_ENV`；未知 `HEAD` 前进仍是 `INCOMPLETE_UNKNOWN`。
-- `INTERRUPTED_ENV` 可以由用户显式 `execution-router resume` 恢复，也可以由用户明确放弃后 `retire_incomplete`；retire 是可选的 abandon path，不再是环境故障的强制恢复方式。
+#### Operator terminal handoff
+
+当 sealed **validation** plan 的 `operator_terminal_execution` 标明正式 Base/B/C/D 全量评测、SFT/GRPO optimizer run 或其它长任务由用户终端执行时，executor 在完成 gate 前所有 tracked code/config/test、Execution preflight 与短测试后必须主动暂停，不得自己启动该长任务。每个 gate 必须有 `restart_policy=exact_rerun|trainer_checkpoint`；SFT/GRPO 必须是 `trainer_checkpoint`。executor 在 persistent `artifact_root` 下按 stage/plan/gate/checkpoint 唯一 identity 生成 immutable、无密钥 `run.sh` 及状态/log 文件，记录 SHA256 和 expected artifacts，并 append 一个 operator checkpoint。
+
+Operator checkpoint 至少记录公共 provenance 字段以及 `interruption_class=operator`、`resume_allowed=true`、唯一 `operator_gate_id`、绝对 `operator_script`、64-hex `operator_script_sha256`、绝对 `operator_status_file`、绝对 `operator_log_file`、非空 `expected_artifacts`、`completed_scope`、非空 `remaining_scope`、`status=awaiting_operator`。script/status/log/expected artifacts 必须位于 router 注入的 persistent `artifact_root` 下且位于 stage worktree 外；script 不得含 secret/credential。script 的运行时 guard 必须验证 stage clean/branch、当前 HEAD 为该 checkpoint docs commit 且 parent 等于 record 的 `result_code_commit`、primary `main HEAD == planning_base_commit`、persistent roots 可用，并通过排他锁阻止同一 checkpoint 并发双跑；status 每次 attempt 前清空并在结束时原子写 exit code，terminal log append-only。若 gate 前没有任何 tracked 业务修改，`result_code_commit` **允许等于 plan_commit**（repair 时允许等于 review_commit），不得为了制造 code commit 修改仓库。
+
+用户运行 exact script 后显式 resume；Web GPT + CodexPro 使用 `$execution-router resume backend=web`，Local Codex 使用 `$execution-router resume`/`backend=local`。resume 必须核验 checkpoint/script SHA、状态/log 与真实 persistent artifacts；用户口头结果或 script exit code 单独不能完成 E0。`exact_rerun` 的环境故障可在不改变 stage HEAD 的前提下复用同一 script。`trainer_checkpoint` 的同一 script 必须在 rerun 时自动选择 latest valid same-run `checkpoint-*` 并显式传给训练 CLI；不得为了补一个 resume 参数先生成新的 docs checkpoint，否则 training `project_commit` 会漂移。若无合法 checkpoint、或 tracked 代码/config 修复导致旧 run identity 失效，旧 incomplete run 必须先移动到 persistent quarantine 并在 execution report 记录路径/原因，再生成新的 operator checkpoint/script fresh restart；禁止删除/覆盖旧正式 evidence。
+
+- `INTERRUPTED_ENV` 与 `AWAITING_OPERATOR` 都可以显式 `execution-router resume` 恢复，也可以由用户明确放弃后 `retire_incomplete`；retire 是可选 abandon path，不是合法 checkpoint 的默认恢复方式。
+- checkpoint commit 本身由 Git 历史推导，不在 record 内自引用；它的 parent 必须等于 `result_code_commit`，且 docs commit 只允许修改 execution report。
 
 ## 通用 stage identity
 
@@ -88,7 +99,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 步骤分为只读 preflight 和 Git mutation；**preflight 全部通过前不得创建 branch/worktree**：
 
-1. 完整校验 plan payload：`stage_id/planning_base_commit/branch/worktree/plan path` 必须互相一致；`stage_profile/target_hardware/evidence_class/development_terminal` 必须存在并满足 development→GTX 1660 Ti (6GB)+engineering+boolean terminal、validation→24GB GPU+real-training/numerical+terminal=false；`DEV-CLOSEOUT` 只允许 `chore/dev-closeout` / `.worktrees/dev-closeout` / terminal=true，且 `execution_routing.mode` 必须为 `single`；`execution_routing.version: 1` 的其它字段必须满足 execution-router 基础 schema。terminal=true 时 plan 必须包含 `development_completion_inventory.version: 1`，WP0–WP8 恰好各一项、状态仅 `finalized|covered_by_this_stage` 且 evidence 非空；`DEV-CLOSEOUT` 的九项必须全部为 `finalized`。同时总体验收必须显式包含 `make lint`、`make test`、`make test-gpu`、`make test-piston` 及无 production-critical stub/TODO/fake implementation 检查。非法返回 `STAGE_HANDOFF_INVALID`，不得先创建 stage。
+1. 完整校验 plan payload：`stage_id/planning_base_commit/branch/worktree/plan path` 必须互相一致；`stage_profile/target_hardware/evidence_class/development_terminal` 必须存在并满足 development→GTX 1660 Ti (6GB)+engineering+boolean terminal、validation→24GB GPU+real-training/numerical+terminal=false；`DEV-CLOSEOUT` 只允许 `chore/dev-closeout` / `.worktrees/dev-closeout` / terminal=true，且 `execution_routing.mode` 必须为 `single`；`execution_routing.version: 1` 的其它字段必须满足 execution-router 基础 schema。terminal=true 时 plan 必须包含 `development_completion_inventory.version: 1`，WP0–WP8 恰好各一项、状态仅 `finalized|covered_by_this_stage` 且 evidence 非空；`DEV-CLOSEOUT` 的九项必须全部为 `finalized`。同时总体验收必须显式包含 `make lint`、`make test`、`make test-gpu`、`make test-piston` 及无 production-critical stub/TODO/fake implementation 检查。若 plan 含 `operator_terminal_execution`，它只允许出现在 validation profile，必须满足 `version: 1`、`required: true`、`gates` 非空；每个 gate 的 `gate_id` 非空且唯一、`run_kind` 非空、`executor_runs_command: false`、`restart_policy` 只能为 `exact_rerun|trainer_checkpoint`、`expected_artifacts` 非空；`run_kind` 为 SFT/GRPO optimizer training 时必须使用 `trainer_checkpoint`。plan 正文还必须存在对应 command template、script runtime provenance/lock/status-log 约束（含真实 long-command rc 捕获，禁止 `set -e`/`tee` 掩盖失败）、operator-start short preflight（覆盖该 gate 实际依赖的 GPU/Piston/model-data/cache 与 artifact-root writable/free-bytes/free-inodes，存储阈值按 stage 规模可判定）、与 restart_policy 一致的恢复/无 checkpoint quarantine 策略，以及 explicit resume/real-artifact acceptance。非法返回 `STAGE_HANDOFF_INVALID`，不得先创建 stage。
 2. 若 `stage_profile=validation`，在创建 branch/worktree 前严格解析 `proceedings.md`：只接受精确标题 `## Development Complete Record` 后紧随的 YAML fenced block，顶层 `development_complete_record` 必须满足 `version: 1`、`development_complete: true`、`completion_inventory_verified: true`，并具有非空 terminal_stage_id、40-hex review_commit、40-hex merge_commit 与 finalized_at；其它自然语言出现这些词句一律忽略。不存在合法 block 返回 `STAGE_DEVELOPMENT_NOT_COMPLETE`。随后必须读取 primary checkout 的 ignored `.ai-bridge/validation-machine.json`：要求 `version: 1`、`machine_status: READY_FOR_VALIDATION_PLANNER`，`artifact_root/hf_home/formal_data_root/readiness_record/piston_identity_record` 均为绝对路径，`bootstrap_project_commit/open_r1_commit` 为 40-hex；`bootstrap_project_commit` 必须是当前 `main` 的祖先。读取 readiness/Piston identity JSON，要求 `bootstrap_status: READY_FOR_VALIDATION_PLANNER`、Piston `deployment_mode: ssh_tunneled_remote`、endpoint `http://127.0.0.1:2000`、Python `3.10.0`、`real_piston_acceptance: PASS`，且 machine record 的 path/host-id/commit identity 与两份 persistent record 一致。缺失或不一致返回 `STAGE_VALIDATION_MACHINE_NOT_READY`。最后使用项目 `.venv` pinned PyTorch 验证 CUDA 可用且 device 0 total memory >=22528 MiB；否则返回 `STAGE_VALIDATION_MACHINE_HANDOFF_REQUIRED`，**不得在未完成 4090 bootstrap 的机器或 1660 Ti 上创建 validation branch/worktree**。
 3. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。`skills/stage-lifecycle/scripts/bootstrap_stage_env.py` 也必须存在。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
 4. 校验 primary execution environment：`<primary>/.venv/bin/python` 必须存在且 `uv` 可执行。缺失返回 `STAGE_PRIMARY_ENV_UNAVAILABLE`；不得先创建 stage worktree。validation 的 24GB 检查继续使用这个 primary pinned runtime。
@@ -148,7 +159,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 ## Operation D: retire_incomplete
 
-用途：当用户明确决定**放弃**一个 plan seal 后已有部分提交、但尚未完成对应 execution/review 的 stage 时，保留完整历史并退出 active-stage 状态，再由 planner 重新规划。它不是通用 rollback，也不是环境故障的默认恢复方式；合法 `INTERRUPTED_ENV` 优先允许用户修复环境后显式 resume，只有用户决定不继续该 stage 时才 retire。
+用途：当用户明确决定**放弃**一个 plan seal 后已有部分提交、但尚未完成对应 execution/review 的 stage 时，保留完整历史并退出 active-stage 状态，再由 planner 重新规划。它不是通用 rollback，也不是合法 resumable checkpoint 的默认恢复方式；`INTERRUPTED_ENV` 优先在环境修复后显式 resume，`AWAITING_OPERATOR` 优先在用户运行 exact terminal script 后显式 resume，只有用户决定不继续该 stage 时才 retire。
 
 输入：必须显式提供 `stage_id` 和一条简短 `reason`，不得自动猜 stage。
 
@@ -175,7 +186,8 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 ## 状态守卫
 
 - `PLANNED`：plan 已由 `bootstrap_plan` commit，尚无 completed implementation execution，且 HEAD 仍等于 plan_commit。
-- `INTERRUPTED_ENV`：尚无对应 completed execution/review，最新 committed execution artifact 是合法 `execution_checkpoint(status=interrupted, interruption_class=environment, resume_allowed=true)`，当前 HEAD 恰好等于提交该 checkpoint 的 docs commit；可由用户显式 `$execution-router resume` 继续，也可显式 `retire_incomplete` 放弃。
+- `INTERRUPTED_ENV`：尚无对应 completed execution/review，最新 committed execution artifact 是合法 `execution_checkpoint(status=interrupted, interruption_class=environment, resume_allowed=true)`，当前 HEAD 恰好等于提交该 checkpoint 的 docs commit；可由用户修复环境后显式 `$execution-router resume` 继续，也可显式 `retire_incomplete` 放弃。
+- `AWAITING_OPERATOR`：尚无对应 completed execution/review，最新 committed execution artifact 是合法 `execution_checkpoint(status=awaiting_operator, interruption_class=operator, resume_allowed=true)`，当前 HEAD 恰好等于其 docs commit；普通 router 只返回 exact script/status/log/expected artifacts/restart policy，用户运行脚本后显式 resume（Web GPT + CodexPro：`$execution-router resume backend=web`；Local Codex：`$execution-router resume`/`backend=local`），不得由 agent 自动越过该 gate。
 - `INCOMPLETE_UNKNOWN`：无 completed E0/review，HEAD 已超过 plan/review baseline，但不存在可证明当前 HEAD 的合法 resumable checkpoint；router 不自动继续，只能人工确认后 retire/replan。
 - `IMPLEMENTED`：execution report 已有 completed implementation record，等待 reviewer-ex。
 - `REPAIR_REQUIRED`：最新 review 已 checkpoint，required=true，且该 review 尚未被 repair execution 消费。

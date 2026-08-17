@@ -29,11 +29,11 @@ worker 不再创建 agent。模型配置不由 router 覆盖。
 
 ## Routed MULTI 前置
 
-router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须传绝对 `artifact_root`、`hf_home`、`formal_data_root`；repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids；resume 再传 `resume=true`、resume_checkpoint_id/commit、resume_from_code_commit、completed_scope、remaining_scope。
+router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须传绝对 `artifact_root`、`hf_home`、`formal_data_root`；repair 再传 review path、整数 source_review_round、review_commit、repair_issue_ids；resume 再传 `resume=true`、resume_checkpoint_id/commit、resume_from_code_commit、resume_interruption_class、completed_scope、remaining_scope；operator resume 还必须有 router 验证过的 `operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/operator_status_file/operator_log_file/expected_artifacts`。
 
 `task_kind` 两条路径互斥；repair 完成后不得继续 implementation。
 
-main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / target_hardware / evidence_class / development_terminal`，与 router 输入逐项一致。development 必须是 GTX 1660 Ti (6GB)+engineering，且所有 workers/coordinator 都不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical+terminal=false，且 fixture/mock/synthetic 不得满足真实 gate。profile 不一致时在 spawn worker 前停止。普通 execution 的 stage HEAD 必须等于 plan/review baseline；resume 的 HEAD 必须等于 router 传入的 resume_checkpoint_commit，并且 checkpoint/source/completed_scope/remaining_scope 精确一致。随后在任何新的业务修改/worker spawn **之前**由 coordinator 串行执行 plan 的 `Execution preflight`；普通 execution preflight 失败时保持 plan/review baseline，不 spawn worker、不写 report；resume 若环境仍未修好则保持 checkpoint HEAD，不追加重复 checkpoint。validation 还必须验证 router `artifact_root / hf_home / formal_data_root` 均位于 worktree 外，并为所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`、`HF_HOME=<hf_home>`、`CODE_VERIFIER_DATA_ROOT=<formal_data_root>`。execution report 必须保持 append-only：正常完成追加 completed execution_record；合法环境中断追加 execution_checkpoint；不得改写旧 E0/E1/... 或 checkpoint 历史。
+main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / target_hardware / evidence_class / development_terminal`，与 router 输入逐项一致。development 必须是 GTX 1660 Ti (6GB)+engineering，且所有 workers/coordinator 都不得为了 completed E0 启动真实 optimizer-based SFT/GRPO；validation 必须是 24GB GPU+real-training/numerical+terminal=false，且 fixture/mock/synthetic 不得满足真实 gate。profile 不一致时在 spawn worker 前停止。普通 execution 的 stage HEAD 必须等于 plan/review baseline；resume 的 HEAD 必须等于 router 传入的 resume_checkpoint_commit，并且 checkpoint/source/completed_scope/remaining_scope 精确一致。随后在任何新的业务修改/worker spawn **之前**由 coordinator 串行执行 plan 的 `Execution preflight`；普通 execution preflight 失败时保持 plan/review baseline，不 spawn worker、不写 report；resume 若环境仍未修好则保持 checkpoint HEAD，不追加重复 checkpoint。validation 还必须验证 router `artifact_root / hf_home / formal_data_root` 均位于 worktree 外，并为真实命令准备 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`、`HF_HOME=<hf_home>`、`CODE_VERIFIER_DATA_ROOT=<formal_data_root>`。若 sealed plan 含 operator terminal gate，正式长任务不得由 coordinator/worker 启动。execution report 必须保持 append-only：正常完成追加 completed execution_record；合法 environment/operator 暂停追加 execution_checkpoint；不得改写旧 E0/E1/... 或 checkpoint 历史。
 
 stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若任一 routed workstream 需要修改 `pyproject.toml` 或 `uv.lock`，必须由 coordinator 在 spawn 相关 worker/继续依赖测试前串行运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；之后全部 workers/tests 使用该 stage `.venv`，不能继续借 primary overlay 隐式满足依赖。
 
@@ -46,6 +46,16 @@ stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若任�
 暂停时 coordinator 捕获 partial `result_code_commit=HEAD`，在 execution report EOF 追加 `execution_checkpoint(version=1, checkpoint_id=Cn, task/source provenance, result_code_commit, interruption_class=environment, resume_allowed=true, failed_command, blocker, completed_scope, remaining_scope, status=interrupted)`，只提交 report docs commit，并返回 `EXECUTION_ENV_INTERRUPTED`。checkpoint docs commit 的 parent 必须是 result_code_commit；不得 checkpoint 未 commit 的 worker diff，也不得自动 retire。
 
 resume 必须来自 router 的 current-head checkpoint。coordinator 不重新执行 completed_scope 对应的已提交 lanes，只为 remaining_scope 重新形成需要的 worker tasks；原 source MULTI routing 不改变。允许重新跑 plan preflight、受影响测试与最终 acceptance。若环境仍坏且没有新 code commit，保持原 checkpoint；若 resume 后又产生新有效 commit 再被环境阻塞，可追加下一 Cn。完成后 execution_record 额外记录 `resumed_from_checkpoint_id/commit` 供审计。
+
+## Operator terminal gate / resume
+
+sealed validation plan 含 `operator_terminal_execution` 时，workers 只能实现/测试 gate 前的 tracked workstreams；正式 Base/B/C/D 全量评测、optimizer-based SFT/GRPO 等长任务必须由 coordinator 在所有相关 lanes 集成、commit 且短时 acceptance 通过后统一 handoff 给用户终端，任何 worker/coordinator 都不得启动长命令。coordinator 解析 `restart_policy=exact_rerun|trainer_checkpoint`；SFT/GRPO 必须为 `trainer_checkpoint`。
+
+coordinator 预分配 checkpoint_id，在 persistent `artifact_root` 下创建包含 stage_id/plan_commit/gate_id/checkpoint_id 的唯一 operator 目录，非空碰撞则停止。生成 secret-free immutable `run.sh`，固定 stage worktree/branch、primary root、planning_base_commit、result_code_commit、execution report path、gate/checkpoint identity 与 artifact/HF/data roots，不预先硬编码未来 checkpoint commit hash；运行时验证 stage clean/branch、`HEAD^ == result_code_commit`、`HEAD^..HEAD` 只改本 stage execution report，并从 report latest checkpoint 核对 stage/gate/checkpoint-id/script-path 与运行时 script SHA256，再验证 primary main 仍为 planning base 且 clean、persistent roots 可用并取得排他锁。每 attempt 获锁后清旧 status/temp-status、append UTC attempt-start，然后运行 sealed gate 的 operator-start short preflight，重新验证当前 GPU/CUDA、Piston（如适用）、model/data/cache 与 artifact-root writable/free-bytes/free-inodes 门槛；失败立即记录并原子写非零 status，不进入长命令。通过后运行 long command并显式捕获其自身 rc：不能让 `set -e` 跳过 status 写入；使用 `tee`/pipeline 时必须在 `pipefail` 下取得 long command rc（例如 `PIPESTATUS[0]`）。随后 append end/exit，status 原子写入并以同一 rc 退出；SIGKILL 后 status 缺失视为未形成可靠终态。stage worktree 只作为 code/runtime cwd，真实 output 只能写 persistent root。
+
+`exact_rerun` 可保持同一 checkpoint/HEAD 重跑同一 script；`trainer_checkpoint` 的同一 script 必须在 canonical run 已存在时选择 numeric 最大的合法 same-run `checkpoint-*` 并自动传 `--resume-from-checkpoint`，无合法 checkpoint 时 fail closed。计算 script SHA256 后 append `interruption_class=operator,status=awaiting_operator,resume_allowed=true` checkpoint，记录 task/source provenance、result_code_commit、operator gate/script/hash/status/log、expected_artifacts、completed_scope/remaining_scope；只提交 report docs commit，返回 `EXECUTION_OPERATOR_ACTION_REQUIRED` 与正确 resume 命令并停止。
+
+operator resume 由 coordinator 重新验证 script hash/restart policy/machine roots/status/log 与真实 persistent artifacts/identity，不替用户重跑 long command。纯环境故障优先保持当前 checkpoint/HEAD，让用户重跑同一 immutable script；trainer checkpoint 由 script 自动恢复，不得为了加 resume flag 先提交新 docs checkpoint。若无合法 checkpoint或真实运行暴露 tracked bug，按原 MULTI routing 做必要最小修复/短测试，然后把旧 incomplete canonical run 移到 persistent unique quarantine path并在 execution report 记录 original/quarantine path、原因/status，之后才生成新的 operator checkpoint/script fresh restart。
 
 ## Anti-fake-parallel hard guard
 
@@ -62,9 +72,9 @@ routed MULTI 必须基于真实代码形成 ≥2 个 mutually independent subpla
 2. 普通 execution 按 plan steps 拆独立 subplans；resume 只为 remaining_scope 中尚未完成的 lanes/集成工作拆任务，sealed routing 本身不改。
 3. 每个 worker 任务必须自包含：worktree、plan、assigned steps、唯一 tracked write_scope、禁止项、定向测试、汇报格式。
 4. workers 只改 assigned tracked scope，不 stage/commit、不写总报告。
-5. coordinator 汇总 diff、解决集成顺序、亲自运行定向 + 全局验收。
+5. coordinator 汇总 diff、解决集成顺序、亲自运行定向 + executor-owned 全局短时验收。若下一步命中 operator long gate，转入 Operator terminal protocol，禁止直接执行长命令。
 6. coordinator 按独立 subplan 显式暂存并 commit 集成后的 code/test/config；禁止 `git add -A`。
-7. 捕获 `result_code_commit=HEAD`。
+7. 只有所有 operator gates 已经通过显式 resume 的真实 artifact 验收后，才捕获最终 `result_code_commit=HEAD`。
 8. append `ai-work/executor/{stage_id}-executor.md` 的 E0 execution_record 和人类摘要，再 docs commit report。
 
 ## task_kind=repair（仅 routed v2）
@@ -73,8 +83,8 @@ routed MULTI 必须基于真实代码形成 ≥2 个 mutually independent subpla
 2. 普通 repair 只按 `repair_issue_ids` 拆 subplans；resume 只处理 remaining_scope 中尚未完成的 repair lanes。其它 review finding/plan step 不自动进入 scope。
 3. worker issue_ids 不重叠、tracked write_scope 不重叠；全部 repair_issue_ids 恰好覆盖一次。
 4. worker 做最小修复和定向测试；不提交。
-5. coordinator 集成后运行受影响测试 + plan 全局 regression/acceptance。全局测试只验证，不扩大 repair scope。
-6. coordinator commit 修复代码/测试，捕获 result_code_commit。
+5. coordinator 集成后运行受影响测试 + plan 中 executor-owned 的全局 regression/acceptance。全局测试只验证，不扩大 repair scope。若需要重跑受影响的 operator long gate，按 Operator terminal protocol 生成新的 checkpoint/script，禁止 coordinator/worker 直接执行。
+6. coordinator commit 修复代码/测试；只有需要重跑的 operator gates 已通过显式 resume 的真实 artifact 验收后，才捕获最终 result_code_commit。
 7. append En repair execution_record，再 docs commit report。同一 review_commit 只能产生一次 completed repair。
 
 ## Parallel filesystem isolation
@@ -120,6 +130,7 @@ backend/effective mode 只用于审计，不参与 reviewer provenance 判定。
 
 - [ ] task_kind 互斥；
 - [ ] Execution preflight 在首次/恢复后的新业务修改或 worker spawn 前完成；baseline preflight 失败未产生业务 commit/report；已有 partial commits 后的 environment interruption 如需暂停，已写合法 checkpoint 而不是强制 retire；
+- [ ] validation 若含 operator terminal gate，workers/coordinator 未启动长任务；restart_policy/唯一 namespace/Git+lock guard/原子 status+append-only log 正确，trainer_checkpoint 同一 script 可恢复 latest valid checkpoint，失败 formal run 只 quarantine 不删除，并只在显式 resume 验证真实 artifacts 后继续；
 - [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] routed MULTI ≥2 真实 subplans，否则已 ROUTING_MISMATCH；
 - [ ] repair worker issue 并集恰好等于 repair_issue_ids；

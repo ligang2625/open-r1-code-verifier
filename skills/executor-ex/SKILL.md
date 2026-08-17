@@ -21,14 +21,14 @@ Routing compatibility marker: `execution-routing-v2`。
 
 - implementation：plan `execution_routing` 只作为已由 router 消费的上游决策；本 skill 按完整 plan 实施。
 - repair：额外必须有 review path、整数 `source_review_round`、`review_commit`、`repair_issue_ids`；只处理这些 issue IDs。plan 只提供规格、禁止范围与总体验收约束。
-- resume：额外必须有 `resume=true`、`resume_checkpoint_id`、`resume_checkpoint_commit`、`resume_from_code_commit`、`completed_scope`、`remaining_scope`；这些字段必须来自 router 对当前 HEAD checkpoint 的验证，executor 不自行挑旧 checkpoint。
+- resume：额外必须有 `resume=true`、`resume_checkpoint_id`、`resume_checkpoint_commit`、`resume_from_code_commit`、`resume_interruption_class`、`completed_scope`、`remaining_scope`；这些字段必须来自 router 对当前 HEAD checkpoint 的验证，executor 不自行挑旧 checkpoint。若 `resume_interruption_class=operator`，还必须有 router 验证过的 `operator_gate_id`、`operator_restart_policy`、`operator_script`、`operator_script_sha256`、`operator_status_file`、`operator_log_file`、`expected_artifacts`。
 
 Artifact：
 
 - execution report：`ai-work/executor/{stage_id}-executor.md`
 - review：`ai-work/reviewer/{stage_id}-review.md`（只读）
 
-同一 stage report append-only，不因“重跑”或 resume 自动清空。若已有 committed execution report，本次执行开始时它必须与最新 committed 版本一致；正常完成时只在 EOF 追加新的 completed `execution_record`，环境中断时只在 EOF 追加新的 `execution_checkpoint`；不得改写旧 E0/E1/... 或旧 checkpoint 历史。
+同一 stage report append-only，不因“重跑”或 resume 自动清空。若已有 committed execution report，本次执行开始时它必须与最新 committed 版本一致；正常完成时只在 EOF 追加新的 completed `execution_record`，environment/operator 合法暂停时只在 EOF 追加新的 `execution_checkpoint`；不得改写旧 E0/E1/... 或旧 checkpoint 历史。
 
 ## 前置校验
 
@@ -79,13 +79,32 @@ repair checkpoint 填 exact review round/commit/issues。`failed_command/blocker
 
 resume 时只从 router 给定的 current-head checkpoint 继续：不重新实现 completed_scope，从 remaining_scope 开始；可以重新执行 plan preflight、定向测试与全局 acceptance。若再次发生同类环境故障且没有新的 partial code commit，保持当前 checkpoint 不变；若 resume 后又新增了有效 commits再遇到环境故障，可追加 C1/C2...。
 
+## Operator terminal gate / resume
+
+仅当 sealed `stage_profile=validation` plan 含合法 `operator_terminal_execution` gate 时使用。正式 Base/B/C/D 全量评测、optimizer-based SFT/GRPO 或 plan 明确标记的其它长任务**不得由 executor 自己启动**。
+
+到达某个 operator gate 时：
+
+1. 先完成并 commit 该 gate 前所有 tracked code/config/test，完整通过 Execution preflight 与 plan 指定的短时 lint/unit/GPU/Piston smoke；stage 必须 clean。解析 gate 的 `restart_policy`，只能是 `exact_rerun|trainer_checkpoint`，SFT/GRPO 必须为 `trainer_checkpoint`。若 gate 前无需 tracked 修改，implementation 允许 `result_code_commit=plan_commit`，repair 允许 `result_code_commit=review_commit`，不得人为制造 commit。
+2. 从 router 输入解析 `artifact_root/hf_home/formal_data_root`，预先分配下一个 `checkpoint_id=Cn`，并在 persistent `artifact_root` 下使用包含 `{stage_id}/{plan_commit}/{gate_id}/{checkpoint_id}` 的唯一 operator 目录；若该目录已存在且非空，停止而不是覆盖。生成 secret-free immutable `run.sh`。script 固定 stage worktree、stage branch、primary root、`planning_base_commit`、即将记录的 `result_code_commit`、execution report path、gate/checkpoint identity 与三个 machine roots；不得预先硬编码未来 checkpoint commit hash。运行时必须确认 worktree 存在且 clean、branch 正确、`HEAD^ == result_code_commit`、`HEAD^..HEAD` 只修改本 stage execution report，并从当前 report 的 latest checkpoint 验证 stage/gate/checkpoint-id/operator-script-path 与自身一致且其中 `operator_script_sha256` 等于运行时计算的 script SHA256；随后确认 primary `main HEAD == planning_base_commit` 且 primary non-ignored tree clean、persistent roots 可用，并取得排他锁（常规 Linux 可用 `flock`；缺失则在 operator handoff 前 fail closed）。允许 stage worktree 作为 code/runtime cwd，但真实 checkpoint/results/output 只能写 persistent artifact root。
+3. script 的 attempt 状态必须抗 stale/concurrent：每次获得锁后先删除旧 status/temp-status，在 terminal log **追加** UTC attempt-start marker；随后执行 sealed plan 为该 gate 定义的 operator-start short preflight，重新确认当前 GPU/CUDA、Piston runtime（如适用）、model/data/cache 与 artifact-root writable/free-bytes/free-inodes 门槛，任一失败就记录 preflight failure 并原子写非零 status，绝不进入长命令。preflight 通过后执行 sealed long command，并**显式捕获 long command 自身 rc**：不能让 `set -e` 在 status 写入前直接结束脚本；若通过 `tee`/pipeline 记录输出，使用 `set -o pipefail` 并取正确的 `PIPESTATUS[0]`（或等价机制），不能把 logger 的成功当成训练/评测成功。最终追加 attempt-end/exit marker，把该 rc 先写临时 status 再 atomic rename 为正式 status，并以同一 rc 退出。若进程被 SIGKILL 导致 status 缺失，resume 必须视为 interrupted/unknown 而不是沿用上一 attempt 的 success。不得覆盖旧 terminal log。
+4. `restart_policy=exact_rerun`：同一 checkpoint 的同一 script 可在环境恢复后重复运行，底层命令必须已有 exact-prefix/identity resume 语义。`restart_policy=trainer_checkpoint`：同一 script 在 canonical run 不存在时 fresh train；若 run 已存在，则必须只在其 `checkpoints/` 下选择 numeric 最大的合法 `checkpoint-[1-9][0-9]*` 并自动附加 `--resume-from-checkpoint`，随后仍由 SFT/GRPO strict loader 验证 same-run provenance；run 已存在但没有合法 checkpoint 时 script fail closed，不得删除/覆盖/自动 fresh restart。
+5. 计算 `run.sh` SHA256，确认 script/status/log 与 `expected_artifacts` 都位于 persistent artifact root 且不在 worktree；在 execution report EOF 追加新的 `execution_checkpoint`：公共 task/source provenance + `result_code_commit` + `interruption_class: operator` + `resume_allowed: true` + `operator_gate_id` + `operator_script` + `operator_script_sha256` + `operator_status_file` + `operator_log_file` + `expected_artifacts` + `completed_scope` + 非空 `remaining_scope` + `status: awaiting_operator`。只提交 execution report docs commit，然后返回 `EXECUTION_OPERATOR_ACTION_REQUIRED`，报告 exact script、restart policy、status/log、expected artifacts，以及当前 runtime 对应的 resume 命令；**立即停止，不运行 script，不进入 reviewer/finalize**。
+
+operator resume 只接受 router 已验证的 current-head operator checkpoint：
+
+1. 重新核验 script SHA256、restart policy、machine roots 与 plan preflight；读取 append-only log、status，并逐项检查真实 persistent artifacts/identity。用户口头“跑完了”或 status=0 单独都不是完成证据；status 缺失表示该 attempt 未形成可靠终态。
+2. 若 artifact 满足 gate 的真实 acceptance，则把该 gate 计入 completed_scope，继续 remaining_scope；若后面还有 operator gate，按同一协议使用新的 checkpoint-id/operator namespace；只有所有 gates 与总体验收都通过后才可写 completed E0/En。reviewer 后续只能验证这些 artifacts，不要求重跑 long gate。
+3. 若只是 tunnel/GPU/cache 等无需 tracked 修改的环境故障：`exact_rerun` 与 `trainer_checkpoint` 都优先保持当前 operator checkpoint/HEAD 不变，让用户在修复环境后再次运行**同一 immutable script**；后者由 script 自动选择 latest valid Trainer checkpoint，然后再次显式 resume。不得为了添加 `--resume-from-checkpoint` 先提交新的 docs checkpoint，因为训练 resume 的 `project_commit` identity 会因此漂移。
+4. 若已有 canonical run 但没有合法 Trainer checkpoint，或 operator run 暴露 tracked source/config/test bug：先停止，不覆盖旧 run。若需要 tracked 修复，做最小修复并 commit、运行定向/回归短测试；随后把旧 incomplete canonical run 移动到 persistent artifact root 下含 stage/gate/checkpoint/UTC identity 的唯一 quarantine 路径，并在 execution report 记录 original path、quarantine path、原因与旧 run status。完成 quarantine 后才生成新的 Cn operator script/checkpoint fresh restart。旧 checkpoint/log/run 全部保留审计历史。
+
 ## task_kind=implementation
 
 1. 全文读 plan/spec/相关代码；resume 额外读取 latest checkpoint 与从 checkpoint 到当前 HEAD 的 Git 状态，确认 completed_scope 已提交且不重复实现。
-2. 普通 development/validation stage 按 plan steps 顺序循环“实现 → 测试 → 验证 → 修正”；resume 只从 remaining_scope 继续。`DEV-CLOSEOUT` 是 verification-only：不得修改业务代码/配置/测试来制造 diff，只执行 plan preflight 与 closeout gates。
+2. 普通 development/validation stage 按 plan steps 顺序循环“实现 → 测试 → 验证 → 修正”；resume 只从 remaining_scope 继续。`DEV-CLOSEOUT` 是 verification-only：不得修改业务代码/配置/测试来制造 diff，只执行 plan preflight 与 closeout gates。若遇到 plan 的 operator terminal gate，执行到 gate 前置条件后转入上面的 Operator terminal protocol，禁止直接运行长命令。
 3. 普通 stage 每个可独立步骤验证后显式暂存该步骤文件并 commit；禁止 `git add -A`。`DEV-CLOSEOUT` 不要求也不允许人为制造 code commit。
-4. 完整运行 plan 总体验收（至少 `make lint`、`make test` 与 stage 特有 gate）。
-5. 所有代码/测试提交完成后记录当前 HEAD 为 `result_code_commit`；对 `DEV-CLOSEOUT`，要求仍 `HEAD == plan_commit`，并合法记录 `result_code_commit = plan_commit`。
+4. 完整运行 plan 总体验收中由 executor 负责的短时 gate（至少 `make lint`、`make test` 与 stage 指定的短测试）；operator long gate 只在 resume 对真实 artifacts 验收，不由 executor 首次调用执行。
+5. 只有所有 operator gates 已经通过合法 resume 验收后，才记录当前 HEAD 为最终 `result_code_commit`；对 `DEV-CLOSEOUT`，要求仍 `HEAD == plan_commit`，并合法记录 `result_code_commit = plan_commit`。
 6. 在 execution report 追加 E0 记录与人类可读摘要，再单独 docs commit report。E0：
 
 ```yaml
@@ -111,8 +130,8 @@ execution_record:
 1. 只解析 router 指定 `repair_issue_ids` 对应的 latest committed review findings；resume 结合 checkpoint，只继续 remaining_scope 中尚未完成的 issue/验证。
 2. 不把其它 minor/suggestion/plan step 自动加入 scope；人工严重级别默认规则不适用于 routed repair，也不重复修改 completed_scope 已提交的 repair。
 3. 每个 issue 做最小修复；异议/无法复现记录证据，不静默忽略。
-4. 运行受影响定向测试，再运行 plan 的全局 regression/acceptance。**全局测试是验证约束，不会扩大 repair scope**。
-5. 修复代码/测试提交完成后记录 `result_code_commit=HEAD`。
+4. 运行受影响定向测试，再运行 plan 中 executor-owned 的全局 regression/acceptance。**全局测试是验证约束，不会扩大 repair scope**。若 reviewer/plan 要求重跑受影响的 operator long gate，按 Operator terminal protocol 生成新的 Cn checkpoint/script，禁止 executor 直接运行。
+5. 只有所有需要重跑的 operator gates 已通过合法 resume artifact 验收后，才记录最终 `result_code_commit=HEAD`。
 6. 追加下一 execution_id（E1/E2/...）并 docs commit report：
 
 ```yaml
@@ -144,6 +163,7 @@ execution_record:
 - [ ] task_kind 只执行了一个互斥流程；repair 后没有继续 implementation；
 - [ ] stage_id 与 report 路径使用完整 stage id；
 - [ ] Execution preflight 在首次/恢复后的新业务修改前完成；baseline preflight 失败未产生业务 commit/report；已有 partial commits 后的 environment interruption 如需暂停，已使用合法 committed checkpoint，未强制 retire；
+- [ ] validation 若含 `operator_terminal_execution`，长任务未由 executor 启动；restart_policy 正确，operator namespace 不碰撞，script 有 Git/primary-root/persistent-root/lock guard 与原子 status/append-only log；trainer_checkpoint 可由同一 script 恢复 latest same-run checkpoint，无 checkpoint/identity drift 时旧 run 已 quarantine 而非删除；只有显式 resume 对真实 artifacts 验收后才继续 completed E0/En；
 - [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] implementation source_plan_commit 正确且没有重复 completed E0；`DEV-CLOSEOUT` 如无业务 diff，已确认 `result_code_commit == plan_commit` 且没有人为制造 code commit；
 - [ ] repair source_review_round/review_commit/issues 与 router 完全一致且没有扩大 scope；

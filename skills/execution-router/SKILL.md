@@ -26,7 +26,7 @@ runtime 判定遵循 common-case capability guard：
 
 backend 不是 plan/review routing 字段，不写回 sealed plan/review，不影响 plan 的 `mode/complexity/parallelizability/multi_benefit`，也不参与 provenance 合法性判断。implementation 与每轮 repair 可以分别选择不同 backend。
 
-Router 还接受一个**显式恢复意图**：`resume`（例如 `$execution-router resume` 或等价明确指令）。`resume` 不是 routing 字段，也不能选择任意历史 commit；它只允许消费**当前 HEAD 对应的最新合法 environment interruption checkpoint**。普通调用遇到可恢复 checkpoint 时只返回 `ROUTING_RESUME_AVAILABLE`，不自动续跑；用户明确 resume 后才 dispatch。resume 继续消费原 plan/review 的 sealed routing，不重新规划、不改变 mode/backend。
+Router 还接受一个**显式恢复意图**：`resume`（例如 `$execution-router resume` 或等价明确指令）。`resume` 不是 routing 字段，也不能选择任意历史 commit；它只允许消费**当前 HEAD 对应的最新合法 resumable execution checkpoint**，即 `interruption_class=environment` 或 `interruption_class=operator`。普通调用遇到 environment checkpoint 时返回 `ROUTING_RESUME_AVAILABLE`；遇到 operator checkpoint 时返回 `ROUTING_OPERATOR_ACTION_REQUIRED` 并报告 exact script/status/log/expected artifacts；两者都不自动续跑。只有用户明确 resume 后才 dispatch，且继续消费原 plan/review 的 sealed routing，不重新规划、不改变 mode/backend。
 
 真正的 Web GPT + CodexPro 环境请求 `backend=local`（或未指定 backend）时返回 `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`。Local Codex 的 MULTI execution 若缺少 execution-agent 能力则返回 `ROUTING_LOCAL_AGENT_CAPABILITY_UNAVAILABLE`；这不改变 runtime/backend 判定。若显式 `backend=web` 但当前环境不是 Web GPT + CodexPro，或没有可写 CodexPro workspace、Git、所需验证命令能力，则返回 `ROUTING_WEB_BACKEND_UNAVAILABLE`。以上情况都不得自动切 backend。
 
@@ -82,25 +82,29 @@ Development stage 不运行上述 4090 machine/24GB preflight；其 plan-specifi
 
 不得在未知 dirty baseline 上启动 execution。
 
-### Resumable environment checkpoint
+### Resumable execution checkpoint
 
-Router 只把 execution report 中**最新 committed**、且提交该 checkpoint 的 docs commit 恰好等于当前 stage HEAD 的 `execution_checkpoint` 视为 resumable。必须同时满足：
+Router 只把 execution report 中**最新 committed**、且提交该 checkpoint 的 docs commit 恰好等于当前 stage HEAD 的 `execution_checkpoint` 视为 resumable。所有 class 共同要求：
 
-- `version: 1`、非空唯一 `checkpoint_id`、`status: interrupted`、`interruption_class: environment`、`resume_allowed: true`；
+- `version: 1`、非空唯一 `checkpoint_id`、`resume_allowed: true`；
 - `stage_id/task_kind/source_plan_commit` 与当前 stage 精确一致；implementation 的 `source_review_round/source_review_commit` 必须为 null、`repair_issue_ids=[]`；repair 必须精确绑定 latest committed review round/commit/issues；
-- `result_code_commit` 必须是提交 checkpoint 前的 parent HEAD，checkpoint docs commit 只允许改 execution report；
-- `failed_command`、`blocker`、`remaining_scope` 非空；`completed_scope` 记录已经 commit、恢复时不得重复实现的范围；
-- 当前不存在同一 source 的 completed execution，也不存在 checkpoint 之后的其它 commit。
+- `result_code_commit` 必须是 checkpoint docs commit 的 parent HEAD，且该 docs commit 只允许改 execution report；
+- `completed_scope` 与非空 `remaining_scope` 可解析；当前不存在同一 source 的 completed execution，也不存在 checkpoint 之后的其它 commit。
 
-普通 router 调用命中该状态返回 `ROUTING_RESUME_AVAILABLE`，报告 checkpoint_id、checkpoint commit、result_code_commit、failed_command/blocker/remaining_scope，并提示用户修复环境后显式 `$execution-router resume`。只有显式 resume 才继续；若用户还指定 checkpoint_id，它必须等于当前 HEAD 的 latest checkpoint，不能选择 stale checkpoint。用户显式要求 resume 但当前 HEAD 不存在合法 checkpoint、checkpoint provenance 不匹配或环境中断之后又有其它 commit 时返回 `ROUTING_RESUME_INVALID`，不得猜断点或自动 retire。
+然后按 `interruption_class` 分支校验：
 
-显式 resume 时先重新执行 Stage environment preflight；通过后按原 plan/review routing dispatch，并额外传 `resume=true`、`resume_checkpoint_id`、`resume_checkpoint_commit`、`resume_from_code_commit`、`completed_scope`、`remaining_scope`。executor 必须从 checkpoint 继续，不重做 completed_scope；允许重新跑 preflight、定向测试和全局 acceptance，因为这些是验证而不是重复实现。
+- **environment**：`status: interrupted`；`failed_command`、`blocker` 非空。仅用于已有有效部分业务 commit 后的外部环境/基础设施故障。普通 router 调用返回 `ROUTING_RESUME_AVAILABLE`，报告 failed command/blocker/remaining scope，提示修复环境后显式 resume。
+- **operator**：只允许 `stage_profile=validation` 且 sealed plan 存在匹配 `operator_terminal_execution.gates[].gate_id`；匹配 gate 的 `restart_policy` 必须是 `exact_rerun|trainer_checkpoint`，SFT/GRPO gate 必须为 `trainer_checkpoint`；`status: awaiting_operator`；checkpoint 必须有非空唯一 `operator_gate_id`、绝对 `operator_script`、64-hex `operator_script_sha256`、绝对 `operator_status_file`、绝对 `operator_log_file` 与非空 `expected_artifacts`。script/status/log/expected-artifact 路径必须位于 router 已验证的 persistent `artifact_root` 下且不在 stage worktree，并且 operator script 路径必须落在包含 stage_id、plan_commit、gate_id、checkpoint_id 的唯一 namespace（或等价不可碰撞 identity）。router 每次读取 checkpoint 都重新确认 script 存在且 SHA256 匹配；普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`，报告 exact script/status/log/expected artifacts/restart_policy，并根据当前 runtime 明确 resume 语法：Web GPT + CodexPro 为 `$execution-router resume backend=web`，Local Codex 为 `$execution-router resume`/`backend=local`。**不得自动执行 script**。operator checkpoint 的 `result_code_commit` 可以等于 plan/review baseline。
+
+只有显式 resume 才继续；若用户还指定 checkpoint_id，它必须等于当前 HEAD 的 latest checkpoint，不能选择 stale checkpoint。用户显式要求 resume 但当前 HEAD 不存在合法 checkpoint、checkpoint provenance/class 字段不匹配、operator script hash 漂移或 checkpoint 之后又有其它 commit 时返回 `ROUTING_RESUME_INVALID`，不得猜断点或自动 retire。Web GPT + CodexPro 的显式 resume 仍必须带 `backend=web`；仅写 `resume` 不改变 Web backend 的显式选择规则。
+
+显式 resume 时先重新执行 Stage environment preflight；validation 仍重新执行 machine/artifact preflight。通过后按原 plan/review routing dispatch，并额外传 `resume=true`、`resume_checkpoint_id`、`resume_checkpoint_commit`、`resume_from_code_commit`、`resume_interruption_class`、`completed_scope`、`remaining_scope`；operator 再传 `operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/operator_status_file/operator_log_file/expected_artifacts`。executor 必须从 checkpoint 继续，不重做 completed_scope；允许重新跑 preflight、定向测试和 executor-owned 短时 acceptance，因为这些是验证而不是重复实现。operator resume 必须先读取状态/log/真实 artifacts，不能把用户口头结果或 exit code 单独视为 gate 完成，也不得在 resume 中直接替用户重跑 operator long command。
 
 ### A. 尚无 committed review
 
 - 已有 `task_kind=implementation,status=completed,source_plan_commit=<plan_commit>` → `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED`，等待 reviewer-ex。
 - 无 completed E0 且 `HEAD == plan_commit` → `task_kind=implementation`，消费 plan `execution_routing`。
-- 无 completed E0、`HEAD != plan_commit`，但当前 HEAD 是合法 implementation environment checkpoint → 普通调用返回 `ROUTING_RESUME_AVAILABLE`；显式 resume 后 `task_kind=implementation`，消费原 plan `execution_routing` 并传 resume context。
+- 无 completed E0、`HEAD != plan_commit`，但当前 HEAD 是合法 implementation resumable checkpoint → environment 普通调用返回 `ROUTING_RESUME_AVAILABLE`，operator 普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`；显式 resume 后 `task_kind=implementation`，消费原 plan `execution_routing` 并传完整 resume context。
 - 无 completed E0 且 `HEAD != plan_commit`，又不存在合法 current-head checkpoint → `ROUTING_INCOMPLETE_IMPLEMENTATION` / `INCOMPLETE_UNKNOWN`；不得自动重跑整份 plan。只有用户明确放弃当前半截 stage 时才提示 `$stage-lifecycle retire_incomplete stage_id/reason`，archive 后重新 planner-ex。
 
 ### B. 已有 committed review
@@ -119,7 +123,7 @@ Router 只把 execution report 中**最新 committed**、且提交该 checkpoint
   1. 从 Git 推导 latest `review_commit`；
   2. `HEAD == review_commit` 且尚无 matching completed repair (`source_review_round` + `source_review_commit`) → `task_kind=repair`；
   3. 已有 matching completed repair → `ROUTING_REPAIR_ALREADY_EXECUTED`；
-  4. 尚无 matching completed repair，且当前 HEAD 是精确绑定该 latest review 的合法 repair environment checkpoint → 普通调用返回 `ROUTING_RESUME_AVAILABLE`；显式 resume 后 `task_kind=repair`，消费原 `repair_routing` 并传 resume context；
+  4. 尚无 matching completed repair，且当前 HEAD 是精确绑定该 latest review 的合法 repair resumable checkpoint → environment 普通调用返回 `ROUTING_RESUME_AVAILABLE`，operator 普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`；显式 resume 后 `task_kind=repair`，消费原 `repair_routing` 并传完整 resume context；
   5. 其它不可解释状态 → `ROUTING_STAGE_STATE_INVALID`。
 
 Router 永不消费未 checkpoint review。

@@ -76,9 +76,10 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 5. terminal 判定不能只看“当前是否还有 dependency-ready 工作”。Planner 必须建立 **Development Completion Inventory**，逐项覆盖 WP0–WP8 的 development deliverables；每个 WP 恰好一项，状态只能是 `finalized` 或 `covered_by_this_stage`，并给出 proceedings/finalized stage 或当前 plan step 的证据。只有 inventory 全覆盖时才允许 `development_terminal: true`。`DEV-CLOSEOUT` 中所有 WP 都必须已经是 `finalized`，不能用它补做缺失功能。
 6. 只有 `stage-lifecycle finalize` 已因一个 terminal PASS stage 在 `proceedings.md` 写入**合法结构化 completion block**后，才允许规划 `validation` stage。合法 block 必须位于精确标题 `## Development Complete Record` 下、紧随一个 YAML fenced block，且顶层键为 `development_complete_record`、`version: 1`、`development_complete: true`、`completion_inventory_verified: true`，并含 terminal stage/review/merge/finalized_at 字段；自然语言中出现同名词句不算 marker。
 7. 从 development 切换到 validation 是一次性的机器交接：terminal finalize 后记录并报告当前 `main HEAD` 为 `development_complete_commit`，在 1660 Ti 上停止规划/bootstrap validation；把该 exact main commit 同步到 4090，安装 pinned training environment 后，从 4090 上重新运行 planner-ex。只要 planner 将要选择 validation，就必须先用项目 `.venv` 的 pinned PyTorch 验证 CUDA 可用且 GPU total memory >=22528 MiB；否则返回 `PLANNER_VALIDATION_MACHINE_HANDOFF_REQUIRED`，不得发布 validation handoff。之后整个 validation track 留在 4090。
-8. validation stage 原则上只运行已冻结代码/配置并收集真实 evidence；若真实运行暴露实现缺陷，优先走该 validation stage 的 review/repair 闭环，修复后重新跑受影响 gate，不在训练机上顺手扩展功能或改变实验定义。
-9. 若一个 WP 同时包含 development 与 validation 内容，必须拆 stage，确保 development stage 可在 1660 Ti 上独立 completed；不得把 24GB gate 与开发代码绑定在同一个 E0 completion contract 中。
-10. 若规模超过单 stage 上限，继续拆成连续 stage（如 `WP5-a`、`WP5-b`），但**不要仅因内部可并行而拆 stage**；每个 stage 必须有独立验收边界。
+8. validation stage 原则上只运行已冻结代码/配置并收集真实 evidence；若真实运行暴露实现缺陷，优先走该 validation stage 的 execution/resume 或 review/repair 闭环，修复后重新跑受影响 gate，不在训练机上顺手扩展功能或改变实验定义。
+9. validation 中正式 Base/B/C/D 全量评测、optimizer-based SFT/GRPO 以及其它预期长时间持续占用 GPU/Piston 的命令，必须规划为 **Operator terminal gate**，不得要求 Web GPT/CodexPro 或 Local Codex 用一个长时间 tool call 持有全过程。executor 仍负责代码/配置、Execution preflight、短时 lint/test/GPU/Piston smoke 与命令生成；到长任务边界时生成 persistent script、提交 operator checkpoint 并停止，用户终端执行后显式 `$execution-router resume`。短时命令不得为了省事全部人工化。
+10. 若一个 WP 同时包含 development 与 validation 内容，必须拆 stage，确保 development stage 可在 1660 Ti 上独立 completed；不得把 24GB gate 与开发代码绑定在同一个 E0 completion contract 中。
+11. 若规模超过单 stage 上限，继续拆成连续 stage（如 `WP5-a`、`WP5-b`），但**不要仅因内部可并行而拆 stage**；每个 stage 必须有独立验收边界。
 
 每份 plan 必须在元信息中明确：
 
@@ -87,7 +88,31 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 - `evidence_class: engineering | real-training/numerical`
 - `development_terminal: true | false`
 
-每份 plan 还必须包含一个 **Execution preflight** 小节，列出在首次业务修改/commit 前即可完成的非破坏性环境检查及通过标准。至少覆盖本 stage 真正依赖的 Piston、必要 Python imports、模型缓存/CUDA（如适用）以及其它已知外部服务。对于 24GB validation 的普通 GPU 容器，Piston 可由独立 CPU 主机通过 SSH local forward 映射为 `127.0.0.1`；planner 只要求严格 loopback endpoint、exact runtime 与真实 Piston acceptance，不得把 GPU 节点本机 Docker/systemd/privileged capability 作为固定前提。preflight 失败时 executor 必须在 `HEAD == plan_commit` 的状态下停止，不得先提交部分实现；无法在实施前判定的逻辑/测试失败不强行塞入 preflight。
+每份 plan 还必须包含一个 **Execution preflight** 小节，列出在首次业务修改/commit 前即可完成的非破坏性环境检查及通过标准。至少覆盖本 stage 真正依赖的 Piston、必要 Python imports、模型缓存/CUDA（如适用）以及其它已知外部服务。对于 24GB validation 的普通 GPU 容器，Piston 可由独立 CPU 主机通过 SSH local forward 映射为 `127.0.0.1`；planner 只要求严格 loopback endpoint、exact runtime 与真实 Piston acceptance，不得把 GPU 节点本机 Docker/systemd/privileged capability 作为固定前提。4090 validation 若把 `make test` / `make test-gpu` 作为 GPU regression gate，必须复用 readiness record 的 exact model id/revision，并把 `CODE_VERIFIER_GPU_MODEL` 指向 `$HF_HOME/hub/models--<org>--<repo>/snapshots/<revision>` 的已验证 snapshot path（或等价 exact local snapshot）；不得只传裸 model id，因为 smoke loader 使用 `model_revision=None`，离线 cache 不保证存在 `main` ref。preflight 失败时 executor 必须在 `HEAD == plan_commit` 的状态下停止，不得先提交部分实现；无法在实施前判定的逻辑/测试失败不强行塞入 preflight。
+
+若 validation stage 含上述长任务，plan 还必须包含唯一一份结构化 **Operator terminal execution** block，并为每个 gate 提供对应的命令模板/成功条件：
+
+```yaml
+operator_terminal_execution:
+  version: 1
+  required: true
+  gates:
+    - gate_id: base-a-formal
+      run_kind: evaluation
+      executor_runs_command: false
+      restart_policy: exact_rerun
+      expected_artifacts:
+        - "$CODE_VERIFIER_ARTIFACT_ROOT/evaluation/<run-id>/run.json"
+```
+
+- `gate_id` 在 stage 内唯一；`run_kind` 为非空描述；`executor_runs_command` 固定 `false`；`restart_policy` 必须是 `exact_rerun | trainer_checkpoint`；`expected_artifacts` 非空且只能使用 router 注入的 persistent roots，不得指向 stage worktree。全量 deterministic evaluation 通常使用 `exact_rerun`；`train-sft` / `train-grpo` 必须使用 `trainer_checkpoint`，因为已有 run 只能通过同 run 的显式 `checkpoint-*` 恢复。
+- 每个 gate 的正文必须给出 executor 在生成 `run.sh` 时要解析的**完整命令模板**、环境变量、成功/失败判据、resume 后需要核验的 artifact/identity，以及与 `restart_policy` 一致的失败恢复策略。还必须定义一个 **operator-start short preflight**：在用户真正启动每次 attempt 时、取得锁后且长命令前，重新验证该 gate 当下依赖的 GPU/CUDA、Piston loopback runtime（如使用候选代码执行）、model/data/cache 可读性以及 persistent artifact root 的可写性、可用 bytes/inodes。存储阈值按该 stage 预计 checkpoint/output 规模明确给出或给出可判定的估算规则，不设置拍脑袋的全项目固定 GiB 值。不得把真实机器绝对路径硬编码进 sealed plan；使用 `$CODE_VERIFIER_ARTIFACT_ROOT/$HF_HOME/$CODE_VERIFIER_DATA_ROOT`。
+- operator script 必须按 `{stage_id}/{plan_commit}/{gate_id}/{checkpoint_id}` 或等价不可碰撞 identity 放在 persistent artifact root；同一 checkpoint 的 script 内容 immutable。由于 script 在 checkpoint docs commit **之前**生成，禁止让脚本预先硬编码未来 checkpoint commit hash 形成循环依赖。运行时必须通过结构证明当前 HEAD 就是对应 checkpoint：stage branch/worktree 存在且 working tree clean；`HEAD^ == result_code_commit`；`HEAD^..HEAD` 只修改本 stage execution report；该 report 的 latest checkpoint 含本 script 固定的 stage/gate/checkpoint-id/path，且其中 `operator_script_sha256` 等于脚本运行时计算的自身 SHA256。然后再确认 primary `main HEAD == planning_base_commit`、persistent roots 仍可用，并取得排他锁避免同一 formal gate 并发双跑；取得锁后运行上述 operator-start short preflight，失败则不进入长命令。status 在每次 attempt 开始前清空，结束时原子写**真实长命令** exit code；terminal log 追加 attempt start/preflight/end/exit 记录，不能覆盖旧失败日志。script 不得让 `set -e`/errexit 在写 status 前吞掉失败路径；必须用显式 rc 捕获或可靠 EXIT trap。若使用 `tee`/pipeline 写日志，必须在 `pipefail` 下捕获 long command 自身的正确退出码（例如 Bash `PIPESTATUS[0]`），不能把 `tee` 成功误写成训练/评测成功。
+- `restart_policy=exact_rerun` 时，环境故障可在**不改变 stage HEAD/checkpoint**的前提下重跑同一 immutable script，由底层 exact-prefix resume 验证 identity；`restart_policy=trainer_checkpoint` 时，同一个 script 必须在再次运行时检测 canonical run 是否已有合法同-run `checkpoint-*`，存在则自动把 latest numeric checkpoint 作为 `--resume-from-checkpoint` 传给 `train-sft/train-grpo`，从而保持 operator checkpoint commit / training `project_commit` 不漂移。已有 run 但没有合法 checkpoint 时必须 fail closed，不能删除/覆盖 run；若最高编号 checkpoint 在 Trainer 实际加载时被判为不完整/损坏，resume 诊断必须先把该 checkpoint 单独移动到 persistent quarantine 并记录，再保持同一 stage HEAD 重跑 script 让其退回前一个合法 checkpoint。
+- 若失败需要 tracked source/config/test 修复，或 incomplete run 与新 code identity 不再兼容，旧 persistent run **不得删除或覆盖**；executor 必须先把它移动到 artifact root 下唯一 quarantine 路径并在 execution report 记录 original/quarantine path 与原因，再用新的 operator checkpoint/script 从 canonical run path fresh restart。没有 checkpoint 的早期中断也走同一 quarantine + fresh-restart 路径。
+- executor 在 operator pause 前完成并 commit 所有应有的 tracked code/config/test；若该 validation stage 在 gate 前不需要任何 tracked 修改，也允许 operator checkpoint 的 `result_code_commit == plan_commit`（repair 时可等于 `review_commit`），不得为了制造 code commit 改文件。
+- 用户执行 persistent script 后必须显式 resume；当前会话是 Web GPT + CodexPro 时使用 `$execution-router resume backend=web`，Local Codex runtime 使用 `$execution-router resume`（或显式 `backend=local`）。E0 只能在 resume 对真实 artifacts 完整验收后写 completed。用户口头“跑完了”或脚本 exit code 本身不是 evidence。
+- 没有长任务的 stage 不写该 block。
 
 `development_terminal: true` 的 plan 必须包含结构化 `Development Completion Inventory`，并额外把 development closeout 全局 gate 写入总体验收：`make lint`、`make test`、`make test-gpu`、`make test-piston`（项目配置的真实 loopback Piston，0 failed/0 skipped）以及生产关键路径无 stub/TODO/fake implementation 的检查。`DEV-CLOSEOUT` 仅运行这些收口检查并写 execution evidence，不新增功能；其 routing 固定为 SINGLE，且允许 zero-code E0。
 
@@ -105,6 +130,7 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 - 不修改 `third_party/open-r1/`；Open-R1 访问只经 adapter；
 - 实施步骤只依赖仓库文件、项目命令与执行 agent 自身文件/shell 能力，不依赖 MCP/其它 skill；
 - validation plan 的真实训练/评测命令不得硬编码 stage-worktree 内的 `outputs/...` 或机器专属 `/data/...`；应使用 router/executor 从 `.ai-bridge/validation-machine.json` 注入的 `$CODE_VERIFIER_ARTIFACT_ROOT`、`$HF_HOME`、`$CODE_VERIFIER_DATA_ROOT`。数据命令使用 `$CODE_VERIFIER_DATA_ROOT/...`，输出省略 `--output-dir` 或显式使用 `$CODE_VERIFIER_ARTIFACT_ROOT/...`。真实 checkpoint/result 的唯一副本不得位于 `.worktrees/...`。
+- validation plan 若声明 `operator_terminal_execution`，每个 gate 必须在实施步骤和总体验收中有明确的“executor prepare → committed operator checkpoint → user terminal run → explicit router resume → artifact validation”边界；不得让 executor 在首次 dispatch 中越过该 gate 直接运行长命令。
 
 ## Execution Routing Assessment
 
@@ -177,6 +203,7 @@ planner-ex 不写模型名/effort，也不选择 execution backend。`backend=lo
 - [ ] 已明确 `stage_profile / target_hardware / evidence_class / development_terminal`，development stage 不包含 24GB 真实训练 gate，validation stage 不接受 synthetic/mock 作为完成证据；
 - [ ] 已写 Execution preflight，并把可提前发现的 Piston/import/model-cache/CUDA 等常见环境 blocker 放在首次业务 commit 之前；
 - [ ] validation plan 的真实输出使用 persistent `CODE_VERIFIER_ARTIFACT_ROOT` 语义，没有把唯一 checkpoint/result 放进 stage worktree；
+- [ ] validation 中的正式长任务已使用合法 `operator_terminal_execution` block；每 gate 的 restart_policy 正确（SFT/GRPO=`trainer_checkpoint`），命令模板/expected artifacts、唯一 operator namespace、runtime Git/lock/status-log guard、trainer checkpoint/no-checkpoint quarantine 策略和 resume gate 完整，短时 preflight/test 未被不必要地人工化；
 - [ ] 若仍有 development deliverable 未覆盖，没有错误标记 terminal；若 `development_terminal=true`，Development Completion Inventory 已逐项覆盖 WP0–WP8 且包含完整 closeout gates；
 - [ ] 若将进入 validation，当前已在 >=22528 MiB 的 24GB-class GPU 机器上；否则已返回 machine handoff required，没有在 1660 Ti 发布/封存 validation plan；
 - [ ] 已记录 planning_base_commit，且与本次规划读取的 `main HEAD` 一致；

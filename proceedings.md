@@ -618,3 +618,24 @@ development_complete_record:
 - validation executor 对真实命令显式设置 `CODE_VERIFIER_ARTIFACT_ROOT`、`HF_HOME`、`CODE_VERIFIER_DATA_ROOT`，因此 Web/Local workflow 不依赖调用进程是否继承用户 shell 的 export；
 - `.ai-bridge/validation-machine.json` 仍是 ignored machine-local runtime state，不是 stage provenance，不得 tracked/staged/commit；正式 stage provenance 仍只在 `ai-work/`；
 - 该 hardening 只修改迁移/workflow 控制面，不改变训练、评测、数据、模型、Piston executor/result semantics，因此同样无需重做 WP3–WP8。
+
+## Validation operator-terminal execution amendment（2026-08-17）
+
+4090 validation 已进入正式长任务阶段。为避免 Base 全量评测、SFT/GRPO optimizer run、B/C/D 全量评测等任务依赖 Web GPT/CodexPro 或 Local Codex 的长时间 tool call，后续 validation workflow 固定采用 operator-terminal checkpoint：
+
+- planner 对预计长时间占用 GPU/Piston 的正式命令写 `operator_terminal_execution` gate；短时 preflight、lint/test、GPU/Piston smoke 继续由 executor 自动执行；
+- executor 先完成并提交 gate 前所需的代码/config/test，随后在 persistent `artifact_root` 生成无密钥、包含固定 machine roots 与 exact command 的 `run.sh`，并将 script path/SHA256/status/log/expected artifacts 写入 append-only `execution_checkpoint`；
+- operator checkpoint 使用 `interruption_class=operator`、`resume_allowed=true`、`status=awaiting_operator`。它是有意的人机交接，不是环境故障；若 gate 前无 tracked 修改，允许 `result_code_commit` 仍等于 plan/review baseline；
+- 用户在普通终端（可用 tmux）运行 exact script，完成或失败后显式调用 `$execution-router resume`。resume 必须读取 persistent 状态/日志并重新核验真实 checkpoint/results/metrics；只有所有 stage acceptance 通过后才能写 completed E0；
+- 若运行失败需要 tracked 代码/config 修复，executor 在同一 stage execution/repair 中最小修复并 commit，然后生成下一 operator checkpoint/script 让用户重跑；若只是外部环境问题且无需 tracked 修改，修好环境后可继续使用当前 checkpoint；
+- 该变更只改变长任务的执行控制面，不改变 A–D 数据、模型、seed、训练预算、Piston 安全边界、metric 定义或 real-training/numerical evidence 标准。
+
+### Operator-terminal robustness hardening（2026-08-17）
+
+独立复核长时间任务恢复链路后进一步收紧：
+
+- 每个 operator gate 增加 `restart_policy=exact_rerun|trainer_checkpoint`；SFT/GRPO 固定为 `trainer_checkpoint`，同一 immutable script 在再次运行时必须自动选择 latest valid same-run `checkpoint-*` 并传入 `--resume-from-checkpoint`，不能把已有 run 当 fresh run 重跑；
+- operator 目录按 stage/plan/gate/checkpoint 唯一命名，script 在长任务前校验 stage clean/branch/HEAD-parent、primary planning base、persistent roots，并取得排他锁；status 每 attempt 开始前清空、结束原子写，terminal log append-only，避免 stale success 和并发双跑；
+- 若没有合法 Trainer checkpoint，或 tracked code/config 修复使旧 run identity 失效，旧 incomplete formal run 只能 quarantine 并记录后 fresh restart，禁止删除/覆盖；
+- Web GPT + CodexPro 的恢复命令明确为 `$execution-router resume backend=web`；Local Codex 仍可使用默认 local 或显式 `backend=local`；
+- reviewer-ex 不重新执行 Base/SFT/GRPO/full-eval operator 长任务，只独立验证 checkpoint/script provenance、persistent artifacts 与短时 readback/test evidence。
