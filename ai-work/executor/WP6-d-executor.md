@@ -62,3 +62,58 @@ execution_checkpoint:
 - The initial unqualified `make test` invocation exposed only environment/test-fixture issues: the default uncached 0.5B GPU-smoke model and a fake SFT Trainer lacking the newly required `global_step`. The fixture was corrected; rerunning the suite with the sealed exact cached 1.5B model produced the final passing 893/3/0 result recorded above.
 - The SFT runtime smoke also exposed that pinned Open-R1 installs DeepSpeed 0.16.8 as a core dependency while Accelerate 1.4.0 imports DeepSpeed merely for model-unwrapping type detection. On this ordinary GPU container, that unused import probes for a CUDA toolkit/nvcc even though plain LoRA SFT does not enable DeepSpeed. The project-side narrow guard avoids only that unconfigured backend probe and was proven with `setuptools` removed and no `nvcc`/`CUDA_HOME` present; the two-step SFT still completed successfully.
 - No formal B SFT run exists at handoff time. The executor did not start the 2,500-example optimizer run and did not modify existing Base A artifacts.
+
+## C1 — Pre-formal robustness re-audit and replacement SFT B operator handoff
+
+At the user's explicit request, Web GPT + CodexPro re-audited WP6-d before any formal optimizer work. C0 was never executed. The audit found one training-interruption provenance defect and two operator-control weaknesses that were important to fix before a long paid-GPU run. The experiment definition, formal data, model revision, optimizer hyperparameters, evaluation definition, and Base A artifacts remain unchanged.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C1
+  stage_id: WP6-d
+  task_kind: implementation
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: acee19768967251fc4aca553fa3283a487b00fc2
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: sft-b-formal
+  operator_restart_policy: trainer_checkpoint
+  operator_script: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-formal/C1/run.sh
+  operator_script_sha256: ecbd03559537dedd6fdc1eeb8734ad962b1ce94e5cd405a727fbc2fbd2fa7042
+  operator_status_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-formal/C1/status
+  operator_log_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-formal/C1/terminal.log
+  expected_artifacts:
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/run.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/resolved_config.yaml
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/environment.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/metrics.jsonl
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/checkpoints/adapter_config.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/checkpoints/adapter_model.safetensors
+  completed_scope:
+    - "pre-formal audit confirmed the sealed training definition remains exact: Qwen2.5-Coder-1.5B-Instruct at revision 2e1fd397ee46e1388853d2af2c993145b0f1098a; 2500 train + 300 validation; max_seq_length 1536; 2 epochs; batch 1; gradient accumulation 16; LR 2e-4; warmup 0.05; cosine; BF16; LoRA r16/alpha32/dropout0.05; logging every optimizer step; save/eval every 100 optimizer steps"
+    - "audit confirmed B evaluation and WP8 analysis identity/data chains are closed: completed-B-only PEFT reload, base/revision checks, exact checkpoint binding, 400-problem exact-prefix evaluation, persisted completion/code and parse/status/pass-rate/failure/token/latency/hit-max-new-tokens fields, problem-level aggregate/bootstrap, and A/B/C/D shared-contract checks"
+    - "critical interruption fix committed in acee19768967251fc4aca553fa3283a487b00fc2: SFT catches BaseException so KeyboardInterrupt closes the current attempt and persists failed status/end_time/attempt GPU-hours/cumulative GPU-hours before re-raising; completed metrics are atomically rebuilt from Trainer state so a resumed completion cannot duplicate a partially written curve"
+    - "new unit coverage proves KeyboardInterrupt attempt/cost persistence and resume metrics de-duplication; focused SFT suite 40 passed, focused SFT/CLI/analysis suite 139 passed, Ruff and Mypy passed"
+    - "fresh exact-model BF16 two-step RTX 4090 smoke under acee197 completed at /root/sj-tmp/open-r1-code-verifier-outputs/sft/WP6-d-validation-smoke-acee197; run.json binds git_commit acee19768967251fc4aca553fa3283a487b00fc2; WP8 curve loader returned 32 numeric rows and cost loader succeeded"
+    - "fresh smoke checkpoint inventory again proves complete Trainer resume state: checkpoint-1 and checkpoint-2 contain optimizer/scheduler/RNG/trainer state/training args/adapter files; measured max checkpoint S=42165518 bytes and F=15 files; final completed adapter strict loader succeeded"
+    - "post-fix global acceptance: make lint PASS; exact cached 1.5B make test PASS 894 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu PASS 3/3; tunneled real make test-piston PASS 9 selected / 0 failed / 0 skipped"
+    - "C1 supersedes unexecuted C0. C1 adds fail-closed native-BF16 checking, exact runtime API/version checks, live Piston YAML digest equality with persisted Base A piston_config_sha256, full frozen formal-config checks, and status-safe resume-source selection so set -e cannot bypass atomic operator status reporting"
+    - "C1 immutable operator script is chmod 0555, bash syntax checked, and SHA256-bound; formal B canonical run still does not exist, so no formal optimizer work has started"
+  remaining_scope:
+    - "operator runs the exact C1 run.sh in a normal SSH terminal or tmux; Web GPT/CodexPro must not start the formal 2500+300 optimizer command"
+    - "if interrupted after a valid Trainer checkpoint, the same immutable C1 script validates canonical-run identity and automatically selects the numerically latest valid same-run checkpoint; if interruption occurs before any valid checkpoint, evidence is preserved and the script fails closed for quarantine/fresh-restart handling rather than deleting or overwriting it"
+    - "explicit execution-router resume backend=web validates C1 status/log and real formal SFT artifacts, finite complete metrics, attempt accounting, all numeric checkpoints, final adapter reload, curve/cost readiness, and payload safety"
+    - "after SFT B acceptance, executor prepares the separate sft-b-evaluation exact_rerun operator checkpoint; after user execution/resume it validates 400 unique paired B results and a 400-resumed/0-generated exact-prefix rerun before E0"
+  status: awaiting_operator
+```
+
+### Re-audit conclusions before C1
+
+- **Formal training has still not started.** C0 has no status/log and no canonical `B-sft-formal-seed42` run; the new code commit after C0 also makes the old C0 Git provenance guard reject execution.
+- The main correctness defect found by this audit was interruption accounting, not the optimizer definition. `KeyboardInterrupt` is now handled analogously to evaluation's existing `BaseException` fail path, preserving attempt/cost provenance without swallowing the interrupt.
+- The downstream evidence inventory is sufficient for the current MVP questions: training curves/eval metrics/token counts/CUDA peak/cost provenance remain available from SFT, and evaluation permanently stores the irrecoverable per-problem model outputs and three-layer verification outcomes needed for aggregate metrics and failure analysis. Formal prepared data remains checksummed and joinable by `problem_id` for difficulty/category/test metadata without model reruns.
+- One known efficiency limitation remains non-blocking: SFT constructs its train/validation datasets by re-validating visible-only trajectories through the tunneled Piston service before optimizer work, and a resume repeats that validation. This can leave the paid GPU underutilized during pre-training validation, but it does not change the experiment definition or lose evidence, so it was not optimized inside this validation stage.
