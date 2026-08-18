@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +23,7 @@ from code_verifier.execution.mock import MockExecutor
 
 
 class _SequenceGenerator:
-    def __init__(self, results: list[GenerationResult | Exception]) -> None:
+    def __init__(self, results: list[GenerationResult | BaseException]) -> None:
         self._results = list(results)
         self.calls: list[tuple[str, int]] = []
 
@@ -30,7 +32,7 @@ class _SequenceGenerator:
         if not self._results:
             raise AssertionError("unexpected generation call")
         value = self._results.pop(0)
-        if isinstance(value, Exception):
+        if isinstance(value, BaseException):
             raise value
         return value
 
@@ -98,6 +100,94 @@ def _completion(marker: str) -> GenerationResult:
         completion_tokens=8,
         latency_ms=2.0,
     )
+
+
+def test_fresh_completed_run_records_timing_and_gpu_hours(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = [_problem("p1", "ONE")]
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
+    monkeypatch.setattr(evaluation_module, "_run_gpu_count_used", lambda config, environment: 1)
+    output_root = tmp_path / "outputs"
+
+    summary = run_pass1_evaluation(
+        config=_config(tmp_path),
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("ONE")]),
+        executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+        run_id="timing-fresh",
+        output_root=output_root,
+        seed=42,
+    )
+
+    metadata = json.loads((summary.results_path.parents[1] / "run.json").read_text(encoding="utf-8"))
+    start = datetime.fromisoformat(metadata["start_time"])
+    end = datetime.fromisoformat(metadata["end_time"])
+    assert metadata["created_at"] == metadata["start_time"]
+    assert start.tzinfo is not None and end.tzinfo is not None
+    assert end >= start
+    assert metadata["status"] == "completed"
+    assert metadata["gpu_count_used"] == 1
+    assert metadata["gpu_hours_semantics"] == "persisted_generation_latency_ms_x_gpu_count_used"
+    assert metadata["gpu_hours"] == pytest.approx(2.0 / 3_600_000.0)
+    assert metadata["piston_config_sha256"] == hashlib.sha256((tmp_path / "piston.yaml").read_bytes()).hexdigest()
+
+
+def test_keyboard_interrupt_resume_accumulates_only_persisted_generation_gpu_hours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problems = [_problem("p1", "ONE"), _problem("p2", "TWO")]
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
+    monkeypatch.setattr(evaluation_module, "_run_gpu_count_used", lambda config, environment: 1)
+    config = _config(tmp_path)
+    output_root = tmp_path / "outputs"
+
+    with pytest.raises(KeyboardInterrupt):
+        run_pass1_evaluation(
+            config=config,
+            model_id="example/model",
+            generator=_SequenceGenerator([_completion("ONE"), KeyboardInterrupt()]),
+            executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+            run_id="timing-resume",
+            output_root=output_root,
+            seed=42,
+        )
+
+    run_json = output_root / "evaluation" / "timing-resume" / "run.json"
+    interrupted = json.loads(run_json.read_text(encoding="utf-8"))
+    immutable_start = interrupted["start_time"]
+    assert interrupted["status"] == "failed"
+    assert interrupted["end_time"] is None
+    assert interrupted["gpu_hours"] == pytest.approx(2.0 / 3_600_000.0)
+
+    resumed = run_pass1_evaluation(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("TWO")]),
+        executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+        run_id="timing-resume",
+        output_root=output_root,
+        seed=42,
+    )
+    completed = json.loads(run_json.read_text(encoding="utf-8"))
+    assert resumed.completed_before_run == 1
+    assert resumed.generated_this_run == 1
+    assert completed["start_time"] == immutable_start
+    assert completed["status"] == "completed"
+    assert completed["end_time"] is not None
+    assert completed["gpu_hours"] == pytest.approx(4.0 / 3_600_000.0)
+
+    frozen_metadata = run_json.read_bytes()
+    no_op = run_pass1_evaluation(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([]),
+        executor=MockExecutor([]),
+        run_id="timing-resume",
+        output_root=output_root,
+        seed=42,
+    )
+    assert no_op.completed_before_run == 2
+    assert no_op.generated_this_run == 0
+    assert run_json.read_bytes() == frozen_metadata
 
 
 def test_interrupted_run_resumes_exact_prefix_without_regeneration(
@@ -242,6 +332,34 @@ def test_resume_still_rejects_unknown_run_artifacts(tmp_path: Path, monkeypatch:
             generator=_SequenceGenerator([]),
             executor=MockExecutor([]),
             run_id="unknown-artifact",
+            output_root=output_root,
+            seed=42,
+        )
+
+
+def test_resume_rejects_piston_definition_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = [_problem("p1", "ONE")]
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
+    config = _config(tmp_path)
+    output_root = tmp_path / "outputs"
+    run_pass1_evaluation(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("ONE")]),
+        executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+        run_id="piston-drift",
+        output_root=output_root,
+        seed=42,
+    )
+    config.piston_config.write_text("piston:\n  url: http://127.0.0.1:3000\n", encoding="utf-8")
+
+    with pytest.raises(EvaluationError, match="config_hash|piston_config_sha256"):
+        run_pass1_evaluation(
+            config=config,
+            model_id="example/model",
+            generator=_SequenceGenerator([]),
+            executor=MockExecutor([]),
+            run_id="piston-drift",
             output_root=output_root,
             seed=42,
         )

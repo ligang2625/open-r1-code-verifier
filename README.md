@@ -402,16 +402,20 @@ make install-gpu
 
 `configs/eval/pass1.yaml` sets `device: auto` and `generation.dtype: float16`; on the 1660 Ti development machine the frozen generator runs on CUDA when torch reports it available, loads the 0.5B debug model in FP16, and the run's `environment.json` records the CUDA/GPU identity so resume fails closed on hardware drift.
 
-`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal Base evaluation uses the immutable 1.5B revision, CUDA, FP16, and real Piston configuration:
+`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal Base evaluation uses the immutable 1.5B revision, CUDA, FP16, real Piston configuration, and an explicit prepared-dataset override so A/B/C/D share the same formal problem set. On the 4090 validation track the routed executor places this command in the SHA-bound operator-terminal `run.sh`; run that exact generated script rather than starting the long formal evaluation from the agent session:
 
 ```bash
+export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/open-r1-code-verifier-outputs
+export CODE_VERIFIER_DATA_ROOT=/absolute/persistent/open-r1-code-verifier-data-4090
 .venv/bin/code-verifier evaluate \
   --config configs/eval/base.yaml \
+  --dataset-dir "$CODE_VERIFIER_DATA_ROOT/prepared" \
   --model-id Qwen/Qwen2.5-Coder-1.5B-Instruct \
-  --run-name base-main-r1 \
-  --seed 42 \
-  --output-dir outputs
+  --run-name A-base-formal-seed42 \
+  --seed 42
 ```
+
+When `--dataset-dir` is supplied, the CLI prints the previous and effective dataset paths on stderr before model/Piston/evaluation setup. The resolved config, dataset hash, run identity, and exact-prefix resume checks then use that effective path normally; omitting the option preserves the YAML value. The operator script additionally fixes the machine roots, validates GPU/Piston/model/data/storage/Git identity, takes an exclusive lock, and atomically records terminal status before `execution-router resume` accepts the persistent artifacts.
 
 Each run is stored under `outputs/evaluation/<run-name>/`:
 
@@ -429,13 +433,15 @@ outputs/evaluation/<run-name>/
     └── results.jsonl
 ```
 
-Only `samples/results.jsonl` may persist completion text and extracted code. The manifest, environment record, progress metrics, logs, summary, and CSV are payload-bounded and do not store tests, reference solutions, completion text, or extracted code. `results.jsonl` stores per-problem status/rate summaries for all three test layers, but never stores the test payloads themselves.
+Only `samples/results.jsonl` may persist completion text and extracted code. The manifest, environment record, progress metrics, logs, summary, and CSV are payload-bounded and do not store tests, reference solutions, completion text, or extracted code. `results.jsonl` stores per-problem status/rate summaries for all three test layers, but never stores the test payloads themselves. Each row also records `hit_max_new_tokens`, so later failure analysis can identify completions that reached the configured generation limit without rerunning model inference.
 
 `summary.json` uses schema version 1 and records run/model/dataset/config identities, bootstrap parameters, metrics, confidence intervals, and error/status counts. `main_results.csv` contains exactly one stable row for the run. Pass@1 means the fraction of problems whose layer pass rate is exactly 1.0; `eval_hidden_average_test_pass_rate` separately averages per-problem test pass rates. Error rates and bootstrap samples are problem-level. `public_eval_gap` is visible pass@1 minus eval-hidden pass@1, with a paired bootstrap interval that preserves problem pairing.
 
 The committed 20-problem smoke fixture currently has four test-split problems. Its Base result is an auditable engineering/pipeline gate, not a final 300–500 problem research benchmark or evidence for broad model-quality claims.
 
 Reusing the same run name performs strict prefix resume rather than overwrite or best-effort matching. Resume succeeds only when the resolved config, model/checkpoint identity, seed, dataset hash, prompt hashes/order, repository/submodule identity, dependency identity, and CUDA/GPU identity match the existing run. Already completed rows are not generated again. Corrupt, reordered, duplicated, non-finite, or identity-drifted rows cause a hard error.
+
+`run.json` also records the immutable `start_time`, completion-only `end_time`, finite non-negative `gpu_hours`, `gpu_count_used`, and a fixed `gpu_hours_semantics`. Evaluation GPU-hours are defined as the sum of `generation_latency_ms` for **persisted** result rows multiplied by the number of evaluation GPUs used, divided by 3,600,000. This measures auditable model-generation device time: Piston/CPU work, model loading, and an interrupted generation that never produced a durable result row are not guessed into the cost. On exact-prefix resume, previously persisted rows therefore contribute exactly once; a completed zero-generation resume leaves the timing/cost metadata unchanged. Interrupted runs retain the original `start_time`, keep `end_time: null`, and recompute the derived GPU-hours from the durable prefix before continuing. The same metadata stores `piston_config_sha256`, binding the actual executor definition used by the run without requiring later analysis to reopen the stage-worktree-local config path after that worktree has been finalized and removed.
 
 The evaluation path is read-only with respect to training: it does not modify the frozen checkpoint, invoke Public/Hidden training rewards, write eval-hidden tests into training artifacts, or add SFT/GRPO behavior. Those boundaries must remain intact during WP6+ work.
 

@@ -176,6 +176,7 @@ def test_prepared_hf_evaluation_interrupts_resumes_and_writes_exact_rows(tmp_pat
         "generation_latency_ms",
         "completion_tokens",
         "error_category_auto",
+        "hit_max_new_tokens",
     }
     assert all(set(row) == expected_fields for row in rows)
     assert [row["execution_status"] for row in rows] == [

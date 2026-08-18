@@ -81,6 +81,7 @@ class EvaluationRecord:
     generation_latency_ms: float
     completion_tokens: int
     error_category_auto: str
+    hit_max_new_tokens: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,9 +132,89 @@ _RECORD_FIELDS = {
     "generation_latency_ms",
     "completion_tokens",
     "error_category_auto",
+    "hit_max_new_tokens",
 }
 _ALLOWED_STATUSES = {status.value for status in ExecutionStatus}
 _ALLOWED_FAILURE_STATUSES = _ALLOWED_STATUSES - {ExecutionStatus.PASSED.value}
+_RUN_STATUSES = {"running", "failed", "completed"}
+_GPU_HOURS_SEMANTICS = "persisted_generation_latency_ms_x_gpu_count_used"
+
+
+def _utc_now_iso() -> str:
+    """Return one timezone-aware UTC timestamp for run provenance."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _run_gpu_count_used(config: EvaluationConfig, environment: Mapping[str, object]) -> int:
+    """Resolve the number of GPUs whose persisted generation latency counts toward gpu_hours."""
+    gpu_count = environment.get("gpu_count")
+    if isinstance(gpu_count, bool) or not isinstance(gpu_count, int) or gpu_count < 0:
+        raise EvaluationError("environment gpu_count must be a non-negative integer")
+    if config.device == "cpu" or gpu_count == 0:
+        return 0
+    if config.device == "cuda":
+        return 1
+    return gpu_count
+
+
+def _gpu_hours_from_records(records: Sequence[EvaluationRecord], *, gpu_count_used: int) -> float:
+    """Compute auditable model-generation device-hours from persisted result rows."""
+    return sum(record.generation_latency_ms for record in records) * gpu_count_used / 3_600_000.0
+
+
+def _file_sha256(path: Path, *, artifact_name: str) -> str:
+    """Hash one required local provenance file without persisting its contents."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise EvaluationError(f"{artifact_name} is unreadable: {type(error).__name__}") from None
+
+
+def _aware_timestamp(value: object, *, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise EvaluationError(f"run.json {field_name} must be a non-empty timezone-aware timestamp")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise EvaluationError(f"run.json {field_name} must be a valid ISO-8601 timestamp") from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise EvaluationError(f"run.json {field_name} must be timezone-aware")
+    return parsed
+
+
+def _validate_run_timing_metadata(
+    run_metadata: Mapping[str, object], *, records: Sequence[EvaluationRecord], problem_count: int
+) -> None:
+    """Validate the resumable evaluation timing/cost contract without treating cost as run identity."""
+    start_time = _aware_timestamp(run_metadata.get("start_time"), field_name="start_time")
+    if run_metadata.get("created_at") != run_metadata.get("start_time"):
+        raise EvaluationError("run.json created_at must equal immutable start_time")
+    gpu_count_used = run_metadata.get("gpu_count_used")
+    if isinstance(gpu_count_used, bool) or not isinstance(gpu_count_used, int) or gpu_count_used < 0:
+        raise EvaluationError("run.json gpu_count_used must be a non-negative integer")
+    if run_metadata.get("gpu_hours_semantics") != _GPU_HOURS_SEMANTICS:
+        raise EvaluationError("run.json gpu_hours_semantics does not match the evaluation contract")
+    gpu_hours = run_metadata.get("gpu_hours")
+    if isinstance(gpu_hours, bool) or not isinstance(gpu_hours, int | float):
+        raise EvaluationError("run.json gpu_hours must be a finite non-negative number")
+    gpu_hours_value = float(gpu_hours)
+    if not math.isfinite(gpu_hours_value) or gpu_hours_value < 0:
+        raise EvaluationError("run.json gpu_hours must be a finite non-negative number")
+    status = run_metadata.get("status")
+    if status not in _RUN_STATUSES:
+        raise EvaluationError("run.json status must be running, failed, or completed")
+    end_time = run_metadata.get("end_time")
+    if status == "completed":
+        parsed_end = _aware_timestamp(end_time, field_name="end_time")
+        if parsed_end < start_time:
+            raise EvaluationError("run.json end_time must not precede start_time")
+        if len(records) != problem_count:
+            raise EvaluationError("completed run metadata requires the full evaluation split")
+        expected_gpu_hours = _gpu_hours_from_records(records, gpu_count_used=gpu_count_used)
+        if not math.isclose(gpu_hours_value, expected_gpu_hours, rel_tol=0.0, abs_tol=1e-12):
+            raise EvaluationError("completed run.json gpu_hours does not match persisted generation latency")
+    elif end_time is not None:
+        raise EvaluationError("run.json end_time must be null until the run is completed")
 
 
 def _exact_mapping(value: object, expected: set[str], *, field_name: str) -> Mapping[str, object]:
@@ -264,6 +345,9 @@ def _record_from_fields(mapping: Mapping[str, object]) -> EvaluationRecord:
     completion_tokens = mapping["completion_tokens"]
     if isinstance(completion_tokens, bool) or not isinstance(completion_tokens, int) or completion_tokens < 0:
         raise EvaluationError("completion_tokens must be a non-negative integer")
+    hit_max_new_tokens = mapping["hit_max_new_tokens"]
+    if not isinstance(hit_max_new_tokens, bool):
+        raise EvaluationError("hit_max_new_tokens must be a boolean")
     execution_status = _status(mapping["execution_status"], field_name="execution_status")
     eval_status = _status(mapping["eval_hidden_execution_status"], field_name="eval_hidden_execution_status")
     if execution_status != eval_status:
@@ -303,6 +387,7 @@ def _record_from_fields(mapping: Mapping[str, object]) -> EvaluationRecord:
         ),
         completion_tokens=completion_tokens,
         error_category_auto=_nonempty_string(mapping["error_category_auto"], field_name="error_category_auto"),
+        hit_max_new_tokens=hit_max_new_tokens,
     )
 
 
@@ -481,6 +566,7 @@ def evaluate_completion(
     values["generation_latency_ms"] = generation.latency_ms
     values["completion_tokens"] = generation.completion_tokens
     values["error_category_auto"] = category
+    values["hit_max_new_tokens"] = generation.hit_max_new_tokens
     return evaluation_record_from_mapping(values)
 
 
@@ -635,9 +721,15 @@ def _populate_new_run_artifacts(
     resolved["run_id"] = run_id
     resolved["model_id"] = model_id
     resolved["seed"] = seed
+    start_time = _utc_now_iso()
     run_metadata: dict[str, object] = {
         "run_id": run_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": start_time,
+        "start_time": start_time,
+        "end_time": None,
+        "gpu_hours": 0.0,
+        "gpu_count_used": _run_gpu_count_used(config, environment),
+        "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
         "project_commit": environment["project_commit"],
         "open_r1_commit": environment["open_r1_commit"],
         "model_id": model_id,
@@ -645,6 +737,7 @@ def _populate_new_run_artifacts(
         "checkpoint": config.checkpoint,
         "dataset_hash": dataset_hash_value,
         "config_hash": config_hash_value,
+        "piston_config_sha256": _file_sha256(config.piston_config, artifact_name="Piston config"),
         "seed": seed,
         "command": "code-verifier evaluate",
         "status": "running",
@@ -733,6 +826,7 @@ def _resume_run_artifacts(
         "checkpoint": config.checkpoint,
         "dataset_hash": dataset_hash_value,
         "config_hash": config_hash_value,
+        "piston_config_sha256": _file_sha256(config.piston_config, artifact_name="Piston config"),
         "seed": seed,
     }
     for key, expected in expected_identity.items():
@@ -756,6 +850,7 @@ def _resume_run_artifacts(
     records = load_evaluation_records(context.results_path)
     if len(records) > len(problems):
         raise EvaluationError("results.jsonl contains more rows than the selected evaluation split")
+    _validate_run_timing_metadata(run_metadata, records=records, problem_count=len(problems))
     if actual_names & derived_names and (run_metadata.get("status") != "completed" or len(records) != len(problems)):
         raise EvaluationError("derived summary artifacts require a completed run with the full evaluation split")
     for index, record in enumerate(records):
@@ -826,7 +921,13 @@ def initialize_or_resume_run(
 
 def _update_run_status(context: _RunContext, status: Literal["running", "failed", "completed"]) -> None:
     metadata = dict(_read_json_object(context.run_json_path, artifact_name="run.json"))
+    gpu_count_used = metadata.get("gpu_count_used")
+    if isinstance(gpu_count_used, bool) or not isinstance(gpu_count_used, int) or gpu_count_used < 0:
+        raise EvaluationError("run.json gpu_count_used must be a non-negative integer")
+    records = load_evaluation_records(context.results_path)
+    metadata["gpu_hours"] = _gpu_hours_from_records(records, gpu_count_used=gpu_count_used)
     metadata["status"] = status
+    metadata["end_time"] = _utc_now_iso() if status == "completed" else None
     _write_json(context.run_json_path, metadata)
 
 
@@ -878,6 +979,14 @@ def run_pass1_evaluation(
     context = _run_context(output_root, run_id, completed=len(completed_records))
     if context.run_dir != run_dir:
         raise EvaluationError("initialized run directory does not match the requested run")
+    if context.completed == len(problems):
+        return EvaluationRunSummary(
+            run_id=run_id,
+            total_problems=len(problems),
+            completed_before_run=context.completed,
+            generated_this_run=0,
+            results_path=context.results_path,
+        )
     _update_run_status(context, "running")
     generated = 0
     try:
@@ -898,7 +1007,7 @@ def run_pass1_evaluation(
             append_evaluation_record(context.results_path, record)
             _append_progress(context, record, completed=index)
             generated += 1
-    except Exception as error:
+    except BaseException as error:
         _update_run_status(context, "failed")
         with context.stderr_path.open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")

@@ -41,6 +41,7 @@ class GenerationResult:
     completion: str
     completion_tokens: int
     latency_ms: float
+    hit_max_new_tokens: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.completion, str):
@@ -61,6 +62,8 @@ class GenerationResult:
             raise GenerationError("latency_ms must be a finite non-negative number") from None
         if not math.isfinite(latency) or latency < 0:
             raise GenerationError("latency_ms must be a finite non-negative number")
+        if not isinstance(self.hit_max_new_tokens, bool):
+            raise GenerationError("hit_max_new_tokens must be a boolean")
         object.__setattr__(self, "latency_ms", latency)
 
 
@@ -515,4 +518,5 @@ class TransformersCompletionGenerator:
             completion=completion,
             completion_tokens=len(new_token_ids),
             latency_ms=latency_ms,
+            hit_max_new_tokens=len(new_token_ids) >= self._config.max_new_tokens,
         )
