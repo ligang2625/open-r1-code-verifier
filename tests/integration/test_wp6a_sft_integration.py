@@ -43,7 +43,7 @@ class _Trainer:
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = dict(kwargs)
-        self.state = SimpleNamespace(log_history=[{"loss": 0.125, "step": 1}])
+        self.state = SimpleNamespace(global_step=1, log_history=[{"loss": 0.125, "step": 1}])
         self.__class__.instances.append(self)
 
     @staticmethod
