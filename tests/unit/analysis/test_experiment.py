@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -134,6 +135,7 @@ def _write_evaluation(
     seed: int = 42,
 ) -> None:
     (path / "samples").mkdir(parents=True)
+    piston_config_sha256 = hashlib.sha256(piston_config.read_bytes()).hexdigest()
     resolved = {
         "dataset_dir": "/fixture/data",
         "split": "test",
@@ -152,7 +154,7 @@ def _write_evaluation(
         "model_id": "example/model",
         "seed": seed,
     }
-    config_hash = resolved_evaluation_config_hash(resolved)
+    config_hash = resolved_evaluation_config_hash(resolved, piston_config_sha256=piston_config_sha256)
     records = [
         _record(
             run_id=run_id,
@@ -175,6 +177,7 @@ def _write_evaluation(
         "project_commit": "fixture-project-commit",
         "open_r1_commit": "fixture-open-r1-commit",
         "dependency_lock_hash": "e" * 64,
+        "piston_config_sha256": piston_config_sha256,
     }
     (path / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
     (path / "resolved_config.yaml").write_text(yaml.safe_dump(resolved), encoding="utf-8")
@@ -235,6 +238,15 @@ def test_load_analysis_inputs_accepts_aligned_completed_a_to_d_fixture(tmp_path:
     assert inputs.hidden_grpo_checkpoint.parent_sft == inputs.sft_checkpoint
 
 
+def test_load_analysis_inputs_accepts_finalized_evaluation_with_missing_historical_piston_path(tmp_path: Path) -> None:
+    config = _fixture(tmp_path)
+    (tmp_path / "piston.yaml").unlink()
+
+    inputs = load_analysis_inputs(config)
+
+    assert len(inputs.evaluation_records["Base"]) == 2
+
+
 @pytest.mark.parametrize("drift", ["problem", "dataset"])
 def test_load_analysis_inputs_rejects_problem_set_or_dataset_drift(tmp_path: Path, drift: str) -> None:
     config = _fixture(tmp_path)
@@ -269,7 +281,7 @@ def test_load_analysis_inputs_rejects_decoding_or_seed_drift(tmp_path: Path) -> 
         load_analysis_inputs(config)
 
 
-@pytest.mark.parametrize("tamper", ["resolved_config", "piston_definition"])
+@pytest.mark.parametrize("tamper", ["resolved_config", "piston_digest"])
 def test_load_analysis_inputs_rejects_resolved_evaluation_identity_tampering(tmp_path: Path, tamper: str) -> None:
     config = _fixture(tmp_path)
     if tamper == "resolved_config":
@@ -278,7 +290,10 @@ def test_load_analysis_inputs_rejects_resolved_evaluation_identity_tampering(tmp
         resolved["generation"]["max_new_tokens"] = 999
         path.write_text(yaml.safe_dump(resolved), encoding="utf-8")
     else:
-        (tmp_path / "piston.yaml").write_text("piston:\n  url: http://127.0.0.1:3000\n", encoding="utf-8")
+        metadata_path = config.public_evaluation_run_dir / "run.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["piston_config_sha256"] = "9" * 64
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     with pytest.raises(AnalysisError, match="resolved evaluation config"):
         load_analysis_inputs(config)
