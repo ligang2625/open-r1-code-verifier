@@ -81,6 +81,7 @@ class EvaluationRecord:
     generation_latency_ms: float
     completion_tokens: int
     error_category_auto: str
+    hit_max_new_tokens: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,7 @@ _RECORD_FIELDS = {
     "generation_latency_ms",
     "completion_tokens",
     "error_category_auto",
+    "hit_max_new_tokens",
 }
 _ALLOWED_STATUSES = {status.value for status in ExecutionStatus}
 _ALLOWED_FAILURE_STATUSES = _ALLOWED_STATUSES - {ExecutionStatus.PASSED.value}
@@ -158,6 +160,14 @@ def _run_gpu_count_used(config: EvaluationConfig, environment: Mapping[str, obje
 def _gpu_hours_from_records(records: Sequence[EvaluationRecord], *, gpu_count_used: int) -> float:
     """Compute auditable model-generation device-hours from persisted result rows."""
     return sum(record.generation_latency_ms for record in records) * gpu_count_used / 3_600_000.0
+
+
+def _file_sha256(path: Path, *, artifact_name: str) -> str:
+    """Hash one required local provenance file without persisting its contents."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise EvaluationError(f"{artifact_name} is unreadable: {type(error).__name__}") from None
 
 
 def _aware_timestamp(value: object, *, field_name: str) -> datetime:
@@ -335,6 +345,9 @@ def _record_from_fields(mapping: Mapping[str, object]) -> EvaluationRecord:
     completion_tokens = mapping["completion_tokens"]
     if isinstance(completion_tokens, bool) or not isinstance(completion_tokens, int) or completion_tokens < 0:
         raise EvaluationError("completion_tokens must be a non-negative integer")
+    hit_max_new_tokens = mapping["hit_max_new_tokens"]
+    if not isinstance(hit_max_new_tokens, bool):
+        raise EvaluationError("hit_max_new_tokens must be a boolean")
     execution_status = _status(mapping["execution_status"], field_name="execution_status")
     eval_status = _status(mapping["eval_hidden_execution_status"], field_name="eval_hidden_execution_status")
     if execution_status != eval_status:
@@ -374,6 +387,7 @@ def _record_from_fields(mapping: Mapping[str, object]) -> EvaluationRecord:
         ),
         completion_tokens=completion_tokens,
         error_category_auto=_nonempty_string(mapping["error_category_auto"], field_name="error_category_auto"),
+        hit_max_new_tokens=hit_max_new_tokens,
     )
 
 
@@ -552,6 +566,7 @@ def evaluate_completion(
     values["generation_latency_ms"] = generation.latency_ms
     values["completion_tokens"] = generation.completion_tokens
     values["error_category_auto"] = category
+    values["hit_max_new_tokens"] = generation.hit_max_new_tokens
     return evaluation_record_from_mapping(values)
 
 
@@ -722,6 +737,7 @@ def _populate_new_run_artifacts(
         "checkpoint": config.checkpoint,
         "dataset_hash": dataset_hash_value,
         "config_hash": config_hash_value,
+        "piston_config_sha256": _file_sha256(config.piston_config, artifact_name="Piston config"),
         "seed": seed,
         "command": "code-verifier evaluate",
         "status": "running",
@@ -810,6 +826,7 @@ def _resume_run_artifacts(
         "checkpoint": config.checkpoint,
         "dataset_hash": dataset_hash_value,
         "config_hash": config_hash_value,
+        "piston_config_sha256": _file_sha256(config.piston_config, artifact_name="Piston config"),
         "seed": seed,
     }
     for key, expected in expected_identity.items():

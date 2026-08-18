@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from datetime import datetime
@@ -127,6 +128,7 @@ def test_fresh_completed_run_records_timing_and_gpu_hours(tmp_path: Path, monkey
     assert metadata["gpu_count_used"] == 1
     assert metadata["gpu_hours_semantics"] == "persisted_generation_latency_ms_x_gpu_count_used"
     assert metadata["gpu_hours"] == pytest.approx(2.0 / 3_600_000.0)
+    assert metadata["piston_config_sha256"] == hashlib.sha256((tmp_path / "piston.yaml").read_bytes()).hexdigest()
 
 
 def test_keyboard_interrupt_resume_accumulates_only_persisted_generation_gpu_hours(
@@ -330,6 +332,34 @@ def test_resume_still_rejects_unknown_run_artifacts(tmp_path: Path, monkeypatch:
             generator=_SequenceGenerator([]),
             executor=MockExecutor([]),
             run_id="unknown-artifact",
+            output_root=output_root,
+            seed=42,
+        )
+
+
+def test_resume_rejects_piston_definition_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = [_problem("p1", "ONE")]
+    monkeypatch.setattr(evaluation_module, "load_evaluation_problems", lambda config: problems)
+    config = _config(tmp_path)
+    output_root = tmp_path / "outputs"
+    run_pass1_evaluation(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("ONE")]),
+        executor=MockExecutor([_pass_result(), _pass_result(), _pass_result()]),
+        run_id="piston-drift",
+        output_root=output_root,
+        seed=42,
+    )
+    config.piston_config.write_text("piston:\n  url: http://127.0.0.1:3000\n", encoding="utf-8")
+
+    with pytest.raises(EvaluationError, match="config_hash|piston_config_sha256"):
+        run_pass1_evaluation(
+            config=config,
+            model_id="example/model",
+            generator=_SequenceGenerator([]),
+            executor=MockExecutor([]),
+            run_id="piston-drift",
             output_root=output_root,
             seed=42,
         )

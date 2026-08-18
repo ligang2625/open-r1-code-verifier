@@ -913,6 +913,31 @@ def test_transformers_generator_reports_completion_token_count_and_latency() -> 
     assert result.completion_tokens == 2
     assert math.isfinite(result.latency_ms)
     assert result.latency_ms >= 0.0
+    assert result.hit_max_new_tokens is False
+
+
+def test_transformers_generator_records_when_generation_reaches_configured_token_limit() -> None:
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    generator = TransformersCompletionGenerator(
+        tokenizer=tokenizer,
+        model=model,
+        torch_runtime=_FakeTorch(),
+        transformers_runtime=runtime,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=2),
+    )
+
+    result = generator.generate("prompt", seed=42)
+
+    assert result.completion_tokens == 2
+    assert result.hit_max_new_tokens is True
+
+
+def test_generation_result_rejects_non_boolean_max_token_flag() -> None:
+    with pytest.raises(GenerationError, match="hit_max_new_tokens"):
+        GenerationResult(completion="ok", completion_tokens=1, latency_ms=0.0, hit_max_new_tokens=1)  # type: ignore[arg-type]
 
 
 def test_transformers_generator_rejects_missing_chat_template() -> None:

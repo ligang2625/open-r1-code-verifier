@@ -263,6 +263,7 @@ def test_evaluate_completion_verifies_all_three_layers_and_uses_eval_status() ->
         completion="```python\ndef solve(x):\n    return x\n```",
         completion_tokens=9,
         latency_ms=4.0,
+        hit_max_new_tokens=True,
     )
     prompt = build_evaluation_prompt(problem)
 
@@ -288,6 +289,7 @@ def test_evaluate_completion_verifies_all_three_layers_and_uses_eval_status() ->
     assert record.execution_status == record.eval_hidden_execution_status
     assert record.runtime_ms == 6.0
     assert record.error_category_auto == "visible_only_success"
+    assert record.hit_max_new_tokens is True
 
 
 def test_evaluate_completion_parse_failure_makes_zero_executor_calls() -> None:
