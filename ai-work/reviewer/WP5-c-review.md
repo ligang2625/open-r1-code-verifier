@@ -166,3 +166,16 @@ repair_routing:
     - "No further repair execution is required for the reviewed E1 head."
   workstream_candidates: []
 ```
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP5-c
+  review_round: 2
+  review_commit: d8f1259bd6684bfe3fa6887a48a99659882d8e26
+  merge_commit: 3850416e0cc5b383ad8c5b111c0aa4f9ef106367
+  finalized_at: "2026-08-18T15:20:00+08:00"
+  status: finalized
+```

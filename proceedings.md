@@ -639,3 +639,34 @@ development_complete_record:
 - 若没有合法 Trainer checkpoint，或 tracked code/config 修复使旧 run identity 失效，旧 incomplete formal run 只能 quarantine 并记录后 fresh restart，禁止删除/覆盖；
 - Web GPT + CodexPro 的恢复命令明确为 `$execution-router resume backend=web`；Local Codex 仍可使用默认 local 或显式 `backend=local`；
 - reviewer-ex 不重新执行 Base/SFT/GRPO/full-eval operator 长任务，只独立验证 checkpoint/script provenance、persistent artifacts 与短时 readback/test evidence。
+
+---
+
+## WP5-c：Formal Base A validation、正式数据绑定与运行 provenance
+
+- **完成日期**：2026-08-18
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP5-c-review.md` R2）
+- **执行计划**：`ai-work/planner/WP5-c-plan.md`
+- **实施范围**：在 RTX 4090 validation track 上完成正式 Base A 的 400 题 test-split 评测、正式数据路径绑定、operator-terminal 执行与中断恢复、运行 timing/cost provenance 及后续分析所需不可再生 generation telemetry；未执行 SFT B、GRPO C/D 或最终 A–D analysis。
+
+### 本阶段完成的功能与正式证据
+
+- `evaluate` 新增显式 `--dataset-dir` override；未传参数时保持 YAML 行为，传入时在 stderr 记录旧/新路径，并将正式 `$CODE_VERIFIER_DATA_ROOT/prepared` 纳入既有 config/dataset/exact-resume identity。
+- 正式 Base A 使用 `Qwen/Qwen2.5-Coder-1.5B-Instruct@2e1fd397ee46e1388853d2af2c993145b0f1098a`、seed 42、CUDA FP16、deterministic generation、真实 loopback Piston，完成 400 个唯一 test problem 的 persistent canonical run。
+- evaluation `run.json` 现保存 timezone-aware `start_time/end_time`、`gpu_count_used`、显式 `gpu_hours_semantics`、可由持久化 generation latency 精确复算的 `gpu_hours`，以及 `piston_config_sha256`；逐题结果新增 `hit_max_new_tokens`，用于保留生成时不可再生的 truncation telemetry。
+- 旧的缺 timing provenance Base A 与一次有意中断的 C1 7-row prefix 均完整保存在 persistent quarantine 中，没有人工回填或覆盖；最终 C2 canonical A 为修复后 fresh 生成。
+- 新旧 Base A 的 completion、extracted code、parser/test status、三层 pass/failure 与 error category 全部一致，仅运行时 latency/runtime 有自然波动，因此 repair 未改变研究语义结果。
+
+### 配置影响与验收结论
+
+- 未修改 `pyproject.toml`、`uv.lock` 或 `third_party/open-r1` gitlink；没有依赖升级，也没有改变正式 A 的模型、revision、seed、decode 参数、test split、Piston 执行语义或指标定义。
+- 正式 Base A：Visible Pass@1 `0.1225`，Train-Hidden Pass@1 `0.1175`，Eval-Hidden Pass@1 `0.115`，Eval-Hidden 95% problem-level bootstrap CI `[0.085, 0.1475]`，public-eval gap `0.0075`。
+- canonical run timing：`start_time=2026-08-18T05:59:25.773910+00:00`，`end_time=2026-08-18T06:53:54.534608+00:00`，`gpu_count_used=1`，`gpu_hours=0.4206591900355286`；该 GPU-hours 语义为持久化 model-generation device time，不等同于 SFT/GRPO trainer-attempt wall time。
+- R2 独立验收：`make lint` PASS；`make test` 为 887 passed、3 个预期 real-Piston opt-in skips；`make test-gpu` 3/3 passed；`make test-piston` 最终完整复验 9/9 passed、0 skipped。review 期间一次瞬时 Piston timeout 在 targeted retry 与完整 retry 中均未复现，记录为基础设施观察而非源码缺陷。
+- completed exact-prefix verification返回 `resumed=400, generated=0`，strict loader/summary/CSV 与 persistent artifact identity 全部通过。
+- WP5-c merge commit：`3850416e0cc5b383ad8c5b111c0aa4f9ef106367`。
+
+### WP5 validation 聚合状态
+
+WP5-a/WP5-b 已完成统一评测的 development 工程合同，WP5-c 现进一步完成正式 400 题 Base A 数值与持久 provenance。A 已成为后续 B/C/D 必须复用的正式 dataset/seed/evaluation-definition 基线；validation track 的下一依赖步骤是正式 SFT B 训练、checkpoint 重载与同一 evaluator/aggregator 下的 B 组评测。
