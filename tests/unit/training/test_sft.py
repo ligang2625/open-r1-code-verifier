@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import re
@@ -246,6 +247,8 @@ def test_validation_smoke_uses_formal_model_revision_bf16_and_two_steps() -> Non
     assert smoke.max_steps == 2
     assert smoke.logging_steps == 1
     assert smoke.save_steps == 1
+    assert smoke.dataset_path == Path.cwd() / "tests/fixtures/wp6/sft_smoke.jsonl"
+    assert smoke.dataset_path.is_file()
     assert smoke.eval_strategy == "no"
     assert smoke.validation_dataset_path is None
 
@@ -384,6 +387,25 @@ def test_pinned_sft_runtime_contract() -> None:
         runtime.get_model,
     ):
         assert callable(symbol)
+
+
+def test_plain_sft_temporarily_disables_unused_deepspeed_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    def original() -> bool:
+        return True
+
+    accelerate_other = SimpleNamespace(is_deepspeed_available=original)
+    real_import_module = importlib.import_module
+
+    def import_module(name: str) -> object:
+        if name == "accelerate.utils.other":
+            return accelerate_other
+        return real_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    with pytest.raises(RuntimeError, match="probe"), sft_module._without_unconfigured_deepspeed_backend():
+        assert accelerate_other.is_deepspeed_available() is False
+        raise RuntimeError("probe")
+    assert accelerate_other.is_deepspeed_available is original
 
 
 class _FakeTokenizer:

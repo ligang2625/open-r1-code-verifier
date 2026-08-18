@@ -11,7 +11,8 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from importlib import metadata
@@ -625,6 +626,27 @@ def _safe_run_dir(output_root: Path, run_name: str) -> Path:
     return run_dir
 
 
+@contextmanager
+def _without_unconfigured_deepspeed_backend() -> Iterator[None]:
+    """Prevent Accelerate from importing an unused DeepSpeed backend during plain SFT."""
+    try:
+        accelerate_other = importlib.import_module("accelerate.utils.other")
+    except (ImportError, ModuleNotFoundError) as error:
+        raise SFTTrainingError(f"could not load Accelerate runtime: {type(error).__name__}") from None
+    is_deepspeed_available = getattr(accelerate_other, "is_deepspeed_available", None)
+    if not callable(is_deepspeed_available):
+        raise SFTTrainingError("Accelerate runtime is missing is_deepspeed_available")
+
+    def deepspeed_unavailable() -> bool:
+        return False
+
+    accelerate_other.is_deepspeed_available = deepspeed_unavailable  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        accelerate_other.is_deepspeed_available = is_deepspeed_available  # type: ignore[attr-defined]
+
+
 def _runtime_arguments(
     config: SFTTrainingConfig,
     *,
@@ -924,16 +946,19 @@ def run_sft_training(
             )
         )
         _reset_cuda_peak_memory()
-        model = runtime.get_model(model_args, training_args)
-        trainer = runtime.trainer_type(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            processing_class=tokenizer,
-            peft_config=runtime.get_peft_config(model_args),
-        )
-        train_result = trainer.train(resume_from_checkpoint=resume_path)
+        with _without_unconfigured_deepspeed_backend():
+            model = runtime.get_model(model_args, training_args)
+            trainer = runtime.trainer_type(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                processing_class=tokenizer,
+                peft_config=runtime.get_peft_config(model_args),
+            )
+            train_result = trainer.train(resume_from_checkpoint=resume_path)
+            trainer.save_state()
+            trainer.save_model(str(checkpoint_dir))
         train_metrics = _finite_numeric_mapping(
             getattr(train_result, "metrics", {}),
             context="SFT train result metrics",
@@ -942,8 +967,6 @@ def run_sft_training(
         if raw_loss is None:
             raise SFTTrainingError("SFT training must produce a finite train_loss")
         train_loss = raw_loss
-        trainer.save_state()
-        trainer.save_model(str(checkpoint_dir))
         trainer_state = getattr(trainer, "state", None)
         _append_trainer_metrics(run_dir / "metrics.jsonl", getattr(trainer_state, "log_history", None))
         raw_global_step = getattr(trainer_state, "global_step", None)
