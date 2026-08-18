@@ -88,3 +88,81 @@ repair_routing:
     - "Parallel lanes would increase risk around run identity and persistent artifact reconciliation without shortening any expensive operator task."
   workstream_candidates: []
 ```
+
+## R2 — R1-M1 timing/cost provenance repair review
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP5-c
+  review_round: 2
+  source_execution_id: E1
+  reviewed_head_commit: 498cfc887e530026dda013bcc1a74e188f38b4dc
+  conclusion: pass
+```
+
+### Review scope and repair provenance
+
+- Reviewed the new completed repair `E1`, which is correctly bound to committed R1 through `source_review_round=1`, `source_review_commit=0355f95085870179e9980fd1be1c303a3c5fa136`, and `repair_issue_ids=[R1-M1]`.
+- Repair history is auditable: `717de9c550f759c3c36e68bbcbf7edefc8bbfbae` implements evaluation timing/cost provenance; C1 was sealed at `a35205a7aa3d47e4102a232ab52741e91e0c4bf4`; `a7033238a0a202084abc2308940955c73fffae90` adds generation-time analysis-readiness provenance without changing the experiment definition; C2 was sealed at `5bdff18b4b88f9a507331ba2e303042a447ca684`; completed E1 is reported by current HEAD `498cfc887e530026dda013bcc1a74e188f38b4dc`.
+- Current HEAD changes only `ai-work/executor/WP5-c-executor.md`; the stage was clean at review start and remained at the same HEAD during all reviewer checks.
+- This review did not rerun the 400-problem long gate. It independently inspected C2 status/log/script provenance, persistent artifacts and quarantines, and ran only short validation/tests.
+
+### R1-M1 closure
+
+- Fresh evaluation runs now persist immutable timezone-aware `start_time`, completion-only `end_time`, finite non-negative `gpu_hours`, `gpu_count_used`, and explicit `gpu_hours_semantics=persisted_generation_latency_ms_x_gpu_count_used`.
+- `created_at == start_time`; completed runs require `end_time >= start_time` and full split completion; incomplete/failed runs require `end_time=null`.
+- `gpu_hours` is recomputed from durable result rows, so interrupted work is never guessed. `run_pass1_evaluation()` catches `BaseException`; a real/simulated `KeyboardInterrupt` therefore records the durable prefix as failed before propagating the interrupt.
+- Focused tests explicitly cover fresh completion, `KeyboardInterrupt` after one persisted row, exact-prefix resume, immutable start time, cumulative durable-row GPU-hours, and completed zero-generation resume that leaves timing metadata byte-identical.
+- The pre-repair formal A run was not edited or backfilled. It remains intact at `/root/sj-tmp/open-r1-code-verifier-outputs/quarantine/WP5-c/R1-M1/A-base-formal-seed42-pre-timing-provenance-cca9945d/`; reviewer independently verified its result SHA256 as `cca9945d28962bcee241cfc69b38ec0c326862e15d9e74f2b5b0354cb01e277e`.
+- C1 was intentionally interrupted after seven durable rows and was likewise preserved intact at `/root/sj-tmp/open-r1-code-verifier-outputs/quarantine/WP5-c/R1-M1/C1-pre-analysis-readiness-86d9f030/`; its result SHA256 is `86d9f030c9bcf06bd774d1fd74ace5a1f44b742a632f4d51563261271cc13ae1`. Its `run.json` independently verifies `status=failed`, `end_time=null`, retained `start_time`, `gpu_count_used=1`, and non-fabricated prefix `gpu_hours`.
+- The new canonical C2 Base A run was therefore produced fresh under the repaired contract rather than reconstructed from unauditable timing estimates.
+
+### Canonical Base A and analysis-readiness evidence
+
+- C2 operator script SHA256 independently matches checkpoint evidence: `1c561a7f8d23b5a0c14955a8010f924648291a12eee279b58265f0dc50072d2f`; status is `0`; terminal log ends with `evaluated 400 problems (resumed=0, generated=400)` and `long-command-end rc=0`.
+- Canonical `run.json` is completed and records `start_time=2026-08-18T05:59:25.773910+00:00`, `end_time=2026-08-18T06:53:54.534608+00:00`, `gpu_count_used=1`, and `gpu_hours=0.4206591900355286`.
+- Reviewer independently recomputed `gpu_hours` from all 400 persisted `generation_latency_ms` values and obtained exactly `0.4206591900355286` within the contract's `1e-12` absolute tolerance.
+- The canonical run additionally persists `piston_config_sha256=f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`, independently matching the current sealed Piston YAML. This preserves execution-definition provenance after the stage worktree is removed.
+- Every strict result row now contains boolean `hit_max_new_tokens`; all 400 rows pass the strict loader and six rows reached the configured 512-token limit. This is additive telemetry only and does not change decoding.
+- The formal experiment definition remains unchanged: same 400 test problems/order, Base model/revision, checkpoint `base`, seed 42, CUDA FP16, greedy decoding, max_new_tokens 512, and loopback Piston.
+- Comparing the quarantined pre-repair A with the new canonical A shows zero drift in all prior semantic result fields. All 400 rows differ only in naturally variable `generation_latency_ms` and `runtime_ms`; completion/code/parser/test outcomes/statuses/error categories are identical.
+- Strict readback passes for 400 rows and the one-row main CSV. Numerical evidence remains unchanged and finite: Eval-Hidden Pass@1 `0.115`, 95% problem-level bootstrap CI `[0.085, 0.1475]`, visible/train-hidden Pass@1 `0.1225/0.1175`, eval-hidden average test pass rate `0.13875`, and public-eval gap `0.0075`.
+
+### Independent reviewer checks
+
+- `make lint`: PASS — Ruff check/format and strict Mypy passed.
+- `make test` with the exact cached 1.5B snapshot: PASS — 887 passed, 3 expected real-Piston opt-in skips, 0 failed.
+- `make test-gpu` with the exact cached revision: PASS — 3 passed, 0 failed/skipped.
+- First reviewer `make test-piston` attempt produced one transient TIMEOUT for a trivial wrong-answer case while the other eight selected checks passed. Immediate targeted rerun of the same case passed, and a subsequent complete `make test-piston` passed 9/9 with 0 failed/skipped (`2 deselected`). This is consistent with the already-recorded slow SSH-tunnel observation rather than a reproducible source defect.
+- Strict result loader / summary / CSV finite-metric readback: PASS.
+- Quarantine preservation and recorded hashes: PASS.
+- Piston config SHA binding: PASS.
+
+### Non-blocking observations
+
+- Evaluation `gpu_hours` deliberately means persisted model-generation device time, while the existing SFT/GRPO training runners currently accumulate trainer-attempt wall time. Because evaluation stores `gpu_hours_semantics` plus `start_time/end_time`, the evidence is unambiguous and R1-M1 is satisfied; future cross-stage cost analysis must respect these distinct semantics rather than silently treating the raw values as identical accounting definitions.
+- The SSH-tunneled Piston service showed one transient timeout during reviewer testing before passing both targeted and complete retries. Future validation stages should continue the existing strict preflight/real-Piston acceptance and should not reinterpret isolated infrastructure latency as candidate behavior without corroborating evidence.
+- The repeated Transformers warning about sampling flags remains log noise only; deterministic resolved config and semantic output reproducibility are unaffected.
+
+### Conclusion
+
+R1-M1 is fully resolved without fabricated metadata or loss of prior evidence. The repaired implementation, interruption/resume tests, quarantined history, fresh canonical Base A artifacts, and numerical results satisfy the sealed WP5-c validation acceptance. No actionable blocker/major/minor finding remains for E1.
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 2
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "R1-M1 is closed by auditable timing/cost provenance, explicit interruption semantics, preserved quarantines, and a fresh canonical Base A run with unchanged research outcomes."
+    - "No further repair execution is required for the reviewed E1 head."
+  workstream_candidates: []
+```
