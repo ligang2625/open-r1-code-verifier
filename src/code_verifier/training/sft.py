@@ -486,10 +486,11 @@ def _append_jsonl(path: Path, value: Mapping[str, object]) -> None:
         os.fsync(handle.fileno())
 
 
-def _append_trainer_metrics(path: Path, log_history: object) -> None:
-    """Append finite numeric Trainer history entries without copying arbitrary metadata."""
+def _trainer_metric_rows(log_history: object) -> list[dict[str, object]]:
+    """Return finite numeric Trainer history rows without copying arbitrary metadata."""
     if not isinstance(log_history, list):
         raise SFTTrainingError("SFT trainer state must provide log_history")
+    rows: list[dict[str, object]] = []
     for entry in log_history:
         if not isinstance(entry, Mapping):
             raise SFTTrainingError("SFT trainer log history entries must be mappings")
@@ -504,7 +505,18 @@ def _append_trainer_metrics(path: Path, log_history: object) -> None:
                 raise SFTTrainingError("SFT trainer metrics must be finite")
             scalars[key] = number
         if len(scalars) > 1:
-            _append_jsonl(path, scalars)
+            rows.append(scalars)
+    return rows
+
+
+def _write_training_metrics(path: Path, *, log_history: object, summary: Mapping[str, object]) -> None:
+    """Atomically replace training metrics so resumed completion cannot duplicate partial history."""
+    rows = [*_trainer_metric_rows(log_history), dict(summary)]
+    content = "".join(
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        for row in rows
+    )
+    _atomic_write(path, content)
 
 
 def _finite_numeric_mapping(value: object, *, context: str) -> dict[str, float]:
@@ -968,7 +980,6 @@ def run_sft_training(
             raise SFTTrainingError("SFT training must produce a finite train_loss")
         train_loss = raw_loss
         trainer_state = getattr(trainer, "state", None)
-        _append_trainer_metrics(run_dir / "metrics.jsonl", getattr(trainer_state, "log_history", None))
         raw_global_step = getattr(trainer_state, "global_step", None)
         if isinstance(raw_global_step, bool) or not isinstance(raw_global_step, int) or raw_global_step < 0:
             raise SFTTrainingError("SFT trainer state must provide a non-negative integer global_step")
@@ -988,7 +999,11 @@ def run_sft_training(
             "attempt_gpu_hours": attempt_gpu_hours,
             "gpu_hours": gpu_hours,
         }
-        _append_jsonl(run_dir / "metrics.jsonl", metrics)
+        _write_training_metrics(
+            run_dir / "metrics.jsonl",
+            log_history=getattr(trainer_state, "log_history", None),
+            summary=metrics,
+        )
         with (run_dir / "stdout.log").open("a", encoding="utf-8") as handle:
             handle.write(f"completed train_samples={len(train_dataset)}\n")
         _write_json(run_dir / "run.json", run_metadata)
@@ -999,7 +1014,7 @@ def run_sft_training(
             train_samples=len(train_dataset),
             gpu_hours=gpu_hours,
         )
-    except Exception as error:
+    except BaseException as error:
         attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
         _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
         _write_json(run_dir / "run.json", run_metadata)

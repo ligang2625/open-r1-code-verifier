@@ -681,7 +681,7 @@ def test_sft_trainer_metrics_reject_non_finite_values(
 
     def init_with_non_finite(self: _FakeTrainer, **kwargs: object) -> None:
         original_init(self, **kwargs)
-        self.state = SimpleNamespace(log_history=[{"loss": math.nan}])
+        self.state = SimpleNamespace(global_step=1, log_history=[{"loss": math.nan}])
 
     monkeypatch.setattr(_FakeTrainer, "__init__", init_with_non_finite)
 
@@ -692,6 +692,38 @@ def test_sft_trainer_metrics_reject_non_finite_values(
             seed=42,
             executor=MockExecutor([_execution_result()]),
         )
+
+
+def test_keyboard_interrupt_closes_attempt_and_persists_cost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
+
+    def interrupt_train(self: _FakeTrainer, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
+        self.resume_from_checkpoint = resume_from_checkpoint
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_FakeTrainer, "train", interrupt_train)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_sft_training(
+            config,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor([_execution_result()]),
+        )
+
+    run_dir = output_root / config.run_name
+    metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == "failed"
+    assert metadata["end_time"] is not None
+    assert metadata["gpu_hours"] >= 0.0
+    assert len(metadata["attempts"]) == 1
+    assert metadata["attempts"][0]["status"] == "failed"
+    assert metadata["attempts"][0]["end_time"] is not None
+    assert metadata["attempts"][0]["gpu_hours"] == metadata["gpu_hours"]
+    assert (run_dir / "stderr.log").read_text(encoding="utf-8") == "KeyboardInterrupt\n"
 
 
 def test_resume_rejects_fresh_run_external_and_cross_run_checkpoints(
@@ -765,6 +797,9 @@ def test_resume_is_provenance_bound_records_source_and_accumulates_cost(
     assert run_metadata["seed_override"] == {"config": 42, "cli": 7}
     assert run_metadata["resume_from_checkpoint"] == "checkpoints/checkpoint-1"
     assert cast(float, run_metadata["gpu_hours"]) > 1.25
+    metrics = [json.loads(line) for line in (resumed.run_dir / "metrics.jsonl").read_text().splitlines()]
+    assert len(metrics) == 2
+    assert [row["record_type"] for row in metrics] == ["trainer", "summary"]
     resolved_config = cast(
         dict[str, object],
         yaml.safe_load((resumed.run_dir / "resolved_config.yaml").read_text(encoding="utf-8")),
