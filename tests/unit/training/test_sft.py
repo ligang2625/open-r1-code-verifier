@@ -212,7 +212,8 @@ def test_main_config_matches_spec_lora_defaults_and_frozen_revision() -> None:
     assert config.model_id == "Qwen/Qwen2.5-Coder-1.5B-Instruct"
     assert config.model_revision is not None
     assert re.fullmatch(r"[0-9a-f]{40}", config.model_revision)
-    assert config.max_seq_length == 1024
+    assert config.max_seq_length == 1536
+    assert config.logging_steps == 1
     assert config.num_train_epochs == 2.0
     assert config.per_device_train_batch_size == 1
     assert config.gradient_accumulation_steps == 16
@@ -226,6 +227,27 @@ def test_main_config_matches_spec_lora_defaults_and_frozen_revision() -> None:
     assert config.eval_strategy == "steps"
     assert config.eval_steps == 100
     assert config.validation_dataset_path == Path.cwd() / "data/processed/wp1-smoke/training/sft_validation.jsonl"
+
+
+def test_validation_smoke_uses_formal_model_revision_bf16_and_two_steps() -> None:
+    main = load_sft_training_config(Path("configs/sft/main.yaml"))
+    smoke = load_sft_training_config(Path("configs/sft/validation-smoke.yaml"))
+
+    assert smoke.model_id == main.model_id
+    assert smoke.model_revision == main.model_revision
+    assert smoke.max_seq_length == main.max_seq_length == 1536
+    assert smoke.learning_rate == main.learning_rate
+    assert (smoke.lora_r, smoke.lora_alpha, smoke.lora_dropout) == (
+        main.lora_r,
+        main.lora_alpha,
+        main.lora_dropout,
+    )
+    assert smoke.bf16 is True and smoke.fp16 is False
+    assert smoke.max_steps == 2
+    assert smoke.logging_steps == 1
+    assert smoke.save_steps == 1
+    assert smoke.eval_strategy == "no"
+    assert smoke.validation_dataset_path is None
 
 
 def test_eval_strategy_requires_exactly_one_validation_artifact_mode(tmp_path: Path) -> None:
@@ -324,6 +346,11 @@ def test_runtime_maps_project_max_seq_length_to_trl_max_length(tmp_path: Path) -
     kwargs = training_config.calls[0]
     assert kwargs["max_length"] == 128
     assert "max_seq_length" not in kwargs
+    assert kwargs["skip_memory_metrics"] is False
+    assert kwargs["include_num_input_tokens_seen"] is True
+    assert kwargs["logging_nan_inf_filter"] is False
+    assert kwargs["save_total_limit"] is None
+    assert kwargs["save_only_model"] is False
     assert kwargs["report_to"] == []
     assert kwargs["seed"] == 7
 
@@ -384,12 +411,24 @@ class _FakeTrainer:
         self.resume_from_checkpoint: str | None = None
         self.state_saved = False
         self.model_saved_to: str | None = None
-        self.state = SimpleNamespace(log_history=[{"loss": 0.3, "step": 1, "ignored": "text"}])
+        self.state = SimpleNamespace(
+            global_step=1,
+            log_history=[
+                {
+                    "loss": 0.3,
+                    "grad_norm": 0.5,
+                    "learning_rate": 0.0002,
+                    "epoch": 0.5,
+                    "step": 1,
+                    "ignored": "text",
+                }
+            ],
+        )
         self.__class__.instances.append(self)
 
     def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
         self.resume_from_checkpoint = resume_from_checkpoint
-        return SimpleNamespace(metrics={"train_loss": self.loss})
+        return SimpleNamespace(metrics={"train_loss": self.loss, "train_runtime": 2.0, "num_input_tokens_seen": 128})
 
     def save_state(self) -> None:
         self.state_saved = True
@@ -466,6 +505,22 @@ def _prepare_fake_run(
     _FakeTrainer.loss = loss
     monkeypatch.setattr(sft_module, "validate_sft_training_hardware", lambda _: None)
     monkeypatch.setattr(sft_module, "_load_sft_runtime", _fake_runtime)
+    monkeypatch.setattr(
+        sft_module,
+        "collect_environment",
+        lambda: {
+            "project_commit": "1" * 40,
+            "open_r1_commit": "2" * 40,
+            "python_version": "3.10.0",
+            "packages": {"torch": "2.6.0"},
+            "cuda_version": "12.4",
+            "gpu_name": "fixture-gpu",
+            "gpu_count": 1,
+            "dependency_lock_hash": "3" * 64,
+        },
+    )
+    monkeypatch.setattr(sft_module, "_reset_cuda_peak_memory", lambda: None)
+    monkeypatch.setattr(sft_module, "_peak_cuda_memory_bytes", lambda: (1234, 5678))
     return config, tmp_path / "outputs"
 
 
@@ -501,12 +556,17 @@ def test_run_artifacts_are_payload_free_and_loss_must_be_finite(
     for artifact in summary.run_dir.iterdir():
         if artifact.is_file():
             assert "PRIVATE_PROMPT_SENTINEL" not in artifact.read_text(encoding="utf-8")
-    assert json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))["status"] == "completed"
+    run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_metadata["status"] == "completed"
+    assert run_metadata["gpu_count_used"] == 1
+    assert "attempt wall time" in run_metadata["gpu_hours_semantics"]
+    assert len(run_metadata["attempts"]) == 1
+    assert run_metadata["attempts"][0]["status"] == "completed"
 
     invalid_root = tmp_path / "invalid"
     invalid_config = replace(config, run_name="invalid-loss")
     _FakeTrainer.loss = math.nan
-    with pytest.raises(SFTTrainingError, match="finite train_loss"):
+    with pytest.raises(SFTTrainingError, match="finite numeric metrics"):
         run_sft_training(
             invalid_config,
             output_root=invalid_root,
@@ -571,9 +631,22 @@ def test_run_sft_training_persists_finite_trainer_curve_metrics(
     )
 
     metrics = [json.loads(line) for line in (summary.run_dir / "metrics.jsonl").read_text().splitlines()]
-    assert metrics[0] == {"loss": 0.3, "record_type": "trainer", "step": 1.0}
+    assert metrics[0] == {
+        "epoch": 0.5,
+        "grad_norm": 0.5,
+        "learning_rate": 0.0002,
+        "loss": 0.3,
+        "record_type": "trainer",
+        "step": 1.0,
+    }
     assert metrics[1]["record_type"] == "summary"
     assert metrics[1]["train_loss"] == 0.25
+    assert metrics[1]["train_runtime"] == 2.0
+    assert metrics[1]["num_input_tokens_seen"] == 128.0
+    assert metrics[1]["global_step"] == 1
+    assert metrics[1]["peak_cuda_memory_allocated_bytes"] == 1234
+    assert metrics[1]["peak_cuda_memory_reserved_bytes"] == 5678
+    assert metrics[1]["gpu_count_used"] == 1
     assert metrics[1]["train_samples"] == 1
 
 

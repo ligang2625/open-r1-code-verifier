@@ -420,6 +420,27 @@ def _evaluate(args: argparse.Namespace) -> int:
 def _train_sft(args: argparse.Namespace) -> int:
     """Run one strict visible-only LoRA SFT workflow through loopback Piston validation."""
     config = load_sft_training_config(Path(str(args.config)))
+    if args.dataset_dir is not None:
+        prepared_dir = Path(str(args.dataset_dir))
+        dataset_path = prepared_dir / "training" / "sft.jsonl"
+        validation_dataset_path = (
+            None if config.eval_strategy == "no" else prepared_dir / "training" / "sft_validation.jsonl"
+        )
+        print(f"override: dataset_path: {config.dataset_path} -> {dataset_path}", file=sys.stderr)
+        if config.eval_strategy != "no":
+            print(
+                f"override: validation_dataset_path: {config.validation_dataset_path} -> {validation_dataset_path}",
+                file=sys.stderr,
+            )
+        config = replace(
+            config,
+            dataset_path=dataset_path,
+            validation_dataset_path=validation_dataset_path,
+        )
+    if args.run_name is not None:
+        run_name = str(args.run_name)
+        print(f"override: run_name: {config.run_name} -> {run_name}", file=sys.stderr)
+        config = replace(config, run_name=run_name)
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = config.seed if cli_seed is None else cli_seed
     if cli_seed is not None and cli_seed != config.seed:
@@ -602,6 +623,18 @@ def build_parser() -> argparse.ArgumentParser:
     train_sft_parser = subparsers.add_parser(
         "train-sft",
         help="run visible-validated LoRA supervised fine-tuning",
+    )
+    train_sft_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override for SFT train/validation artifacts",
+    )
+    train_sft_parser.add_argument(
+        "--run-name",
+        type=_safe_run_name,
+        default=None,
+        help="optional safe SFT run id override",
     )
     train_sft_parser.add_argument(
         "--resume-from-checkpoint",

@@ -148,6 +148,9 @@ _SFT_RUN_LAYOUT = {
     "checkpoints",
 }
 _PEFT_ADAPTER_FILES = {"adapter_config.json", "adapter_model.safetensors"}
+_GPU_HOURS_SEMANTICS = (
+    "attempt wall time in hours multiplied by gpu_count_used; includes validation, model load, train, and save"
+)
 
 
 def _exact_mapping(value: object) -> Mapping[str, object]:
@@ -503,6 +506,102 @@ def _append_trainer_metrics(path: Path, log_history: object) -> None:
             _append_jsonl(path, scalars)
 
 
+def _finite_numeric_mapping(value: object, *, context: str) -> dict[str, float]:
+    """Return all finite numeric scalars from one Trainer mapping."""
+    if not isinstance(value, Mapping):
+        raise SFTTrainingError(f"{context} must be a mapping")
+    scalars: dict[str, float] = {}
+    for key, raw_value in value.items():
+        if not isinstance(key, str):
+            raise SFTTrainingError(f"{context} metric names must be strings")
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int | float):
+            continue
+        number = float(raw_value)
+        if not math.isfinite(number):
+            raise SFTTrainingError(f"{context} must contain only finite numeric metrics")
+        scalars[key] = number
+    return scalars
+
+
+def _gpu_count_used(environment: Mapping[str, Any]) -> int:
+    """Return the actual single-process GPU count used by the current SFT runtime."""
+    available = environment.get("gpu_count")
+    if isinstance(available, bool) or not isinstance(available, int) or available < 1:
+        raise SFTTrainingError("SFT environment must report at least one GPU")
+    return 1
+
+
+def _begin_attempt(run_metadata: dict[str, object], *, resume_source: str | None) -> None:
+    """Append one payload-free training attempt before expensive work begins."""
+    attempts = run_metadata.get("attempts")
+    if not isinstance(attempts, list):
+        raise SFTTrainingError("SFT run metadata has invalid attempt history")
+    attempts.append(
+        {
+            "attempt": len(attempts) + 1,
+            "start_time": datetime.now(timezone.utc).isoformat(),
+            "end_time": None,
+            "status": "running",
+            "resume_from_checkpoint": resume_source,
+            "gpu_hours": 0.0,
+        }
+    )
+    run_metadata["status"] = "running"
+    run_metadata["end_time"] = None
+    run_metadata["resume_from_checkpoint"] = resume_source
+
+
+def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu_hours: float) -> None:
+    """Close the latest attempt and update cumulative cost metadata."""
+    if status not in {"completed", "failed"}:
+        raise SFTTrainingError("SFT attempt status is invalid")
+    if not math.isfinite(attempt_gpu_hours) or attempt_gpu_hours < 0.0:
+        raise SFTTrainingError("SFT attempt gpu_hours must be finite and non-negative")
+    attempts = run_metadata.get("attempts")
+    if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
+        raise SFTTrainingError("SFT run metadata has invalid attempt history")
+    latest = cast(dict[str, object], attempts[-1])
+    prior_attempt_gpu_hours = latest.get("gpu_hours")
+    cumulative_gpu_hours = run_metadata.get("gpu_hours")
+    if (
+        isinstance(prior_attempt_gpu_hours, bool)
+        or not isinstance(prior_attempt_gpu_hours, int | float)
+        or not math.isfinite(float(prior_attempt_gpu_hours))
+        or float(prior_attempt_gpu_hours) < 0.0
+        or isinstance(cumulative_gpu_hours, bool)
+        or not isinstance(cumulative_gpu_hours, int | float)
+        or not math.isfinite(float(cumulative_gpu_hours))
+        or float(cumulative_gpu_hours) < float(prior_attempt_gpu_hours)
+    ):
+        raise SFTTrainingError("SFT run metadata has invalid cumulative gpu_hours")
+    base_gpu_hours = float(cumulative_gpu_hours) - float(prior_attempt_gpu_hours)
+    latest["status"] = status
+    latest["end_time"] = datetime.now(timezone.utc).isoformat()
+    latest["gpu_hours"] = attempt_gpu_hours
+    run_metadata["gpu_hours"] = base_gpu_hours + attempt_gpu_hours
+    run_metadata["status"] = status
+    run_metadata["end_time"] = latest["end_time"]
+
+
+def _reset_cuda_peak_memory() -> None:
+    """Reset project-owned CUDA peak counters immediately before model construction."""
+    torch_runtime = _load_torch_runtime()
+    if bool(torch_runtime.cuda.is_available()):
+        torch_runtime.cuda.reset_peak_memory_stats(0)
+
+
+def _peak_cuda_memory_bytes() -> tuple[int, int]:
+    """Read project-owned CUDA peak allocated/reserved bytes."""
+    torch_runtime = _load_torch_runtime()
+    if not bool(torch_runtime.cuda.is_available()):
+        return 0, 0
+    allocated = int(torch_runtime.cuda.max_memory_allocated(0))
+    reserved = int(torch_runtime.cuda.max_memory_reserved(0))
+    if allocated < 0 or reserved < 0:
+        raise SFTTrainingError("CUDA peak memory metrics must be non-negative")
+    return allocated, reserved
+
+
 def _dataset_hash(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -570,6 +669,11 @@ def _runtime_arguments(
         gradient_checkpointing=config.gradient_checkpointing,
         seed=seed,
         data_seed=seed,
+        skip_memory_metrics=False,
+        include_num_input_tokens_seen=True,
+        logging_nan_inf_filter=False,
+        save_total_limit=None,
+        save_only_model=False,
         report_to=[],
         push_to_hub=False,
     )
@@ -588,6 +692,7 @@ def _initialize_run(
 ) -> dict[str, object]:
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "checkpoints").mkdir()
+    gpu_count_used = _gpu_count_used(environment)
     started = datetime.now(timezone.utc).isoformat()
     run_metadata: dict[str, object] = {
         "run_id": config.run_name,
@@ -599,7 +704,9 @@ def _initialize_run(
         "cuda_version": environment["cuda_version"],
         "gpu_name": environment["gpu_name"],
         "gpu_count": environment["gpu_count"],
+        "gpu_count_used": gpu_count_used,
         "dependency_lock_hash": environment["dependency_lock_hash"],
+        "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
         "model_id": config.model_id,
         "model_revision": config.model_revision,
         "dataset_hash": dataset_hash,
@@ -612,6 +719,7 @@ def _initialize_run(
         "start_time": started,
         "end_time": None,
         "gpu_hours": 0.0,
+        "attempts": [],
         "status": "running",
     }
     resolved = _resolved_config_mapping(config, effective_seed=seed)
@@ -656,6 +764,8 @@ def _validate_resume_run(
         "cuda_version": environment["cuda_version"],
         "gpu_name": environment["gpu_name"],
         "gpu_count": environment["gpu_count"],
+        "gpu_count_used": _gpu_count_used(environment),
+        "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
     }
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         raise SFTTrainingError("existing SFT run identity does not match the requested resume")
@@ -663,6 +773,8 @@ def _validate_resume_run(
         raise SFTTrainingError("existing SFT run does not match the strict artifact layout")
     if value.get("status") not in {"running", "failed"}:
         raise SFTTrainingError("only an interrupted or failed SFT run may be resumed")
+    if not isinstance(value.get("attempts"), list):
+        raise SFTTrainingError("existing SFT run has invalid attempt history")
     previous_gpu_hours = value.get("gpu_hours")
     if (
         isinstance(previous_gpu_hours, bool)
@@ -775,7 +887,9 @@ def run_sft_training(
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
-    previous_gpu_hours = float(cast(int | float, run_metadata["gpu_hours"]))
+    gpu_count_used = cast(int, run_metadata["gpu_count_used"])
+    _begin_attempt(run_metadata, resume_source=resume_source)
+    _write_json(run_dir / "run.json", run_metadata)
     started = time.perf_counter()
     try:
         records = load_training_artifact(config.dataset_path, kind=TrainingArtifactKind.SFT)
@@ -809,6 +923,7 @@ def run_sft_training(
                 max_seq_length=config.max_seq_length,
             )
         )
+        _reset_cuda_peak_memory()
         model = runtime.get_model(model_args, training_args)
         trainer = runtime.trainer_type(
             model=model,
@@ -819,30 +934,40 @@ def run_sft_training(
             peft_config=runtime.get_peft_config(model_args),
         )
         train_result = trainer.train(resume_from_checkpoint=resume_path)
-        raw_loss = getattr(train_result, "metrics", {}).get("train_loss")
-        if isinstance(raw_loss, bool) or not isinstance(raw_loss, int | float) or not math.isfinite(float(raw_loss)):
+        train_metrics = _finite_numeric_mapping(
+            getattr(train_result, "metrics", {}),
+            context="SFT train result metrics",
+        )
+        raw_loss = train_metrics.get("train_loss")
+        if raw_loss is None:
             raise SFTTrainingError("SFT training must produce a finite train_loss")
-        train_loss = float(raw_loss)
+        train_loss = raw_loss
         trainer.save_state()
         trainer.save_model(str(checkpoint_dir))
         trainer_state = getattr(trainer, "state", None)
         _append_trainer_metrics(run_dir / "metrics.jsonl", getattr(trainer_state, "log_history", None))
-        attempt_gpu_hours = (time.perf_counter() - started) / 3600.0
-        gpu_hours = previous_gpu_hours + attempt_gpu_hours
-        metrics = {
+        raw_global_step = getattr(trainer_state, "global_step", None)
+        if isinstance(raw_global_step, bool) or not isinstance(raw_global_step, int) or raw_global_step < 0:
+            raise SFTTrainingError("SFT trainer state must provide a non-negative integer global_step")
+        peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
+        attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
+        _finish_attempt(run_metadata, status="completed", attempt_gpu_hours=attempt_gpu_hours)
+        gpu_hours = cast(float, run_metadata["gpu_hours"])
+        metrics: dict[str, object] = {
             "record_type": "summary",
-            "train_loss": train_loss,
+            **train_metrics,
+            "global_step": raw_global_step,
             "train_samples": len(train_dataset),
             "eval_samples": 0 if eval_dataset is None else len(eval_dataset),
+            "peak_cuda_memory_allocated_bytes": peak_allocated,
+            "peak_cuda_memory_reserved_bytes": peak_reserved,
+            "gpu_count_used": gpu_count_used,
             "attempt_gpu_hours": attempt_gpu_hours,
             "gpu_hours": gpu_hours,
         }
         _append_jsonl(run_dir / "metrics.jsonl", metrics)
         with (run_dir / "stdout.log").open("a", encoding="utf-8") as handle:
             handle.write(f"completed train_samples={len(train_dataset)}\n")
-        run_metadata["status"] = "completed"
-        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
-        run_metadata["gpu_hours"] = gpu_hours
         _write_json(run_dir / "run.json", run_metadata)
         return SFTTrainingSummary(
             run_dir=run_dir,
@@ -852,10 +977,8 @@ def run_sft_training(
             gpu_hours=gpu_hours,
         )
     except Exception as error:
-        gpu_hours = previous_gpu_hours + (time.perf_counter() - started) / 3600.0
-        run_metadata["status"] = "failed"
-        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
-        run_metadata["gpu_hours"] = gpu_hours
+        attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
+        _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
         _write_json(run_dir / "run.json", run_metadata)
         with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")

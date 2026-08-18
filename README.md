@@ -449,18 +449,24 @@ The evaluation path is read-only with respect to training: it does not modify th
 
 WP6-a normalizes every accepted SFT target to exactly one closed Python fenced block, parses the expected top-level function, verifies it only against the artifact's visible tests through `verify_completion()` and the configured `CodeExecutor`, and rejects failed, truncated, duplicate, repetitive, or over-length trajectories. After validation, the TRL dataset contains only conversational `prompt` and `completion` columns; tests, function names, and metadata are dropped before trainer construction.
 
-On the 24GB training machine, prepare the WP1 data, start the loopback Piston service, install the training extra, and use a **persistent artifact root outside the stage worktree**. Routed validation automatically uses the primary checkout's `outputs/`; for a separate disk or mount, set an absolute override:
+On the 24GB training machine, prepare the data, start the loopback Piston service, install the training extra, and use the validation-machine record's **persistent artifact root outside the stage worktree**. Formal validation also uses its persistent formal-data and Hugging Face cache roots; the routed executor supplies these exact paths rather than falling back to repository-local outputs.
+
+For engineering smoke, `configs/sft/validation-smoke.yaml` uses the same frozen 1.5B model revision, BF16, LoRA settings, learning rate, and `max_seq_length=1536` as formal SFT, but runs only two optimizer steps with per-step logging/checkpointing and no validation set. It is runtime/telemetry evidence only, never a B checkpoint or research metric.
+
+Formal B training is prepared by the routed executor and run from its immutable operator-terminal script. The underlying command has this shape:
 
 ```bash
-export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/path/open-r1-code-verifier-outputs
-make install-train
+export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/open-r1-code-verifier-outputs
+export CODE_VERIFIER_DATA_ROOT=/absolute/persistent/open-r1-code-verifier-data-4090
+export HF_HOME=/absolute/persistent/huggingface
 .venv/bin/code-verifier train-sft \
-  --config configs/sft/debug.yaml \
-  --seed 42 \
-  --log-level INFO
+  --config configs/sft/main.yaml \
+  --dataset-dir "$CODE_VERIFIER_DATA_ROOT/prepared" \
+  --run-name B-sft-formal-seed42 \
+  --seed 42
 ```
 
-When `CODE_VERIFIER_ARTIFACT_ROOT` is set, the default SFT output becomes `$CODE_VERIFIER_ARTIFACT_ROOT/sft`; the default evaluation output becomes `$CODE_VERIFIER_ARTIFACT_ROOT`. An explicit `--output-dir` still overrides the CLI default, but validation workflow rules forbid pointing it back inside `.worktrees/...`.
+`--dataset-dir` binds SFT train data to `<prepared>/training/sft.jsonl`; when evaluation is enabled it also binds the independent `<prepared>/training/sft_validation.jsonl`. `--run-name` replaces the YAML run id and becomes part of the resolved config/run identity. Both overrides are printed as path/name changes on stderr without printing sample payloads. When `CODE_VERIFIER_ARTIFACT_ROOT` is set, the default SFT output becomes `$CODE_VERIFIER_ARTIFACT_ROOT/sft`; an explicit `--output-dir` still overrides the CLI default, but validation workflow rules forbid pointing formal evidence back inside `.worktrees/...`.
 
 Resume is explicit:
 
@@ -473,11 +479,9 @@ Resume is explicit:
 
 Resume accepts only a concrete `checkpoint-*` directory inside the already-existing run. The existing run's
 model, effective config/seed, train and validation datasets, repository/Open-R1 commits, dependency lock, and
-recorded cost must match; external or cross-run checkpoints are rejected. GPU-hours accumulate across attempts.
-If `--seed` is omitted, `train-sft` uses the YAML seed. An explicit different CLI seed is printed as an override
-and becomes the resolved run identity.
+recorded cost must match; external or cross-run checkpoints are rejected. GPU-hours accumulate across payload-free attempt records; each attempt stores start/end/status, resume source, and attempt GPU-hours. `gpu_hours_semantics` defines SFT cost as attempt wall time multiplied by the single GPU used, covering trajectory validation, model loading, training, and saving. If `--seed` is omitted, `train-sft` uses the YAML seed. An explicit different CLI seed is printed as an override and becomes the resolved run identity.
 
-Each run uses `<artifact-root>/sft/<run-name>/` (default local path `outputs/sft/<run-name>/` when no artifact root is supplied) with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. `configs/sft/debug.yaml` is a short 0.5B/fp16 path with evaluation disabled. `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration and evaluates every 100 steps against the independent visible-only `training/sft_validation.jsonl` artifact. Both enforce a non-lowerable project minimum of 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
+Each run uses `<artifact-root>/sft/<run-name>/` (default local path `outputs/sft/<run-name>/` when no artifact root is supplied) with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. Trainer history preserves every finite numeric scalar, while the final summary also stores the Trainer's finite numeric result metrics plus project-owned `global_step`, train/eval counts, peak CUDA allocated/reserved bytes, GPU count, attempt GPU-hours, and cumulative GPU-hours. Formal config disables NaN/Inf filtering, retains all numeric `checkpoint-*` directories (`save_total_limit=None`, `save_only_model=False`), and logs every optimizer step; non-finite numeric telemetry fails closed. `configs/sft/debug.yaml` remains the short 0.5B/fp16 development path. `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration and evaluates every 100 steps against the independent visible-only `training/sft_validation.jsonl` artifact. All SFT configs enforce a non-lowerable project minimum of 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
 
 WP6-a does not claim a real SFT checkpoint or B-group result. The final SFT validation still requires a 24GB GPU with at least 50 validated SFT examples and must complete the real 1–2 step smoke, finite-loss check, checkpoint reload, unified deterministic pass@1 evaluation, and cost recording; that validation does not block later dependency-ready code development.
 

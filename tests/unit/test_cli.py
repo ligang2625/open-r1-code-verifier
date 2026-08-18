@@ -1072,8 +1072,140 @@ def test_train_sft_help_exposes_common_and_resume_arguments(capsys: Any) -> None
 
     assert error.value.code == 0
     help_text = capsys.readouterr().out
-    for option in ("--help", "--config", "--seed", "--output-dir", "--log-level", "--resume-from-checkpoint"):
+    for option in (
+        "--help",
+        "--config",
+        "--dataset-dir",
+        "--run-name",
+        "--seed",
+        "--output-dir",
+        "--log-level",
+        "--resume-from-checkpoint",
+    ):
         assert option in help_text
+
+
+def test_train_sft_parser_accepts_formal_dataset_and_run_overrides() -> None:
+    args = build_parser().parse_args(
+        [
+            "train-sft",
+            "--config",
+            "configs/sft/main.yaml",
+            "--dataset-dir",
+            "/formal/prepared",
+            "--run-name",
+            "B-sft-formal-seed42",
+        ]
+    )
+
+    assert args.dataset_dir == Path("/formal/prepared")
+    assert args.run_name == "B-sft-formal-seed42"
+
+
+def test_train_sft_handler_applies_formal_dataset_and_run_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    seen: list[object] = []
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    def fake_run(config: object, **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        seen.append(config)
+        return SimpleNamespace(
+            train_samples=1,
+            train_loss=0.25,
+            run_dir=tmp_path / "outputs/sft/B-sft-formal-seed42",
+            checkpoint_dir=tmp_path / "outputs/sft/B-sft-formal-seed42/checkpoints",
+        )
+
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
+    prepared = tmp_path / "prepared"
+
+    assert (
+        main(
+            [
+                "train-sft",
+                "--config",
+                "configs/sft/main.yaml",
+                "--dataset-dir",
+                str(prepared),
+                "--run-name",
+                "B-sft-formal-seed42",
+                "--output-dir",
+                str(tmp_path / "outputs/sft"),
+            ]
+        )
+        == 0
+    )
+    effective = cast(Any, seen[0])
+    assert effective.dataset_path == prepared / "training/sft.jsonl"
+    assert effective.validation_dataset_path == prepared / "training/sft_validation.jsonl"
+    assert effective.run_name == "B-sft-formal-seed42"
+    stderr = capsys.readouterr().err
+    assert "override: dataset_path:" in stderr
+    assert "override: validation_dataset_path:" in stderr
+    assert "override: run_name: main -> B-sft-formal-seed42" in stderr
+
+
+def test_train_sft_dataset_override_preserves_no_eval_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: list[object] = []
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    def fake_run(config: object, **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        seen.append(config)
+        return SimpleNamespace(
+            train_samples=1,
+            train_loss=0.25,
+            run_dir=tmp_path / "outputs/sft/smoke",
+            checkpoint_dir=tmp_path / "outputs/sft/smoke/checkpoints",
+        )
+
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
+    prepared = tmp_path / "prepared"
+
+    assert (
+        main(
+            [
+                "train-sft",
+                "--config",
+                "configs/sft/validation-smoke.yaml",
+                "--dataset-dir",
+                str(prepared),
+                "--run-name",
+                "smoke",
+                "--output-dir",
+                str(tmp_path / "outputs/sft"),
+            ]
+        )
+        == 0
+    )
+    effective = cast(Any, seen[0])
+    assert effective.dataset_path == prepared / "training/sft.jsonl"
+    assert effective.validation_dataset_path is None
 
 
 def test_train_sft_reports_hardware_or_runtime_error_without_traceback(
