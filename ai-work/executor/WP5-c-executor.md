@@ -232,3 +232,40 @@ These observations are deliberately **not modified in WP5-c** because SFT/GRPO a
 - WP8 final analysis should be updated to consume the evaluation run's stored `piston_config_sha256` rather than reopening the ephemeral absolute Piston-config path from `resolved_config.yaml`. This is a future analysis-code change only; the necessary immutable data is now captured by C2, so it will not require rerunning A/B/C/D.
 
 - The formal 400-problem evaluation has **not** been executed by Web GPT/CodexPro for C2.
+
+## E1 — Completed R1-M1 repair after C2 operator resume
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP5-c
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: 34c37aa0a8d8b432cc920aa9e130e986c7e0e27f
+  source_review_round: 1
+  source_review_commit: 0355f95085870179e9980fd1be1c303a3c5fa136
+  repair_issue_ids:
+    - R1-M1
+  result_code_commit: 5bdff18b4b88f9a507331ba2e303042a447ca684
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  resumed_from_checkpoint_id: C2
+  resumed_from_checkpoint_commit: 5bdff18b4b88f9a507331ba2e303042a447ca684
+  status: completed
+```
+
+### Completed repair evidence
+
+- Routing source remained the committed R1 `repair_routing`: `mode=single`, `complexity=normal`, issue `R1-M1`; Web runtime therefore used `effective_execution_mode=single` without modifying the sealed review routing.
+- Resume provenance is exact: current checkpoint commit `5bdff18b4b88f9a507331ba2e303042a447ca684` has parent `a7033238a0a202084abc2308940955c73fffae90`, changes only `ai-work/executor/WP5-c-executor.md`, and C2 script SHA256 remained `1c561a7f8d23b5a0c14955a8010f924648291a12eee279b58265f0dc50072d2f`.
+- C2 operator terminal status is `0`. Its append-only log records `evaluated 400 problems (resumed=0, generated=400)` and `2026-08-18T06:54:13Z long-command-end rc=0`; Web GPT/CodexPro did not run that long command.
+- Router/stage validation preflight passed on the recorded RTX 4090 machine: PyTorch `2.6.0+cu124`, CUDA `12.4`, NVIDIA GeForce RTX 4090, 22683 MiB reported total VRAM; persistent roots remained `/root/sj-tmp/open-r1-code-verifier-outputs`, `/root/sj-tmp/huggingface`, and `/root/sj-tmp/open-r1-code-verifier-data-4090` outside the stage worktree.
+- Canonical Base A run is `/root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42`. `run.json.status=completed`, start/end are `2026-08-18T05:59:25.773910+00:00` / `2026-08-18T06:53:54.534608+00:00`, `gpu_count_used=1`, and `gpu_hours=0.4206591900355286` exactly equals the sum of all persisted per-problem generation latencies divided by 3,600,000.
+- Run identities are fixed and accepted: dataset hash `770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae`; config hash `fd1aaebe1b076c9a062826eae32bb94e2e0caf20b876ac7ddd3911bb65ab7d32`; model `Qwen/Qwen2.5-Coder-1.5B-Instruct@2e1fd397ee46e1388853d2af2c993145b0f1098a`; checkpoint `base`; seed `42`; Open-R1 commit `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`; dependency lock hash `59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560`; Piston config SHA256 `f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`.
+- Strict result readback passed: exactly 400 rows, 400 unique problem IDs, exact order equality with the formal test split, and all rows satisfy the new `hit_max_new_tokens` boolean contract. Six of 400 completions reached the configured 512-token generation limit.
+- Formal result SHA256 is `3c512ea6aeb160efa865e7b00c52a7494929f68d9bf10683b8746c6eac2d411b`. Pre-resume `run.json`, `summary.json`, and `main_results.csv` SHA256 values were `68a11f5d53f36c007bf246d1817e3dec334cca504685c6d5ea280bcadd90678a`, `46b882aedad073692ec67b80c1350f1848c6dcb74fa79c17398d2e3f871edf3a`, and `8b432dc133197c7e0e0db293a932ffbadf32aec86a2d5dc6a26bbf0c7c4f99f6`.
+- Executor-owned exact-prefix verification used the same env/config/dataset/model/run-name/seed and returned `evaluated 400 problems (resumed=400, generated=0)`. The result/run/summary/CSV SHA256 values above were unchanged after this zero-generation verification.
+- Formal numerical evidence remains finite and consistent: Eval-Hidden Pass@1 `0.115` with 95% problem-level bootstrap CI `[0.085, 0.1475]`; visible/train-hidden Pass@1 `0.1225/0.1175`; eval-hidden average test pass rate `0.13875`; public-eval gap `0.0075`; bootstrap uses 10,000 problem-level resamples with seed 42.
+- Non-sample payload scan passed across run/environment/resolved-config/metrics/stdout/stderr/summary/main-results artifacts; completion/code/hidden-test/reference/starter/SFT-response payload fields remain confined to the intended sample/result or source-data boundaries.
+- Final executor-owned acceptance after operator resume: `make lint` PASS; `make test` PASS with 887 passed, 3 expected real-Piston opt-in skips, 0 failed; exact-revision `make test-gpu` PASS with 3/3; real loopback `make test-piston` PASS with 9/9 selected passed, 0 failed/skipped (`2 deselected`).
+- R1-M1 is therefore completed without fabricating old timing data: the old formal evidence and the intentionally interrupted C1 prefix remain quarantined with their recorded hashes, while the new canonical C2 run supplies the required timing/cost and analysis-readiness provenance.
