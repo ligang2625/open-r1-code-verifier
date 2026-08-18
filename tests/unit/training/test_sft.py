@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 import code_verifier.training.sft as sft_module
-from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
+from code_verifier.execution import ExecutionResult, ExecutionStatus
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.sft import (
     SFTCheckpointIdentity,
@@ -543,6 +543,19 @@ def _prepare_fake_run(
     )
     monkeypatch.setattr(sft_module, "_reset_cuda_peak_memory", lambda: None)
     monkeypatch.setattr(sft_module, "_peak_cuda_memory_bytes", lambda: (1234, 5678))
+    monkeypatch.setattr(
+        sft_module,
+        "validate_sft_prevalidation_manifest",
+        lambda path, **kwargs: SimpleNamespace(
+            manifest_sha256="a" * 64,
+            validator_project_commit="4" * 40,
+            piston_config_sha256="5" * 64,
+            piston_executor_version="piston:fixture",
+            train_samples=1,
+            validation_samples=0,
+            max_token_count=17,
+        ),
+    )
     return config, tmp_path / "outputs"
 
 
@@ -555,7 +568,7 @@ def test_run_artifacts_are_payload_free_and_loss_must_be_finite(
         config,
         output_root=output_root,
         seed=42,
-        executor=MockExecutor([_execution_result()]),
+        prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
     )
 
     assert summary.train_loss == 0.25
@@ -593,7 +606,7 @@ def test_run_artifacts_are_payload_free_and_loss_must_be_finite(
             invalid_config,
             output_root=invalid_root,
             seed=42,
-            executor=MockExecutor([_execution_result()]),
+            prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
         )
     invalid_run = invalid_root / "invalid-loss"
     assert json.loads((invalid_run / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
@@ -621,7 +634,7 @@ def test_eval_strategy_steps_builds_independent_payload_minimal_validation_datas
         config,
         output_root=output_root,
         seed=42,
-        executor=MockExecutor([_execution_result(), _execution_result()]),
+        prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
     )
 
     trainer = _FakeTrainer.instances[0]
@@ -649,7 +662,7 @@ def test_run_sft_training_persists_finite_trainer_curve_metrics(
         config,
         output_root=output_root,
         seed=42,
-        executor=MockExecutor([_execution_result()]),
+        prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
     )
 
     metrics = [json.loads(line) for line in (summary.run_dir / "metrics.jsonl").read_text().splitlines()]
@@ -690,7 +703,7 @@ def test_sft_trainer_metrics_reject_non_finite_values(
             config,
             output_root=output_root,
             seed=42,
-            executor=MockExecutor([_execution_result()]),
+            prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
         )
 
 
@@ -711,7 +724,7 @@ def test_keyboard_interrupt_closes_attempt_and_persists_cost(
             config,
             output_root=output_root,
             seed=42,
-            executor=MockExecutor([_execution_result()]),
+            prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
         )
 
     run_dir = output_root / config.run_name
@@ -738,7 +751,7 @@ def test_resume_rejects_fresh_run_external_and_cross_run_checkpoints(
             config,
             output_root=output_root,
             seed=42,
-            executor=MockExecutor([_execution_result()]),
+            prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
             resume_from_checkpoint=external_checkpoint,
         )
 
@@ -746,7 +759,7 @@ def test_resume_rejects_fresh_run_external_and_cross_run_checkpoints(
         config,
         output_root=output_root,
         seed=42,
-        executor=MockExecutor([_execution_result()]),
+        prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
     )
     run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     run_metadata["status"] = "failed"
@@ -758,7 +771,7 @@ def test_resume_rejects_fresh_run_external_and_cross_run_checkpoints(
             config,
             output_root=output_root,
             seed=42,
-            executor=MockExecutor([_execution_result()]),
+            prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
             resume_from_checkpoint=other_checkpoint,
         )
 
@@ -772,7 +785,7 @@ def test_resume_is_provenance_bound_records_source_and_accumulates_cost(
         config,
         output_root=output_root,
         seed=7,
-        executor=MockExecutor([_execution_result()]),
+        prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
     )
     checkpoint = summary.checkpoint_dir / "checkpoint-1"
     checkpoint.mkdir()
@@ -785,7 +798,7 @@ def test_resume_is_provenance_bound_records_source_and_accumulates_cost(
         config,
         output_root=output_root,
         seed=7,
-        executor=MockExecutor([_execution_result()]),
+        prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
         resume_from_checkpoint=checkpoint,
     )
 
@@ -817,7 +830,7 @@ def test_resume_rejects_repository_provenance_drift(
         config,
         output_root=output_root,
         seed=42,
-        executor=MockExecutor([_execution_result()]),
+        prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
     )
     checkpoint = summary.checkpoint_dir / "checkpoint-1"
     checkpoint.mkdir()
@@ -831,6 +844,60 @@ def test_resume_rejects_repository_provenance_drift(
             config,
             output_root=output_root,
             seed=42,
-            executor=MockExecutor([_execution_result()]),
+            prevalidation_manifest=config.dataset_path.parent / "prevalidation.json",
+            resume_from_checkpoint=checkpoint,
+        )
+
+
+def test_manifest_backed_training_skips_inline_piston_and_binds_resume_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, output_root = _prepare_fake_run(tmp_path, monkeypatch)
+    manifest_a = tmp_path / "prevalidation-a.json"
+    manifest_b = tmp_path / "prevalidation-b.json"
+
+    def evidence_for(path: Path, **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        digest = "a" * 64 if path == manifest_a else "b" * 64
+        return SimpleNamespace(
+            manifest_sha256=digest,
+            validator_project_commit="4" * 40,
+            piston_config_sha256="5" * 64,
+            piston_executor_version="piston:fixture",
+            train_samples=1,
+            validation_samples=0,
+            max_token_count=17,
+        )
+
+    monkeypatch.setattr(sft_module, "validate_sft_prevalidation_manifest", evidence_for)
+    assert not hasattr(sft_module, "build_sft_dataset")
+
+    summary = run_sft_training(
+        config,
+        output_root=output_root,
+        seed=42,
+        prevalidation_manifest=manifest_a,
+    )
+    metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert metadata["prevalidation_mode"] == "manifest"
+    assert metadata["prevalidation_manifest_sha256"] == "a" * 64
+    assert metadata["prevalidation_validator_project_commit"] == "4" * 40
+    assert metadata["prevalidation_piston_config_sha256"] == "5" * 64
+    assert metadata["prevalidation_piston_executor_version"] == "piston:fixture"
+    assert metadata["prevalidation_max_token_count"] == 17
+    assert "off-GPU prevalidation is excluded" in metadata["gpu_hours_semantics"]
+
+    checkpoint = summary.checkpoint_dir / "checkpoint-1"
+    checkpoint.mkdir()
+    metadata["status"] = "failed"
+    (summary.run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(SFTTrainingError, match="identity"):
+        run_sft_training(
+            config,
+            output_root=output_root,
+            seed=42,
+            prevalidation_manifest=manifest_b,
             resume_from_checkpoint=checkpoint,
         )

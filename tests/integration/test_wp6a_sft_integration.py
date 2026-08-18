@@ -10,8 +10,6 @@ from typing import Any, ClassVar, cast
 import pytest
 
 import code_verifier.training.sft as sft_module
-from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
-from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.sft import (
     SFTTrainingConfig,
     _SFTRuntime,
@@ -77,25 +75,6 @@ def _runtime() -> _SFTRuntime:
     )
 
 
-def _passing_result() -> ExecutionResult:
-    return ExecutionResult(
-        status=ExecutionStatus.PASSED,
-        passed_tests=1,
-        total_tests=1,
-        pass_rate=1.0,
-        runtime_ms=1.0,
-        test_results=[
-            ExecutionTestCaseResult(
-                status=ExecutionStatus.PASSED,
-                passed=True,
-                runtime_ms=1.0,
-                stdout="",
-                stderr="",
-            )
-        ],
-    )
-
-
 def _record() -> dict[str, object]:
     return {
         "problem_id": "wp6a-1",
@@ -153,6 +132,19 @@ def _install_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     _Trainer.instances.clear()
     monkeypatch.setattr(sft_module, "validate_sft_training_hardware", lambda _: None)
     monkeypatch.setattr(sft_module, "_load_sft_runtime", _runtime)
+    monkeypatch.setattr(
+        sft_module,
+        "validate_sft_prevalidation_manifest",
+        lambda path, **kwargs: SimpleNamespace(
+            manifest_sha256="a" * 64,
+            validator_project_commit="4" * 40,
+            piston_config_sha256="5" * 64,
+            piston_executor_version="piston:fixture",
+            train_samples=1,
+            validation_samples=0,
+            max_token_count=4,
+        ),
+    )
 
 
 def test_wp6a_sft_pipeline_maps_visible_only_data_and_writes_reproducible_artifacts(
@@ -163,17 +155,14 @@ def test_wp6a_sft_pipeline_maps_visible_only_data_and_writes_reproducible_artifa
     artifact.write_text(json.dumps(_record()) + "\n", encoding="utf-8")
     config = _config(tmp_path, artifact)
     _install_fakes(monkeypatch)
-    executor = MockExecutor([_passing_result()])
-
     summary = run_sft_training(
         config,
         output_root=tmp_path / "outputs" / "sft",
         seed=42,
-        executor=executor,
+        prevalidation_manifest=tmp_path / "prevalidation.json",
     )
 
     assert summary.train_loss == 0.125
-    assert executor.calls[0].tests == [{"input": "VISIBLE_VALUE", "expected": "VISIBLE_VALUE"}]
     trainer_dataset = cast(Any, _Trainer.instances[0].kwargs["train_dataset"])
     assert trainer_dataset.column_names == ["prompt", "completion"]
     serialized = repr(trainer_dataset[0])
@@ -195,16 +184,13 @@ def test_wp6a_sft_pipeline_rejects_hidden_field_or_failed_trajectory(
     artifact.write_text(json.dumps(record) + "\n", encoding="utf-8")
     config = _config(tmp_path, artifact)
     _install_fakes(monkeypatch)
-    executor = MockExecutor([_passing_result()])
-
     with pytest.raises(ValueError):
         run_sft_training(
             config,
             output_root=tmp_path / "outputs" / "sft",
             seed=42,
-            executor=executor,
+            prevalidation_manifest=tmp_path / "prevalidation.json",
         )
 
-    assert executor.calls == ()
     assert _Tokenizer.calls == []
     assert _Trainer.instances == []

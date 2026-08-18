@@ -25,9 +25,12 @@ import yaml
 from code_verifier.config import ConfigError, load_yaml_mapping
 from code_verifier.data.leakage_checks import TrainingArtifactKind, load_training_artifact
 from code_verifier.environment import collect_environment
-from code_verifier.execution.base import CodeExecutor
 from code_verifier.training.open_r1_adapter import import_open_r1_module
-from code_verifier.training.sft_data import build_sft_dataset
+from code_verifier.training.sft_data import build_prevalidated_sft_dataset
+from code_verifier.training.sft_prevalidation import (
+    SFTPrevalidationEvidence,
+    validate_sft_prevalidation_manifest,
+)
 
 
 @dataclass(frozen=True)
@@ -150,7 +153,8 @@ _SFT_RUN_LAYOUT = {
 }
 _PEFT_ADAPTER_FILES = {"adapter_config.json", "adapter_model.safetensors"}
 _GPU_HOURS_SEMANTICS = (
-    "attempt wall time in hours multiplied by gpu_count_used; includes validation, model load, train, and save"
+    "attempt wall time in hours multiplied by gpu_count_used; includes in-process preflight/data mapping, "
+    "model load, train, and save; off-GPU prevalidation is excluded"
 )
 
 
@@ -723,6 +727,7 @@ def _initialize_run(
     validation_dataset_hash: str | None,
     config_hash: str,
     environment: Mapping[str, Any],
+    prevalidation_evidence: SFTPrevalidationEvidence,
 ) -> dict[str, object]:
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "checkpoints").mkdir()
@@ -746,6 +751,12 @@ def _initialize_run(
         "dataset_hash": dataset_hash,
         "validation_dataset_hash": validation_dataset_hash,
         "config_hash": config_hash,
+        "prevalidation_mode": "manifest",
+        "prevalidation_manifest_sha256": prevalidation_evidence.manifest_sha256,
+        "prevalidation_validator_project_commit": prevalidation_evidence.validator_project_commit,
+        "prevalidation_piston_config_sha256": prevalidation_evidence.piston_config_sha256,
+        "prevalidation_piston_executor_version": prevalidation_evidence.piston_executor_version,
+        "prevalidation_max_token_count": prevalidation_evidence.max_token_count,
         "seed": seed,
         "seed_override": None if seed == config.seed else {"config": config.seed, "cli": seed},
         "resume_from_checkpoint": None,
@@ -774,6 +785,7 @@ def _validate_resume_run(
     validation_dataset_hash: str | None,
     config_hash: str,
     environment: Mapping[str, Any],
+    prevalidation_evidence: SFTPrevalidationEvidence,
     resume_source: str,
 ) -> dict[str, object]:
     try:
@@ -789,6 +801,12 @@ def _validate_resume_run(
         "dataset_hash": dataset_hash,
         "validation_dataset_hash": validation_dataset_hash,
         "config_hash": config_hash,
+        "prevalidation_mode": "manifest",
+        "prevalidation_manifest_sha256": prevalidation_evidence.manifest_sha256,
+        "prevalidation_validator_project_commit": prevalidation_evidence.validator_project_commit,
+        "prevalidation_piston_config_sha256": prevalidation_evidence.piston_config_sha256,
+        "prevalidation_piston_executor_version": prevalidation_evidence.piston_executor_version,
+        "prevalidation_max_token_count": prevalidation_evidence.max_token_count,
         "seed": seed,
         "git_commit": environment["project_commit"],
         "open_r1_commit": environment["open_r1_commit"],
@@ -871,12 +889,21 @@ def run_sft_training(
     *,
     output_root: Path,
     seed: int,
-    executor: CodeExecutor,
+    prevalidation_manifest: Path,
     resume_from_checkpoint: Path | None = None,
 ) -> SFTTrainingSummary:
-    """Validate trajectories and run one local-only pinned LoRA SFT lifecycle."""
+    """Run one pinned LoRA SFT lifecycle using durable off-GPU prevalidation evidence."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise SFTTrainingError("seed must be an integer")
+    prevalidation_evidence = validate_sft_prevalidation_manifest(
+        prevalidation_manifest,
+        dataset_path=config.dataset_path,
+        validation_dataset_path=config.validation_dataset_path,
+        model_id=config.model_id,
+        model_revision=config.model_revision,
+        max_seq_length=config.max_seq_length,
+        piston_config_path=config.piston_config,
+    )
     validate_sft_training_hardware(config)
     runtime = _load_sft_runtime()
     run_dir = _safe_run_dir(output_root, config.run_name)
@@ -902,6 +929,7 @@ def run_sft_training(
             validation_dataset_hash=validation_dataset_hash,
             config_hash=config_hash,
             environment=environment,
+            prevalidation_evidence=prevalidation_evidence,
             resume_source=resume_source,
         )
     else:
@@ -916,6 +944,7 @@ def run_sft_training(
                 validation_dataset_hash=validation_dataset_hash,
                 config_hash=config_hash,
                 environment=environment,
+                prevalidation_evidence=prevalidation_evidence,
             )
         except Exception:
             shutil.rmtree(run_dir, ignore_errors=True)
@@ -940,23 +969,9 @@ def run_sft_training(
             seed=seed,
             runtime=runtime,
         )
-        tokenizer = runtime.get_tokenizer(model_args, training_args)
-        train_dataset = build_sft_dataset(
-            records,
-            executor=executor,
-            tokenizer=tokenizer,
-            max_seq_length=config.max_seq_length,
-        )
-        eval_dataset = (
-            None
-            if validation_records is None
-            else build_sft_dataset(
-                validation_records,
-                executor=executor,
-                tokenizer=tokenizer,
-                max_seq_length=config.max_seq_length,
-            )
-        )
+        codec = runtime.get_tokenizer(model_args, training_args)
+        train_dataset = build_prevalidated_sft_dataset(records)
+        eval_dataset = None if validation_records is None else build_prevalidated_sft_dataset(validation_records)
         _reset_cuda_peak_memory()
         with _without_unconfigured_deepspeed_backend():
             model = runtime.get_model(model_args, training_args)
@@ -965,7 +980,7 @@ def run_sft_training(
                 args=training_args,
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
-                processing_class=tokenizer,
+                processing_class=codec,
                 peft_config=runtime.get_peft_config(model_args),
             )
             train_result = trainer.train(resume_from_checkpoint=resume_path)

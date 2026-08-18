@@ -65,6 +65,7 @@ from code_verifier.training import (
     GRPODataError,
     GRPOTrainingError,
     SFTDataError,
+    SFTPrevalidationError,
     SFTTrainingError,
     grpo_evaluation_checkpoint_id,
     load_completed_grpo_checkpoint,
@@ -72,6 +73,7 @@ from code_verifier.training import (
     load_grpo_training_config,
     load_sft_training_config,
     run_grpo_training,
+    run_sft_prevalidation,
     run_sft_training,
 )
 
@@ -94,7 +96,7 @@ EXECUTION_ERRORS = (
     UnicodeError,
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
-TRAINING_ERRORS = (SFTDataError, SFTTrainingError, GRPODataError, GRPOTrainingError)
+TRAINING_ERRORS = (SFTDataError, SFTPrevalidationError, SFTTrainingError, GRPODataError, GRPOTrainingError)
 ANALYSIS_ERRORS = (AnalysisError,)
 ARTIFACT_ROOT_ENV = "CODE_VERIFIER_ARTIFACT_ROOT"
 
@@ -417,8 +419,68 @@ def _evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prevalidate_sft(args: argparse.Namespace) -> int:
+    """Run the visible-only SFT data gate on a non-training Piston host."""
+    config = load_sft_training_config(Path(str(args.config)))
+    if args.dataset_dir is not None:
+        prepared_dir = Path(str(args.dataset_dir))
+        dataset_path = prepared_dir / "training" / "sft.jsonl"
+        validation_dataset_path = (
+            None if config.eval_strategy == "no" else prepared_dir / "training" / "sft_validation.jsonl"
+        )
+        print(f"override: dataset_path: {config.dataset_path} -> {dataset_path}", file=sys.stderr)
+        if config.eval_strategy != "no":
+            print(
+                f"override: validation_dataset_path: {config.validation_dataset_path} -> {validation_dataset_path}",
+                file=sys.stderr,
+            )
+        config = replace(
+            config,
+            dataset_path=dataset_path,
+            validation_dataset_path=validation_dataset_path,
+        )
+
+    workers = int(args.workers)
+    progress_every = int(args.progress_every)
+
+    def progress(split: str, completed: int, total: int, elapsed_seconds: float) -> None:
+        rate = completed / elapsed_seconds if elapsed_seconds > 0 else 0.0
+        print(
+            f"prevalidation-progress split={split} completed={completed}/{total} "
+            f"elapsed_seconds={elapsed_seconds:.1f} rate={rate:.2f}_records_per_second",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    print(
+        f"prevalidation-start workers={workers} train={config.dataset_path} "
+        f"validation={config.validation_dataset_path}",
+        file=sys.stderr,
+        flush=True,
+    )
+    summary = run_sft_prevalidation(
+        dataset_path=config.dataset_path,
+        validation_dataset_path=config.validation_dataset_path,
+        model_id=config.model_id,
+        model_revision=config.model_revision,
+        max_seq_length=config.max_seq_length,
+        piston_config_path=config.piston_config,
+        output_manifest=Path(str(args.output_manifest)),
+        workers=workers,
+        progress_every=progress_every,
+        progress_callback=progress,
+    )
+    print(
+        f"prevalidated {summary.total_samples} samples "
+        f"(train={summary.train_samples}, validation={summary.validation_samples}, "
+        f"max_tokens={summary.max_token_count}, elapsed_seconds={summary.elapsed_seconds:.1f})"
+    )
+    print(f"manifest={summary.manifest_path}")
+    return 0
+
+
 def _train_sft(args: argparse.Namespace) -> int:
-    """Run one strict visible-only LoRA SFT workflow through loopback Piston validation."""
+    """Run LoRA SFT only after strict off-GPU prevalidation evidence is supplied."""
     config = load_sft_training_config(Path(str(args.config)))
     if args.dataset_dir is not None:
         prepared_dir = Path(str(args.dataset_dir))
@@ -445,15 +507,12 @@ def _train_sft(args: argparse.Namespace) -> int:
     effective_seed = config.seed if cli_seed is None else cli_seed
     if cli_seed is not None and cli_seed != config.seed:
         print(f"override: seed: {config.seed} -> {cli_seed}", file=sys.stderr)
-    piston_config = load_piston_executor_config(config.piston_config)
-    executor = PistonExecutor(piston_config)
-    executor.validate_runtime()
     resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
     summary = run_sft_training(
         config,
         output_root=Path(str(args.output_dir)),
         seed=effective_seed,
-        executor=executor,
+        prevalidation_manifest=Path(str(args.prevalidation_manifest)),
         resume_from_checkpoint=resume,
     )
     print(f"trained {summary.train_samples} samples (train_loss={summary.train_loss:g})")
@@ -620,6 +679,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate_parser.set_defaults(handler=_evaluate)
 
+    prevalidate_sft_parser = subparsers.add_parser(
+        "prevalidate-sft",
+        help="validate SFT trajectories through local Piston and write a durable manifest",
+    )
+    prevalidate_sft_parser.add_argument("--config", type=Path, required=True, help="SFT YAML config path")
+    prevalidate_sft_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override for SFT train/validation artifacts",
+    )
+    prevalidate_sft_parser.add_argument(
+        "--output-manifest",
+        type=Path,
+        required=True,
+        help="new immutable prevalidation manifest path",
+    )
+    prevalidate_sft_parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="bounded concurrent Piston workers (default: 4, maximum: 32)",
+    )
+    prevalidate_sft_parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=25,
+        help="print progress after this many completed records (default: 25)",
+    )
+    prevalidate_sft_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
+    prevalidate_sft_parser.set_defaults(handler=_prevalidate_sft)
+
     train_sft_parser = subparsers.add_parser(
         "train-sft",
         help="run visible-validated LoRA supervised fine-tuning",
@@ -635,6 +726,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=_safe_run_name,
         default=None,
         help="optional safe SFT run id override",
+    )
+    train_sft_parser.add_argument(
+        "--prevalidation-manifest",
+        type=Path,
+        required=True,
+        help="completed off-GPU SFT prevalidation manifest",
     )
     train_sft_parser.add_argument(
         "--resume-from-checkpoint",

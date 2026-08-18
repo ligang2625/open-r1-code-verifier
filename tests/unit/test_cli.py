@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -481,7 +482,9 @@ def test_persistent_artifact_root_changes_model_output_defaults(
     evaluate_args = parser.parse_args(
         ["evaluate", "--config", "eval.yaml", "--model-id", "example/model", "--run-name", "base-debug"]
     )
-    sft_args = parser.parse_args(["train-sft", "--config", "sft.yaml"])
+    sft_args = parser.parse_args(
+        ["train-sft", "--config", "sft.yaml", "--prevalidation-manifest", "prevalidation.json"]
+    )
     explicit_output = tmp_path / "explicit"
     explicit_args = parser.parse_args(
         [
@@ -1077,6 +1080,7 @@ def test_train_sft_help_exposes_common_and_resume_arguments(capsys: Any) -> None
         "--config",
         "--dataset-dir",
         "--run-name",
+        "--prevalidation-manifest",
         "--seed",
         "--output-dir",
         "--log-level",
@@ -1091,6 +1095,8 @@ def test_train_sft_parser_accepts_formal_dataset_and_run_overrides() -> None:
             "train-sft",
             "--config",
             "configs/sft/main.yaml",
+            "--prevalidation-manifest",
+            "/formal/prevalidation.json",
             "--dataset-dir",
             "/formal/prepared",
             "--run-name",
@@ -1109,13 +1115,10 @@ def test_train_sft_handler_applies_formal_dataset_and_run_overrides(
 ) -> None:
     seen: list[object] = []
 
-    class FakePistonExecutor:
+    class ForbiddenPistonExecutor:
         def __init__(self, config: object) -> None:
             del config
-
-        @staticmethod
-        def validate_runtime() -> str:
-            return "3.10.0"
+            raise AssertionError("train-sft must not construct Piston")
 
     def fake_run(config: object, **kwargs: object) -> SimpleNamespace:
         del kwargs
@@ -1127,8 +1130,12 @@ def test_train_sft_handler_applies_formal_dataset_and_run_overrides(
             checkpoint_dir=tmp_path / "outputs/sft/B-sft-formal-seed42/checkpoints",
         )
 
-    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
-    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(
+        cli_module,
+        "load_piston_executor_config",
+        lambda path: (_ for _ in ()).throw(AssertionError("train-sft must not load Piston config")),
+    )
+    monkeypatch.setattr(cli_module, "PistonExecutor", ForbiddenPistonExecutor)
     monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
     prepared = tmp_path / "prepared"
 
@@ -1138,6 +1145,8 @@ def test_train_sft_handler_applies_formal_dataset_and_run_overrides(
                 "train-sft",
                 "--config",
                 "configs/sft/main.yaml",
+                "--prevalidation-manifest",
+                str(tmp_path / "prevalidation.json"),
                 "--dataset-dir",
                 str(prepared),
                 "--run-name",
@@ -1193,6 +1202,8 @@ def test_train_sft_dataset_override_preserves_no_eval_mode(
                 "train-sft",
                 "--config",
                 "configs/sft/validation-smoke.yaml",
+                "--prevalidation-manifest",
+                str(tmp_path / "prevalidation.json"),
                 "--dataset-dir",
                 str(prepared),
                 "--run-name",
@@ -1233,7 +1244,7 @@ def test_train_sft_reports_hardware_or_runtime_error_without_traceback(
         lambda *args, **kwargs: (_ for _ in ()).throw(SFTTrainingError("training hardware rejected")),
     )
 
-    assert main(["train-sft", "--config", "sft.yaml"]) == 2
+    assert main(["train-sft", "--config", "sft.yaml", "--prevalidation-manifest", "prevalidation.json"]) == 2
     output = capsys.readouterr()
     assert "training hardware rejected" in output.err
     assert "Traceback" not in output.err
@@ -1272,11 +1283,24 @@ def test_train_sft_uses_yaml_seed_and_prints_explicit_cli_override(
     monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
     monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
 
-    assert main(["train-sft", "--config", "sft.yaml"]) == 0
+    assert main(["train-sft", "--config", "sft.yaml", "--prevalidation-manifest", "prevalidation.json"]) == 0
     assert seen_seeds == [7]
     assert "override:" not in capsys.readouterr().err
 
-    assert main(["train-sft", "--config", "sft.yaml", "--seed", "11"]) == 0
+    assert (
+        main(
+            [
+                "train-sft",
+                "--config",
+                "sft.yaml",
+                "--prevalidation-manifest",
+                "prevalidation.json",
+                "--seed",
+                "11",
+            ]
+        )
+        == 0
+    )
     assert seen_seeds == [7, 11]
     assert "override: seed: 7 -> 11" in capsys.readouterr().err
 
@@ -1899,3 +1923,55 @@ def test_analyze_results_default_output_honors_artifact_root(
     args = parser.parse_args(["analyze-results", "--manifest", "analysis.yaml"])
 
     assert args.output_dir == tmp_path / "persistent" / "analysis"
+
+
+def test_prevalidate_sft_handler_runs_off_gpu_gate_and_reports_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_prevalidate(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        progress = cast(Callable[[str, int, int, float], None], kwargs["progress_callback"])
+        progress("train", 25, 2500, 5.0)
+        return SimpleNamespace(
+            total_samples=2800,
+            train_samples=2500,
+            validation_samples=300,
+            max_token_count=1519,
+            elapsed_seconds=42.0,
+            manifest_path=kwargs["output_manifest"],
+        )
+
+    monkeypatch.setattr(cli_module, "run_sft_prevalidation", fake_prevalidate)
+    prepared = tmp_path / "prepared"
+    manifest = tmp_path / "manifest.json"
+
+    assert (
+        main(
+            [
+                "prevalidate-sft",
+                "--config",
+                "configs/sft/main.yaml",
+                "--dataset-dir",
+                str(prepared),
+                "--output-manifest",
+                str(manifest),
+                "--workers",
+                "8",
+                "--progress-every",
+                "25",
+            ]
+        )
+        == 0
+    )
+    assert seen["dataset_path"] == prepared / "training/sft.jsonl"
+    assert seen["validation_dataset_path"] == prepared / "training/sft_validation.jsonl"
+    assert seen["output_manifest"] == manifest
+    assert seen["workers"] == 8
+    assert seen["progress_every"] == 25
+    output = capsys.readouterr()
+    assert "prevalidation-progress split=train completed=25/2500" in output.err
+    assert "prevalidated 2800 samples" in output.out
