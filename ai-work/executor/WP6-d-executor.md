@@ -287,3 +287,36 @@ execution_checkpoint:
 - The generation bundle does not carry hidden-test payloads. Verification remains the only phase that reads the three test layers, and only the verification machine needs the live Piston service.
 - The current C4 generation target is fresh. No generation bundle exists at checkpoint creation time.
 - No 1660 Ti project repository was accessed or modified during this repair; only its already-configured Piston service was used for the explicit 9/9 sandbox regression.
+
+## C5 — Accepted staged B generation; verification transfer deferred
+
+C4 was executed by the operator and accepted from its real persistent artifacts. The expensive 4090 generation phase is complete. The remaining B work is CPU/Piston verification plus aggregation on the 1660 Ti side, but this 4090 execution context is explicitly isolated from the 1660 Ti project repository while its independent workflow/infrastructure refactor is active. No transfer or verification command was attempted against that repository.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C5
+  stage_id: WP6-d
+  task_kind: implementation
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 41abf31618372445ba2233f386c08417b4407436
+  interruption_class: environment
+  resume_allowed: true
+  failed_command: "not executed: transfer generation bundle/code identity to the protected 1660 Ti project environment and run verify-eval"
+  blocker: "the 1660 Ti project repository is under an independent workflow/infrastructure refactor and must not be read, modified, or synchronized from this 4090 execution conversation until that isolation is released"
+  completed_scope:
+    - "C4 operator status is 0; terminal.log records all short preflights passing, generated 400 evaluation prompts with resumed=0/generated=400, and long-command-end rc=0"
+    - "completed generation run /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42 has status=completed, completed_records=400, total_problems=400, model Qwen/Qwen2.5-Coder-1.5B-Instruct revision 2e1fd397ee46e1388853d2af2c993145b0f1098a, formal B checkpoint binding, seed 42, and pinned Piston-definition SHA f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e"
+    - "strict project loader accepted all 400 generation rows; IDs are unique and exactly match the formal test problem order and Base A problem order; records SHA256=24cdd44976e7c8ff50934cb636ff7128497799c84f7b3739be89314fe477adfc and evaluation-contract SHA256=119fe22ee3983394ecae036b9ddc6a741766b07f3f09244765aa510679322a72"
+    - "generation telemetry is complete and finite: 400 metrics rows, cumulative generation latency 2738824.847012933 ms, 80456 completion tokens, hit_max_new_tokens count 0, and persisted generation GPU-hours 0.7607846797258146"
+    - "non-sample generation artifacts are completion-payload safe, and a strict completed-bundle no-op readback returned resumed=400/generated=0 without model generation"
+  remaining_scope:
+    - "after the 1660 Ti repository isolation is released, transfer the exact generation bundle plus the exact code/dependency identity and formal prepared data required by the cross-machine contract; do not regenerate any B completion"
+    - "on the 1660 Ti verification environment, run verify-eval for B-sft-formal-seed42 through the local loopback Piston service with bounded workers, preserving exact-prefix resume and canonical result ordering"
+    - "run aggregate-eval after 400/400 verification rows complete, then sync the completed B evaluation artifacts back for strict run/result/summary/payload/GPU-hours/provenance acceptance and A/B pairing readiness"
+    - "after final B acceptance, run any remaining short closeout gates required by the sealed plan, append completed E0, and stop before reviewer-ex; do not enter C/D in WP6-d"
+  status: interrupted
+```
