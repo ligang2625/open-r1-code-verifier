@@ -134,3 +134,8 @@ def test_active_stage_workflow_migration_preserves_sealed_provenance() -> None:
     assert "CUDA/VRAM/BF16" in executor_multi
     assert "没有 `operator_handoff_mode`" in reviewer
     assert "bootstrap_plan` 对新/纯 PLANNED stage 仍严格要求显式字段" in lifecycle
+    for document in (agents, workflow, lifecycle, router, executor_local, executor_multi, executor_web, reviewer):
+        assert "control_plane_manual" in document
+    assert "task_kind=repair" in router
+    assert "不能用于新 plan" in router
+    assert "不得要求或接受伪造的 4090 machine/GPU fields" in reviewer
