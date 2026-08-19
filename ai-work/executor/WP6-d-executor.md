@@ -351,3 +351,52 @@ execution_record:
   resumed_from_checkpoint_commit: c24728249f14a7952d98050210662b506c720884
   status: completed
 ```
+
+## C6 — R1-M1 control-plane manual verification provenance repair
+
+R1 independently accepted the scientific/numerical B evidence but found that the 400-problem Piston verification performed after the staged generation split lacked the sealed operator-terminal script/status/log provenance. The existing export, formal SFT, C3/C4 evidence, generation bundle, canonical B result, and Base A are preserved unchanged. Existing durable command/output evidence was sufficient to reconstruct and cross-check the exact verification identity, but not sufficient to authenticate an immutable operator script SHA plus terminal status/log retrospectively. Therefore this repair prepares a new **verification-only** manual operator checkpoint on the GTX 1660 Ti; it does not rerun SFT or model generation and it writes to a fresh non-overwriting repair namespace.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C6
+  stage_id: WP6-d
+  task_kind: repair
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: 1
+  source_review_commit: 6f80d545374809693d8a47defe791ee1f881489e
+  repair_issue_ids:
+    - R1-M1
+  result_code_commit: 6f80d545374809693d8a47defe791ee1f881489e
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  workflow_runtime_commit: 734549fe3282edad76456c69f085e53d9ce39844
+  legacy_control_plane_default: true
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: sft-b-evaluation
+  operator_handoff_mode: control_plane_manual
+  operator_restart_policy: exact_rerun
+  operator_script: ai-work/executor/operator/WP6-d/sft-b-evaluation/C6/run.sh
+  operator_script_sha256: 819b5fd1b85d768321c6b2e6c8a9f720550f42419e91ef6cad2259da470abcdc
+  operator_status_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C6/status
+  operator_log_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C6/terminal.log
+  operator_evidence_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C6/operator-evidence.json
+  expected_artifacts:
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C6/output/evaluation/B-sft-formal-seed42/run.json
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C6/output/evaluation/B-sft-formal-seed42/samples/results.jsonl
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C6/operator-evidence.json
+  completed_scope:
+    - "active-stage workflow migration is bound to workflow_runtime_commit 734549fe3282edad76456c69f085e53d9ce39844 without advancing target-repo main or rewriting the sealed WP6-d plan/review history; the missing legacy control_plane_hardware is runtime-defaulted to GTX 1660 Ti only for this already-reviewed stage"
+    - "existing R1 evidence was re-inspected: the export manifest-protected restore instructions, final B run metadata and stdout authenticate the intended verify-eval semantics and completed 400-row result, but no independent post-C4 operator script SHA/status/log exists for the Piston verification itself, so retrospective provenance synthesis was rejected"
+    - "a standalone clean verifier checkout was prepared at exact generation-bound project commit 41abf31618372445ba2233f386c08417b4407436 with Open-R1 1416fa0cf21595d2083b399a2a0bbddd7f6e9563; runtime collection reproduces dependency lock SHA 59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560 and the exact frozen tracked package versions (accelerate/datasets/open-r1/peft/torch/transformers/trl)"
+    - "pre-operator control-plane checks passed before this checkpoint: the 148-entry exported evidence manifest has zero SHA mismatches; canonical B MANIFEST identity is available; exact Piston config SHA is f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e; real local Piston acceptance passed 9/9 with 0 skipped"
+    - "C6 tracked immutable script is bash-syntax clean and SHA256-bound; it verifies checkpoint/review/workflow-runtime/Git identities, export and canonical manifests, frozen generation/data/verifier/Open-R1/dependency/Piston identities, local Piston health and storage before running only verify-eval with workers=4 into a fresh repair namespace"
+    - "C6 never overwrites /home/dzy/wp6d-b-verified or any formal SFT/generation/quarantine evidence; its postcheck authenticates the canonical raw-results SHA, then requires the fresh 400-row problem order plus every generated payload/verdict/schema field to match canonical B exactly while treating only runtime_ms and path-derived config_hash as fresh attempt-local fields; both raw and normalized semantic SHA256 values are preserved in operator evidence"
+  remaining_scope:
+    - "operator manually runs the exact tracked C6 run.sh on the GTX 1660 Ti; Web GPT/CodexPro must not execute the 400-problem operator command"
+    - "after C6 exits, explicit execution-router resume backend=web validates the status/log/evidence bytes, exact workflow/checkpoint/script and frozen generation/data/code/dependency/Piston identities, fresh repair output inventory, command_rc=0, postcheck_rc=0 and gate_status=passed"
+    - "resume runs the exact-prefix verification readback against the fresh repair output and requires resumed=400/verified=0 without re-executing Piston rows, then aggregates the repair output and proves equality of deterministic correctness/bootstrap/status aggregates with canonical B, exact generated-payload preservation and Base A/B shared evaluation contract; fresh Piston execution-runtime telemetry remains measured evidence rather than a byte-equality target"
+    - "resume reruns the required short regressions, appends a completed R1-M1 repair execution record with operator_evidence_sha256, and stops before reviewer-ex; no C/D work enters WP6-d"
+  status: awaiting_operator
+```
