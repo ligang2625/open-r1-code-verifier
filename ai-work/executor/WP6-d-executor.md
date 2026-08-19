@@ -320,3 +320,34 @@ execution_checkpoint:
     - "after final B acceptance, run any remaining short closeout gates required by the sealed plan, append completed E0, and stop before reviewer-ex; do not enter C/D in WP6-d"
   status: interrupted
 ```
+
+## E0 — Completed WP6-d implementation after C5 resume
+
+C5 resumed after the 1660 Ti workflow/infrastructure work finished. The 4090 had already been retired after the SHA-verified export, so the remaining staged verification was accepted in-place on the 1660 Ti rather than copied back to a live 4090. This changes only transport/storage topology: the transferred generation bundle, formal dataset, exact verifier code/dependency identity, Piston definition, deterministic evaluation contract, per-problem schema, and aggregation definitions remained unchanged.
+
+- `/home/dzy/wp6d-b-export` was revalidated against its 148-entry manifest: 0 missing files and 0 SHA256 mismatches across 239,749,291 bytes.
+- Verification executed from an isolated checkout bound to generation `project_commit=41abf31618372445ba2233f386c08417b4407436`, Open-R1 `1416fa0cf21595d2083b399a2a0bbddd7f6e9563`, dependency lock `59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560`, and Piston YAML SHA `f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`; imports resolved to that isolated checkout and local Piston reported Python 3.10.0.
+- `verify-eval` completed all 400 rows with `resumed=0, verified=400` using 4 bounded workers; a second exact-prefix invocation returned `resumed=400, verified=0`.
+- `aggregate-eval` completed 400 problems and wrote `/home/dzy/wp6d-b-verified/evaluation/B-sft-formal-seed42/{summary.json,main_results.csv}`. The final results JSONL SHA256 is `b53cb533b17ce7ca30e508a01cc484272470c64c1532d5a68810dfa66cd6291f`; a local manifest covers the complete final B directory.
+- Strict acceptance loaded Base A and B through the project analysis loader and proved 400 unique IDs in identical order, identical dataset hash, seed 42, split/test, deterministic generation definition and Piston definition. Every final B row preserved the exact transferred completion, prompt hash, completion-token count, generation latency, and `hit_max_new_tokens` value from the generation bundle. Non-sample B artifacts are completion-payload safe.
+- B aggregate evidence is finite: visible Pass@1 `0.3525`, train-hidden Pass@1 `0.335`, eval-hidden Pass@1 `0.3775` with 95% 10,000-resample bootstrap CI `[0.33, 0.425]`, eval-hidden average test pass rate `0.4525`, and public/eval gap `-0.025`. Generation GPU-hours remain `0.7607846797258146`; local Piston verification does not add GPU cost.
+- Final closeout was rerun from the reconstructed lifecycle stage worktree with a workflow-standard overlay `.venv` bound to that worktree: `make lint` passed; `make test` passed 910 with only the 3 expected real-Piston opt-in skips; `make test-gpu` passed 3/3 using the locally cached 0.5B smoke snapshot; `make test-piston` passed 9/9 with 0 skipped. The earlier one-off GPU-smoke invocation with a nonexistent snapshot path and the attempted full CUDA venv downloads were environment-only setup attempts and required no tracked source/test/config change.
+- No C/D training, evaluation, or final A-D conclusion was entered in WP6-d.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP6-d
+  execution_id: E0
+  task_kind: implementation
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: c24728249f14a7952d98050210662b506c720884
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  resumed_from_checkpoint_id: C5
+  resumed_from_checkpoint_commit: c24728249f14a7952d98050210662b506c720884
+  status: completed
+```
