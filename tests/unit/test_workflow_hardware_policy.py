@@ -33,10 +33,44 @@ def test_new_operator_handoff_is_portable_and_legacy_records_remain_readable() -
     for document in (lifecycle, router, executor_local, executor_web):
         assert "portable_target" in document
 
-    assert ".ai-bridge/operator-handoffs" in executor_local
+    assert "ai-work/executor/operator/" in executor_local
+    assert ".ai-bridge/operator-handoffs" not in executor_local
     assert "operator-evidence.json" in executor_local
+    assert "postcheck_rc" in executor_local
+    assert "gate_status=passed" in executor_local
+    assert "operator_evidence_sha256" in executor_local
     assert "旧版" in lifecycle
     assert "legacy" in router.lower()
+
+
+def test_validation_evidence_profile_does_not_force_4090_execution() -> None:
+    planner = _text("skills/planner-ex/SKILL.md")
+    lifecycle = _text("skills/stage-lifecycle/SKILL.md")
+    router = _text("skills/execution-router/SKILL.md")
+    reviewer = _text("skills/reviewer-ex/SKILL.md")
+
+    for document in (planner, lifecycle, router, reviewer):
+        assert "formal-evidence" in document or "formal evidence" in document
+        assert "target_hardware=GTX 1660 Ti" in document or "target=GTX 1660 Ti" in document
+        assert "24GB" in document
+
+    assert "全部 24GB acceptance gates" in lifecycle
+    assert "不存在 router 直接把 executor 切到 4090 的第二路径" in router
+
+
+def test_target_gpu_success_requires_post_run_acceptance_and_evidence_hash() -> None:
+    planner = _text("skills/planner-ex/SKILL.md")
+    lifecycle = _text("skills/stage-lifecycle/SKILL.md")
+    router = _text("skills/execution-router/SKILL.md")
+    reviewer = _text("skills/reviewer-ex/SKILL.md")
+
+    for document in (planner, lifecycle, router, reviewer):
+        assert "postcheck_rc" in document
+        assert "gate_status" in document
+
+    assert "operator_evidence_sha256" in router
+    assert "operator_evidence_sha256" in reviewer
+    assert "tracked operator script" in reviewer
 
 
 def test_canonical_piston_host_and_sft_prevalidation_policy_are_preserved() -> None:

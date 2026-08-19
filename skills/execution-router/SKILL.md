@@ -45,7 +45,7 @@ Open-R1 artifact：
 - execution：`ai-work/executor/{stage_id}-executor.md`
 - review：`ai-work/reviewer/{stage_id}-review.md`
 
-plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git 历史推导 `plan_commit`。未提交、dirty 或 seal 后又修改 plan → `ROUTING_PLAN_NOT_SEALED`。同时解析 plan 的 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`；`control_plane_hardware` 必须是 `GTX 1660 Ti (6GB)`，并与 profile/target 映射一致，否则返回 `ROUTING_PLAN_PROFILE_INVALID`。`target_hardware=24GB GPU` 只描述 formal gate 的执行目标，不决定当前 Web/Local backend 或 router 所在机器。
+plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git 历史推导 `plan_commit`。未提交、dirty 或 seal 后又修改 plan → `ROUTING_PLAN_NOT_SEALED`。同时解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`；`control_plane_hardware` 固定 `GTX 1660 Ti (6GB)`。development 只允许 target=GTX 1660 Ti + engineering；validation 固定 real-training/numerical + terminal=false，但 target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU execution）。validation target=24GB 时 sealed plan 必须有覆盖全部 24GB gates 的 operator block；target=GTX 1660 Ti 时不得隐含需要 24GB execution。违反返回 `ROUTING_PLAN_PROFILE_INVALID`。target hardware 不决定当前 Web/Local backend 或 router 所在机器。
 
 ## Control-plane dispatch 与 target-GPU boundary
 
@@ -53,9 +53,9 @@ Router 默认只调度 **control-plane execution**。无论 `stage_profile=devel
 
 对 `stage_profile=validation`，router 在普通 dispatch 前**不得**读取本机 `.ai-bridge/validation-machine.json`、不得要求 >=22528 MiB GPU，也不得要求 4090 的 `artifact_root/hf_home/formal_data_root` 已挂载。它只验证 sealed plan/provenance/stage environment 和 control-plane Execution preflight，并把 `control_plane_hardware/target_hardware` 传给 executor。
 
-真正的 target-GPU boundary 由 sealed `operator_terminal_execution` gate 表示：control-plane executor 只生成 portable handoff + operator checkpoint，用户在 4090 手工运行。portable `run.sh` 在 4090 启动时才读取/验证 target-local `.ai-bridge/validation-machine.json`、READY/Piston identity、绝对 `artifact_root/hf_home/formal_data_root`、CUDA/VRAM >=22528 MiB、exact model/data/cache、storage capacity 与（若需要）到唯一 Piston host `1660ti-wsl` 的 loopback tunnel。训练入口原有 >=20 GiB guard 继续作为第二层保护。
+真正的 target-GPU boundary 由 sealed `operator_terminal_execution` gate 表示；validation `target_hardware=24GB GPU` 的**全部** 24GB acceptance gates（包括短 smoke）都经该边界，不存在 router 直接把 executor 切到 4090 的第二路径。control-plane executor 生成并提交 tracked portable script + operator checkpoint 后停止。用户通过 Git 把 exact checkpoint commit 同步到 4090，checkout/detach 到该 commit并运行 repo 内 hash-matching script。script 在 target start 时才读取/验证 `.ai-bridge/validation-machine.json`、READY/Piston identity、persistent roots、CUDA/VRAM >=22528 MiB、exact model/data/cache/storage/tunnel；训练入口 >=20 GiB guard 保留为第二层保护。
 
-正式 artifacts 不回退到 control-plane repo-local `outputs/`。target script 将 checkpoint/results 保留在 4090 persistent root，并生成 secret-free `operator-evidence.json` 与必要小型 status/log/manifest/metrics。用户把这些 evidence 同步回 checkpoint 指定的 control-plane ignored evidence 目录后，router resume/reviewer 默认在 1660 Ti 完成 strict readback/aggregation/provenance 验证；只有 evidence 不足且确实需要 target GPU 或大 artifact 本地读取时，才允许短时只读连接 4090。
+正式 artifacts 不回退到 control-plane repo-local `outputs/`。target script 在目标命令后立即运行 sealed post-run acceptance，并生成 versioned secret-free `operator-evidence.json`；只有 `command_rc=0 && postcheck_rc=0 && gate_status=passed` 才能完成 gate。用户把 evidence 与必要小型 status/log/manifest/metrics byte-for-byte 同步回 checkpoint 指定的 control-plane evidence 目录。router resume 必须验证 evidence schema/provenance、tracked script SHA 与 operator checkpoint commit，并计算 received evidence SHA256；大型 checkpoint 不默认复制。只有 evidence/postcheck 无法证明 required large-artifact property 时才允许短时只读 4090 check。
 
 ## Transport preflight
 
@@ -83,21 +83,21 @@ Router 默认只调度 **control-plane execution**。无论 `stage_profile=devel
 
 ### Resumable execution checkpoint
 
-Router 只把 execution report 中**最新 committed**、且提交该 checkpoint 的 docs commit 恰好等于当前 stage HEAD 的 `execution_checkpoint` 视为 resumable。所有 class 共同要求：
+Router 只把 execution report 中**最新 committed**、且提交该 checkpoint 的 provenance commit 恰好等于当前 stage HEAD 的 `execution_checkpoint` 视为 resumable。所有 class 共同要求：
 
 - `version: 1`、非空唯一 `checkpoint_id`、`resume_allowed: true`；
 - `stage_id/task_kind/source_plan_commit` 与当前 stage 精确一致；implementation 的 `source_review_round/source_review_commit` 必须为 null、`repair_issue_ids=[]`；repair 必须精确绑定 latest committed review round/commit/issues；
-- `result_code_commit` 必须是 checkpoint docs commit 的 parent HEAD，且该 docs commit 只允许改 execution report；
+- `result_code_commit` 必须是 checkpoint provenance commit 的 parent HEAD；environment checkpoint commit 只允许改 execution report，portable operator checkpoint commit 只允许改 execution report + 新增 record 指定的 tracked operator script；
 - `completed_scope` 与非空 `remaining_scope` 可解析；当前不存在同一 source 的 completed execution，也不存在 checkpoint 之后的其它 commit。
 
 然后按 `interruption_class` 分支校验：
 
 - **environment**：`status: interrupted`；`failed_command`、`blocker` 非空。仅用于已有有效部分业务 commit 后的外部环境/基础设施故障。普通 router 调用返回 `ROUTING_RESUME_AVAILABLE`，报告 failed command/blocker/remaining scope，提示修复环境后显式 resume。
-- **operator**：只允许 `stage_profile=validation` 且 sealed plan 存在匹配 `operator_terminal_execution.gates[].gate_id`；匹配 gate 的 `restart_policy` 必须是 `exact_rerun|trainer_checkpoint`，SFT/GRPO gate 必须为 `trainer_checkpoint`；`status: awaiting_operator`。新 checkpoint 使用 `operator_handoff_mode=portable_target`：必须有唯一 gate id、control-plane-local 绝对 `operator_script`、64-hex SHA256、target status/log/evidence templates、control-plane evidence directory 与非空 `expected_artifacts`；router 重新确认本地 source script 存在且 hash 匹配，但**不要求 4090 root 在 control plane 可见**。旧版没有 `operator_handoff_mode` 且记录 absolute persistent-root script/status/log 的已提交 checkpoint 继续按 legacy v1 规则验证。普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`，报告 exact source script/hash、目标 commit、target path templates/evidence contract/restart_policy 和 resume 语法；不得自动执行 script。operator checkpoint 的 `result_code_commit` 可以等于 plan/review baseline。
+- **operator**：只允许 `stage_profile=validation,target_hardware=24GB GPU` 且 sealed plan 存在匹配 `operator_terminal_execution.gates[].gate_id`；restart policy 合法，SFT/GRPO=`trainer_checkpoint`；`status: awaiting_operator`。新 checkpoint 使用 `operator_handoff_mode=portable_target`：必须有唯一 gate id、repo-relative `operator_script=ai-work/executor/operator/.../run.sh`、64-hex SHA256、target status/log/evidence templates、control-plane evidence directory 与非空 `expected_artifacts`。router 必须从当前 checkpoint commit 的 Git tree 读取 script，确认该 path 是本 commit 新增、无其它 operator script diff、SHA 匹配且 `.ai-bridge/**` 未 tracked；不依赖 control-plane 外部文件。旧版没有 `operator_handoff_mode` 且记录 absolute persistent-root script/status/log 的 checkpoint 继续按 legacy v1。普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`，报告 exact checkpoint commit、tracked script path/hash、先让 commit 在 4090 可达的 Git handoff、target evidence contract/restart policy/resume 语法；不得自动 push或执行 script。
 
 只有显式 resume 才继续；若用户还指定 checkpoint_id，它必须等于当前 HEAD 的 latest checkpoint，不能选择 stale checkpoint。用户显式要求 resume 但当前 HEAD 不存在合法 checkpoint、checkpoint provenance/class 字段不匹配、operator script hash 漂移或 checkpoint 之后又有其它 commit 时返回 `ROUTING_RESUME_INVALID`，不得猜断点或自动 retire。Web GPT + CodexPro 的显式 resume 仍必须带 `backend=web`；仅写 `resume` 不改变 Web backend 的显式选择规则。
 
-显式 resume 时先重新执行 Stage environment preflight；validation 在 control plane **不再**重新执行本机 4090 machine/GPU preflight。通过后按原 plan/review routing dispatch，并传完整 resume context。portable operator 再传 `operator_handoff_mode/operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/target path templates/control-plane evidence directory/expected_artifacts`；legacy operator 继续传其原 absolute fields。executor 必须从 checkpoint 继续，不重做 completed_scope；operator resume 先验证已同步回来的 evidence/status/log/真实 artifact identity，默认在 1660 Ti 做 strict readback/aggregation，不能把用户口头结果或 exit code 单独视为 gate 完成，也不得在 resume 中直接替用户重跑 operator long command。
+显式 resume 时先重新执行 Stage environment preflight；validation 在 control plane 不重新执行本机 4090 machine/GPU preflight。portable operator resume 传 tracked script path/SHA、operator checkpoint commit、target templates/evidence directory/expected artifacts。executor 必须先计算 received `operator-evidence.json` SHA256，并严格验证 versioned fields 与 current plan/checkpoint/script/target contract一致：至少 `command_rc=0`、`postcheck_rc=0`、`gate_status=passed`，machine/GPU/roots/Piston（如 required）匹配，formal run/expected-artifact inventory满足 sealed acceptance；同步回来的 identity/metadata artifacts 必须重算 hash。证据不足以证明 required large-artifact property 时，保持 checkpoint 不变并要求短时只读 target check，而不是猜 PASS。通过后从 remaining_scope 继续，并在最终 completed execution record 以固定字段 `operator_evidence_sha256`（同时记录 gate/checkpoint id）绑定 received evidence bytes。legacy operator 继续按原 absolute fields。不得替用户重跑 operator target command。
 
 ### A. 尚无 committed review
 

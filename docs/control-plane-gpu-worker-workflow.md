@@ -16,33 +16,34 @@ control_plane_hardware: GTX 1660 Ti (6GB)
 target_hardware: GTX 1660 Ti (6GB) | 24GB GPU
 ```
 
-`target_hardware: 24GB GPU` never implies that planner, reviewer or execution-router must run on the 4090.
+For validation, `target_hardware` describes what this stage must newly execute, not where its formal source artifacts came from. A validation stage that only aggregates/analyzes existing formal evidence uses `GTX 1660 Ti (6GB)`; a validation stage that performs any new target-GPU execution uses `24GB GPU`. Neither choice moves planner, reviewer or execution-router off the control plane.
 
 ### RTX 4090: ephemeral target-GPU worker
 
 Use the 4090 only when a gate intrinsically needs it: target-GPU smoke/acceptance, optimizer-based SFT/GRPO, target numerical validation, or formal model inference/evaluation that cannot reasonably run on the 1660 Ti. The 4090 may be offline while validation is planned, routed, reviewed or analyzed.
 
-## Long target-GPU jobs
+## Target-GPU operator gates
 
-GPT/CodexPro prepares all tracked code/configuration, control-plane preflight, short tests and a secret-free portable `run.sh`. It does not start or continuously monitor formal long jobs.
+Every validation gate that actually needs the 24GB worker uses the same operator boundary, whether it is a short 4090-only smoke or a long formal job. GPT/CodexPro prepares all tracked code/configuration and control-plane checks; it never starts or continuously monitors the target-GPU command.
 
-The control-plane executor writes the immutable script under ignored `.ai-bridge/operator-handoffs/<stage>/<plan>/<gate>/<checkpoint>/`, records its SHA256 and target artifact/evidence contract in an append-only operator checkpoint, and stops with operator action required.
+The control-plane executor creates one immutable, secret-free tracked script at `ai-work/executor/operator/<stage>/<gate>/<checkpoint>/run.sh`. The operator checkpoint commit contains exactly the execution report plus that new script and has `result_code_commit` as its parent. The workflow does not auto-push.
 
 On the 4090, the user:
 
-1. fetches/checks out the exact operator-checkpoint commit;
-2. copies the exact `run.sh` and verifies its SHA256;
-3. runs it manually in SSH/tmux.
+1. makes the exact operator-checkpoint commit reachable through Git;
+2. checks out or detaches at that exact commit and confirms the worktree is clean;
+3. recomputes the tracked `run.sh` SHA256 and compares it with the checkpoint;
+4. runs that tracked script manually in SSH/tmux.
 
-The target script resolves the 4090 checkout and target-local machine record at runtime. Before the formal command it fail-closes on Git/report provenance, READY identity, CUDA/VRAM, model/data/cache, persistent artifact/HF/data roots, storage capacity, locking and Piston when applicable. Existing `exact_rerun`, `trainer_checkpoint`, latest-valid-checkpoint, atomic status, append-only log and quarantine/no-overwrite semantics remain authoritative.
+The target script resolves the target-local machine record and fails closed on Git/checkpoint/script provenance, READY identity, CUDA/VRAM, model/data/cache, persistent artifact/HF/data roots, storage, locking and Piston when applicable. It then executes **start preflight → target command → mandatory post-run acceptance**. A target-command return code of zero is not enough: `gate_status=passed` is legal only when `command_rc=0` and `postcheck_rc=0`. Existing `exact_rerun`, `trainer_checkpoint`, latest-valid-checkpoint, atomic status, append-only log and quarantine/no-overwrite semantics remain authoritative.
 
-After each target attempt the script emits a small secret-free `operator-evidence.json` binding the operator checkpoint, script hash, target machine/GPU identity, resolved roots, Piston identity when applicable, status/log, formal run identity and checkpoint/artifact inventory/hashes/summaries. Sync that evidence plus only the necessary small manifests/metrics/logs back to the control plane. Do not rsync large model checkpoints back by default.
+After each attempt the script emits a versioned secret-free `operator-evidence.json` binding stage/plan/operator-checkpoint/result-code/checkpoint/gate identity, tracked script path/SHA, target machine-record SHA, GPU identity/VRAM, resolved roots, Piston identity when applicable, timestamps, command/postcheck rc, gate status, formal run identity and expected-artifact inventory. Sync that evidence plus only the necessary small manifests/metrics/logs byte-for-byte back to the control plane. Resume computes the received evidence SHA256 and records it in the completed execution record. Do not rsync large model checkpoints back by default.
 
 ## Cross-machine review
 
-reviewer-ex normally runs on the GTX 1660 Ti regardless of where formal artifacts were produced. It reviews Git/result provenance, operator checkpoint, target machine identity, evidence manifest, metrics/logs, checkpoint inventory/hashes/summaries and repeatable control-plane readback/aggregation tests. Reviewer location, artifact source machine and target hardware are independent.
+reviewer-ex normally runs on the GTX 1660 Ti regardless of where formal artifacts were produced. For target=24GB stages it independently recomputes the tracked script SHA, received evidence SHA and synced small-artifact hashes, and checks the post-run acceptance result before PASS. For formal-evidence-only validation stages with target=1660 Ti, it reviews source formal identities/hashes and the analysis itself without inventing a new GPU requirement. Reviewer location, artifact source machine and target hardware are independent.
 
-A brief read-only target-machine metadata/artifact check is allowed only when the synced evidence is insufficient. Review never reruns or monitors the formal long job merely to obtain local artifacts.
+A brief read-only target-machine metadata/artifact check is allowed only when the target-side postcheck/evidence cannot prove a required large-artifact property. Review never reruns or monitors a formal target-GPU command merely to obtain local artifacts.
 
 ## Piston
 

@@ -684,3 +684,16 @@ WP5-a/WP5-b 已完成统一评测的 development 工程合同，WP5-c 现进一�
 - 项目唯一 Piston host 固定为 `1660ti-wsl`；`home-piston-01` retired。4090 只通过 `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh` 建立 `127.0.0.1:2000 -> 1660ti-wsl:127.0.0.1:2000` local forward。
 - 已有 environment-interruption resumability 保持：合法 committed environment checkpoint 修复环境后显式 resume；`retire_incomplete` 仍只是显式 abandon path。
 - canonical policy 见 `docs/control-plane-gpu-worker-workflow.md`。
+
+---
+
+## Project workflow hardening amendment: target-GPU provenance and acceptance
+
+- **生效日期**：2026-08-19
+- **性质**：对上一条 control-plane/GPU-worker policy 的质量加固；不修改当前/历史 experiment definition、formal artifact identity 或已有 operator checkpoint。
+- validation 现在明确区分 evidence profile 与 execution target：只消费既有 formal evidence 做 aggregation/bootstrap CI/error analysis/report 的 validation stage 合法使用 `target_hardware: GTX 1660 Ti (6GB)`；只有需要新 target-GPU execution 的 stage 才使用 `24GB GPU`。
+- 所有新的 24GB acceptance gates（包括短时 4090-only smoke）统一经过 operator boundary，不再存在 execution-router 直接切换到 4090 的隐式路径。
+- 新 portable operator `run.sh` 改为 tracked、secret-free Git provenance artifact：`ai-work/executor/operator/<stage>/<gate>/<checkpoint>/run.sh`。operator checkpoint commit 只允许修改 execution report + 新增这一份 script，且 parent=`result_code_commit`；`.ai-bridge/**` 仍完全禁止 tracked。旧 absolute-root/早期 portable checkpoint 继续按 legacy contract 读取，不回写旧记录。
+- 4090 target script 必须执行 start preflight → target command → mandatory post-run acceptance。`command_rc=0` 单独不构成 PASS；只有 `command_rc=0 && postcheck_rc=0` 才允许 `gate_status=passed`。postcheck 必须按 sealed plan 对 completed run/checkpoint、metrics/schema、artifact identity 做短时 strict validation。
+- 每次 target attempt 必须输出 versioned secret-free `operator-evidence.json`，绑定 plan/operator checkpoint/result code/script SHA、target machine-record SHA、GPU/roots/Piston、command/postcheck rc、formal run identity 与 expected-artifact inventory。evidence byte SHA256 由 1660 Ti resume 计算并写入 completed execution record，reviewer 独立重算；证据不能证明的大 artifact property 才允许短时只读 4090 check。
+- 这些加固提高可重现性与 fail-closed acceptance，不增加正式 GPU job 次数，也不要求 4090 为 planner/reviewer/analysis 保持在线。
