@@ -109,6 +109,24 @@ def test_canonical_workflow_documents_all_four_machine_routing_cases() -> None:
     assert "Case 4: GRPO" in workflow
     assert "4090: off" in workflow
     assert "Do not rsync large model checkpoints back by default" in workflow
+    assert "generate complete frozen bundle" in workflow
+    assert "verify frozen completions with local Piston" in workflow
+
+
+def test_formal_evaluation_does_not_serialize_4090_generation_with_piston() -> None:
+    agents = _text("AGENTS.md")
+    spec = _text("PROJECT_SPEC_Open-R1_CodeVerifier.md")
+    planner = _text("skills/planner-ex/SKILL.md")
+    workflow = _text("docs/control-plane-gpu-worker-workflow.md")
+
+    for document in (agents, spec, planner, workflow):
+        assert "generate-eval" in document
+        assert "verify-eval" in document
+        assert "aggregate-eval" in document
+    assert "不得让 4090 在每题 generation 之间等待 Piston" in spec
+    assert "不默认把整条 evaluation 留在 4090" in planner
+    assert "Piston execution timing is fresh runtime telemetry" in workflow
+    assert "control_plane_manual" in spec
 
 
 def test_active_stage_workflow_migration_preserves_sealed_provenance() -> None:

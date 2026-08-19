@@ -93,10 +93,12 @@ The 4090 may be shut down after the formal artifacts/evidence are safely stored.
 ### Case 3: formal evaluation
 
 ```text
-1660 Ti: prepare exact evaluation config/operator handoff
-4090: load model -> ensure 1660ti-wsl Piston tunnel -> formal inference/evaluation -> artifacts/evidence
-1660 Ti: aggregate -> bootstrap CI -> failure analysis -> reviewer
+1660 Ti: prepare exact evaluation config + target-generation operator handoff
+4090: load model -> generate complete frozen bundle -> generation artifacts/evidence -> shut down when safe
+1660 Ti: verify frozen completions with local Piston -> aggregate -> bootstrap CI -> failure analysis -> reviewer
 ```
+
+Do not serialize target-GPU generation with remote Piston verification once the staged evaluation contract is available. The portable generation bundle must bind model/revision/checkpoint, seed, ordered dataset identity, decode settings, Piston-definition SHA, code/Open-R1/dependency identity and record hashes. `generate-eval` runs only the model-generation phase on the target GPU; `verify-eval` then consumes that immutable bundle on the control plane, preserves canonical problem order and exact generated payload, and `aggregate-eval` derives the correctness/statistical outputs. Piston execution timing is fresh runtime telemetry and is not expected to be byte-identical across independent verification attempts.
 
 ### Case 4: GRPO
 
