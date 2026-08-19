@@ -402,20 +402,45 @@ make install-gpu
 
 `configs/eval/pass1.yaml` sets `device: auto` and `generation.dtype: float16`; on the 1660 Ti development machine the frozen generator runs on CUDA when torch reports it available, loads the 0.5B debug model in FP16, and the run's `environment.json` records the CUDA/GPU identity so resume fails closed on hardware drift.
 
-`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal Base evaluation uses the immutable 1.5B revision, CUDA, FP16, real Piston configuration, and an explicit prepared-dataset override so A/B/C/D share the same formal problem set. On the 4090 validation track the routed executor places this command in the SHA-bound operator-terminal `run.sh`; run that exact generated script rather than starting the long formal evaluation from the agent session:
+`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal evaluation uses the immutable 1.5B revision, CUDA, FP16, the same real-Piston definition, and an explicit prepared-dataset override so A/B/C/D share one formal problem set. The original one-process `evaluate` command remains supported for local/debug use and historical formal runs. When the 24GB generation GPU and the trusted Piston service are on different machines, formal validation may instead split the same evaluator into two strict stages so the paid GPU does not idle on sandbox work.
+
+On the 4090, `generate-eval` loads the frozen Base/SFT/GRPO source and persists all 400 deterministic completions without constructing or contacting Piston:
 
 ```bash
 export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/open-r1-code-verifier-outputs
 export CODE_VERIFIER_DATA_ROOT=/absolute/persistent/open-r1-code-verifier-data-4090
-.venv/bin/code-verifier evaluate \
+.venv/bin/code-verifier generate-eval \
   --config configs/eval/base.yaml \
   --dataset-dir "$CODE_VERIFIER_DATA_ROOT/prepared" \
-  --model-id Qwen/Qwen2.5-Coder-1.5B-Instruct \
-  --run-name A-base-formal-seed42 \
+  --sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/B-sft-formal-seed42" \
+  --run-name B-sft-formal-seed42 \
   --seed 42
 ```
 
-When `--dataset-dir` is supplied, the CLI prints the previous and effective dataset paths on stderr before model/Piston/evaluation setup. The resolved config, dataset hash, run identity, and exact-prefix resume checks then use that effective path normally; omitting the option preserves the YAML value. The operator script additionally fixes the machine roots, validates GPU/Piston/model/data/storage/Git identity, takes an exclusive lock, and atomically records terminal status before `execution-router resume` accepts the persistent artifacts.
+The completed `generation/<run-name>/` bundle stores only the irrecoverable model outputs under `samples/generations.jsonl`; its non-sample metadata is payload-free. A path-independent contract hash binds model/revision/checkpoint, seed, split, decoding, ordered dataset content, and the exact Piston YAML SHA, while file hashes bind the transferred generation rows and environment. Generation resume is exact-prefix and never regenerates a durable row.
+
+Transfer that completed bundle together with the exact repository/dependency identity and formal prepared dataset to the Piston machine. `verify-eval` needs no model weights: it revalidates the bundle/content hashes, runs the unchanged visible → train-hidden → eval-hidden verifier through local Piston with bounded concurrency, preserves canonical problem order, and writes the existing `evaluation/<run-name>/` per-problem schema:
+
+```bash
+.venv/bin/code-verifier verify-eval \
+  --config configs/eval/base.yaml \
+  --dataset-dir /absolute/local/formal-data/prepared \
+  --generation-run-dir /absolute/local/generation/B-sft-formal-seed42 \
+  --run-name B-sft-formal-seed42 \
+  --seed 42 \
+  --workers 4 \
+  --output-dir /absolute/local/verified-outputs
+```
+
+After verification reaches the full split, aggregate on the same CPU/Piston machine (or any machine that can read the completed evaluation directory); this stage performs no generation and no Piston work:
+
+```bash
+.venv/bin/code-verifier aggregate-eval \
+  --run-dir /absolute/local/verified-outputs/evaluation/B-sft-formal-seed42 \
+  --seed 42
+```
+
+The generation and verification machines may use different absolute dataset/Piston paths; equality is content/semantic identity rather than path equality. Verification exact-prefix resume preserves already written result rows, and the final evaluation rows use the verifier machine's resolved config hash while retaining hashes/timestamps/GPU-hours of the originating generation bundle. `aggregate-eval` then writes the normal `summary.json` and `main_results.csv`. On the validation track, routed executors still place long generation work in SHA-bound operator-terminal scripts rather than starting it from the agent session.
 
 Each run is stored under `outputs/evaluation/<run-name>/`:
 
@@ -505,19 +530,11 @@ WP6-a does not claim a real SFT checkpoint or B-group result. The final SFT vali
 
 `evaluate` accepts exactly one explicit model source. `--model-id` keeps the Base path. `--sft-run-dir` loads only a strict SFT artifact with `run.json` status `completed`, a complete pinned PEFT adapter under its direct `checkpoints/` directory, and valid non-sensitive run identity. The adapter config's base model must exactly match the completed run. Pinned TRL 0.18.0 / PEFT 0.14.0 normally leaves the adapter config revision unset, so the completed run's non-empty `model_revision` remains the source of truth for loading the base weights; if an adapter config does contain a revision, it must match that run metadata.
 
-After a real SFT run has completed on the 4090 validation machine, evaluate B with the same evaluation config, Piston executor, pass@1 evaluator, and aggregator used for Base:
+After a real SFT run has completed on the 4090 validation machine, B must use the same evaluation config, deterministic generator, Piston definition, three-layer verifier, and aggregator used for Base. `evaluate --sft-run-dir` remains the one-process reference implementation. Formal remote-Piston validation may use the equivalent `generate-eval --sft-run-dir` → transferred bundle → `verify-eval` workflow described above so only model generation occupies the 4090.
 
-```bash
-.venv/bin/code-verifier evaluate \
-  --config configs/eval/base.yaml \
-  --sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-run>" \
-  --run-name sft-b-main-r1 \
-  --seed 42
-```
+The effective generation identity records the SFT run's base `model_id` and `model_revision` plus the resolved adapter `checkpoints/` path. The cross-machine contract also binds the same seed, problem set/order, decoding settings, and Piston YAML digest. Verification then reuses `evaluate_completion()` and the existing final evaluation schema rather than introducing a second verdict or metric definition. Unit equivalence tests require staged and one-process evaluation records to match exactly for the same completions, and transferred-bundle tests require different local absolute paths to preserve the same semantic identity.
 
-The effective evaluation identity records the SFT run's base `model_id` and `model_revision` plus the resolved adapter `checkpoints/` path. Existing config hashing and exact-prefix resume therefore reject a different SFT run or checkpoint. The SFT path does not introduce a second evaluator, result schema, or metric definition.
-
-On the GTX 1660 Ti, fixture adapters and fake Transformers/PEFT runtimes validate this loader, CLI, resume, artifact, and aggregation contract without optimizer steps or model downloads. Those fixtures are engineering evidence only: they are not real B checkpoints, B metrics, loss, or cost evidence. A formal B result exists only after the 4090 validation track produces a real completed SFT run and evaluates it through the command above.
+On the GTX 1660 Ti, the verification phase requires no model weights or optimizer work: after syncing the exact code/dependency commit, formal data, and completed generation bundle, it can run the real local Piston service with bounded workers. Fixture/fake tests remain engineering evidence only; a formal B result exists only after the real 4090 generation bundle and real three-layer Piston verification both complete and the final evaluation artifacts are synced back for acceptance.
 
 ## WP7-a GRPO control plane
 

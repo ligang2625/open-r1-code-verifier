@@ -68,6 +68,13 @@ def test_build_parser_exposes_analyze_results_command() -> None:
     assert "analyze-results" in build_parser().format_help()
 
 
+def test_build_parser_exposes_split_evaluation_commands() -> None:
+    help_text = build_parser().format_help()
+    assert "generate-eval" in help_text
+    assert "verify-eval" in help_text
+    assert "aggregate-eval" in help_text
+
+
 def test_no_command_prints_help(capsys: Any) -> None:
     """Invoking the CLI without a command is a successful help operation."""
     assert main([]) == 0
@@ -387,6 +394,111 @@ def _grpo_checkpoint_identity(tmp_path: Path, *, reward_mode: str = "public") ->
         seed=11,
         parent_sft=parent,
     )
+
+
+def test_generate_eval_handler_does_not_construct_piston(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    config = _evaluation_config(tmp_path)
+    output_root = tmp_path / "outputs"
+    seen: dict[str, object] = {}
+    generator = object()
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "_build_generation_model", lambda *args: generator)
+
+    def forbidden_piston(*args: object, **kwargs: object) -> object:
+        raise AssertionError("generate-eval must not construct Piston")
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", forbidden_piston)
+
+    def fake_run_generation_bundle(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(
+            total_problems=4,
+            completed_before_run=0,
+            generated_this_run=4,
+            run_dir=output_root / "generation" / "split-run",
+            records_path=output_root / "generation" / "split-run" / "samples" / "generations.jsonl",
+        )
+
+    monkeypatch.setattr(cli_module, "run_generation_bundle", fake_run_generation_bundle)
+    assert (
+        main(
+            [
+                "generate-eval",
+                "--config",
+                str(tmp_path / "eval.yaml"),
+                "--model-id",
+                "example/model",
+                "--run-name",
+                "split-run",
+                "--output-dir",
+                str(output_root),
+            ]
+        )
+        == 0
+    )
+    assert seen["generator"] is generator
+    assert seen["run_id"] == "split-run"
+    assert seen["output_root"] == output_root
+    assert "generated 4 evaluation prompts" in capsys.readouterr().out
+
+
+def test_verify_eval_handler_does_not_aggregate_implicitly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    config = _evaluation_config(tmp_path)
+    generation_run = tmp_path / "generation" / "split-run"
+    output_root = tmp_path / "outputs"
+    source = SimpleNamespace(run_id="split-run", model_revision="revision-1", checkpoint="checkpoint-1", seed=42)
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "load_generation_bundle_source", lambda path: source)
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+
+    class FakePiston:
+        def __init__(self, piston_config: object) -> None:
+            self.piston_config = piston_config
+
+        def validate_runtime(self) -> str:
+            return "3.10.0"
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePiston)
+    monkeypatch.setattr(
+        cli_module,
+        "run_verification_from_generation_bundle",
+        lambda **kwargs: SimpleNamespace(
+            total_problems=4,
+            completed_before_run=0,
+            verified_this_run=4,
+            results_path=output_root / "evaluation" / "split-run" / "samples" / "results.jsonl",
+        ),
+    )
+
+    def forbidden_aggregate(*args: object, **kwargs: object) -> object:
+        raise AssertionError("verify-eval must not aggregate implicitly")
+
+    monkeypatch.setattr(cli_module, "aggregate_evaluation_run", forbidden_aggregate)
+    assert (
+        main(
+            [
+                "verify-eval",
+                "--config",
+                str(tmp_path / "eval.yaml"),
+                "--generation-run-dir",
+                str(generation_run),
+                "--run-name",
+                "split-run",
+                "--output-dir",
+                str(output_root),
+                "--workers",
+                "4",
+            ]
+        )
+        == 0
+    )
+    assert "verified 4 generated completions" in capsys.readouterr().out
 
 
 def test_evaluate_parser_requires_exactly_one_of_base_sft_or_grpo_source(
