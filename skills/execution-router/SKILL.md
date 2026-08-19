@@ -45,18 +45,17 @@ Open-R1 artifact：
 - execution：`ai-work/executor/{stage_id}-executor.md`
 - review：`ai-work/reviewer/{stage_id}-review.md`
 
-plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git 历史推导 `plan_commit`。未提交、dirty 或 seal 后又修改 plan → `ROUTING_PLAN_NOT_SEALED`。同时解析 plan 的 `stage_profile / target_hardware / evidence_class / development_terminal`；profile 映射不合法时返回 `ROUTING_PLAN_PROFILE_INVALID`。
+plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git 历史推导 `plan_commit`。未提交、dirty 或 seal 后又修改 plan → `ROUTING_PLAN_NOT_SEALED`。同时解析 plan 的 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`；`control_plane_hardware` 必须是 `GTX 1660 Ti (6GB)`，并与 profile/target 映射一致，否则返回 `ROUTING_PLAN_PROFILE_INVALID`。`target_hardware=24GB GPU` 只描述 formal gate 的执行目标，不决定当前 Web/Local backend 或 router 所在机器。
 
-## Validation machine/artifact preflight
+## Control-plane dispatch 与 target-GPU boundary
 
-只对 `stage_profile=validation` 执行，并且必须发生在 dispatch/executor 创建之前：
+Router 默认只调度 **control-plane execution**。无论 `stage_profile=development|validation`，planner/bootstrap/router/reviewer 与普通 code edit、lint/unit/CPU/non-4090 integration、Piston、data preparation、analysis/report、operator-handoff preparation 都在 GTX 1660 Ti 上完成；`backend=web|local` 只描述当前执行 runtime，不等价于 target hardware。
 
-1. 读取 primary checkout 的 ignored `.ai-bridge/validation-machine.json`，并按 lifecycle 同一合同验证 `version: 1`、`machine_status: READY_FOR_VALIDATION_PLANNER`、bootstrap commit 为当前 `main` 祖先、persistent readiness/Piston identity 仍存在且一致；失败返回 `ROUTING_VALIDATION_MACHINE_NOT_READY`。从该 record 解析绝对 `artifact_root`、`hf_home`、`formal_data_root`。若调用环境已设置 `CODE_VERIFIER_ARTIFACT_ROOT` / `HF_HOME` / `CODE_VERIFIER_DATA_ROOT`，展开后必须与 record 对应路径完全一致，否则同样 fail closed；正式 validation 不再回退到 primary `<repo>/outputs`。
-2. 使用项目 `.venv` 的 pinned PyTorch runtime 检查 `torch.cuda.is_available()`，并通过 `torch.cuda.get_device_properties(0).total_memory` / `torch.cuda.get_device_name(0)` 读取目标 GPU。CUDA 不可用、torch/CUDA runtime 无法导入或总显存低于 `22528 MiB`（22 GiB）时返回 `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE`。这是用于识别 24GB-class training machine 的简单 common-case dispatch guard；训练入口原有 `>=20 GiB` fail-closed 继续作为第二层运行时保护，不做自动 GPU 调度。若 `nvidia-smi` 可用，可额外记录其 identity/VRAM 作为审计信息，但不得把它作为唯一硬件探测方式。
-3. `artifact_root` 不得位于目标 stage worktree 内；创建（若不存在）并做一次临时文件 create/delete writable probe。`hf_home` 与 `formal_data_root` 必须存在、可读，且三者均为 stage worktree 外的绝对路径；失败返回 `ROUTING_VALIDATION_STORAGE_UNAVAILABLE`。
-4. 将 `artifact_root`、`hf_home`、`formal_data_root` 作为 dispatch 输入传给 executor；validation executor 必须对所有真实训练/评测命令设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`、`HF_HOME=<hf_home>`、`CODE_VERIFIER_DATA_ROOT=<formal_data_root>`，并拒绝把真实 checkpoint/metrics 写入 stage worktree。
+对 `stage_profile=validation`，router 在普通 dispatch 前**不得**读取本机 `.ai-bridge/validation-machine.json`、不得要求 >=22528 MiB GPU，也不得要求 4090 的 `artifact_root/hf_home/formal_data_root` 已挂载。它只验证 sealed plan/provenance/stage environment 和 control-plane Execution preflight，并把 `control_plane_hardware/target_hardware` 传给 executor。
 
-Development stage 不运行上述 4090 machine/24GB preflight；其 plan-specific Piston/import/model-cache/CUDA prerequisites 由 plan 的 Execution preflight 在首次业务修改/commit 前执行。Validation 中某个 stage 若实际需要候选代码执行，plan 的 Execution preflight 仍必须验证当前 SSH-tunneled loopback Piston 可达/exact runtime；READY record 不是“隧道永远在线”的替代品。
+真正的 target-GPU boundary 由 sealed `operator_terminal_execution` gate 表示：control-plane executor 只生成 portable handoff + operator checkpoint，用户在 4090 手工运行。portable `run.sh` 在 4090 启动时才读取/验证 target-local `.ai-bridge/validation-machine.json`、READY/Piston identity、绝对 `artifact_root/hf_home/formal_data_root`、CUDA/VRAM >=22528 MiB、exact model/data/cache、storage capacity 与（若需要）到唯一 Piston host `1660ti-wsl` 的 loopback tunnel。训练入口原有 >=20 GiB guard 继续作为第二层保护。
+
+正式 artifacts 不回退到 control-plane repo-local `outputs/`。target script 将 checkpoint/results 保留在 4090 persistent root，并生成 secret-free `operator-evidence.json` 与必要小型 status/log/manifest/metrics。用户把这些 evidence 同步回 checkpoint 指定的 control-plane ignored evidence 目录后，router resume/reviewer 默认在 1660 Ti 完成 strict readback/aggregation/provenance 验证；只有 evidence 不足且确实需要 target GPU 或大 artifact 本地读取时，才允许短时只读连接 4090。
 
 ## Transport preflight
 
@@ -94,11 +93,11 @@ Router 只把 execution report 中**最新 committed**、且提交该 checkpoint
 然后按 `interruption_class` 分支校验：
 
 - **environment**：`status: interrupted`；`failed_command`、`blocker` 非空。仅用于已有有效部分业务 commit 后的外部环境/基础设施故障。普通 router 调用返回 `ROUTING_RESUME_AVAILABLE`，报告 failed command/blocker/remaining scope，提示修复环境后显式 resume。
-- **operator**：只允许 `stage_profile=validation` 且 sealed plan 存在匹配 `operator_terminal_execution.gates[].gate_id`；匹配 gate 的 `restart_policy` 必须是 `exact_rerun|trainer_checkpoint`，SFT/GRPO gate 必须为 `trainer_checkpoint`；`status: awaiting_operator`；checkpoint 必须有非空唯一 `operator_gate_id`、绝对 `operator_script`、64-hex `operator_script_sha256`、绝对 `operator_status_file`、绝对 `operator_log_file` 与非空 `expected_artifacts`。script/status/log/expected-artifact 路径必须位于 router 已验证的 persistent `artifact_root` 下且不在 stage worktree，并且 operator script 路径必须落在包含 stage_id、plan_commit、gate_id、checkpoint_id 的唯一 namespace（或等价不可碰撞 identity）。router 每次读取 checkpoint 都重新确认 script 存在且 SHA256 匹配；普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`，报告 exact script/status/log/expected artifacts/restart_policy，并根据当前 runtime 明确 resume 语法：Web GPT + CodexPro 为 `$execution-router resume backend=web`，Local Codex 为 `$execution-router resume`/`backend=local`。**不得自动执行 script**。operator checkpoint 的 `result_code_commit` 可以等于 plan/review baseline。
+- **operator**：只允许 `stage_profile=validation` 且 sealed plan 存在匹配 `operator_terminal_execution.gates[].gate_id`；匹配 gate 的 `restart_policy` 必须是 `exact_rerun|trainer_checkpoint`，SFT/GRPO gate 必须为 `trainer_checkpoint`；`status: awaiting_operator`。新 checkpoint 使用 `operator_handoff_mode=portable_target`：必须有唯一 gate id、control-plane-local 绝对 `operator_script`、64-hex SHA256、target status/log/evidence templates、control-plane evidence directory 与非空 `expected_artifacts`；router 重新确认本地 source script 存在且 hash 匹配，但**不要求 4090 root 在 control plane 可见**。旧版没有 `operator_handoff_mode` 且记录 absolute persistent-root script/status/log 的已提交 checkpoint 继续按 legacy v1 规则验证。普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`，报告 exact source script/hash、目标 commit、target path templates/evidence contract/restart_policy 和 resume 语法；不得自动执行 script。operator checkpoint 的 `result_code_commit` 可以等于 plan/review baseline。
 
 只有显式 resume 才继续；若用户还指定 checkpoint_id，它必须等于当前 HEAD 的 latest checkpoint，不能选择 stale checkpoint。用户显式要求 resume 但当前 HEAD 不存在合法 checkpoint、checkpoint provenance/class 字段不匹配、operator script hash 漂移或 checkpoint 之后又有其它 commit 时返回 `ROUTING_RESUME_INVALID`，不得猜断点或自动 retire。Web GPT + CodexPro 的显式 resume 仍必须带 `backend=web`；仅写 `resume` 不改变 Web backend 的显式选择规则。
 
-显式 resume 时先重新执行 Stage environment preflight；validation 仍重新执行 machine/artifact preflight。通过后按原 plan/review routing dispatch，并额外传 `resume=true`、`resume_checkpoint_id`、`resume_checkpoint_commit`、`resume_from_code_commit`、`resume_interruption_class`、`completed_scope`、`remaining_scope`；operator 再传 `operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/operator_status_file/operator_log_file/expected_artifacts`。executor 必须从 checkpoint 继续，不重做 completed_scope；允许重新跑 preflight、定向测试和 executor-owned 短时 acceptance，因为这些是验证而不是重复实现。operator resume 必须先读取状态/log/真实 artifacts，不能把用户口头结果或 exit code 单独视为 gate 完成，也不得在 resume 中直接替用户重跑 operator long command。
+显式 resume 时先重新执行 Stage environment preflight；validation 在 control plane **不再**重新执行本机 4090 machine/GPU preflight。通过后按原 plan/review routing dispatch，并传完整 resume context。portable operator 再传 `operator_handoff_mode/operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/target path templates/control-plane evidence directory/expected_artifacts`；legacy operator 继续传其原 absolute fields。executor 必须从 checkpoint 继续，不重做 completed_scope；operator resume 先验证已同步回来的 evidence/status/log/真实 artifact identity，默认在 1660 Ti 做 strict readback/aggregation，不能把用户口头结果或 exit code 单独视为 gate 完成，也不得在 resume 中直接替用户重跑 operator long command。
 
 ### A. 尚无 committed review
 
@@ -160,7 +159,7 @@ Router 永不消费未 checkpoint review。
 
 1. 目标 worktree `skills/executor-ex/SKILL.md` 必须含 `execution-routing-v2`，否则 `ROUTING_SKILL_VERSION_MISMATCH`。
 2. 创建恰好 1 个 execution agent。
-3. 传：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=local`、`source_mode=single`、single_class，以及 `stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`、`hf_home`、`formal_data_root`。
+3. 传：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=local`、`source_mode=single`、single_class，以及 `stage_profile/control_plane_hardware/target_hardware/evidence_class/development_terminal`。普通 validation control-plane dispatch **不传 4090 `artifact_root/hf_home/formal_data_root`**；operator gate 使用 sealed target-runtime templates，并由 4090 script 解析真实 roots。
 4. repair 再传 review path、source_review_round、review_commit、repair_issue_ids；resume 再传 `resume=true`、resume_checkpoint_id/commit、resume_from_code_commit、completed_scope、remaining_scope。
 5. agent 必须先进入 stage worktree；不得 subagent。
 6. single 实际无法可靠完成时返回证据；router 不自动改 MULTI。
@@ -168,7 +167,7 @@ Router 永不消费未 checkpoint review。
 ### MULTI
 
 1. 目标 worktree `skills/executor/SKILL.md` 必须含 v2 marker。
-2. 调用 `$executor`，传 stage/provenance、`backend=local`、`source_mode=multi`、`stage_profile/target_hardware/evidence_class/development_terminal`；validation 再传绝对 `artifact_root`、`hf_home`、`formal_data_root`；repair 同样传 review provenance/issues；resume 同样传 resume checkpoint context。
+2. 调用 `$executor`，传 stage/provenance、`backend=local`、`source_mode=multi`、`stage_profile/control_plane_hardware/target_hardware/evidence_class/development_terminal`；validation 的普通 control-plane dispatch 不要求/传入 4090 roots，operator target roots由 portable script 在 4090 解析；repair 同样传 review provenance/issues；resume 同样传 resume checkpoint context。
 3. coordinator 必须基于真实代码复核 ≥2 个独立 subplans；不足 → `ROUTING_MISMATCH`，不得假并行或退化单 worker。
 4. multi 模型/effort 继续由 executor 管理。
 
@@ -187,7 +186,7 @@ router **不 spawn execution agent**。它把 stage/provenance 和完整 source 
 
 - stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind
 - `backend=web`
-- `stage_profile/target_hardware/evidence_class/development_terminal`；validation 另带绝对 `artifact_root`、`hf_home`、`formal_data_root`
+- `stage_profile/control_plane_hardware/target_hardware/evidence_class/development_terminal`；validation 普通 dispatch 不要求 4090 roots，operator gate 使用 target-runtime templates
 - source routing 的完整结构和 `source_mode`
 - repair 时：review path、source_review_round、review_commit、repair_issue_ids
 - resume 时：`resume=true`、resume_checkpoint_id、resume_checkpoint_commit、resume_from_code_commit、completed_scope、remaining_scope
@@ -214,12 +213,12 @@ effective_execution_mode: single    # single | multi | serialized_multi
 
 ## 输出
 
-报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、stage profile；validation 额外报告实际 GPU identity/total VRAM 与 machine-record `artifact_root`、`hf_home`、`formal_data_root`；repair 再报告 review_round/review_commit/repair_issue_ids；resume 再报告 resume_checkpoint_id/commit、resume_from_code_commit 与 remaining_scope；local SINGLE 报实际 model/effort。
+报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、`control_plane_hardware`、stage profile 与 `target_hardware`；validation control-plane dispatch 不声称当前拥有 target GPU。到 operator boundary 时报告 source script/hash、target commit、target-runtime path/evidence contract 与 manual-run 要求；target GPU identity/VRAM/roots 来自 4090 `operator-evidence.json`，不从 control-plane runtime伪造。repair 再报告 review provenance/issues；resume 再报告 checkpoint 与 remaining scope；local SINGLE 报实际 model/effort。
 
 ## 关键错误
 
 - `ROUTING_PLAN_MISSING` / `ROUTING_PLAN_AMBIGUOUS` / `ROUTING_PLAN_NOT_SEALED` / `ROUTING_PLAN_PROFILE_INVALID`
-- `ROUTING_VALIDATION_MACHINE_NOT_READY` / `ROUTING_VALIDATION_HARDWARE_UNAVAILABLE` / `ROUTING_VALIDATION_STORAGE_UNAVAILABLE`
+- `ROUTING_OPERATOR_ACTION_REQUIRED` / `ROUTING_OPERATOR_EVIDENCE_MISSING` / `ROUTING_OPERATOR_EVIDENCE_INVALID`（target machine/GPU/storage 的 fail-closed 错误由 4090 operator-start script 记录进 evidence；历史 `ROUTING_VALIDATION_*` record 仍可审计读取）
 - `ROUTING_STAGE_ENV_UNAVAILABLE`
 - `ROUTING_RESUME_AVAILABLE` / `ROUTING_RESUME_INVALID`
 - `ROUTING_STAGE_DIRTY`

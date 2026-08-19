@@ -2,6 +2,8 @@
 
 Piston is an external sandbox service. It is not a Git submodule or vendored dependency of this repository. The CodeVerifier process sends untrusted source text only to a loopback HTTP endpoint and must never execute model-generated code directly in the training/evaluation process.
 
+**Current project topology:** the only Piston host is `1660ti-wsl`. `home-piston-01` is retired and must not be reintroduced. The pinned service runs on the GTX 1660 Ti WSL host. The 1660 Ti control plane uses its loopback endpoint directly; a 4090 target-GPU job that needs Piston reaches the same service only through `4090 127.0.0.1:2000 -> 1660ti-wsl 127.0.0.1:2000`. The existing 4090 helper is `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh`.
+
 The loopback endpoint may be backed by either:
 
 1. a Piston service running on the same Linux host/VM; or
@@ -118,16 +120,13 @@ The response must contain exactly the configured Python version before the GPU n
 
 ## RTX 4090 container: establish the SSH loopback tunnel
 
-Run the tunnel from the 4090 GPU container. Replace `<PISTON_SSH_TARGET>` with the SSH target for the dedicated Piston host; add `-p <PORT>` when that host uses a non-default SSH port.
+Run the existing helper from the 4090 GPU container; it owns the canonical SSH target `1660ti-wsl` and loopback mapping:
 
 ```bash
-ssh -N -T \
-  -o ExitOnForwardFailure=yes \
-  -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 \
-  -L 127.0.0.1:2000:127.0.0.1:2000 \
-  <PISTON_SSH_TARGET>
+/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh
 ```
+
+For troubleshooting, the underlying contract is an SSH local forward from 4090 `127.0.0.1:2000` to `1660ti-wsl` `127.0.0.1:2000`. Do not substitute another Piston host.
 
 Keep this SSH session alive for the entire training/evaluation command that needs Piston. If the SSH process exits, CodeVerifier must fail closed on Piston transport errors rather than running candidate code locally.
 

@@ -18,7 +18,7 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 必需输入
 
-共同：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=web`、完整 source routing、source_mode、effective_execution_mode、`stage_profile`、`target_hardware`、`evidence_class`、`development_terminal`。validation 额外必须有 router 解析出的绝对 `artifact_root`、`hf_home`、`formal_data_root`。
+共同：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=web`、完整 source routing、source_mode、effective_execution_mode、`stage_profile`、`control_plane_hardware`、`target_hardware`、`evidence_class`、`development_terminal`。Web executor 默认在 GTX 1660 Ti control plane；validation 普通 dispatch 不要求 4090 `artifact_root/hf_home/formal_data_root`，target roots 由 portable operator script 在 4090 runtime 解析。
 
 - source_mode=single → effective 必须为 `single`
 - source_mode=multi → effective 必须为 `serialized_multi`
@@ -33,9 +33,9 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 2. plan 内容必须等于 plan_commit seal 版本。
 3. implementation：report 不得已有 matching completed E0。普通 execution 要求 `HEAD == plan_commit`；resume 要求 `HEAD == resume_checkpoint_commit`，并精确匹配 checkpoint task/source/completed_scope/remaining_scope。
 4. repair：普通 execution 要求 `HEAD == review_commit`；resume 要求 `HEAD == resume_checkpoint_commit` 且 checkpoint 精确绑定 latest committed review round/commit/issues。
-5. 解析 plan 的 `stage_profile / target_hardware / evidence_class / development_terminal` 并与 router 输入逐项一致：development 必须是 GTX 1660 Ti (6GB)+engineering；validation 必须是 24GB GPU+real-training/numerical+terminal=false。profile 不一致则停止。
+5. 解析 plan 的 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal` 并与 router 输入逐项一致：control plane 固定 GTX 1660 Ti；development target=GTX 1660 Ti+engineering；validation target=24GB GPU+real-training/numerical+terminal=false，但当前 Web executor 仍在 control plane，不因 target=4090 改变 backend/机器。
 6. 在任何新的业务文件修改或 commit **之前**完整执行 plan 的 `Execution preflight`；普通 execution preflight 失败时保持 plan/review baseline，不写 report；resume 若环境仍未修好则保持 checkpoint HEAD，不追加重复 checkpoint，修复后可再次显式 resume。
-7. validation：确认 router `artifact_root / hf_home / formal_data_root` 均为绝对路径且位于 stage worktree 外；所有真实训练/评测命令显式设置 `CODE_VERIFIER_ARTIFACT_ROOT=<artifact_root>`、`HF_HOME=<hf_home>`、`CODE_VERIFIER_DATA_ROOT=<formal_data_root>`，不得依赖 CodexPro server 是否继承了用户 shell export，不得把 checkpoint/metrics/output 显式写回 worktree；synthetic/mock/fake artifact 不能满足真实 gate。
+7. validation：Web executor 不解析/校验 4090 roots，也不通过 CodexPro tool call 启动真实 target-GPU training/evaluation。sealed formal 命令只使用 `$CODE_VERIFIER_ARTIFACT_ROOT/$HF_HOME/$CODE_VERIFIER_DATA_ROOT` target-runtime templates；portable `run.sh` 在 4090 读取 target-local machine record 后设置并验证真实 roots。synthetic/mock/fake artifact 仍不能满足真实 gate。
 8. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
 9. stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若本次 execution 修改 `pyproject.toml` 或 `uv.lock`，必须在继续依赖相关测试前运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，切换为完整 stage-local pinned environment；不能让 primary overlay 掩盖 dependency contract 的变化。
 
@@ -51,13 +51,13 @@ resume 必须来自 router 验证的 current-head checkpoint。source SINGLE 从
 
 ## Operator terminal gate / resume
 
-sealed validation plan 含 `operator_terminal_execution` 时，正式 Base/B/C/D 全量评测、optimizer SFT/GRPO 等长任务不得由 Web executor/CodexPro tool call 自己启动。达到 gate 前先完成并 commit tracked code/config/test、Execution preflight 和短时 lint/unit/GPU/Piston smoke；解析 `restart_policy=exact_rerun|trainer_checkpoint`，SFT/GRPO 必须为 `trainer_checkpoint`；若 gate 前无 tracked 修改，允许 result_code_commit 等于 plan/review baseline。
+sealed validation plan 含 `operator_terminal_execution` 时，正式 Base/B/C/D 全量评测、optimizer SFT/GRPO 等 target-GPU 长任务不得由 Web executor/CodexPro tool call 自己启动。达到 gate 前只完成并 commit tracked code/config/test、control-plane Execution preflight、lint/unit/CPU/non-4090 integration/Piston 与其它 1660 Ti 可完成的 short validation；不要为了 handoff 连接 4090。解析 `restart_policy=exact_rerun|trainer_checkpoint`，SFT/GRPO 必须为 `trainer_checkpoint`；若 gate 前无 tracked 修改，允许 result_code_commit 等于 plan/review baseline。
 
-Web executor 预分配下一个 checkpoint_id，在 router 的 persistent `artifact_root` 下创建包含 stage_id/plan_commit/gate_id/checkpoint_id 的唯一 operator 目录；存在非空同名目录时停止，不覆盖。生成 secret-free immutable `run.sh`：固定 stage worktree/branch、primary root、planning_base_commit、result_code_commit、execution report path、gate/checkpoint identity 和三个 machine roots，不预先硬编码未来 checkpoint commit hash。运行时验证 stage clean/branch、`HEAD^ == result_code_commit`、`HEAD^..HEAD` 只改本 stage execution report，并从 report latest checkpoint 核对 stage/gate/checkpoint-id/script-path 与运行时 script SHA256；随后验证 primary main 仍为 planning base 且 clean、persistent roots 可用，并取得排他锁。每 attempt 获锁后先清旧 status/temp-status、append UTC attempt-start，再执行 sealed gate 的 operator-start short preflight，重新验证当前 GPU/CUDA、Piston（如适用）、model/data/cache 与 artifact-root writable/free-bytes/free-inodes 门槛；失败就记录并原子写非零 status，不进入长命令。通过后执行 long command并显式捕获其自身 rc：不能让 `set -e` 跳过 status 写入；使用 `tee`/pipeline 时必须通过 `pipefail` + `PIPESTATUS[0]`（或等价可靠机制）取得 long command rc。terminal log append end/exit，status 通过临时文件 atomic rename 写入并以该 rc 退出；SIGKILL 后 status 缺失必须被视为未形成可靠终态。stage worktree 只作为 code/runtime cwd，真实 checkpoint/results/output 只能写 persistent artifact root。
+Web executor 在 ignored `.ai-bridge/operator-handoffs/<stage>/<plan>/<gate>/<checkpoint>/` 唯一目录生成 secret-free immutable **portable** `run.sh`，记录 `operator_handoff_mode=portable_target`、SHA256、target status/log/evidence templates、control-plane evidence directory 与 expected artifacts。script 不硬编码 1660 Ti checkout/roots；用户在 4090 fetch/checkout exact operator-checkpoint commit、复制并校验 script hash 后手工运行。script 在目标端解析 `CODE_VERIFIER_TARGET_REPO` 与 target-local `.ai-bridge/validation-machine.json`，验证 Git/report parent、READY identity、>=22528 MiB GPU、persistent roots/model/data/cache/storage、排他锁；若 gate 需要 Piston，确保 `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh` 对唯一 `1660ti-wsl` host 的 loopback tunnel 健康。attempt status atomic、terminal log append-only、long command rc 必须显式可靠捕获；结束时生成 secret-free `operator-evidence.json` 绑定 target machine/GPU/roots/Piston、formal run、checkpoint inventory/hashes/summaries/status/log。
 
-`exact_rerun` 允许环境恢复后在不改变 checkpoint HEAD 的情况下重跑同一 script。`trainer_checkpoint` 的同一 script 必须在 canonical run 已存在时只从其 `checkpoints/` 选择 numeric 最大的合法 `checkpoint-*` 并自动追加 `--resume-from-checkpoint`；run 存在但无合法 checkpoint 时 fail closed，不删除/覆盖。确认 script/status/log/expected-artifact 路径均位于 artifact_root，计算 SHA256，append `interruption_class=operator,status=awaiting_operator,resume_allowed=true` checkpoint，记录 exact gate/script/hash/status/log/expected_artifacts/completed_scope/remaining_scope；只提交 report docs commit，返回 `EXECUTION_OPERATOR_ACTION_REQUIRED` 和当前 runtime 对应的 resume 命令并停止。
+`exact_rerun` 与 `trainer_checkpoint` 的 same-checkpoint resume/latest-valid-checkpoint/strict-loader/quarantine/no-overwrite 语义保持不变。计算 source script SHA 后 append portable operator checkpoint，只提交 report docs commit，返回 `EXECUTION_OPERATOR_ACTION_REQUIRED`，明确 exact target commit、source script/hash、4090 manual-run 步骤与 evidence 回传目录，然后停止。
 
-operator resume 必须重新核验 script SHA/restart policy/machine roots，读取 append-only status/log 并按 sealed gate acceptance 检查真实 artifacts/identity；不得自动替用户重跑 long command。成功则继续 remaining_scope。纯环境故障优先保持当前 checkpoint/HEAD，让用户修复环境后重跑同一 immutable script；`trainer_checkpoint` 由 script 自动恢复 latest valid checkpoint，不得为了加 resume 参数先提交新 docs checkpoint。若无合法 checkpoint或真实运行暴露 tracked bug，先保留旧 run：必要 tracked 修复 commit/短测试后，把 incomplete canonical run 移到 persistent unique quarantine path，并在 execution report 记录原路径/新路径/原因/status；之后才生成新的 Cn script/checkpoint fresh restart。
+operator resume 默认在 1660 Ti 重新核验 source script SHA/restart policy 与同步回来的 `operator-evidence.json`/status/log/manifest/metrics，从 evidence 验证 target machine/GPU/roots/formal artifact identity；不要求 control-plane 本机拥有 24GB GPU或挂载 4090 roots，也不得替用户重跑/监控 long command。成功则继续 remaining_scope。纯环境故障保持 current checkpoint/HEAD，让用户修复 target 环境后重跑同一 hash-matching script；无合法 trainer checkpoint或 tracked bug 时按既有 quarantine + fresh portable checkpoint 规则保留旧正式 evidence。
 
 ## source SINGLE
 
@@ -139,7 +139,7 @@ Repair 使用 E1/E2/... 并填 source_review_round/source_review_commit/repair_i
 - [ ] implementation/repair 只执行一个 task_kind；`DEV-CLOSEOUT` 如无业务 diff，已确认 `result_code_commit == plan_commit` 且没有人为制造 code commit；
 - [ ] Execution preflight 在首次/恢复后的新业务修改前完成；baseline preflight 失败未产生业务 commit/report；已有 partial commits 后的 environment interruption 如需暂停，已写合法 checkpoint 而不是强制 retire；
 - [ ] validation 若含 operator terminal gate，Web executor 未启动长任务；restart_policy/唯一 namespace/Git+lock guard/原子 status+append-only log 正确，trainer_checkpoint 同一 script 可恢复 latest valid checkpoint，失败 formal run 只 quarantine 不删除，并只在显式 resume 验证真实 artifacts 后继续；
-- [ ] validation 的 persistent artifact_root 位于 worktree 外，真实 checkpoint/result 未写入 `.worktrees/...`；
+- [ ] validation 的正式 checkpoint/result 只写 target persistent artifact_root；control plane 不要求挂载该 root，portable operator evidence 足以跨机器核验，真实 checkpoint/result 未写入 `.worktrees/...`；
 - [ ] serialized_multi 覆盖全部 source candidates/repair_issue_ids；
 - [ ] result_code_commit 在 report docs commit 之前捕获；
 - [ ] `.ai-bridge/**` 保持 ignored/untracked，所有 staged/committed path 都不包含 transport state；

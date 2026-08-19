@@ -670,3 +670,17 @@ development_complete_record:
 ### WP5 validation 聚合状态
 
 WP5-a/WP5-b 已完成统一评测的 development 工程合同，WP5-c 现进一步完成正式 400 题 Base A 数值与持久 provenance。A 已成为后续 B/C/D 必须复用的正式 dataset/seed/evaluation-definition 基线；validation track 的下一依赖步骤是正式 SFT B 训练、checkpoint 重载与同一 evaluator/aggregator 下的 B 组评测。
+
+---
+
+## Project workflow amendment: GTX 1660 Ti control plane / RTX 4090 worker
+
+- **生效日期**：2026-08-19
+- **性质**：项目级 workflow/infrastructure policy；不修改任何既有 experiment definition、formal artifact、stage result 或历史 provenance。
+- 本 amendment supersede 旧文档中“validation planner/reviewer/analysis 必须在 4090”以及“整个 validation track 留在 4090”的**运行位置**约束；历史记录中描述当时实际在哪台机器执行的事实保持不变。
+- GTX 1660 Ti 现在是 development + validation 的固定 control plane：planner-ex、reviewer-ex、stage-lifecycle、execution-router、普通代码/测试、数据准备、SFT prevalidation、Piston、aggregation/error analysis/report 默认在此完成。validation plan 显式区分 `control_plane_hardware: GTX 1660 Ti (6GB)` 与 `target_hardware: 24GB GPU`。
+- RTX 4090 只作为按需 target-GPU worker。formal SFT/GRPO、必须使用目标 GPU 的 inference/numerical acceptance 通过 portable operator handoff 交给用户在 4090 SSH/tmux 手工执行；GPT/CodexPro 不启动或持续监控正式长任务。
+- 新 operator checkpoint 使用 `operator_handoff_mode=portable_target`，1660 Ti 生成 ignored immutable `run.sh` 和 SHA/expected-artifact contract；4090 target-start 时才验证 READY/GPU/roots/model/data/cache/Piston/storage，完成后生成 secret-free `operator-evidence.json`。小型 evidence 同步回 1660 Ti；大型 checkpoint 默认留在 4090。历史 absolute-root operator checkpoint 继续按 legacy v1 contract 审计，不回写旧记录。
+- 项目唯一 Piston host 固定为 `1660ti-wsl`；`home-piston-01` retired。4090 只通过 `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh` 建立 `127.0.0.1:2000 -> 1660ti-wsl:127.0.0.1:2000` local forward。
+- 已有 environment-interruption resumability 保持：合法 committed environment checkpoint 修复环境后显式 resume；`retire_incomplete` 仍只是显式 abandon path。
+- canonical policy 见 `docs/control-plane-gpu-worker-workflow.md`。

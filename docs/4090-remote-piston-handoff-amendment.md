@@ -3,6 +3,8 @@
 > Status: authoritative migration-infrastructure amendment after the WP8 Development Complete Record.
 >
 > This document changes only the 1660 Ti → 4090 deployment topology. It does not reopen WP3–WP8 product development and does not change formal dataset/model/training/evaluation identities.
+>
+> **2026-08-19 workflow-location update:** `docs/control-plane-gpu-worker-workflow.md` now supersedes any statement here that implies planner/reviewer/lifecycle/routing must move to or remain on the 4090. The only Piston host is now `1660ti-wsl` (`home-piston-01` is retired); a Piston-dependent 4090 gate uses `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh`. This document remains authoritative for the non-privileged target-GPU/Piston separation where not superseded.
 
 ## 1. Why the original migration package is stale
 
