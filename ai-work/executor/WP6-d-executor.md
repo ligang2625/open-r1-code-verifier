@@ -229,3 +229,61 @@ execution_checkpoint:
 - No production code/config/test change was required during this resume. `result_code_commit` for C3 is therefore the committed C2 checkpoint HEAD `60f4d95cf4624ae2114a7f0188d8b0b43541542c`; C3 itself is a docs-only operator checkpoint.
 - The formal B evaluation remains unstarted. Its canonical path does not exist at C3 creation time, so this checkpoint does not pre-create or contaminate evaluation evidence.
 - All future Piston-backed work in this stage remains bound to the current `1660ti-wsl` service through the 4090 loopback tunnel. The 1660 Ti project repository was not accessed or modified during this resume.
+
+## C4 — Interrupted C3 quarantine and generation/verification decoupling
+
+The operator interrupted C3 after the real B evaluation exposed a throughput defect in the execution architecture rather than a model or verifier failure. The old evaluator serialized GPU generation with remote Piston verification, leaving the RTX 4090 idle for most wall-clock time. The partial C3 run was preserved as failed evidence, then the evaluation control plane was minimally repaired so formal generation can complete on the 4090 before any Piston work is performed. The evaluation problem set, model/checkpoint, deterministic decoding, three test layers, Piston definition, per-problem verdict schema, metrics, and bootstrap definitions are unchanged.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C4
+  stage_id: WP6-d
+  task_kind: implementation
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 5107f03d58380e0260671142c062604accf80ff6
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: sft-b-evaluation
+  operator_restart_policy: exact_rerun
+  operator_script: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C4/run.sh
+  operator_script_sha256: 3ce22292c7e9b8d759516f1c870088733f9d7035c48f7edcb9e23d5f5e68291d
+  operator_status_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C4/status
+  operator_log_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C4/terminal.log
+  quarantine_record: /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/quarantine/WP6-d/C3-B-sft-formal-seed42-interrupted-156rows.quarantine.json
+  quarantine_record_sha256: 7a2934cf13d402be36c2397ce08c3fd649afd0a5f8304fb064769eb988448d68
+  expected_artifacts:
+    - /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42/run.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42/resolved_config.yaml
+    - /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42/environment.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42/metrics.jsonl
+    - /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42/stdout.log
+    - /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42/stderr.log
+    - /root/sj-tmp/open-r1-code-verifier-outputs/generation/B-sft-formal-seed42/samples/generations.jsonl
+  completed_scope:
+    - "C3 was interrupted by the operator after 156/400 durable evaluation rows. The old run closed with run.json status=failed and gpu_hours=0.3259985226868755; its rows SHA256 is ee6d93a9917921e502d14c21c6b79192a1d06f6cc74aaf1e34d9697117a4d622. Because Ctrl+C terminated the old outer script before its final write, C3 has no operator status file; terminal.log remains preserved"
+    - "the exact partial C3 evaluation directory was atomically moved out of the canonical B path to /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/quarantine/WP6-d/C3-B-sft-formal-seed42-interrupted-156rows and is indexed by the immutable quarantine record above; no partial row or prior GPU cost was deleted or reused as new formal B evidence"
+    - "result-code commit 5107f03d58380e0260671142c062604accf80ff6 introduces generate-eval -> verify-eval -> aggregate-eval. generate-eval persists exact-prefix deterministic completions without constructing/contacting Piston; verify-eval reuses the existing evaluate_completion/verify_completion contracts with bounded local-Piston workers while preserving canonical problem order; aggregate-eval remains the existing deterministic aggregator"
+    - "the transferable generation contract is path-independent but content-strict: model/revision/checkpoint, seed, split, decode settings, ordered dataset identity, Piston YAML SHA, generation rows SHA, and source code/dependency provenance are bound. Different absolute dataset/Piston paths on a later verification machine are allowed only when their semantic/content identities match"
+    - "staged-vs-one-process equivalence, exact-prefix generation/verification resume, crash-accounting reconciliation, transfer-path portability, tamper rejection, bounded worker concurrency with ordered persistence, payload safety, and code/dependency drift fail-closed behavior are covered by the new staged tests"
+    - "final repair regression is green on the 4090: make lint passed; the full suite passed 908 tests with only 3 expected real-Piston skips when run against the exact cached 1.5B snapshot; make test-gpu passed 3/3; and the explicit real current 1660ti-wsl Piston acceptance passed 9/9"
+    - "C4 run.sh is chmod 0555, bash -n clean, SHA256-bound, and statically contains no ensure-piston, runtime API, curl, or ssh invocation. It validates only the pinned Piston YAML SHA as part of the future verification definition; the long command is generation-only"
+  remaining_scope:
+    - "operator runs the exact C4 run.sh in a normal SSH terminal or tmux. Web GPT/CodexPro must not start the 400-problem formal generation command"
+    - "C4 exact_rerun validates any existing generation prefix and resumes only missing durable generation rows; the EXIT/INT/TERM handling also atomically writes operator status on interruption"
+    - "after C4 exits, explicit execution-router resume backend=web must validate status/log plus 400 unique completed generation rows, exact model/revision/checkpoint/seed/dataset/order/decode/Piston-definition identities, finite generation latency/token telemetry, bundle/environment hashes, GPU-hours accounting, payload safety, and a short 400-resumed/0-generated no-op readback"
+    - "only after the 4090 generation bundle is accepted should the exact code/dependency commit, formal data, and bundle be transferred to the 1660 Ti for local-Piston verify-eval and aggregate-eval. This execution conversation must not access or modify the 1660 Ti code repository while its separate workflow refactor is active"
+    - "after verified B artifacts are synced back and strict A/B pairing acceptance passes, WP6-d may close E0; do not enter C/D work in this stage"
+  status: awaiting_operator
+```
+
+### C4 repair conclusions
+
+- The C3 interruption is treated as a preserved formal attempt, not as reusable B evidence. New formal B generation starts from 0/400 under the repaired staged architecture.
+- The expensive/non-reproducible model output is now durably captured before CPU/Piston verification. This removes remote Piston latency from paid 4090 wall time without changing any verifier result semantics.
+- The generation bundle does not carry hidden-test payloads. Verification remains the only phase that reads the three test layers, and only the verification machine needs the live Piston service.
+- The current C4 generation target is fresh. No generation bundle exists at checkpoint creation time.
+- No 1660 Ti project repository was accessed or modified during this repair; only its already-configured Piston service was used for the explicit 9/9 sandbox regression.
