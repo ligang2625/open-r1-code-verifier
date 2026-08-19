@@ -117,3 +117,60 @@ execution_checkpoint:
 - The main correctness defect found by this audit was interruption accounting, not the optimizer definition. `KeyboardInterrupt` is now handled analogously to evaluation's existing `BaseException` fail path, preserving attempt/cost provenance without swallowing the interrupt.
 - The downstream evidence inventory is sufficient for the current MVP questions: training curves/eval metrics/token counts/CUDA peak/cost provenance remain available from SFT, and evaluation permanently stores the irrecoverable per-problem model outputs and three-layer verification outcomes needed for aggregate metrics and failure analysis. Formal prepared data remains checksummed and joinable by `problem_id` for difficulty/category/test metadata without model reruns.
 - One known efficiency limitation remains non-blocking: SFT constructs its train/validation datasets by re-validating visible-only trajectories through the tunneled Piston service before optimizer work, and a resume repeats that validation. This can leave the paid GPU underutilized during pre-training validation, but it does not change the experiment definition or lose evidence, so it was not optimized inside this validation stage.
+
+## C2 — Off-GPU formal prevalidation recovery and fresh manifest-backed SFT B handoff
+
+C1 was manually started and then interrupted after the operator identified that the old implementation was spending paid RTX 4090 time on sequential visible-trajectory Piston validation before Trainer initialization. No optimizer step or Trainer checkpoint was produced. The user explicitly directed a controlled workflow change: perform the exact SFT trajectory validation on the GTX 1660 Ti / local Piston host, bind the result in an immutable manifest, and keep the RTX 4090 path for model load / Trainer / optimizer only. The experiment definition itself remains unchanged.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C2
+  stage_id: WP6-d
+  task_kind: implementation
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 52a1ffffbfd07348483e6981215a39a99581fbf0
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: sft-b-formal
+  operator_restart_policy: trainer_checkpoint
+  operator_script: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-formal/C2/run.sh
+  operator_script_sha256: 6d43eb6e18a745f6aea53550d287709b7adc6e14868bb255dc67fbad2addcf0f
+  operator_status_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-formal/C2/status
+  operator_log_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-formal/C2/terminal.log
+  operator_prevalidation_manifest: /root/sj-tmp/open-r1-code-verifier-outputs/sft-prevalidation/WP6-d/formal-52a1ffff/WP6-d-formal-sft-prevalidation-52a1ffff.json
+  operator_prevalidation_manifest_sha256: 1e6a5a224dbc80374237101b65774bcfd450a80595041631f2239a8b4dba70dc
+  quarantine_record: /root/sj-tmp/open-r1-code-verifier-outputs/sft/quarantine/WP6-d/C1-B-sft-formal-seed42-b775102-status130.quarantine.json
+  expected_artifacts:
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/run.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/resolved_config.yaml
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/environment.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/metrics.jsonl
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/checkpoints/adapter_config.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/checkpoints/adapter_model.safetensors
+  completed_scope:
+    - "C1 terminal status is 130. Its failed run closed attempt 1 with gpu_hours=0.3463342955455624 and produced no Trainer checkpoint; the exact old files were SHA256-inventoried and atomically moved to /root/sj-tmp/open-r1-code-verifier-outputs/sft/quarantine/WP6-d/C1-B-sft-formal-seed42-b775102-status130, leaving the canonical B run path free for a fresh C2 run"
+    - "result-code commit 52a1ffffbfd07348483e6981215a39a99581fbf0 removes the superseded inline-Piston SFT training path, adds production prevalidate-sft, and makes train-sft require a strictly validated prevalidation manifest; the sealed model/data/hyperparameter definition is unchanged"
+    - "formal prevalidation completed on the GTX 1660 Ti at exact validator commit 52a1ffffbfd07348483e6981215a39a99581fbf0 with 2500 train + 300 validation records, all passed, max_token_count=1519 under max_seq_length=1536, Piston config SHA f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e, Python runtime 3.10.0, and pinned package versions matching the 4090 training environment"
+    - "the formal manifest was rsynced byte-for-byte from 1660 Ti to the 4090 artifact root; both sides report SHA256 1e6a5a224dbc80374237101b65774bcfd450a80595041631f2239a8b4dba70dc, and the 4090 strict consumer revalidated raw dataset hashes/order/record hashes/model revision/max sequence/Piston definition and returned 2500/300/1519 evidence"
+    - "the final result-code commit was proven by a real two-step RTX 4090 manifest-backed SFT smoke at /root/sj-tmp/open-r1-code-verifier-outputs/sft/WP6-d-manifest-smoke-52a1fff; run.json binds git_commit 52a1ffffbfd07348483e6981215a39a99581fbf0, prevalidation_mode=manifest, complete Trainer checkpoint state, finite curve/cost telemetry, and strict completed-adapter reload"
+    - "the current project Piston host has been migrated from retired home-piston-01 to 1660ti-wsl. The 1660 Ti local service is the same pinned privileged Piston image/runtime and passes 9/9 acceptance locally; the 4090 reaches it only through SSH local forwarding to 127.0.0.1:2000 using the 1660ti-wsl alias and dedicated SSH key, and a subsequent complete tunneled acceptance passed 9/9. Machine records and validation-machine.json now identify 1660ti-wsl as the current Piston host"
+    - "C2 does not contact live Piston during formal SFT preflight or training. It validates the immutable manifest and Piston definition SHA instead, so 4090 optimizer time is not coupled to remote Piston latency. Future Piston-backed evaluation/GRPO operations must use the 1660ti-wsl tunnel"
+    - "C2 run.sh is secret-free, bash syntax checked, chmod 0555, SHA256-bound, requires the manifest SHA above, verifies current GPU/BF16/model/data/Base A/quarantine/final smoke/storage and manifest provenance, and preserves trainer_checkpoint resume semantics for any later same-C2 interruption with a valid numeric Trainer checkpoint"
+  remaining_scope:
+    - "operator runs the exact C2 run.sh in a normal SSH terminal or tmux; Web GPT/CodexPro must not start the formal optimizer command"
+    - "after the operator run exits, explicit execution-router resume backend=web validates C2 status/log and the real formal SFT artifacts, including manifest identity, attempts/GPU-hours, finite complete metrics, expected numeric checkpoints near 100/200/300, final adapter reload, curve/cost readiness, and payload safety"
+    - "after formal SFT B acceptance, executor prepares the separate sft-b-evaluation exact_rerun operator checkpoint; all future Piston requests for B evaluation and later GRPO/evaluation must terminate at the 1660ti-wsl Piston service"
+  status: awaiting_operator
+```
+
+### C2 recovery conclusions
+
+- C1 evidence was preserved rather than deleted or overwritten. Its 0.3463342955455624 GPU-hours remain attributable to the failed pre-optimizer attempt.
+- Formal SFT trajectory validation is now an off-GPU prerequisite. `train-sft` cannot silently fall back to inline Piston validation and cannot start without the exact manifest.
+- The synced formal manifest is immutable on the 4090 (`0444`) and is bound by SHA256 in both C2 report and C2 operator script.
+- `home-piston-01` is retired for current/future project operations. Historical bootstrap/machine records were archived before current machine provenance was switched to `1660ti-wsl`.
+- The 4090-to-1660 Ti Tailscale path currently uses DERP and is slower than the old host. One initial tunneled batch acceptance experienced a transient transport failure; the targeted batch rerun passed and the subsequent complete 9-test tunneled suite passed. This does not affect C2 SFT because C2 is manifest-only, but later Piston-heavy evaluation/GRPO should retain fail-closed transport handling and operator-visible logs.
