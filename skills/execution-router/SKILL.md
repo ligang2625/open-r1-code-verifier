@@ -47,6 +47,8 @@ Open-R1 artifact：
 
 plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git 历史推导 `plan_commit`。未提交、dirty 或 seal 后又修改 plan → `ROUTING_PLAN_NOT_SEALED`。同时解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`；`control_plane_hardware` 固定 `GTX 1660 Ti (6GB)`。development 只允许 target=GTX 1660 Ti + engineering；validation 固定 real-training/numerical + terminal=false，但 target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU execution）。validation target=24GB 时 sealed plan 必须有覆盖全部 24GB gates 的 operator block；target=GTX 1660 Ti 时不得隐含需要 24GB execution。违反返回 `ROUTING_PLAN_PROFILE_INVALID`。target hardware 不决定当前 Web/Local backend 或 router 所在机器。
 
+**已封存旧 stage 的迁移兼容**：本 control-plane workflow 上线前已经存在 completed execution 或 committed review 的 active stage，其 sealed plan 可能没有 `control_plane_hardware`。这类 stage 不得为了采用新 workflow 改写 plan。router 仅在“同一 `plan_commit` 已有 committed completed execution 或 committed review”这一窄条件成立时，把缺失字段运行时解释为 `GTX 1660 Ti (6GB)`，并向 executor 传 `legacy_control_plane_default=true` 与当前 clean maintenance runtime 的 exact `workflow_runtime_commit`；其它 metadata 仍逐项严格校验。没有 execution/review 的纯 PLANNED stage 缺字段仍返回 `ROUTING_PLAN_PROFILE_INVALID`，应走 pre-execution replan，而不是静默补字段。
+
 ## Control-plane dispatch 与 target-GPU boundary
 
 Router 默认只调度 **control-plane execution**。无论 `stage_profile=development|validation`，planner/bootstrap/router/reviewer 与普通 code edit、lint/unit/CPU/non-4090 integration、Piston、data preparation、analysis/report、operator-handoff preparation 都在 GTX 1660 Ti 上完成；`backend=web|local` 只描述当前执行 runtime，不等价于 target hardware。
@@ -213,7 +215,7 @@ effective_execution_mode: single    # single | multi | serialized_multi
 
 ## 输出
 
-报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、`control_plane_hardware`、stage profile 与 `target_hardware`；validation control-plane dispatch 不声称当前拥有 target GPU。到 operator boundary 时报告 source script/hash、target commit、target-runtime path/evidence contract 与 manual-run 要求；target GPU identity/VRAM/roots 来自 4090 `operator-evidence.json`，不从 control-plane runtime伪造。repair 再报告 review provenance/issues；resume 再报告 checkpoint 与 remaining scope；local SINGLE 报实际 model/effort。
+报告：task_kind、stage_id、plan_commit、routing source、source_mode、backend、effective_execution_mode、绝对 worktree、`control_plane_hardware`、stage profile 与 `target_hardware`；若使用旧 sealed-plan 迁移兼容，额外报告 `legacy_control_plane_default=true`，明确没有改写 plan。validation control-plane dispatch 不声称当前拥有 target GPU。到 operator boundary 时报告 source script/hash、target commit、target-runtime path/evidence contract 与 manual-run 要求；target GPU identity/VRAM/roots 来自 4090 `operator-evidence.json`，不从 control-plane runtime伪造。repair 再报告 review provenance/issues；resume 再报告 checkpoint 与 remaining scope；local SINGLE 报实际 model/effort。
 
 ## 关键错误
 

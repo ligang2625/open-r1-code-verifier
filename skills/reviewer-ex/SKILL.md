@@ -59,10 +59,10 @@ reviewer 只能审查一个**新的 completed execution record**：
 
 ## 审查流程
 
-1. 全文读取 plan 和最新 execution record/report，并先解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`；`control_plane_hardware` 必须为 GTX 1660 Ti。validation 可合法 target=GTX 1660 Ti（只消费 formal evidence）或 24GB GPU（含新的 target-GPU gates）；两者都不要求 reviewer 本机是 4090，但证据要求不同。
+1. 全文读取 plan 和最新 execution record/report，并先解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`；`control_plane_hardware` 必须为 GTX 1660 Ti。validation 可合法 target=GTX 1660 Ti（只消费 formal evidence）或 24GB GPU（含新的 target-GPU gates）；两者都不要求 reviewer 本机是 4090，但证据要求不同。若 sealed plan 缺少 `control_plane_hardware`，只有同一 `plan_commit` 已有 committed completed execution 或 committed review、且最新 execution 明确记录 `legacy_control_plane_default=true` 与 exact `workflow_runtime_commit` 时，reviewer 才运行时解释为 GTX 1660 Ti；不得改写 plan，也不得把兼容扩展到纯 PLANNED stage。
 2. 对照 plan 每个实施步骤、交付、总体验收，核对实际 diff/代码。
 3. 精读适用 spec/审查清单；检查接口、范围、安全、数据泄漏、测试真实性等。
-4. 在 stage worktree 独立运行 `make lint`、`make test` 和所有可在 1660 Ti 完成的 reviewer-owned 短时验收；analysis/aggregation/bootstrap CI/failure analysis/report 也默认在 control plane 复核。validation target=GTX 1660 Ti 时，重点审查被消费的 formal source identities/hashes 与分析算法/统计结果，不得因为 stage_profile=validation 虚构 4090 requirement。validation target=24GB 时，reviewer **不得重新运行** target-GPU gate；必须从 Git 重新计算 tracked operator script SHA，从 completed execution record 取得 `operator_evidence_sha256`，对同步回来的 evidence bytes 重算 SHA并逐字段核对 current plan/checkpoint/script、machine-record SHA、GPU/VRAM、roots/Piston（如 required）、`command_rc=0`、`postcheck_rc=0`、`gate_status=passed`、formal run identity 与 expected-artifact inventory；同步回来的 identity/metadata artifacts 也独立重算 hash。大型 checkpoint 默认留在 4090；如果 target-side postcheck/evidence 仍不能证明某个 required large-artifact property，必须在 PASS 前做短时只读 target metadata/artifact check，但不得启动/监控 formal job。
+4. 在 stage worktree 独立运行 `make lint`、`make test` 和所有可在 1660 Ti 完成的 reviewer-owned 短时验收；analysis/aggregation/bootstrap CI/failure analysis/report 也默认在 control plane 复核。validation target=GTX 1660 Ti 时，重点审查被消费的 formal source identities/hashes 与分析算法/统计结果，不得因为 stage_profile=validation 虚构 4090 requirement。validation target=24GB 时，reviewer **不得重新运行** target-GPU gate。对新 `operator_handoff_mode=portable_target` gate，必须从 Git 重新计算 tracked operator script SHA，从 completed execution record 取得 `operator_evidence_sha256`，对同步回来的 evidence bytes 重算 SHA并逐字段核对 current plan/checkpoint/script、machine-record SHA、GPU/VRAM、roots/Piston（如 required）、`command_rc=0`、`postcheck_rc=0`、`gate_status=passed`、formal run identity 与 expected-artifact inventory；同步回来的 identity/metadata artifacts 也独立重算 hash。对 workflow migration 前已经 committed、没有 `operator_handoff_mode` 的 absolute-path checkpoint，继续按其 sealed legacy v1 script/status/log/artifact contract 审查，不得追溯要求它凭空拥有 `operator_evidence_sha256`；但本轮新的 repair execution 若声称补齐某段历史 provenance，必须提供可独立认证的 exact command/script/hash/status/log/evidence binding，不能只引用旧 execution 文字。大型 checkpoint 默认留在 4090；如果 target-side postcheck/evidence 仍不能证明某个 required large-artifact property，必须在 PASS 前做短时只读 target metadata/artifact check，但不得启动/监控 formal job。
 5. 核验 execution report 声明，标记核实通过/与事实不符/无法核实。
 6. 生成稳定 issue IDs：`R{round}-B1`/`M1`/`m1`/`S1` 等；上一轮未解决问题沿用原 ID，新问题用当前 round 新 ID。
 7. 生成结论与 repair routing。
@@ -93,6 +93,7 @@ review_record:
   review_round: 1
   source_execution_id: E0
   reviewed_head_commit: <stage HEAD before writing this review>
+  workflow_runtime_commit: <required for active-stage workflow migration; otherwise omit>
   conclusion: needs_repair  # needs_repair | pass
 ```
 
@@ -159,7 +160,7 @@ PASS 只表示“当前 reviewed_head_commit 的代码在本轮证据下通过�
 - [ ] 当前 CodexPro workspace 已绑定到 plan 指定的绝对 stage worktree，未在 primary checkout 写 review；
 - [ ] latest execution 是上一 review 之后的新 completed record，否则已返回 REVIEW_NO_NEW_EXECUTION；
 - [ ] recorded `reviewed_head_commit` 在审查期间未变化；
-- [ ] 已按 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal` 使用正确证据边界；reviewer 默认留在 1660 Ti，未把 reviewer location 与 artifact source/target hardware 混为一谈；terminal development 已独立核验 completion inventory/closeout；validation target=1660 时未虚构 GPU requirement；validation target=24GB 时已独立重算 tracked script SHA 与 received evidence SHA，并核验 command/postcheck/gate_status、target identity 与 selected artifact hashes，大 checkpoint 未被无意义完整搬回，target-GPU gate 未被 reviewer 重跑；
+- [ ] 已按 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal` 使用正确证据边界；active-stage workflow migration 时已验证并记录 exact `workflow_runtime_commit` 与 `legacy_control_plane_default=true`，未改写 sealed plan；reviewer 默认留在 1660 Ti，未把 reviewer location 与 artifact source/target hardware 混为一谈；terminal development 已独立核验 completion inventory/closeout；validation target=1660 时未虚构 GPU requirement；validation target=24GB 时新 portable gate 已独立重算 tracked script SHA 与 received evidence SHA，legacy v1 gate 按其原 contract 审计，target-GPU gate 未被 reviewer 重跑；
 - [ ] 全部结论有代码/命令/spec 证据；
 - [ ] 所有 actionable failed plan/acceptance/test finding 都映射到 repair_issue_ids；
 - [ ] conclusion 与 required 严格一致（pass=false / needs_repair=true）；

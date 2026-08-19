@@ -29,11 +29,11 @@ worker 不再创建 agent。模型配置不由 router 覆盖。
 
 ## Routed MULTI 前置
 
-router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`、`stage_profile`、`control_plane_hardware`、`target_hardware`、`evidence_class`、`development_terminal`。`control_plane_hardware` 固定 GTX 1660 Ti；validation 普通 dispatch 不要求/传入 4090 roots。repair/resume 继续携带既有 review/checkpoint provenance；portable operator resume 传 `operator_handoff_mode/operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/target path templates/control-plane evidence directory/expected_artifacts`，legacy operator 兼容其旧 absolute fields。
+router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`、`stage_profile`、`control_plane_hardware`、`target_hardware`、`evidence_class`、`development_terminal`。`control_plane_hardware` 固定 GTX 1660 Ti；validation 普通 dispatch 不要求/传入 4090 roots。router 若对已封存旧 stage 使用迁移兼容，还会传 `legacy_control_plane_default=true` 与 exact `workflow_runtime_commit`；coordinator 只能消费这两个显式字段，不能自行给缺失字段补默认值。repair/resume 继续携带既有 review/checkpoint provenance；portable operator resume 传 `operator_handoff_mode/operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/target path templates/control-plane evidence directory/expected_artifacts`，legacy operator 兼容其旧 absolute fields。
 
 `task_kind` 两条路径互斥；repair 完成后不得继续 implementation。
 
-main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`，与 router 输入逐项一致。control plane 固定 GTX 1660 Ti；development target=GTX 1660 Ti+engineering；validation 固定 real-training/numerical+terminal=false，target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU gates）。target=24GB 时全部 24GB acceptance 必须由 operator block 覆盖。workers/coordinator 始终只做 control-plane scope，fixture/mock/synthetic 不得满足真实 gate。普通 execution/resume HEAD/checkpoint guards 保持不变；任何业务修改/worker spawn 前 coordinator 串行执行 control-plane preflight。validation 不读取本机 4090 machine record、不要求 24GB GPU，也不解析 target roots。若有 operator gate，coordinator 负责集成、1660 Ti validation、tracked operator script/evidence contract；任何 worker/coordinator 都不得启动 target-GPU command。execution report 继续 append-only。
+main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`，与 router 输入逐项一致。control plane 固定 GTX 1660 Ti；development target=GTX 1660 Ti+engineering；validation 固定 real-training/numerical+terminal=false，target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU gates）。target=24GB 时全部 24GB acceptance 必须由 operator block 覆盖。若 plan 缺少 `control_plane_hardware`，只有 router 已传 `legacy_control_plane_default=true` 且 execution/review provenance 证明这是迁移前已进入执行/review 的 sealed stage 时才运行时解释为 GTX 1660 Ti；不得改写 plan，也不得扩展到纯 PLANNED stage。workers/coordinator 始终只做 control-plane scope，fixture/mock/synthetic 不得满足真实 gate。普通 execution/resume HEAD/checkpoint guards 保持不变；任何业务修改/worker spawn 前 coordinator 串行执行 control-plane preflight。正常新 plan 完整执行其 preflight；旧 sealed stage 使用 `legacy_control_plane_default=true` 时，旧 preflight 中 control-plane 可执行且与本次 task 相关的 Git/transport/stage-env/Piston/data/readback/短测试必须重跑，而仅用于 4090 target-start 的 CUDA/VRAM/BF16/machine-record/target roots/target-local model-cache 检查不得在 1660 Ti 强制重跑，只能由已 committed target/operator evidence 保持历史证明，并在本次 repair 真正需要新的 target-GPU execution 时重新进入 operator boundary。validation 不读取本机 4090 machine record、不要求 24GB GPU，也不解析 target roots。若有 operator gate，coordinator 负责集成、1660 Ti validation、tracked operator script/evidence contract；任何 worker/coordinator 都不得启动 target-GPU command。execution report 继续 append-only。
 
 stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若任一 routed workstream 需要修改 `pyproject.toml` 或 `uv.lock`，必须由 coordinator 在 spawn 相关 worker/继续依赖测试前串行运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；之后全部 workers/tests 使用该 stage `.venv`，不能继续借 primary overlay 隐式满足依赖。
 
@@ -113,12 +113,14 @@ execution_record:
   result_code_commit: <code HEAD>
   execution_backend: local_codex
   effective_execution_mode: multi
+  workflow_runtime_commit: <required for active-stage workflow migration; otherwise omit>
+  legacy_control_plane_default: true  # required with workflow_runtime_commit; otherwise omit
   status: completed
 ```
 
 Repair：E1/E2/...；填整数 source_review_round、source_review_commit、repair_issue_ids，并同样记录 `execution_backend: local_codex`、`effective_execution_mode: multi`。
 
-backend/effective mode 只用于审计，不参与 reviewer provenance 判定。若本次来自 resume，completed record 额外记录 `resumed_from_checkpoint_id` 与 `resumed_from_checkpoint_commit`。只有所有必须验收通过才标 completed。code commits 在前，report docs commit 在后。
+backend/effective mode 只用于审计，不参与 reviewer provenance 判定。active-stage workflow migration 时 `workflow_runtime_commit` 与 `legacy_control_plane_default=true` 必须成对记录，绑定本轮实际加载的 maintenance runtime；普通 stage 省略二者。若本次来自 resume，completed record 额外记录 `resumed_from_checkpoint_id` 与 `resumed_from_checkpoint_commit`。只有所有必须验收通过才标 completed。code commits 在前，report docs commit 在后。
 
 ## 边界
 

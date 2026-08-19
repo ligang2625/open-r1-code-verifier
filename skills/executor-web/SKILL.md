@@ -18,7 +18,7 @@ Routing compatibility marker: `execution-routing-v2`。
 
 ## 必需输入
 
-共同：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=web`、完整 source routing、source_mode、effective_execution_mode、`stage_profile`、`control_plane_hardware`、`target_hardware`、`evidence_class`、`development_terminal`。Web executor 默认在 GTX 1660 Ti control plane；validation 普通 dispatch 不要求 4090 `artifact_root/hf_home/formal_data_root`，target roots 由 portable operator script 在 4090 runtime 解析。
+共同：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=web`、完整 source routing、source_mode、effective_execution_mode、`stage_profile`、`control_plane_hardware`、`target_hardware`、`evidence_class`、`development_terminal`。Web executor 默认在 GTX 1660 Ti control plane；validation 普通 dispatch 不要求 4090 `artifact_root/hf_home/formal_data_root`，target roots 由 portable operator script 在 4090 runtime 解析。router 若对已封存旧 stage 使用迁移兼容，还会传 `legacy_control_plane_default=true` 与 exact `workflow_runtime_commit`；executor 只能消费这两个显式字段，不能自行给缺失字段补默认值。
 
 - source_mode=single → effective 必须为 `single`
 - source_mode=multi → effective 必须为 `serialized_multi`
@@ -33,8 +33,8 @@ Artifact：`ai-work/executor/{stage_id}-executor.md`，append-only。若已有 c
 2. plan 内容必须等于 plan_commit seal 版本。
 3. implementation：report 不得已有 matching completed E0。普通 execution 要求 `HEAD == plan_commit`；resume 要求 `HEAD == resume_checkpoint_commit`，并精确匹配 checkpoint task/source/completed_scope/remaining_scope。
 4. repair：普通 execution 要求 `HEAD == review_commit`；resume 要求 `HEAD == resume_checkpoint_commit` 且 checkpoint 精确绑定 latest committed review round/commit/issues。
-5. 解析 plan 的 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal` 并与 router 输入逐项一致：control plane 固定 GTX 1660 Ti；development target=GTX 1660 Ti+engineering；validation 固定 real-training/numerical+terminal=false，target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU gates）。target=24GB 时全部 24GB acceptance 必须由 operator block覆盖；Web executor 自身仍在 control plane。
-6. 在任何新的业务文件修改或 commit **之前**完整执行 plan 的 `Execution preflight`；普通 execution preflight 失败时保持 plan/review baseline，不写 report；resume 若环境仍未修好则保持 checkpoint HEAD，不追加重复 checkpoint，修复后可再次显式 resume。
+5. 解析 plan 的 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal` 并与 router 输入逐项一致：control plane 固定 GTX 1660 Ti；development target=GTX 1660 Ti+engineering；validation 固定 real-training/numerical+terminal=false，target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU gates）。target=24GB 时全部 24GB acceptance 必须由 operator block覆盖；Web executor 自身仍在 control plane。若 plan 缺少 `control_plane_hardware`，只有 router 已传 `legacy_control_plane_default=true` 且 execution/review provenance 证明这是迁移前已进入执行/review 的 sealed stage 时，才把该字段运行时视为 GTX 1660 Ti；不得修改 plan，也不得把这个兼容扩展到纯 PLANNED stage。
+6. 在任何新的业务文件修改或 commit **之前**执行 plan 的 `Execution preflight`。正常新 plan 必须完整执行。对 `legacy_control_plane_default=true` 的旧 sealed stage，按当前硬件职责重新分类旧 preflight：control-plane 可执行且与本次 task 相关的 Git/transport/stage-env/Piston/data/readback/短测试必须重跑；旧 plan 中仅用于 4090 target-start 的 CUDA/VRAM/BF16/target machine record/target roots/target-local model-cache 等检查不得在 1660 Ti 伪造或强制重跑，而是由已经 committed 的 target/operator evidence 保持其历史证明，并且只有本次 repair 真正要求新的 target-GPU execution 时才重新进入 operator boundary。此兼容只移动检查地点，不降低 formal evidence/identity 要求。普通 execution preflight 失败时保持 plan/review baseline，不写 report；resume 若环境仍未修好则保持 checkpoint HEAD，不追加重复 checkpoint，修复后可再次显式 resume。
 7. validation：Web executor 不解析/校验 4090 roots，也不通过 CodexPro tool call 启动真实 target-GPU training/evaluation。sealed formal 命令只使用 `$CODE_VERIFIER_ARTIFACT_ROOT/$HF_HOME/$CODE_VERIFIER_DATA_ROOT` target-runtime templates；portable `run.sh` 在 4090 读取 target-local machine record 后设置并验证真实 roots。synthetic/mock/fake artifact 仍不能满足真实 gate。
 8. 当前环境必须具备 workspace write、Git 和 plan 所需验证命令能力；缺失则停止，不自动改用 local。
 9. stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若本次 execution 修改 `pyproject.toml` 或 `uv.lock`，必须在继续依赖相关测试前运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，切换为完整 stage-local pinned environment；不能让 primary overlay 掩盖 dependency contract 的变化。
@@ -120,12 +120,14 @@ execution_record:
   result_code_commit: <code HEAD>
   execution_backend: web_codexpro
   effective_execution_mode: single  # or serialized_multi
+  workflow_runtime_commit: <required for active-stage workflow migration; otherwise omit>
+  legacy_control_plane_default: true  # required with workflow_runtime_commit; otherwise omit
   status: completed
 ```
 
 Repair 使用 E1/E2/... 并填 source_review_round/source_review_commit/repair_issue_ids。只有全部必须验收满足才可 completed。
 
-`execution_backend/effective_execution_mode` 只用于审计，不改变 reviewer provenance。若本次来自 resume，completed record 额外记录 `resumed_from_checkpoint_id` 与 `resumed_from_checkpoint_commit`。
+`execution_backend/effective_execution_mode` 只用于审计，不改变 reviewer provenance。active-stage workflow migration 时 `workflow_runtime_commit` 与 `legacy_control_plane_default=true` 必须成对记录，绑定本轮实际加载的 maintenance runtime；普通 stage 省略二者。若本次来自 resume，completed record 额外记录 `resumed_from_checkpoint_id` 与 `resumed_from_checkpoint_commit`。
 
 ## 报告
 

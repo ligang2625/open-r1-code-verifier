@@ -106,6 +106,16 @@ The 4090 may be shut down after the formal artifacts/evidence are safely stored.
 1660 Ti: sync evidence -> analysis/review
 ```
 
+## Active-stage workflow migration
+
+A project-level workflow update may land while an already sealed stage has completed execution/review history. Do **not** advance that clone's primary `main` or commit workflow files onto the active stage merely to pick up the new control plane: lifecycle still binds finalize to the sealed `planning_base_commit`, and router still binds repair to the latest review commit.
+
+For that narrow case, fetch the exact workflow-maintenance commit into the same repository under a dedicated clean maintenance branch/worktree and load router/executor/reviewer/lifecycle from that worktree while all business reads/writes continue against the original stage worktree. The maintenance worktree is runtime protocol source only; it must not mutate the sealed plan/review/execution history. Record its exact `workflow_runtime_commit` in every new execution/review produced under the migrated runtime.
+
+If the pre-migration sealed plan lacks `control_plane_hardware`, runtime may infer `GTX 1660 Ti (6GB)` only when the same `plan_commit` already has a committed completed execution or committed review. A pure PLANNED stage must instead use pre-execution replan. For the legacy active stage, old preflight items are reclassified by the new hardware responsibility: control-plane checks that matter to the current task rerun locally; 4090-only checks stay bound to already committed target/operator evidence unless the current repair truly requires a new target-GPU gate. This never rewrites the plan or weakens formal evidence.
+
+After the active stage finalizes and no planning-base/HEAD guard depends on the old primary baseline, fast-forward/cherry-pick the already-verified workflow-maintenance commits into that clone's `main` before planning the next stage.
+
 ## Backward compatibility
 
 Historical operator checkpoints that predate `operator_handoff_mode: portable_target` may contain absolute target-root paths. They remain auditable under the legacy v1 contract; do not rewrite historical records merely to adopt this workflow. New operator checkpoints use the portable-target contract.

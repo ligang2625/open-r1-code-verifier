@@ -109,3 +109,28 @@ def test_canonical_workflow_documents_all_four_machine_routing_cases() -> None:
     assert "Case 4: GRPO" in workflow
     assert "4090: off" in workflow
     assert "Do not rsync large model checkpoints back by default" in workflow
+
+
+def test_active_stage_workflow_migration_preserves_sealed_provenance() -> None:
+    agents = _text("AGENTS.md")
+    workflow = _text("docs/control-plane-gpu-worker-workflow.md")
+    lifecycle = _text("skills/stage-lifecycle/SKILL.md")
+    router = _text("skills/execution-router/SKILL.md")
+    executor_local = _text("skills/executor-ex/SKILL.md")
+    executor_multi = _text("skills/executor/SKILL.md")
+    executor_web = _text("skills/executor-web/SKILL.md")
+    reviewer = _text("skills/reviewer-ex/SKILL.md")
+
+    for document in (agents, workflow, lifecycle, router, executor_local, executor_multi, executor_web, reviewer):
+        assert "workflow_runtime_commit" in document
+
+    assert "Do **not** advance that clone's primary `main`" in workflow
+    assert "不得为了加载新 lifecycle 把 primary `main` 前移" in lifecycle
+    assert "legacy_control_plane_default=true" in router
+    assert "纯 PLANNED stage" in router
+    assert "不得为了采用新 workflow 改写 plan" in router
+    assert "CUDA/VRAM/BF16" in executor_web
+    assert "CUDA/VRAM/BF16" in executor_local
+    assert "CUDA/VRAM/BF16" in executor_multi
+    assert "没有 `operator_handoff_mode`" in reviewer
+    assert "bootstrap_plan` 对新/纯 PLANNED stage 仍严格要求显式字段" in lifecycle
