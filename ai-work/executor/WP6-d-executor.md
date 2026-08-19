@@ -174,3 +174,58 @@ execution_checkpoint:
 - The synced formal manifest is immutable on the 4090 (`0444`) and is bound by SHA256 in both C2 report and C2 operator script.
 - `home-piston-01` is retired for current/future project operations. Historical bootstrap/machine records were archived before current machine provenance was switched to `1660ti-wsl`.
 - The 4090-to-1660 Ti Tailscale path currently uses DERP and is slower than the old host. One initial tunneled batch acceptance experienced a transient transport failure; the targeted batch rerun passed and the subsequent complete 9-test tunneled suite passed. This does not affect C2 SFT because C2 is manifest-only, but later Piston-heavy evaluation/GRPO should retain fail-closed transport handling and operator-visible logs.
+
+## C3 — Formal SFT B acceptance and B evaluation operator handoff
+
+The operator completed C2 successfully. Web GPT + CodexPro resumed only on the RTX 4090 machine, verified the immutable C2 operator identity and the real formal SFT artifacts, and did not access or modify the GTX 1660 Ti code repository. Formal SFT B is accepted; the next long-running gate is the separate 400-problem B evaluation and remains operator-owned.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C3
+  stage_id: WP6-d
+  task_kind: implementation
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 60f4d95cf4624ae2114a7f0188d8b0b43541542c
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: sft-b-evaluation
+  operator_restart_policy: exact_rerun
+  operator_script: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C3/run.sh
+  operator_script_sha256: 96c08ed47c36ca4d83fd6b933bd1588a8cf337edbb6ec83d3c22dcbafc354957
+  operator_status_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C3/status
+  operator_log_file: /root/sj-tmp/open-r1-code-verifier-outputs/operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C3/terminal.log
+  expected_artifacts:
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/B-sft-formal-seed42/run.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/B-sft-formal-seed42/resolved_config.yaml
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/B-sft-formal-seed42/environment.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/B-sft-formal-seed42/samples/results.jsonl
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/B-sft-formal-seed42/summary.json
+    - /root/sj-tmp/open-r1-code-verifier-outputs/evaluation/B-sft-formal-seed42/main_results.csv
+  completed_scope:
+    - "C2 immutable operator identity verified: run.sh SHA256 6d43eb6e18a745f6aea53550d287709b7adc6e14868bb255dc67fbad2addcf0f, terminal status 0, and terminal.log records all short preflights PASS followed by long-command-end rc=0"
+    - "formal B run /root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42 is completed and binds git_commit 60f4d95cf4624ae2114a7f0188d8b0b43541542c, exact Qwen/Qwen2.5-Coder-1.5B-Instruct revision, seed 42, manifest-only prevalidation SHA 1e6a5a224dbc80374237101b65774bcfd450a80595041631f2239a8b4dba70dc, validator commit 52a1ffffbfd07348483e6981215a39a99581fbf0, and exact Piston config/executor identities"
+    - "Trainer completed global_step=314 at epoch 2.0; metrics.jsonl has 319 finite records including summary, train_loss=0.21536325907726198, peak CUDA allocated=20068083200 bytes, peak CUDA reserved=24620564480 bytes, and C2 gpu_hours=0.5215871774233367"
+    - "all numeric Trainer checkpoints are preserved: checkpoint-100, checkpoint-200, checkpoint-300, and checkpoint-314 each contain optimizer.pt, scheduler.pt, rng_state.pth, trainer_state.json, training_args.bin, adapter_config.json, and adapter_model.safetensors with trainer global_step matching the numeric suffix"
+    - "formal completed-B strict loader passed; load_training_curve_rows returned 2549 long-form finite scalar rows; build_cost_row succeeded; an independent offline exact-revision BF16 PEFT reload succeeded on cuda:0"
+    - "project-owned formal SFT metadata/log artifacts passed payload-safety scanning for hidden-test/reference-solution/problem/completion payload fields and obvious API-token material"
+    - "C1 failed pre-optimizer evidence remains preserved unchanged in quarantine with status 130, zero Trainer checkpoints, and gpu_hours=0.3463342955455624; C2 cost is separately attributable and does not overwrite the failed-attempt cost"
+    - "C3 B-evaluation target is currently fresh; exact formal evaluation preparation resolves 400/400 unique test problems and the completed B adapter checkpoint without creating the canonical B evaluation run"
+    - "C3 immutable exact_rerun script is secret-free, chmod 0555, bash syntax checked, and SHA256-bound. Its start preflight validates the current RTX 4090, completed B/Base A identities, storage, and uses the 4090-side ensure-piston-1660ti-tunnel.sh plus loopback Piston runtime validation; it does not access the 1660 Ti code repository"
+  remaining_scope:
+    - "operator runs the exact C3 run.sh in a normal SSH terminal or tmux; Web GPT/CodexPro must not start the 400-problem B evaluation"
+    - "C3 exact_rerun uses the project's strict initialize_or_resume_run contract for any existing B evaluation prefix; an environment/transport interruption may reuse the same immutable script without changing checkpoint HEAD, while identity drift fails closed"
+    - "after the operator run exits, explicit execution-router resume backend=web validates status/log, 400 unique B results with the exact Base A problem set and evaluation/Piston/seed/checkpoint identities, required per-sample payload fields and non-sample payload safety, finite summary/main results, then runs only the short 400-resumed/0-generated exact-prefix readback and A/B analysis pairing gates"
+    - "only after B evaluation acceptance and all final executor-owned WP6-d acceptance gates may completed E0 be appended; do not enter C/D work in this stage"
+  status: awaiting_operator
+```
+
+### C3 acceptance conclusions
+
+- C2 formal SFT B is accepted as a real RTX 4090 training result. The actual Trainer schedule resolved to 314 optimizer steps; the earlier planning estimate of approximately 313 was not treated as a hard identity field.
+- No production code/config/test change was required during this resume. `result_code_commit` for C3 is therefore the committed C2 checkpoint HEAD `60f4d95cf4624ae2114a7f0188d8b0b43541542c`; C3 itself is a docs-only operator checkpoint.
+- The formal B evaluation remains unstarted. Its canonical path does not exist at C3 creation time, so this checkpoint does not pre-create or contaminate evaluation evidence.
+- All future Piston-backed work in this stage remains bound to the current `1660ti-wsl` service through the 4090 loopback tunnel. The 1660 Ti project repository was not accessed or modified during this resume.
