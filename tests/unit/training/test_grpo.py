@@ -273,14 +273,14 @@ def _reward_columns(*, hidden: bool) -> dict[str, object]:
         "function_name": ["solve", "solve"],
         "metadata": [metadata, metadata],
         "visible_tests": [
-            [{"input": "VISIBLE_ONE", "expected": "VISIBLE_ONE"}],
-            [{"input": "VISIBLE_TWO", "expected": "VISIBLE_TWO"}],
+            [json.dumps({"input": "VISIBLE_ONE", "expected": "VISIBLE_ONE"})],
+            [json.dumps({"input": "VISIBLE_TWO", "expected": "VISIBLE_TWO"})],
         ],
     }
     if hidden:
         columns["train_hidden_tests"] = [
-            [{"input": "HIDDEN_ONE", "expected": "HIDDEN_ONE"}],
-            [{"input": "HIDDEN_TWO", "expected": "HIDDEN_TWO"}],
+            [json.dumps({"input": "HIDDEN_ONE", "expected": "HIDDEN_ONE"})],
+            [json.dumps({"input": "HIDDEN_TWO", "expected": "HIDDEN_TWO"})],
         ]
     return columns
 
@@ -336,6 +336,26 @@ def test_grpo_reward_callback_selects_only_configured_test_source_and_writes_san
         contents = path.read_text(encoding="utf-8")
         for forbidden in ("PROMPT_SENTINEL", "VISIBLE_ONE", "HIDDEN_ONE", "completion", "function_name", "metadata"):
             assert forbidden not in contents
+
+
+def test_grpo_reward_callback_restores_heterogeneous_json_test_values(tmp_path: Path) -> None:
+    executor = MockExecutor([_execution_result(passed=True), _execution_result(passed=True)])
+    callback = _callback(tmp_path, reward_mode="public", executor=executor)
+    columns = _reward_columns(hidden=False)
+    columns["visible_tests"] = [
+        [json.dumps({"input": [1, {"x": True}], "expected": {"answer": [1, None]}})],
+        [json.dumps({"input": {"value": 3.5}, "expected": [False, "ok"]})],
+    ]
+
+    callback(
+        prompts=[[{"role": "user", "content": "prompt"}]] * 2,
+        completions=["```python\ndef solve(value): return value\n```"] * 2,
+        completion_ids=[[1], [1]],
+        **columns,
+    )
+
+    assert executor.calls[0].tests == [{"input": [1, {"x": True}], "expected": {"answer": [1, None]}}]
+    assert executor.calls[1].tests == [{"input": {"value": 3.5}, "expected": [False, "ok"]}]
 
 
 def test_grpo_reward_callback_rejects_batch_group_and_column_mismatch(tmp_path: Path) -> None:

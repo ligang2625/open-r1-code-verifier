@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import cast
 
 import pytest
@@ -45,6 +46,9 @@ def test_build_grpo_dataset_public_uses_shared_prompt_and_visible_payload_only()
             ),
         }
     ]
+    encoded_tests = dataset[0]["visible_tests"]
+    assert isinstance(encoded_tests, list)
+    assert json.loads(encoded_tests[0]) == {"input": "VISIBLE_SENTINEL", "expected": "VISIBLE_SENTINEL"}
     serialized = repr(dataset[0])
     assert "VISIBLE_SENTINEL" in serialized
     assert "train_hidden_tests" not in serialized
@@ -65,7 +69,37 @@ def test_build_grpo_dataset_hidden_adds_only_train_hidden_reward_payload() -> No
     ]
     for field in public.column_names:
         assert hidden[0][field] == public[0][field]
-    assert hidden[0]["train_hidden_tests"] == [{"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}]
+    encoded_hidden = hidden[0]["train_hidden_tests"]
+    assert isinstance(encoded_hidden, list)
+    assert json.loads(encoded_hidden[0]) == {"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}
+
+
+def test_build_grpo_dataset_supports_heterogeneous_json_test_values() -> None:
+    public_one = _record(hidden=False)
+    public_one_tests = [{"input": [1, 2], "expected": {"answer": 3}}]
+    public_one["visible_tests"] = public_one_tests
+    public_two = _record(hidden=False)
+    public_two["problem_id"] = "grpo-2"
+    public_two_tests = [{"input": {"value": [1]}, "expected": [True, None, 3.5]}]
+    public_two["visible_tests"] = public_two_tests
+
+    public = build_grpo_dataset([public_one, public_two], reward_mode="public")
+
+    assert json.loads(public[0]["visible_tests"][0]) == public_one_tests[0]
+    assert json.loads(public[1]["visible_tests"][0]) == public_two_tests[0]
+
+    hidden_one = _record(hidden=True)
+    hidden_one_tests = [{"input": {"left": 1}, "expected": False}]
+    hidden_one["train_hidden_tests"] = hidden_one_tests
+    hidden_two = _record(hidden=True)
+    hidden_two["problem_id"] = "grpo-2"
+    hidden_two_tests = [{"input": ["x"], "expected": None}]
+    hidden_two["train_hidden_tests"] = hidden_two_tests
+
+    hidden = build_grpo_dataset([hidden_one, hidden_two], reward_mode="hidden")
+
+    assert json.loads(hidden[0]["train_hidden_tests"][0]) == hidden_one_tests[0]
+    assert json.loads(hidden[1]["train_hidden_tests"][0]) == hidden_two_tests[0]
 
 
 def test_build_grpo_dataset_rejects_duplicate_problem_ids() -> None:

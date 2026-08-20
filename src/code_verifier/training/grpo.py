@@ -474,6 +474,37 @@ def _batch_length(value: object, *, field_name: str) -> int:
     return len(value)
 
 
+def _decode_test_payload_batch(value: object, *, field_name: str) -> list[list[dict[str, object]]]:
+    _batch_length(value, field_name=field_name)
+    batch = cast(Sequence[object], value)
+    decoded_batch: list[list[dict[str, object]]] = []
+    for item_index, item in enumerate(batch):
+        if isinstance(item, str | bytes | bytearray | Mapping) or not isinstance(item, Sequence) or not item:
+            raise GRPOTrainingError(f"{field_name}[{item_index}] must be a non-empty sequence")
+        decoded_tests: list[dict[str, object]] = []
+        for test_index, encoded in enumerate(cast(Sequence[object], item)):
+            if isinstance(encoded, Mapping):
+                parsed = dict(encoded)
+            elif isinstance(encoded, str):
+                try:
+                    parsed = json.loads(encoded)
+                except json.JSONDecodeError:
+                    raise GRPOTrainingError(
+                        f"{field_name}[{item_index}][{test_index}] must contain valid JSON"
+                    ) from None
+            else:
+                raise GRPOTrainingError(
+                    f"{field_name}[{item_index}][{test_index}] must be encoded JSON text or a test mapping"
+                )
+            if not isinstance(parsed, dict) or set(parsed) != {"input", "expected"}:
+                raise GRPOTrainingError(
+                    f"{field_name}[{item_index}][{test_index}] must decode to one exact test mapping"
+                )
+            decoded_tests.append(cast(dict[str, object], parsed))
+        decoded_batch.append(decoded_tests)
+    return decoded_batch
+
+
 def _completion_text(item: object) -> str:
     if isinstance(item, str):
         return item
@@ -566,7 +597,8 @@ def build_grpo_reward_callback(
         if any(len(indices) != num_generations for indices in groups.values()):
             raise GRPOTrainingError("each GRPO problem group must contain exactly num_generations completions")
 
-        selected_tests = columns["visible_tests"] if reward_mode == "public" else columns["train_hidden_tests"]
+        selected_field = "visible_tests" if reward_mode == "public" else "train_hidden_tests"
+        selected_tests = _decode_test_payload_batch(columns[selected_field], field_name=selected_field)
         try:
             rewards, component_records = compute_code_rewards(
                 completions,

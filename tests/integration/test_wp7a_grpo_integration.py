@@ -161,7 +161,10 @@ def test_wp7a_grpo_dataset_uses_shared_prompt_and_payload_boundaries() -> None:
     )
     assert public[0]["prompt"] == [{"role": "user", "content": expected_prompt}]
     assert "train_hidden_tests" not in public.column_names
-    assert hidden[0]["train_hidden_tests"] == [{"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}]
+    assert json.loads(hidden[0]["train_hidden_tests"][0]) == {
+        "input": "HIDDEN_SENTINEL",
+        "expected": "HIDDEN_SENTINEL",
+    }
     for forbidden in ("eval_hidden_tests", "reference_solution", "starter_code", "sft_response"):
         assert forbidden not in repr(public[0])
         assert forbidden not in repr(hidden[0])
