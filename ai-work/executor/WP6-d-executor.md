@@ -450,3 +450,52 @@ execution_checkpoint:
     - "resume reruns required short regressions, appends a completed R1-M1 repair execution record with operator_evidence_sha256, and stops before reviewer-ex; no C/D work enters WP6-d"
   status: awaiting_operator
 ```
+
+## C8 — supersede C7 cwd-sensitive evaluation-config path resolution
+
+C7 is preserved unchanged. Its manual GTX 1660 Ti attempt `20260820T061613Z-3070` passed the corrected dependency-lock preflight and reached `verify-eval`, then exited with `command_rc=2`, `postcheck_rc=125`, `gate_status=command_failed`. No C7 repair output directory was created. The failure is deterministic and script-local: `load_evaluation_config()` resolves relative YAML paths against `Path.cwd()`, so launching C7 from `/home/dzy` turned `piston_config: configs/execution/piston-local.yaml` into the nonexistent `/home/dzy/configs/execution/piston-local.yaml`. From the frozen isolated verifier checkout, the same config resolves to `/home/dzy/wp6d-r1-verifier-41abf/configs/execution/piston-local.yaml` as intended.
+
+C8 therefore only fixes the operator command cwd by entering the frozen verifier checkout before `verify-eval`; all frozen identities, command arguments, fresh-output policy, Piston semantics and strict postcheck remain unchanged.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C8
+  stage_id: WP6-d
+  task_kind: repair
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: 1
+  source_review_commit: 6f80d545374809693d8a47defe791ee1f881489e
+  repair_issue_ids:
+    - R1-M1
+  result_code_commit: 280cfb0da3f5d988b60484c712d511b25d87f433
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  workflow_runtime_commit: 734549fe3282edad76456c69f085e53d9ce39844
+  legacy_control_plane_default: true
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: sft-b-evaluation
+  operator_handoff_mode: control_plane_manual
+  operator_restart_policy: exact_rerun
+  operator_script: ai-work/executor/operator/WP6-d/sft-b-evaluation/C8/run.sh
+  operator_script_sha256: 0aade6967bf863da9afabd224eb286314fa86fde1c4254165e1e26010fab7ddd
+  operator_status_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C8/status
+  operator_log_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C8/terminal.log
+  operator_evidence_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C8/operator-evidence.json
+  expected_artifacts:
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C8/output/evaluation/B-sft-formal-seed42/run.json
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C8/output/evaluation/B-sft-formal-seed42/samples/results.jsonl
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C8/operator-evidence.json
+  completed_scope:
+    - "C6 and C7 commits/evidence are preserved unchanged; R1, sealed plan, E0, formal SFT/generation evidence, canonical B and Base A remain untouched"
+    - "C7 passed the corrected dependency-lock identity check but failed before verification output creation because its operator command inherited the caller cwd and therefore resolved the relative piston_config path under /home/dzy"
+    - "project source confirms evaluation config relative paths are resolved from Path.cwd(); a focused readback from the frozen verifier checkout resolves piston_config to /home/dzy/wp6d-r1-verifier-41abf/configs/execution/piston-local.yaml"
+    - "C8 changes only checkpoint namespace/parent identity and enters the frozen verifier checkout before verify-eval; all other frozen command/provenance/postcheck semantics remain unchanged"
+    - "C8 run.sh is bash-syntax clean, read-only, and SHA256-bound as 0aade6967bf863da9afabd224eb286314fa86fde1c4254165e1e26010fab7ddd"
+  remaining_scope:
+    - "operator manually runs the exact tracked C8 run.sh on the GTX 1660 Ti; Web GPT/CodexPro must not execute the 400-problem operator command"
+    - "after C8 exits, explicit execution-router resume backend=web under workflow_runtime_commit 734549fe3282edad76456c69f085e53d9ce39844 validates status/log/evidence, exact checkpoint/script and frozen generation/data/code/dependency/Piston identities, fresh repair output inventory, command_rc=0, postcheck_rc=0 and gate_status=passed"
+    - "resume performs exact-prefix readback and aggregation/equality acceptance, reruns required short regressions, appends completed R1-M1 repair execution with operator_evidence_sha256, and stops before reviewer-ex"
+  status: awaiting_operator
+```
