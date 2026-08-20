@@ -596,11 +596,24 @@ def _resolved_config_mapping(config: EvaluationConfig) -> dict[str, object]:
     }
 
 
-def evaluation_config_hash(config: EvaluationConfig, *, model_id: str, seed: int) -> str:
-    """Hash resolved evaluation/model/seed settings plus the exact Piston YAML identity."""
-    if not config.piston_config.is_file():
-        raise EvaluationError(f"piston config does not exist: {config.piston_config}")
-    piston_digest = hashlib.sha256(config.piston_config.read_bytes()).hexdigest()
+def _validated_sha256_digest(value: str, *, field_name: str) -> str:
+    digest = _nonempty_string(value, field_name=field_name)
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise EvaluationError(f"{field_name} must be a lowercase SHA-256 digest")
+    return digest
+
+
+def _evaluation_config_hash_with_piston_digest(
+    config: EvaluationConfig,
+    *,
+    model_id: str,
+    seed: int,
+    piston_config_sha256: str,
+) -> str:
+    piston_digest = _validated_sha256_digest(
+        piston_config_sha256,
+        field_name="piston_config_sha256",
+    )
     payload = {
         "evaluation": _resolved_config_mapping(config),
         "model_id": _nonempty_string(model_id, field_name="model_id"),
@@ -611,18 +624,32 @@ def evaluation_config_hash(config: EvaluationConfig, *, model_id: str, seed: int
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def resolved_evaluation_config_hash(value: object) -> str:
-    """Recompute the canonical identity of one persisted resolved evaluation config."""
+def evaluation_config_hash(config: EvaluationConfig, *, model_id: str, seed: int) -> str:
+    """Hash resolved evaluation/model/seed settings plus the exact Piston YAML identity."""
+    if not config.piston_config.is_file():
+        raise EvaluationError(f"piston config does not exist: {config.piston_config}")
+    piston_digest = hashlib.sha256(config.piston_config.read_bytes()).hexdigest()
+    return _evaluation_config_hash_with_piston_digest(
+        config,
+        model_id=model_id,
+        seed=seed,
+        piston_config_sha256=piston_digest,
+    )
+
+
+def resolved_evaluation_config_hash(value: object, *, piston_config_sha256: str) -> str:
+    """Recompute persisted config identity without reopening an ephemeral historical Piston path."""
     root = _exact_mapping(value, _CONFIG_FIELDS | {"run_id", "model_id", "seed"}, field_name="resolved config")
     seed = root["seed"]
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise EvaluationError("resolved config seed must be an integer")
     config = evaluation_config_from_mapping({field: root[field] for field in _CONFIG_FIELDS})
     _nonempty_string(root["run_id"], field_name="run_id")
-    return evaluation_config_hash(
+    return _evaluation_config_hash_with_piston_digest(
         config,
         model_id=_nonempty_string(root["model_id"], field_name="model_id"),
         seed=seed,
+        piston_config_sha256=piston_config_sha256,
     )
 
 

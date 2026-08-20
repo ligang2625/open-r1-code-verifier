@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -65,6 +66,13 @@ def test_root_help_lists_wp2_parse_command() -> None:
 
 def test_build_parser_exposes_analyze_results_command() -> None:
     assert "analyze-results" in build_parser().format_help()
+
+
+def test_build_parser_exposes_split_evaluation_commands() -> None:
+    help_text = build_parser().format_help()
+    assert "generate-eval" in help_text
+    assert "verify-eval" in help_text
+    assert "aggregate-eval" in help_text
 
 
 def test_no_command_prints_help(capsys: Any) -> None:
@@ -388,6 +396,111 @@ def _grpo_checkpoint_identity(tmp_path: Path, *, reward_mode: str = "public") ->
     )
 
 
+def test_generate_eval_handler_does_not_construct_piston(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    config = _evaluation_config(tmp_path)
+    output_root = tmp_path / "outputs"
+    seen: dict[str, object] = {}
+    generator = object()
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "_build_generation_model", lambda *args: generator)
+
+    def forbidden_piston(*args: object, **kwargs: object) -> object:
+        raise AssertionError("generate-eval must not construct Piston")
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", forbidden_piston)
+
+    def fake_run_generation_bundle(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(
+            total_problems=4,
+            completed_before_run=0,
+            generated_this_run=4,
+            run_dir=output_root / "generation" / "split-run",
+            records_path=output_root / "generation" / "split-run" / "samples" / "generations.jsonl",
+        )
+
+    monkeypatch.setattr(cli_module, "run_generation_bundle", fake_run_generation_bundle)
+    assert (
+        main(
+            [
+                "generate-eval",
+                "--config",
+                str(tmp_path / "eval.yaml"),
+                "--model-id",
+                "example/model",
+                "--run-name",
+                "split-run",
+                "--output-dir",
+                str(output_root),
+            ]
+        )
+        == 0
+    )
+    assert seen["generator"] is generator
+    assert seen["run_id"] == "split-run"
+    assert seen["output_root"] == output_root
+    assert "generated 4 evaluation prompts" in capsys.readouterr().out
+
+
+def test_verify_eval_handler_does_not_aggregate_implicitly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    config = _evaluation_config(tmp_path)
+    generation_run = tmp_path / "generation" / "split-run"
+    output_root = tmp_path / "outputs"
+    source = SimpleNamespace(run_id="split-run", model_revision="revision-1", checkpoint="checkpoint-1", seed=42)
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+    monkeypatch.setattr(cli_module, "load_generation_bundle_source", lambda path: source)
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+
+    class FakePiston:
+        def __init__(self, piston_config: object) -> None:
+            self.piston_config = piston_config
+
+        def validate_runtime(self) -> str:
+            return "3.10.0"
+
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePiston)
+    monkeypatch.setattr(
+        cli_module,
+        "run_verification_from_generation_bundle",
+        lambda **kwargs: SimpleNamespace(
+            total_problems=4,
+            completed_before_run=0,
+            verified_this_run=4,
+            results_path=output_root / "evaluation" / "split-run" / "samples" / "results.jsonl",
+        ),
+    )
+
+    def forbidden_aggregate(*args: object, **kwargs: object) -> object:
+        raise AssertionError("verify-eval must not aggregate implicitly")
+
+    monkeypatch.setattr(cli_module, "aggregate_evaluation_run", forbidden_aggregate)
+    assert (
+        main(
+            [
+                "verify-eval",
+                "--config",
+                str(tmp_path / "eval.yaml"),
+                "--generation-run-dir",
+                str(generation_run),
+                "--run-name",
+                "split-run",
+                "--output-dir",
+                str(output_root),
+                "--workers",
+                "4",
+            ]
+        )
+        == 0
+    )
+    assert "verified 4 generated completions" in capsys.readouterr().out
+
+
 def test_evaluate_parser_requires_exactly_one_of_base_sft_or_grpo_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -481,7 +594,9 @@ def test_persistent_artifact_root_changes_model_output_defaults(
     evaluate_args = parser.parse_args(
         ["evaluate", "--config", "eval.yaml", "--model-id", "example/model", "--run-name", "base-debug"]
     )
-    sft_args = parser.parse_args(["train-sft", "--config", "sft.yaml"])
+    sft_args = parser.parse_args(
+        ["train-sft", "--config", "sft.yaml", "--prevalidation-manifest", "prevalidation.json"]
+    )
     explicit_output = tmp_path / "explicit"
     explicit_args = parser.parse_args(
         [
@@ -1072,8 +1187,148 @@ def test_train_sft_help_exposes_common_and_resume_arguments(capsys: Any) -> None
 
     assert error.value.code == 0
     help_text = capsys.readouterr().out
-    for option in ("--help", "--config", "--seed", "--output-dir", "--log-level", "--resume-from-checkpoint"):
+    for option in (
+        "--help",
+        "--config",
+        "--dataset-dir",
+        "--run-name",
+        "--prevalidation-manifest",
+        "--seed",
+        "--output-dir",
+        "--log-level",
+        "--resume-from-checkpoint",
+    ):
         assert option in help_text
+
+
+def test_train_sft_parser_accepts_formal_dataset_and_run_overrides() -> None:
+    args = build_parser().parse_args(
+        [
+            "train-sft",
+            "--config",
+            "configs/sft/main.yaml",
+            "--prevalidation-manifest",
+            "/formal/prevalidation.json",
+            "--dataset-dir",
+            "/formal/prepared",
+            "--run-name",
+            "B-sft-formal-seed42",
+        ]
+    )
+
+    assert args.dataset_dir == Path("/formal/prepared")
+    assert args.run_name == "B-sft-formal-seed42"
+
+
+def test_train_sft_handler_applies_formal_dataset_and_run_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    seen: list[object] = []
+
+    class ForbiddenPistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+            raise AssertionError("train-sft must not construct Piston")
+
+    def fake_run(config: object, **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        seen.append(config)
+        return SimpleNamespace(
+            train_samples=1,
+            train_loss=0.25,
+            run_dir=tmp_path / "outputs/sft/B-sft-formal-seed42",
+            checkpoint_dir=tmp_path / "outputs/sft/B-sft-formal-seed42/checkpoints",
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "load_piston_executor_config",
+        lambda path: (_ for _ in ()).throw(AssertionError("train-sft must not load Piston config")),
+    )
+    monkeypatch.setattr(cli_module, "PistonExecutor", ForbiddenPistonExecutor)
+    monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
+    prepared = tmp_path / "prepared"
+
+    assert (
+        main(
+            [
+                "train-sft",
+                "--config",
+                "configs/sft/main.yaml",
+                "--prevalidation-manifest",
+                str(tmp_path / "prevalidation.json"),
+                "--dataset-dir",
+                str(prepared),
+                "--run-name",
+                "B-sft-formal-seed42",
+                "--output-dir",
+                str(tmp_path / "outputs/sft"),
+            ]
+        )
+        == 0
+    )
+    effective = cast(Any, seen[0])
+    assert effective.dataset_path == prepared / "training/sft.jsonl"
+    assert effective.validation_dataset_path == prepared / "training/sft_validation.jsonl"
+    assert effective.run_name == "B-sft-formal-seed42"
+    stderr = capsys.readouterr().err
+    assert "override: dataset_path:" in stderr
+    assert "override: validation_dataset_path:" in stderr
+    assert "override: run_name: main -> B-sft-formal-seed42" in stderr
+
+
+def test_train_sft_dataset_override_preserves_no_eval_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: list[object] = []
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            del config
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    def fake_run(config: object, **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        seen.append(config)
+        return SimpleNamespace(
+            train_samples=1,
+            train_loss=0.25,
+            run_dir=tmp_path / "outputs/sft/smoke",
+            checkpoint_dir=tmp_path / "outputs/sft/smoke/checkpoints",
+        )
+
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: object())
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
+    prepared = tmp_path / "prepared"
+
+    assert (
+        main(
+            [
+                "train-sft",
+                "--config",
+                "configs/sft/validation-smoke.yaml",
+                "--prevalidation-manifest",
+                str(tmp_path / "prevalidation.json"),
+                "--dataset-dir",
+                str(prepared),
+                "--run-name",
+                "smoke",
+                "--output-dir",
+                str(tmp_path / "outputs/sft"),
+            ]
+        )
+        == 0
+    )
+    effective = cast(Any, seen[0])
+    assert effective.dataset_path == prepared / "training/sft.jsonl"
+    assert effective.validation_dataset_path is None
 
 
 def test_train_sft_reports_hardware_or_runtime_error_without_traceback(
@@ -1101,7 +1356,7 @@ def test_train_sft_reports_hardware_or_runtime_error_without_traceback(
         lambda *args, **kwargs: (_ for _ in ()).throw(SFTTrainingError("training hardware rejected")),
     )
 
-    assert main(["train-sft", "--config", "sft.yaml"]) == 2
+    assert main(["train-sft", "--config", "sft.yaml", "--prevalidation-manifest", "prevalidation.json"]) == 2
     output = capsys.readouterr()
     assert "training hardware rejected" in output.err
     assert "Traceback" not in output.err
@@ -1140,11 +1395,24 @@ def test_train_sft_uses_yaml_seed_and_prints_explicit_cli_override(
     monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
     monkeypatch.setattr(cli_module, "run_sft_training", fake_run)
 
-    assert main(["train-sft", "--config", "sft.yaml"]) == 0
+    assert main(["train-sft", "--config", "sft.yaml", "--prevalidation-manifest", "prevalidation.json"]) == 0
     assert seen_seeds == [7]
     assert "override:" not in capsys.readouterr().err
 
-    assert main(["train-sft", "--config", "sft.yaml", "--seed", "11"]) == 0
+    assert (
+        main(
+            [
+                "train-sft",
+                "--config",
+                "sft.yaml",
+                "--prevalidation-manifest",
+                "prevalidation.json",
+                "--seed",
+                "11",
+            ]
+        )
+        == 0
+    )
     assert seen_seeds == [7, 11]
     assert "override: seed: 7 -> 11" in capsys.readouterr().err
 
@@ -1767,3 +2035,55 @@ def test_analyze_results_default_output_honors_artifact_root(
     args = parser.parse_args(["analyze-results", "--manifest", "analysis.yaml"])
 
     assert args.output_dir == tmp_path / "persistent" / "analysis"
+
+
+def test_prevalidate_sft_handler_runs_off_gpu_gate_and_reports_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_prevalidate(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        progress = cast(Callable[[str, int, int, float], None], kwargs["progress_callback"])
+        progress("train", 25, 2500, 5.0)
+        return SimpleNamespace(
+            total_samples=2800,
+            train_samples=2500,
+            validation_samples=300,
+            max_token_count=1519,
+            elapsed_seconds=42.0,
+            manifest_path=kwargs["output_manifest"],
+        )
+
+    monkeypatch.setattr(cli_module, "run_sft_prevalidation", fake_prevalidate)
+    prepared = tmp_path / "prepared"
+    manifest = tmp_path / "manifest.json"
+
+    assert (
+        main(
+            [
+                "prevalidate-sft",
+                "--config",
+                "configs/sft/main.yaml",
+                "--dataset-dir",
+                str(prepared),
+                "--output-manifest",
+                str(manifest),
+                "--workers",
+                "8",
+                "--progress-every",
+                "25",
+            ]
+        )
+        == 0
+    )
+    assert seen["dataset_path"] == prepared / "training/sft.jsonl"
+    assert seen["validation_dataset_path"] == prepared / "training/sft_validation.jsonl"
+    assert seen["output_manifest"] == manifest
+    assert seen["workers"] == 8
+    assert seen["progress_every"] == 25
+    output = capsys.readouterr()
+    assert "prevalidation-progress split=train completed=25/2500" in output.err
+    assert "prevalidated 2800 samples" in output.out
