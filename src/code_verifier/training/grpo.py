@@ -93,6 +93,7 @@ class GRPOCheckpointIdentity:
     reward_mode: str
     dataset_hash: str
     config_hash: str
+    paired_definition_sha256: str
     dependency_lock_hash: str
     seed: int
     parent_sft: SFTCheckpointIdentity
@@ -166,6 +167,11 @@ _GRPO_RUN_LAYOUT = {
     "stderr.log",
     "checkpoints",
 }
+_PAIR_SCHEMA_VERSION = 1
+_GPU_HOURS_SEMANTICS = (
+    "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
+    "model load, train, and save"
+)
 
 
 def _exact_mapping(value: object) -> Mapping[str, object]:
@@ -390,6 +396,9 @@ def load_completed_grpo_checkpoint(run_dir: Path) -> GRPOCheckpointIdentity:
         reward_mode=reward_mode,
         dataset_hash=_checkpoint_identity_hash(metadata_value.get("dataset_hash"), field_name="dataset_hash"),
         config_hash=_checkpoint_identity_hash(metadata_value.get("config_hash"), field_name="config_hash"),
+        paired_definition_sha256=_checkpoint_identity_hash(
+            metadata_value.get("paired_definition_sha256"), field_name="paired_definition_sha256"
+        ),
         dependency_lock_hash=_checkpoint_identity_hash(
             metadata_value.get("dependency_lock_hash"), field_name="dependency_lock_hash"
         ),
@@ -406,6 +415,7 @@ def grpo_evaluation_checkpoint_id(identity: GRPOCheckpointIdentity) -> str:
         "config_hash": identity.config_hash,
         "dataset_hash": identity.dataset_hash,
         "dependency_lock_hash": identity.dependency_lock_hash,
+        "paired_definition_sha256": identity.paired_definition_sha256,
         "parent_sft": {
             "checkpoint_dir": str(parent.checkpoint_dir),
             "config_hash": parent.config_hash,
@@ -746,6 +756,10 @@ def _runtime_arguments(
             save_steps=config.save_steps,
             seed=seed,
             data_seed=seed,
+            skip_memory_metrics=False,
+            logging_nan_inf_filter=False,
+            save_total_limit=None,
+            save_only_model=False,
             use_vllm=False,
             report_to=[],
             push_to_hub=False,
@@ -881,6 +895,107 @@ def _parent_identity_mapping(parent_sft: SFTCheckpointIdentity) -> dict[str, obj
     }
 
 
+def _paired_definition(
+    public_config: GRPOTrainingConfig,
+    hidden_config: GRPOTrainingConfig,
+    *,
+    seed: int,
+    parent_sft: SFTCheckpointIdentity,
+) -> tuple[str, dict[str, object]]:
+    """Build one payload-free canonical identity for the complete C/D definition pair."""
+    components: dict[str, object] = {
+        "paired_definition_version": _PAIR_SCHEMA_VERSION,
+        "paired_public_config_hash": _config_hash(public_config, seed=seed),
+        "paired_hidden_config_hash": _config_hash(hidden_config, seed=seed),
+        "paired_public_dataset_hash": _file_hash(public_config.dataset_path, description="Public GRPO dataset"),
+        "paired_hidden_dataset_hash": _file_hash(hidden_config.dataset_path, description="Hidden GRPO dataset"),
+    }
+    canonical = {**components, "seed": seed, "parent_sft": _parent_identity_mapping(parent_sft)}
+    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), components
+
+
+def _gpu_count_used(environment: Mapping[str, Any]) -> int:
+    available = environment.get("gpu_count")
+    if isinstance(available, bool) or not isinstance(available, int) or available < 1:
+        raise GRPOTrainingError("GRPO environment must report at least one GPU")
+    return 1
+
+
+def _attempt_gpu_hours_total(attempts: object) -> float:
+    if not isinstance(attempts, list):
+        raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    total = 0.0
+    for index, value in enumerate(attempts, 1):
+        if not isinstance(value, Mapping) or value.get("attempt") != index:
+            raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        status = value.get("status")
+        if status not in {"running", "completed", "failed"}:
+            raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        gpu_hours = value.get("gpu_hours")
+        if (
+            isinstance(gpu_hours, bool)
+            or not isinstance(gpu_hours, int | float)
+            or not math.isfinite(float(gpu_hours))
+            or float(gpu_hours) < 0.0
+        ):
+            raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        total += float(gpu_hours)
+    return total
+
+
+def _begin_attempt(run_metadata: dict[str, object], *, resume_source: str | None) -> None:
+    attempts = run_metadata.get("attempts")
+    if not isinstance(attempts, list):
+        raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    attempts.append(
+        {
+            "attempt": len(attempts) + 1,
+            "start_time": datetime.now(timezone.utc).isoformat(),
+            "end_time": None,
+            "status": "running",
+            "resume_from_checkpoint": resume_source,
+            "gpu_hours": 0.0,
+        }
+    )
+    run_metadata["status"] = "running"
+    run_metadata["end_time"] = None
+    run_metadata["resume_from_checkpoint"] = resume_source
+
+
+def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu_hours: float) -> None:
+    if status not in {"completed", "failed"} or not math.isfinite(attempt_gpu_hours) or attempt_gpu_hours < 0.0:
+        raise GRPOTrainingError("GRPO attempt telemetry is invalid")
+    attempts = run_metadata.get("attempts")
+    if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
+        raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    latest = cast(dict[str, object], attempts[-1])
+    latest["status"] = status
+    latest["end_time"] = datetime.now(timezone.utc).isoformat()
+    latest["gpu_hours"] = attempt_gpu_hours
+    cumulative = _attempt_gpu_hours_total(attempts)
+    run_metadata["gpu_hours"] = cumulative
+    run_metadata["status"] = status
+    run_metadata["end_time"] = latest["end_time"]
+
+
+def _reset_cuda_peak_memory() -> None:
+    torch_runtime = _load_torch_runtime()
+    if bool(torch_runtime.cuda.is_available()):
+        torch_runtime.cuda.reset_peak_memory_stats(0)
+
+
+def _peak_cuda_memory_bytes() -> tuple[int, int]:
+    torch_runtime = _load_torch_runtime()
+    if not bool(torch_runtime.cuda.is_available()):
+        return 0, 0
+    allocated = int(torch_runtime.cuda.max_memory_allocated(0))
+    reserved = int(torch_runtime.cuda.max_memory_reserved(0))
+    if allocated < 0 or reserved < 0:
+        raise GRPOTrainingError("CUDA peak memory metrics must be non-negative")
+    return allocated, reserved
+
+
 def _initialize_run(
     *,
     run_dir: Path,
@@ -889,12 +1004,15 @@ def _initialize_run(
     parent_sft: SFTCheckpointIdentity,
     dataset_hash: str,
     config_hash: str,
+    paired_definition_sha256: str,
+    paired_components: Mapping[str, object],
     environment: Mapping[str, Any],
 ) -> dict[str, object]:
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "checkpoints").mkdir()
     started = datetime.now(timezone.utc).isoformat()
     packages = cast(Mapping[str, object], environment["packages"])
+    gpu_count_used = _gpu_count_used(environment)
     run_metadata: dict[str, object] = {
         "run_id": config.run_name,
         "reward_mode": config.reward_mode,
@@ -906,9 +1024,13 @@ def _initialize_run(
         "cuda_version": environment["cuda_version"],
         "gpu_name": environment["gpu_name"],
         "gpu_count": environment["gpu_count"],
+        "gpu_count_used": gpu_count_used,
+        "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
         "dependency_lock_hash": environment["dependency_lock_hash"],
         "dataset_hash": dataset_hash,
         "config_hash": config_hash,
+        "paired_definition_sha256": paired_definition_sha256,
+        **paired_components,
         "seed": seed,
         "seed_override": None if seed == config.seed else {"config": config.seed, "cli": seed},
         **_parent_identity_mapping(parent_sft),
@@ -917,6 +1039,10 @@ def _initialize_run(
         "start_time": started,
         "end_time": None,
         "gpu_hours": 0.0,
+        "attempts": [],
+        "global_step": None,
+        "peak_cuda_memory_allocated_bytes": 0,
+        "peak_cuda_memory_reserved_bytes": 0,
         "status": "running",
     }
     _atomic_write(
@@ -961,6 +1087,8 @@ def _validate_resume_run(
     parent_sft: SFTCheckpointIdentity,
     dataset_hash: str,
     config_hash: str,
+    paired_definition_sha256: str,
+    paired_components: Mapping[str, object],
     environment: Mapping[str, Any],
     resume_source: str,
 ) -> dict[str, object]:
@@ -976,6 +1104,8 @@ def _validate_resume_run(
         "reward_mode": config.reward_mode,
         "dataset_hash": dataset_hash,
         "config_hash": config_hash,
+        "paired_definition_sha256": paired_definition_sha256,
+        **paired_components,
         "seed": seed,
         "git_commit": environment["project_commit"],
         "open_r1_commit": environment["open_r1_commit"],
@@ -985,6 +1115,8 @@ def _validate_resume_run(
         "cuda_version": environment["cuda_version"],
         "gpu_name": environment["gpu_name"],
         "gpu_count": environment["gpu_count"],
+        "gpu_count_used": _gpu_count_used(environment),
+        "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
         **_parent_identity_mapping(parent_sft),
     }
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
@@ -994,11 +1126,13 @@ def _validate_resume_run(
     if value.get("status") not in {"running", "failed"}:
         raise GRPOTrainingError("only an interrupted or failed GRPO run may be resumed")
     previous_gpu_hours = value.get("gpu_hours")
+    attempts_total = _attempt_gpu_hours_total(value.get("attempts"))
     if (
         isinstance(previous_gpu_hours, bool)
         or not isinstance(previous_gpu_hours, int | float)
         or not math.isfinite(float(previous_gpu_hours))
         or float(previous_gpu_hours) < 0.0
+        or not math.isclose(float(previous_gpu_hours), attempts_total, rel_tol=0.0, abs_tol=1e-12)
     ):
         raise GRPOTrainingError("existing GRPO run has invalid cumulative gpu_hours")
     value["status"] = "running"
@@ -1008,9 +1142,10 @@ def _validate_resume_run(
     return cast(dict[str, object], value)
 
 
-def _append_trainer_metrics(path: Path, log_history: object) -> None:
+def _trainer_metric_rows(log_history: object) -> list[dict[str, object]]:
     if not isinstance(log_history, list):
         raise GRPOTrainingError("GRPO trainer state must provide log_history")
+    rows: list[dict[str, object]] = []
     for entry in log_history:
         if not isinstance(entry, Mapping):
             raise GRPOTrainingError("GRPO trainer log history entries must be mappings")
@@ -1025,7 +1160,33 @@ def _append_trainer_metrics(path: Path, log_history: object) -> None:
                 raise GRPOTrainingError("GRPO trainer metrics must be finite")
             scalars[key] = number
         if len(scalars) > 1:
-            _append_jsonl(path, scalars)
+            rows.append(scalars)
+    return rows
+
+
+def _write_training_metrics(path: Path, *, log_history: object, summary: Mapping[str, object]) -> None:
+    rows = [*_trainer_metric_rows(log_history), dict(summary)]
+    content = "".join(
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        for row in rows
+    )
+    _atomic_write(path, content)
+
+
+def _finite_numeric_mapping(value: object, *, context: str) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        raise GRPOTrainingError(f"{context} must be a mapping")
+    scalars: dict[str, float] = {}
+    for key, raw_value in value.items():
+        if not isinstance(key, str):
+            raise GRPOTrainingError(f"{context} metric names must be strings")
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int | float):
+            continue
+        number = float(raw_value)
+        if not math.isfinite(number):
+            raise GRPOTrainingError(f"{context} must contain only finite numeric metrics")
+        scalars[key] = number
+    return scalars
 
 
 def run_grpo_training(
@@ -1056,6 +1217,9 @@ def run_grpo_training(
     hidden_records = load_training_artifact(hidden_config.dataset_path, kind=TrainingArtifactKind.HIDDEN_GRPO)
     validate_grpo_artifact_pair(public_records, hidden_records)
     parent_sft = public_parent_sft
+    paired_definition_sha256, paired_components = _paired_definition(
+        public_config, hidden_config, seed=seed, parent_sft=parent_sft
+    )
     records = public_records if reward_mode == "public" else hidden_records
     run_dir = _safe_run_dir(output_root, config.run_name)
     checkpoint_dir = run_dir / "checkpoints"
@@ -1063,6 +1227,7 @@ def run_grpo_training(
     config_hash = _config_hash(config, seed=seed)
     environment = collect_environment()
     resume_path: str | None = None
+    resume_source: str | None = None
     if resume_from_checkpoint is not None:
         if not run_dir.is_dir():
             raise GRPOTrainingError("resume requires an existing GRPO run directory")
@@ -1075,6 +1240,8 @@ def run_grpo_training(
             parent_sft=parent_sft,
             dataset_hash=dataset_hash,
             config_hash=config_hash,
+            paired_definition_sha256=paired_definition_sha256,
+            paired_components=paired_components,
             environment=environment,
             resume_source=resume_source,
         )
@@ -1089,14 +1256,19 @@ def run_grpo_training(
                 parent_sft=parent_sft,
                 dataset_hash=dataset_hash,
                 config_hash=config_hash,
+                paired_definition_sha256=paired_definition_sha256,
+                paired_components=paired_components,
                 environment=environment,
             )
         except Exception:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
-    previous_gpu_hours = float(cast(int | float, run_metadata["gpu_hours"]))
+    gpu_count_used = cast(int, run_metadata["gpu_count_used"])
+    _begin_attempt(run_metadata, resume_source=resume_source)
+    _write_json(run_dir / "run.json", run_metadata)
     started = time.perf_counter()
+    peak_reset = False
     try:
         train_dataset = build_grpo_dataset(records, reward_mode=config.reward_mode)
         runtime = _load_grpo_runtime()
@@ -1108,6 +1280,8 @@ def run_grpo_training(
             runtime=runtime,
         )
         tokenizer = runtime.get_tokenizer(model_args, training_args)
+        _reset_cuda_peak_memory()
+        peak_reset = True
         model = _load_merged_sft_policy(
             parent_sft=parent_sft,
             model_args=model_args,
@@ -1133,31 +1307,54 @@ def run_grpo_training(
             peft_config=runtime.get_peft_config(model_args),
         )
         train_result = trainer.train(resume_from_checkpoint=resume_path)
-        raw_loss = getattr(train_result, "metrics", {}).get("train_loss")
-        if isinstance(raw_loss, bool) or not isinstance(raw_loss, int | float) or not math.isfinite(float(raw_loss)):
+        raw_train_metrics = getattr(train_result, "metrics", {})
+        if isinstance(raw_train_metrics, Mapping):
+            raw_train_loss = raw_train_metrics.get("train_loss")
+            if (
+                isinstance(raw_train_loss, int | float)
+                and not isinstance(raw_train_loss, bool)
+                and not math.isfinite(float(raw_train_loss))
+            ):
+                raise GRPOTrainingError("GRPO training must produce a finite train_loss")
+        train_metrics = _finite_numeric_mapping(
+            raw_train_metrics,
+            context="GRPO train result metrics",
+        )
+        raw_loss = train_metrics.get("train_loss")
+        if raw_loss is None:
             raise GRPOTrainingError("GRPO training must produce a finite train_loss")
-        train_loss = float(raw_loss)
+        train_loss = raw_loss
         trainer.save_state()
         trainer.save_model(str(checkpoint_dir))
         trainer_state = getattr(trainer, "state", None)
-        _append_trainer_metrics(run_dir / "metrics.jsonl", getattr(trainer_state, "log_history", None))
-        attempt_gpu_hours = (time.perf_counter() - started) / 3600.0
-        gpu_hours = previous_gpu_hours + attempt_gpu_hours
-        _append_jsonl(
+        raw_global_step = getattr(trainer_state, "global_step", None)
+        if isinstance(raw_global_step, bool) or not isinstance(raw_global_step, int) or raw_global_step < 0:
+            raise GRPOTrainingError("GRPO trainer state must provide a non-negative integer global_step")
+        peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
+        attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
+        _finish_attempt(run_metadata, status="completed", attempt_gpu_hours=attempt_gpu_hours)
+        gpu_hours = cast(float, run_metadata["gpu_hours"])
+        run_metadata["global_step"] = raw_global_step
+        run_metadata["peak_cuda_memory_allocated_bytes"] = peak_allocated
+        run_metadata["peak_cuda_memory_reserved_bytes"] = peak_reserved
+        summary_metrics: dict[str, object] = {
+            "record_type": "summary",
+            **train_metrics,
+            "global_step": raw_global_step,
+            "train_samples": len(train_dataset),
+            "peak_cuda_memory_allocated_bytes": peak_allocated,
+            "peak_cuda_memory_reserved_bytes": peak_reserved,
+            "gpu_count_used": gpu_count_used,
+            "attempt_gpu_hours": attempt_gpu_hours,
+            "gpu_hours": gpu_hours,
+        }
+        _write_training_metrics(
             run_dir / "metrics.jsonl",
-            {
-                "record_type": "summary",
-                "train_loss": train_loss,
-                "train_samples": len(train_dataset),
-                "attempt_gpu_hours": attempt_gpu_hours,
-                "gpu_hours": gpu_hours,
-            },
+            log_history=getattr(trainer_state, "log_history", None),
+            summary=summary_metrics,
         )
         with (run_dir / "stdout.log").open("a", encoding="utf-8") as handle:
             handle.write(f"completed train_samples={len(train_dataset)} reward_mode={config.reward_mode}\n")
-        run_metadata["status"] = "completed"
-        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
-        run_metadata["gpu_hours"] = gpu_hours
         _write_json(run_dir / "run.json", run_metadata)
         return GRPOTrainingSummary(
             run_dir=run_dir,
@@ -1167,11 +1364,18 @@ def run_grpo_training(
             train_samples=len(train_dataset),
             gpu_hours=gpu_hours,
         )
-    except Exception as error:
-        gpu_hours = previous_gpu_hours + (time.perf_counter() - started) / 3600.0
-        run_metadata["status"] = "failed"
-        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
-        run_metadata["gpu_hours"] = gpu_hours
+    except BaseException as error:
+        attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
+        if peak_reset:
+            try:
+                peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
+            except Exception:
+                peak_allocated = peak_reserved = 0
+        else:
+            peak_allocated = peak_reserved = 0
+        run_metadata["peak_cuda_memory_allocated_bytes"] = peak_allocated
+        run_metadata["peak_cuda_memory_reserved_bytes"] = peak_reserved
+        _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
         _write_json(run_dir / "run.json", run_metadata)
         with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")

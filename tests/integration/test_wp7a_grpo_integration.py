@@ -225,7 +225,7 @@ class _Trainer:
         _MergedPolicy.events.append("new_grpo_lora")
         self.kwargs = dict(kwargs)
         self.resume: str | None = None
-        self.state = SimpleNamespace(log_history=[{"loss": 0.2, "step": 1}])
+        self.state = SimpleNamespace(log_history=[{"loss": 0.2, "step": 1}], global_step=1)
         self.__class__.instances.append(self)
 
     def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:

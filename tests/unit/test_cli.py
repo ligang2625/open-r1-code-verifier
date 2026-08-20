@@ -41,6 +41,7 @@ from code_verifier.training import (
     SFTCheckpointIdentity,
     SFTTrainingError,
     grpo_evaluation_checkpoint_id,
+    load_grpo_training_config,
 )
 
 
@@ -390,6 +391,7 @@ def _grpo_checkpoint_identity(tmp_path: Path, *, reward_mode: str = "public") ->
         reward_mode=reward_mode,
         dataset_hash="1" * 64,
         config_hash="2" * 64,
+        paired_definition_sha256="4" * 64,
         dependency_lock_hash="3" * 64,
         seed=11,
         parent_sft=parent,
@@ -1472,8 +1474,8 @@ def test_train_grpo_overrides_complete_dataset_and_run_name_pair_before_executio
     tmp_path: Path,
     capsys: Any,
 ) -> None:
-    public = cli_module.load_grpo_training_config(Path("configs/grpo/public.yaml"))
-    hidden = cli_module.load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
+    public = load_grpo_training_config(Path("configs/grpo/public.yaml"))
+    hidden = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
     configs = {Path("public.yaml"): public, Path("hidden.yaml"): hidden}
     seen: dict[str, object] = {}
 
@@ -1544,8 +1546,8 @@ def test_train_grpo_rejects_single_sided_run_name_override(
     monkeypatch: pytest.MonkeyPatch,
     capsys: Any,
 ) -> None:
-    public = cli_module.load_grpo_training_config(Path("configs/grpo/public.yaml"))
-    hidden = cli_module.load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
+    public = load_grpo_training_config(Path("configs/grpo/public.yaml"))
+    hidden = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
     configs = {Path("public.yaml"): public, Path("hidden.yaml"): hidden}
     monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: configs[path])
 

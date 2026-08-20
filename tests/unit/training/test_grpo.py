@@ -449,6 +449,10 @@ def test_grpo_runtime_arguments_bind_parent_model_and_frozen_invariants(tmp_path
     assert training_kwargs["report_to"] == []
     assert training_kwargs["push_to_hub"] is False
     assert training_kwargs["seed"] == 7
+    assert training_kwargs["skip_memory_metrics"] is False
+    assert training_kwargs["logging_nan_inf_filter"] is False
+    assert training_kwargs["save_total_limit"] is None
+    assert training_kwargs["save_only_model"] is False
 
 
 def test_grpo_runtime_arguments_normalize_pinned_constructor_value_error(tmp_path: Path) -> None:
@@ -642,6 +646,7 @@ def _write_completed_grpo_run(
         "reward_mode": reward_mode,
         "dataset_hash": "1" * 64,
         "config_hash": "2" * 64,
+        "paired_definition_sha256": "4" * 64,
         "dependency_lock_hash": "3" * 64,
         "seed": 7,
         "parent_sft_run_id": parent.run_id,
@@ -695,6 +700,7 @@ def test_load_completed_grpo_checkpoint_accepts_completed_run_and_parent_identit
         reward_mode="public",
         dataset_hash="1" * 64,
         config_hash="2" * 64,
+        paired_definition_sha256="4" * 64,
         dependency_lock_hash="3" * 64,
         seed=7,
         parent_sft=SFTCheckpointIdentity(
@@ -719,6 +725,7 @@ def test_load_completed_grpo_checkpoint_accepts_completed_run_and_parent_identit
         ("reward_mode", "eval"),
         ("dataset_hash", "invalid"),
         ("config_hash", None),
+        ("paired_definition_sha256", "f" * 63),
         ("dependency_lock_hash", "f" * 63),
         ("seed", True),
     ],
@@ -810,6 +817,7 @@ def test_grpo_evaluation_checkpoint_id_is_stable_and_binds_parent_and_reward_mod
     assert checkpoint_id.startswith(f"{identity.checkpoint_dir}#identity=")
     assert re.fullmatch(r"[0-9a-f]{64}", checkpoint_id.rsplit("=", 1)[1])
     assert grpo_evaluation_checkpoint_id(replace(identity, reward_mode="hidden")) != checkpoint_id
+    assert grpo_evaluation_checkpoint_id(replace(identity, paired_definition_sha256="5" * 64)) != checkpoint_id
     changed_parent = replace(identity.parent_sft, dataset_hash="e" * 64)
     assert grpo_evaluation_checkpoint_id(replace(identity, parent_sft=changed_parent)) != checkpoint_id
 
@@ -856,11 +864,12 @@ class _FakePeftModel:
 class _FakeTrainer:
     instances: ClassVar[list[_FakeTrainer]] = []
     loss = 0.25
+    extra_metrics: ClassVar[dict[str, float]] = {}
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = dict(kwargs)
         self.resume_from_checkpoint: str | None = None
-        self.state = SimpleNamespace(log_history=[{"loss": 0.3, "step": 1, "ignored": "text"}])
+        self.state = SimpleNamespace(log_history=[{"loss": 0.3, "step": 1, "ignored": "text"}], global_step=1)
         self.__class__.instances.append(self)
 
     def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
@@ -875,7 +884,7 @@ class _FakeTrainer:
             completion_ids=[[1, 2]] * 4,
             **columns,
         )
-        return SimpleNamespace(metrics={"train_loss": self.loss})
+        return SimpleNamespace(metrics={"train_loss": self.loss, "train_runtime": 1.5, **self.extra_metrics})
 
     @staticmethod
     def save_state() -> None:
@@ -912,8 +921,11 @@ def _prepare_fake_grpo_run(
     _write_completed_sft_run(sft_run_dir)
     _FakeTrainer.instances.clear()
     _FakeTrainer.loss = 0.25
+    _FakeTrainer.extra_metrics = {}
     monkeypatch.setattr(grpo_module, "validate_grpo_training_hardware", lambda _: None)
     monkeypatch.setattr(grpo_module, "_load_grpo_runtime", _fake_grpo_runtime)
+    monkeypatch.setattr(grpo_module, "_reset_cuda_peak_memory", lambda: None)
+    monkeypatch.setattr(grpo_module, "_peak_cuda_memory_bytes", lambda: (123, 456))
     return public_config, hidden_config, sft_run_dir, tmp_path / "outputs"
 
 
@@ -963,10 +975,23 @@ def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
     assert len(_read_jsonl(summary.run_dir / "rewards.jsonl")) == 4
     metrics = _read_jsonl(summary.run_dir / "metrics.jsonl")
     assert [row["record_type"] for row in metrics] == ["trainer", "summary"]
+    assert metrics[-1]["train_runtime"] == 1.5
+    assert metrics[-1]["global_step"] == 1
+    assert metrics[-1]["peak_cuda_memory_allocated_bytes"] == 123
+    assert metrics[-1]["peak_cuda_memory_reserved_bytes"] == 456
     run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     assert run_metadata["status"] == "completed"
     assert run_metadata["parent_sft_run_id"] == "completed-b"
     assert run_metadata["parent_sft_checkpoint_path"] == str((sft_run_dir / "checkpoints").resolve())
+    assert re.fullmatch(r"[0-9a-f]{64}", run_metadata["paired_definition_sha256"])
+    assert run_metadata["paired_definition_version"] == 1
+    assert run_metadata["gpu_count_used"] == 1
+    assert run_metadata["global_step"] == 1
+    assert run_metadata["peak_cuda_memory_allocated_bytes"] == 123
+    assert run_metadata["peak_cuda_memory_reserved_bytes"] == 456
+    assert len(run_metadata["attempts"]) == 1
+    assert run_metadata["attempts"][0]["status"] == "completed"
+    assert run_metadata["gpu_hours"] == pytest.approx(run_metadata["attempts"][0]["gpu_hours"])
     for name in (
         "run.json",
         "environment.json",
@@ -1000,8 +1025,73 @@ def test_grpo_run_failure_is_sanitized_and_requires_finite_loss(
             executor=MockExecutor(_passing_results(4)),
         )
     run_dir = output_root / public_config.run_name
-    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
+    run_metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_metadata["status"] == "failed"
+    assert run_metadata["attempts"][-1]["status"] == "failed"
+    assert run_metadata["gpu_hours"] == pytest.approx(sum(item["gpu_hours"] for item in run_metadata["attempts"]))
+    assert run_metadata["peak_cuda_memory_allocated_bytes"] == 123
+    assert run_metadata["peak_cuda_memory_reserved_bytes"] == 456
     assert (run_dir / "stderr.log").read_text(encoding="utf-8") == "GRPOTrainingError\n"
+
+
+def test_grpo_run_rejects_nonfinite_train_result_metric(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    _FakeTrainer.extra_metrics = {"train_runtime": math.inf}
+
+    with pytest.raises(GRPOTrainingError, match="finite numeric metrics"):
+        run_grpo_training(
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=sft_run_dir,
+            hidden_sft_run_dir=sft_run_dir,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor(_passing_results(4)),
+        )
+
+    run_metadata = json.loads((output_root / public_config.run_name / "run.json").read_text(encoding="utf-8"))
+    assert run_metadata["status"] == "failed"
+    assert run_metadata["attempts"][-1]["status"] == "failed"
+
+
+def test_grpo_public_and_hidden_runs_share_paired_definition_sha256(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+
+    public_summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+    hidden_summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="hidden",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+
+    public_metadata = json.loads((public_summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    hidden_metadata = json.loads((hidden_summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert public_metadata["paired_definition_sha256"] == hidden_metadata["paired_definition_sha256"]
+    assert public_metadata["paired_public_config_hash"] == hidden_metadata["paired_public_config_hash"]
+    assert public_metadata["paired_hidden_config_hash"] == hidden_metadata["paired_hidden_config_hash"]
+    assert public_metadata["paired_public_dataset_hash"] == hidden_metadata["paired_public_dataset_hash"]
+    assert public_metadata["paired_hidden_dataset_hash"] == hidden_metadata["paired_hidden_dataset_hash"]
 
 
 def test_grpo_resume_is_bound_and_appends_logs(
@@ -1024,6 +1114,7 @@ def test_grpo_resume_is_bound_and_appends_logs(
     metadata_value = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     metadata_value["status"] = "failed"
     metadata_value["gpu_hours"] = 1.25
+    metadata_value["attempts"][-1]["gpu_hours"] = 1.25
     (summary.run_dir / "run.json").write_text(json.dumps(metadata_value), encoding="utf-8")
 
     resumed = run_grpo_training(
@@ -1042,8 +1133,12 @@ def test_grpo_resume_is_bound_and_appends_logs(
     resumed_metadata = json.loads((resumed.run_dir / "run.json").read_text(encoding="utf-8"))
     assert resumed_metadata["resume_from_checkpoint"] == "checkpoints/checkpoint-1"
     assert resumed_metadata["gpu_hours"] > 1.25
+    assert len(resumed_metadata["attempts"]) == 2
+    assert resumed_metadata["gpu_hours"] == pytest.approx(
+        sum(item["gpu_hours"] for item in resumed_metadata["attempts"])
+    )
     assert len(_read_jsonl(resumed.run_dir / "rollouts.jsonl")) == 8
-    assert len(_read_jsonl(resumed.run_dir / "metrics.jsonl")) == 4
+    assert len(_read_jsonl(resumed.run_dir / "metrics.jsonl")) == 2
 
 
 @pytest.mark.parametrize("drift", ["seed", "config", "dataset", "dependency", "parent"])
@@ -1091,6 +1186,45 @@ def test_grpo_resume_rejects_identity_drift(
             hidden_sft_run_dir=sft_run_dir,
             output_root=output_root,
             seed=seed,
+            executor=MockExecutor(_passing_results(4)),
+            resume_from_checkpoint=checkpoint,
+        )
+
+
+def test_grpo_resume_rejects_counterpart_only_dataset_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+    checkpoint = summary.checkpoint_dir / "checkpoint-1"
+    checkpoint.mkdir()
+    run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    run_metadata["status"] = "failed"
+    (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")
+
+    hidden_record = json.loads(hidden_config.dataset_path.read_text(encoding="utf-8"))
+    hidden_record["train_hidden_tests"] = [{"input": "COUNTERPART_DRIFT", "expected": "COUNTERPART_DRIFT"}]
+    hidden_config.dataset_path.write_text(json.dumps(hidden_record) + "\n", encoding="utf-8")
+
+    with pytest.raises(GRPOTrainingError, match="identity"):
+        run_grpo_training(
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=sft_run_dir,
+            hidden_sft_run_dir=sft_run_dir,
+            output_root=output_root,
+            seed=42,
             executor=MockExecutor(_passing_results(4)),
             resume_from_checkpoint=checkpoint,
         )
