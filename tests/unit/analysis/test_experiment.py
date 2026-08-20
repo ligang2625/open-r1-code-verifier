@@ -92,6 +92,7 @@ def _write_grpo_run(path: Path, parent: Path, *, reward_mode: str) -> None:
         "reward_mode": reward_mode,
         "dataset_hash": "f" * 64,
         "config_hash": ("1" if reward_mode == "public" else "2") * 64,
+        "paired_definition_sha256": "4" * 64,
         "dependency_lock_hash": "e" * 64,
         "seed": 42,
         "parent_sft_run_path": str(parent.resolve()),
