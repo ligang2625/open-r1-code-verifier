@@ -248,3 +248,68 @@ execution_checkpoint:
 - The real 4090 C2 canonical Public directory still exactly matches C3 quarantine prerequisites and has not been edited by Web GPT/CodexPro. The C3 quarantine check performed on the target was read-only.
 - C3 preserves C2 failure evidence rather than deleting it: an exact match is atomically moved under the external artifact-root quarantine namespace and accompanied by a deterministic manifest containing every quarantined file size/SHA. Unknown, changed, partially overlapping, symlinked, or inconsistent states fail closed.
 - No RTX 4090 target training command was started or monitored by Web GPT/CodexPro during this repair. All target-side connector work was read-only diagnosis/matching; all executable repair tests were control-plane CPU/1660/Piston or synthetic metadata-only dry-runs.
+
+## C4 — reuse the proven plain-training DeepSpeed guard for GRPO
+
+The operator ran C3 and reported a Public failure after formal Dataset materialization and merged-B model loading, while `GRPOTrainer.__init__` enabled gradient checkpointing. Accelerate 1.4.0 called `is_peft_model()`, which imported the lock-pinned but unconfigured DeepSpeed 0.16.8 backend for model-unwrapping type detection; DeepSpeed's import-time CUDA op compatibility probe reached `torch.utils.cpp_extension`, which imports `setuptools`, but the Python 3.10 locked runtime does not install setuptools as a runtime package. This is not an extraneous-package incident: `uv.lock` pins DeepSpeed 0.16.8 through Open-R1, and an exact frozen/offline `uv sync --dry-run` includes it. WP6-d had already solved the identical plain-LoRA SFT condition with `_without_unconfigured_deepspeed_backend()`. C4 applies that established narrow guard to the GRPO model/Trainer/train/save lifecycle without changing dependencies, model/data identities, DeepSpeed pins, or experiment semantics.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C4
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 847f7c7f74b6d4d4af37762efe1da6a7370a8110
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-smoke
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-smoke/C4/run.sh
+  operator_script_sha256: 35b65f89a7f33e46c4b7f44f6a68a539e7c9b795a5ca85dc680b3ec0276b4e85
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C4/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C4/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C4/operator-evidence.json"
+  target_quarantine_manifest_template: "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/quarantine/WP7-c/grpo-cd-smoke/C3/quarantine-manifest.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-smoke/C4
+  supersedes_checkpoint_id: C3
+  supersedes_checkpoint_commit: 500b3936dba6b0ef72a3e4a0ad8b703a35d93682
+  failed_c3_public_stderr_sha256: cc0e697f76fe85b5ad6186baae92dcb29572e91a63ee09e1e687b25c1ffc21ea
+  expected_artifacts:
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/quarantine/WP7-c/grpo-cd-smoke/C3/quarantine-manifest.json"
+  completed_scope:
+    - "the C3 user-reported traceback reaches GRPOTrainer.__init__ -> gradient-checkpointing -> accelerate.is_peft_model -> extract_model_from_parallel -> import deepspeed -> torch.utils.cpp_extension -> import setuptools and ends with ModuleNotFoundError: No module named setuptools, before trainer.train()"
+    - "the same failure was reproduced exactly on the GTX1660 control-plane pinned runtime: deepspeed=0.16.8, accelerate=1.4.0, torch=2.6.0+cu124, trl=0.18.0, peft=0.14.0, setuptools absent"
+    - "DeepSpeed is not extraneous: uv.lock contains deepspeed==0.16.8 and setuptools, while the Python 3.10 dependency markers do not install setuptools at runtime; frozen/offline uv sync dry-run includes DeepSpeed 0.16.8"
+    - "WP6-d already established _without_unconfigured_deepspeed_backend for plain LoRA SFT; with setuptools absent and DeepSpeed installed, the exact guarded Accelerate is_peft_model probe returns False without importing the unused backend"
+    - "business result-code 847f7c7f74b6d4d4af37762efe1da6a7370a8110 wraps the GRPO merged-model/Trainer/train/save lifecycle in the same established guard and adds a lifecycle regression test; pyproject.toml and uv.lock are unchanged"
+    - "post-fix acceptance is fresh PASS: GRPO unit 63/63; make lint including Ruff/format/mypy; make test 930 passed / 3 expected real-Piston opt-in skips / 0 failed; GTX1660 GPU smoke 3/3; real Piston 9/9; formal Public/Hidden Dataset materialization 2500+2500 PASS"
+    - "C4 target preflight contains an executable guarded Accelerate compatibility probe requiring deepspeed=0.16.8 and proving is_peft_model(object()) returns False inside the guard even when setuptools is absent; the exact heredoc passes on the current control-plane runtime"
+    - "C4 inherits the C3 complete-formal Dataset materialization preflight and C2 quarantine handling, and adds semantic C3 quarantine tied to checkpoint 500b3936..., result-code 7b47ee0..., formal pair/data/B/lock identity, one failed non-resume attempt, global_step=null, positive CUDA peak, empty Trainer checkpoints/telemetry, ModuleNotFoundError stderr, absent Hidden run, and matching C3 operator evidence/status/terminal semantics"
+    - "the exact C4 C3-quarantine heredoc passes first quarantine, idempotent rerun, manifest-tamper rejection, and future-C4-run non-interference dry-runs; actual C3 run/evidence/status/terminal SHAs are captured into the target quarantine manifest at runtime rather than guessed on the control plane"
+    - "C4 bash syntax passes and all 17 embedded Python heredocs compile; there is one actual parameterized smoke train-grpo invocation, no validation-pilot command, and pilot appears only in the final evidence note that it was not started"
+  remaining_scope:
+    - "make the exact C4 checkpoint commit reachable on the RTX 4090 through Git, checkout/detach that exact commit, confirm clean checkout, recompute C4 run.sh SHA256 and run it manually in SSH/tmux; do not rerun C0/C1/C2/C3"
+    - "C4 re-runs all target preflight gates, including formal 2500+2500 Dataset materialization and the guarded Accelerate/DeepSpeed compatibility probe; it then preserves/quarantines only the semantically exact C3 pre-trainer-train failure and starts a fresh canonical Public smoke"
+    - "subsequent C4 reruns never quarantine a C4 run; they use only the existing strict trainer-checkpoint restart/completed semantics"
+    - "C4 runs Public 20-step smoke then Hidden 20-step smoke from the same formal completed B and paired definition; no pilot is started"
+    - "after C4 exits, sync operator-evidence.json, status, terminal.log, postcheck-summary.json, the C3 quarantine manifest, and required small run metadata byte-for-byte to the C4 control-plane receive directory, then explicitly invoke execution-router resume backend=web stage_id=WP7-c"
+    - "only after C4 smoke evidence is accepted may a distinct grpo-cd-pilot checkpoint be generated"
+  status: awaiting_operator
+```
+
+### C3 failure and C4 repair notes
+
+- This repair deliberately does not install setuptools, remove DeepSpeed, or change the lock. DeepSpeed 0.16.8 is part of the pinned Open-R1 runtime; the experiment is plain LoRA GRPO and has no configured DeepSpeed backend, so suppressing only Accelerate's unused type-detection import is the same narrow backend-selection policy already used by the accepted formal SFT path.
+- The C3 failure occurred later than C2: formal Dataset materialization had passed and the merged B model was loaded before `GRPOTrainer.__init__` failed. C4 therefore refuses to treat it as a Trainer resume unless a complete cadence-valid Trainer checkpoint exists; the known no-checkpoint C3 state is instead preserved under a distinct external quarantine namespace.
+- The 4090 CodexPro connector became unavailable during this repair, so control-plane code does not invent target C3 run/evidence hashes. C4 validates C3 evidence/status/terminal and run semantics on-target before any move, then records the actual target hashes and every quarantined file hash in its deterministic quarantine manifest. Any mismatch fails closed.
+- No RTX4090 target training command was started or monitored by Web GPT/CodexPro during C4 preparation. All executable validation was on the GTX1660 control plane or synthetic metadata-only recovery dry-runs.
