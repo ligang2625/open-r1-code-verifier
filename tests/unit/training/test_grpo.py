@@ -1181,6 +1181,55 @@ def test_grpo_resume_is_bound_and_appends_logs(
     assert len(_read_jsonl(resumed.run_dir / "metrics.jsonl")) == 2
 
 
+def test_grpo_resume_validation_is_read_only_until_attempt_begin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+    checkpoint = summary.checkpoint_dir / "checkpoint-1"
+    checkpoint.mkdir()
+    metadata_value = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    metadata_value["status"] = "failed"
+    metadata_value["end_time"] = "preserved-end-time"
+    metadata_value["resume_from_checkpoint"] = None
+    metadata_value["gpu_hours"] = 1.25
+    metadata_value["attempts"][-1]["status"] = "failed"
+    metadata_value["attempts"][-1]["end_time"] = "preserved-attempt-end-time"
+    metadata_value["attempts"][-1]["gpu_hours"] = 1.25
+    before_text = json.dumps(metadata_value, sort_keys=True, indent=2) + "\n"
+    (summary.run_dir / "run.json").write_text(before_text, encoding="utf-8")
+
+    def stop_before_attempt(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise GRPOTrainingError("stop before attempt begin")
+
+    monkeypatch.setattr(grpo_module, "_begin_attempt", stop_before_attempt)
+    with pytest.raises(GRPOTrainingError, match="stop before attempt begin"):
+        run_grpo_training(
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=sft_run_dir,
+            hidden_sft_run_dir=sft_run_dir,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor(_passing_results(4)),
+            resume_from_checkpoint=checkpoint,
+        )
+
+    assert (summary.run_dir / "run.json").read_text(encoding="utf-8") == before_text
+
+
 @pytest.mark.parametrize("drift", ["seed", "config", "dataset", "dependency", "parent"])
 def test_grpo_resume_rejects_identity_drift(
     tmp_path: Path,

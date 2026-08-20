@@ -1135,10 +1135,6 @@ def _validate_resume_run(
         or not math.isclose(float(previous_gpu_hours), attempts_total, rel_tol=0.0, abs_tol=1e-12)
     ):
         raise GRPOTrainingError("existing GRPO run has invalid cumulative gpu_hours")
-    value["status"] = "running"
-    value["end_time"] = None
-    value["resume_from_checkpoint"] = resume_source
-    _write_json(run_dir / "run.json", value)
     return cast(dict[str, object], value)
 
 
