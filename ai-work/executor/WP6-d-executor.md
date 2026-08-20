@@ -400,3 +400,53 @@ execution_checkpoint:
     - "resume reruns the required short regressions, appends a completed R1-M1 repair execution record with operator_evidence_sha256, and stops before reviewer-ex; no C/D work enters WP6-d"
   status: awaiting_operator
 ```
+
+## C7 — supersede C6 dependency-lock preflight bug without rewriting C6
+
+The committed C6 checkpoint at `782d92de34856497ed1b955bbc7d37af2a4ec0cb` is preserved unchanged. Its first manual GTX 1660 Ti attempt created status/log/evidence but failed in operator preflight before `verify-eval` started: status `125`, `gate_status=preflight_failed`, note `dependency lock SHA mismatch`, and no C6 repair output directory was created. Reinspection proved the isolated verifier checkout itself is still clean at `41abf31618372445ba2233f386c08417b4407436`; the failure was a tracked C6 script bug. Project `dependency_lock_hash` is `SHA256(b"uv.lock\\0" + uv.lock bytes)`, which reproduces the frozen `59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560`, while C6 incorrectly compared that identity with the raw file SHA256 `f0ef5dc5645e18c9a625057a8b12d3d1c666e9f0cb3539f0e776ba8b26655e80`.
+
+C7 therefore supersedes only the immutable operator script, uses a fresh non-overwriting namespace, and binds its parent/result-code to C6. It does not alter R1, the sealed plan, E0, C6, formal SFT/generation artifacts, canonical B, or Base A.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C7
+  stage_id: WP6-d
+  task_kind: repair
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: 1
+  source_review_commit: 6f80d545374809693d8a47defe791ee1f881489e
+  repair_issue_ids:
+    - R1-M1
+  result_code_commit: 782d92de34856497ed1b955bbc7d37af2a4ec0cb
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  workflow_runtime_commit: 734549fe3282edad76456c69f085e53d9ce39844
+  legacy_control_plane_default: true
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: sft-b-evaluation
+  operator_handoff_mode: control_plane_manual
+  operator_restart_policy: exact_rerun
+  operator_script: ai-work/executor/operator/WP6-d/sft-b-evaluation/C7/run.sh
+  operator_script_sha256: 9defecfd41244b679b05aa8ef68f57f2205ef15face4a04918b1bb9c5f508c00
+  operator_status_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C7/status
+  operator_log_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C7/terminal.log
+  operator_evidence_file: /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C7/operator-evidence.json
+  expected_artifacts:
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C7/output/evaluation/B-sft-formal-seed42/run.json
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C7/output/evaluation/B-sft-formal-seed42/samples/results.jsonl
+    - /home/dzy/wp6d-r1-operator/WP6-d/eb523bc749e9aa4362790c45bbcf4d604ad7e478/sft-b-evaluation/C7/operator-evidence.json
+  completed_scope:
+    - "C6 checkpoint commit 782d92de34856497ed1b955bbc7d37af2a4ec0cb and its failed operator evidence are preserved unchanged as auditable history; R1 and all earlier WP6-d scientific evidence remain untouched"
+    - "C6 manual attempt 20260820T041332Z-2559 failed before verify-eval at dependency-lock preflight with status=125/command_rc=125/postcheck_rc=125/gate_status=preflight_failed and produced no repair output directory"
+    - "the isolated verifier remains clean at project commit 41abf31618372445ba2233f386c08417b4407436; project-native dependency lock identity recomputation returns frozen SHA 59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560, proving the C6 raw-file sha256sum comparison was the defect"
+    - "C7 changes only the immutable checkpoint namespace/parent identity and dependency-lock computation; frozen generation/data/verifier/Open-R1/package/Piston/canonical-B identities, workers=4 verify-eval command, fresh-output policy and strict semantic postcheck remain unchanged"
+    - "C7 run.sh is bash-syntax clean, restored read-only, and SHA256-bound as 9defecfd41244b679b05aa8ef68f57f2205ef15face4a04918b1bb9c5f508c00"
+  remaining_scope:
+    - "operator manually runs the exact tracked C7 run.sh on the GTX 1660 Ti; Web GPT/CodexPro must not execute the 400-problem operator command"
+    - "after C7 exits, explicit execution-router resume backend=web under workflow_runtime_commit 734549fe3282edad76456c69f085e53d9ce39844 validates status/log/evidence, exact checkpoint/script and frozen generation/data/code/dependency/Piston identities, fresh repair output inventory, command_rc=0, postcheck_rc=0 and gate_status=passed"
+    - "resume runs exact-prefix verification readback against fresh C7 output and requires resumed=400/verified=0 without re-executing Piston rows, then aggregates the repair output and proves deterministic aggregate equality with canonical B, generated-payload preservation and Base A/B shared evaluation contract"
+    - "resume reruns required short regressions, appends a completed R1-M1 repair execution record with operator_evidence_sha256, and stops before reviewer-ex; no C/D work enters WP6-d"
+  status: awaiting_operator
+```
