@@ -499,3 +499,38 @@ execution_checkpoint:
     - "resume performs exact-prefix readback and aggregation/equality acceptance, reruns required short regressions, appends completed R1-M1 repair execution with operator_evidence_sha256, and stops before reviewer-ex"
   status: awaiting_operator
 ```
+
+## E1 — Completed R1-M1 repair after C8 resume
+
+C8 operator evidence was accepted under the active-stage migration runtime without rerunning the operator command. The exact tracked C8 script remained SHA256 `0aade6967bf863da9afabd224eb286314fa86fde1c4254165e1e26010fab7ddd`; terminal status was `0`; evidence bound checkpoint commit `ebf7b0d63c3c56231dc3c68a7e922cd9902c5c54`, workflow runtime `734549fe3282edad76456c69f085e53d9ce39844`, `command_rc=0`, `postcheck_rc=0`, and `gate_status=passed`. The accepted evidence bytes have SHA256 `612f02274000881206769a7b92d48a7e8ba85ea4fb338cf89529765f9956317a`.
+
+- Exact-prefix verification readback returned `resumed=400, verified=0`; no Piston problem row was re-executed during resume.
+- `aggregate-eval` accepted all 400 C8 rows. Relative to canonical B, all deterministic correctness/status/bootstrap aggregates are identical; only path-derived `config_hash` and fresh Piston `mean_execution_runtime_ms` differ as attempt-local telemetry.
+- Project strict loaders accepted Base A and fresh C8 B with 400 unique problem IDs in identical order and matching dataset hash, seed 42, test split, deterministic generation config/model revision, and Piston definition SHA. All 400 transferred generation payloads (`completion`, prompt hash, token count, generation latency, max-token marker, model/checkpoint/run identity) match the fresh C8 result rows exactly.
+- Short regression gates passed from the stage-local environment: `make lint`; `make test` = 910 passed / 3 expected real-Piston opt-in skips; `make test-gpu` = 3 passed; `make test-piston` = 9 passed / 2 deselected.
+- No plan/review/source/config/test/third-party file was modified during this resume, and no C/D work entered WP6-d.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP6-d
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: eb523bc749e9aa4362790c45bbcf4d604ad7e478
+  source_review_round: 1
+  source_review_commit: 6f80d545374809693d8a47defe791ee1f881489e
+  repair_issue_ids:
+    - R1-M1
+  result_code_commit: ebf7b0d63c3c56231dc3c68a7e922cd9902c5c54
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  workflow_runtime_commit: 734549fe3282edad76456c69f085e53d9ce39844
+  legacy_control_plane_default: true
+  resumed_from_checkpoint_id: C8
+  resumed_from_checkpoint_commit: ebf7b0d63c3c56231dc3c68a7e922cd9902c5c54
+  operator_handoff_mode: control_plane_manual
+  operator_gate_id: sft-b-evaluation
+  operator_checkpoint_id: C8
+  operator_evidence_sha256: 612f02274000881206769a7b92d48a7e8ba85ea4fb338cf89529765f9956317a
+  status: completed
+```
