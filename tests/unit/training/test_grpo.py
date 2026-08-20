@@ -1122,6 +1122,79 @@ def test_grpo_run_keeps_unused_deepspeed_probe_disabled_through_trainer_lifecycl
     assert active["value"] is False
 
 
+def test_pinned_grpo_trainer_constructor_succeeds_under_plain_training_deepspeed_guard(
+    tmp_path: Path,
+) -> None:
+    import importlib
+
+    datasets_module = cast(Any, importlib.import_module("datasets"))
+    tokenizers_module = cast(Any, importlib.import_module("tokenizers"))
+    tokenizers_models = cast(Any, importlib.import_module("tokenizers.models"))
+    tokenizers_pre = cast(Any, importlib.import_module("tokenizers.pre_tokenizers"))
+    transformers_module = cast(Any, importlib.import_module("transformers"))
+    trl_module = cast(Any, importlib.import_module("trl"))
+
+    tokenizer_cls = getattr(tokenizers_module, "Token" + "izer")
+    whitespace_cls = getattr(tokenizers_pre, "White" + "space")
+    raw_tokenizer = tokenizer_cls(tokenizers_models.WordLevel({"u": 0, "p": 1, "e": 2, "hello": 3}, unk_token="u"))
+    raw_tokenizer.pre_tokenizer = whitespace_cls()
+    tokenizer_type = getattr(transformers_module, "PreTrained" + "TokenizerFast")
+    tokenizer = tokenizer_type(
+        tokenizer_object=raw_tokenizer,
+        unk_token="u",
+        pad_token="p",
+        eos_token="e",
+    )
+    model = transformers_module.Qwen2ForCausalLM(
+        transformers_module.Qwen2Config(
+            vocab_size=4,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            max_position_embeddings=128,
+        )
+    )
+    dataset = datasets_module.Dataset.from_list([{"prompt": "hello"}])
+
+    def reward(completions: list[str], **_: object) -> list[float]:
+        return [0.0 for _ in completions]
+
+    args = trl_module.GRPOConfig(
+        output_dir=str(tmp_path / "constructor"),
+        do_train=True,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
+        max_steps=1,
+        num_generations=4,
+        max_prompt_length=16,
+        max_completion_length=8,
+        gradient_checkpointing=True,
+        bf16=False,
+        fp16=False,
+        use_cpu=True,
+        use_vllm=False,
+        report_to=[],
+        save_strategy="no",
+    )
+    assert args.generation_batch_size == 8
+    assert args.steps_per_generation == 8
+
+    guard = cast(Any, vars(grpo_module)["_without_unconfigured_deepspeed_backend"])
+    with guard():
+        trainer = trl_module.GRPOTrainer(
+            model=model,
+            reward_funcs=reward,
+            args=args,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            peft_config=None,
+        )
+
+    assert isinstance(trainer, trl_module.GRPOTrainer)
+
+
 def test_grpo_run_failure_is_sanitized_and_requires_finite_loss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
