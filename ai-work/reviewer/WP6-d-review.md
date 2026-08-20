@@ -94,3 +94,66 @@ repair_routing:
 ### Next lifecycle step
 
 Run `$stage-lifecycle checkpoint_review` to commit this R1 review. After checkpointing, run `$execution-router` for the single `R1-M1` repair. Once a new completed repair execution is appended, invoke `reviewer-ex` again in a fresh Web conversation/context.
+
+## R2 — latest completed E1 repair
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP6-d
+  review_round: 2
+  source_execution_id: E1
+  reviewed_head_commit: 60bf54a23f78bde1fe43a462a23efd4d7934c3b4
+  conclusion: pass
+```
+
+### Provenance and review boundary
+
+- Latest completed execution is `E1`, `task_kind=repair`, submitted by execution-report commit / reviewed HEAD `60bf54a23f78bde1fe43a462a23efd4d7934c3b4`.
+- E1 correctly binds the sealed plan commit `eb523bc749e9aa4362790c45bbcf4d604ad7e478`, previous committed review round `1` at `6f80d545374809693d8a47defe791ee1f881489e`, and the sole repair issue `R1-M1`.
+- The stage worktree was clean before review, `.ai-bridge` has no tracked paths, and HEAD remained `60bf54a23f78bde1fe43a462a23efd4d7934c3b4` through reviewer-owned verification before this R2 artifact was appended.
+- This is a validation stage. Reviewer did not rerun formal SFT, 4090 generation, or the 400-row Piston operator command; only persisted operator provenance and short readback/regression gates were independently checked.
+
+### Independent verification
+
+- `make lint`: PASS; Ruff check/format and strict Mypy all passed.
+- `make test`: PASS `910 passed, 3 skipped, 0 failed`; the three skips are the expected real-Piston opt-in cases.
+- `make test-gpu`: PASS `3/3`.
+- Real `make test-piston`: PASS `9/9`, `0 skipped`, `0 failed` (`2` deselected).
+- C8 tracked operator script SHA256 is `0aade6967bf863da9afabd224eb286314fa86fde1c4254165e1e26010fab7ddd`, matching the checkpoint/evidence binding. Persisted operator evidence SHA256 independently recomputes to `612f02274000881206769a7b92d48a7e8ba85ea4fb338cf89529765f9956317a`; status is `0`; evidence records checkpoint commit `ebf7b0d63c3c56231dc3c68a7e922cd9902c5c54`, workflow runtime `734549fe3282edad76456c69f085e53d9ce39844`, `command_rc=0`, `postcheck_rc=0`, and `gate_status=passed`.
+- The append-only C8 terminal log records the actual operator attempt running `verify-eval` over the frozen 400-row generation bundle, producing `resumed=0, verified=400`, followed by a successful strict semantic postcheck and terminal gate completion.
+- Reviewer independently reran the exact-prefix C8 verification readback from the frozen verifier checkout; it returned `resumed=400, verified=0`, so no Piston problem row was re-executed.
+- Project strict loaders accept both canonical B and fresh C8 B as completed 400-row runs with 400 unique problem IDs in identical order and matching dataset hash, seed, model/revision, persisted Piston definition, generation records SHA, and generation contract SHA.
+- Reviewer independently compared all 400 canonical/C8 result rows after excluding only the documented attempt-local `runtime_ms` and path-derived `config_hash`; normalized semantic SHA256 is identical (`ecc946b8a39e939721e02cf7b8da41c1f537e43ef7f5ad503c2a3934ebdf985`) and every normalized row is equal.
+- Canonical and C8 aggregate summaries differ only in path-derived `config_hash` and fresh `mean_execution_runtime_ms`; deterministic correctness/status/error/bootstrap/token/generation metrics are unchanged. This is consistent with R1's already independently accepted canonical B scientific evidence.
+
+### R1-M1 resolution
+
+`R1-M1` is resolved. The missing formal verification control-plane provenance now exists as a genuine new operator-owned C8 attempt rather than retrospective synthesis: the frozen generation/data/verifier/Open-R1/dependency/Piston identities are bound before execution; the script is immutable and SHA-bound; status/log/evidence capture the real command and postcheck outcome; the repair writes a fresh namespace without overwriting canonical B; and short reviewer-owned readback proves exact-prefix completion and semantic equality with the previously accepted canonical B result.
+
+The earlier C6/C7 failed attempts remain preserved as audit history and do not weaken C8: C6 failed before verification because of the dependency-lock preflight bug, C7 failed before output creation because of cwd-sensitive config resolution, and C8 superseded those scripts without rewriting their evidence.
+
+### Findings and conclusion
+
+No blocker, major, minor, or actionable issue remains for E1. R1's scientific/numerical acceptance remains valid, and the sole missing operator-terminal verification provenance has been repaired with independently auditable evidence. Conclusion: `pass`.
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 2
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "R1-M1 is resolved by the genuine C8 operator verification evidence and independent exact-prefix/semantic/aggregate readback; no further executor action is required."
+  workstream_candidates: []
+```
+
+### Next lifecycle step
+
+Run `$stage-lifecycle checkpoint_review` to commit this R2 PASS review. If the lifecycle stale/provenance checks pass, run `$stage-lifecycle finalize` for WP6-d.
