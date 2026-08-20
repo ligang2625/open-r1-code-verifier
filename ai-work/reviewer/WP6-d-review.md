@@ -157,3 +157,16 @@ repair_routing:
 ### Next lifecycle step
 
 Run `$stage-lifecycle checkpoint_review` to commit this R2 PASS review. If the lifecycle stale/provenance checks pass, run `$stage-lifecycle finalize` for WP6-d.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP6-d
+  review_round: 2
+  review_commit: 6c0dbb337f990c709342db254d1dca24a4e7e03d
+  merge_commit: 5741ccd8432f530edc9edcca914ebba5339dc800
+  finalized_at: "2026-08-20T15:15:37+08:00"
+  status: finalized
+```
