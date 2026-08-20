@@ -14,6 +14,7 @@ from typing import Any, ClassVar, cast
 import pytest
 
 import code_verifier.training.grpo as grpo_module
+from code_verifier.analysis import build_cost_row, load_training_curve_rows
 from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.grpo import (
@@ -116,6 +117,40 @@ def test_checked_in_grpo_configs_match_spec_and_each_other() -> None:
     assert public.lora_alpha == 32
     assert public.lora_dropout == 0.05
     assert public.min_cuda_memory_gb == 20.0
+
+
+def test_checked_in_grpo_smoke_and_pilot_pairs_only_change_phase_fields() -> None:
+    public_main = load_grpo_training_config(Path("configs/grpo/public.yaml"))
+    hidden_main = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
+    public_smoke = load_grpo_training_config(Path("configs/grpo/validation-smoke-public.yaml"))
+    hidden_smoke = load_grpo_training_config(Path("configs/grpo/validation-smoke-hidden.yaml"))
+    public_pilot = load_grpo_training_config(Path("configs/grpo/validation-pilot-public.yaml"))
+    hidden_pilot = load_grpo_training_config(Path("configs/grpo/validation-pilot-hidden.yaml"))
+
+    validate_grpo_config_pair(public_smoke, hidden_smoke)
+    validate_grpo_config_pair(public_pilot, hidden_pilot)
+    assert public_smoke.max_steps == hidden_smoke.max_steps == 20
+    assert public_smoke.save_steps == hidden_smoke.save_steps == 10
+    assert public_pilot.max_steps == hidden_pilot.max_steps == 100
+    assert public_pilot.save_steps == hidden_pilot.save_steps == 50
+    assert public_smoke.run_name != public_pilot.run_name
+    assert hidden_smoke.run_name != hidden_pilot.run_name
+
+    for phased, main in (
+        (public_smoke, public_main),
+        (hidden_smoke, hidden_main),
+        (public_pilot, public_main),
+        (hidden_pilot, hidden_main),
+    ):
+        assert (
+            replace(
+                phased,
+                run_name=main.run_name,
+                max_steps=main.max_steps,
+                save_steps=main.save_steps,
+            )
+            == main
+        )
 
 
 @pytest.mark.parametrize("num_generations", [1, 3])
@@ -979,6 +1014,11 @@ def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
     assert metrics[-1]["global_step"] == 1
     assert metrics[-1]["peak_cuda_memory_allocated_bytes"] == 123
     assert metrics[-1]["peak_cuda_memory_reserved_bytes"] == 456
+    curve_rows = load_training_curve_rows(summary.run_dir, method="Public-RLVR")
+    assert [(row.metric, row.value) for row in curve_rows] == [("loss", 0.3)]
+    cost_row = build_cost_row(summary.run_dir, method="Public-RLVR", gpu_hour_cost_usd=None)
+    assert cost_row.rollouts == 4
+    assert cost_row.gpu_hours == pytest.approx(summary.gpu_hours)
     run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     assert run_metadata["status"] == "completed"
     assert run_metadata["parent_sft_run_id"] == "completed-b"
