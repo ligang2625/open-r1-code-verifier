@@ -182,3 +182,69 @@ execution_checkpoint:
 - Latest C1 evidence binds checkpoint `925181820e86787b7374108d1f6c9ce7b970606b`, script SHA `ffc66388cf42c084a7a8a2e84fd7a3a9a7ee60e82f4d06882e4ea062219ee860`, target machine pointer SHA `b2230476c3d7600477108db5684ba2efbef95b89f746b8d8a1bc83b88ba5cab7`, readiness SHA `5e3a42ac4f99d8312f876bd4f7ac70b35d5b3db27a7ca7c8c96a7196b019e45d`, and Piston identity SHA `19e978bacadea8ff1ac358b3e19efb68f395740200faa460b0f17b706c283d79`.
 - The C1 failure produced no Public or Hidden smoke run metadata/checkpoint/log artifact; C2 therefore enters the same smoke namespace as a clean fresh run unless an operator independently creates incompatible files, which the existing fail-closed run-action logic would reject.
 - The 4090 machine provenance was not edited. C2 repairs only the tracked interpretation of an already validated, stronger Piston acceptance label.
+
+## C3 — heterogeneous GRPO test-payload repair and exact C2 failure quarantine
+
+The operator ran C2 on the exact RTX 4090 checkpoint. C2 passed its full provenance/machine/GPU/frozen-runtime/offline-model/data/B/pair/Piston/storage preflight and reached the Public `train-grpo` command, but failed while materializing the HuggingFace trainer Dataset, before model/Trainer initialization. The formal test payload permits arbitrary JSON values in `input` and `expected`; PyArrow cannot infer one struct field type when those values mix list/dict/scalar/null shapes. The production repair stores each test case as canonical JSON text inside the trainer Dataset (`list<string>`) and strictly restores the exact `{input, expected}` mapping in the reward callback before verifier/Piston use. Formal JSONL, prompts, verifier inputs, reward math, parent B, pair identity, and all GRPO hyperparameters remain unchanged.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C3
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 7b47ee0ebb1b4c6ab494944155ff0fbd6ebaa0e0
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-smoke
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-smoke/C3/run.sh
+  operator_script_sha256: 6ba8009e04f525cb690ed265063fe71059a2bd38fec3b58b01f66f10c4cd2fd3
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C3/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C3/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C3/operator-evidence.json"
+  target_quarantine_manifest_template: "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/quarantine/WP7-c/grpo-cd-smoke/C2/quarantine-manifest.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-smoke/C3
+  supersedes_checkpoint_id: C2
+  supersedes_checkpoint_commit: b0d59cf0ccbdd5bd190f678ab1dc727a9112f98c
+  failed_c2_operator_evidence_sha256: 0e120f39c52cdb0ac3460f69a3dfd1c2d195412ae28c17c51a999227909f453f
+  failed_c2_status_sha256: 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865
+  failed_c2_terminal_log_sha256: 0424ea62147892a4825741bd1063eb9e4db023077d6b73abfc17d3e7753581ed
+  failed_c2_public_run_json_sha256: f642703ee635a4eafd02d8f905b34b85dcd1510b734d4288e7415e7047ce67cc
+  failed_c2_public_stderr_sha256: fc56b31a1f8c3bd2a166b0f815a68672b2631958f96a393be79049e62e9cd6b9
+  expected_artifacts:
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+  completed_scope:
+    - "C2 target preflight passed, then Public failed in build_grpo_dataset -> datasets.Dataset.from_list with pyarrow ArrowInvalid cannot mix list and non-list, non-null values; C2 evidence has command_rc=1/gate_status=command_failed"
+    - "C2 failed Public run has global_step=null, peak CUDA allocated/reserved=0, empty checkpoints, zero-byte metrics/rollouts/rewards/group_metrics/stdout, stderr identity ArrowInvalid, and approximately 0.000157 GPU-hours; Hidden run does not exist"
+    - "real formal Public visible_tests Arrow inference fails because input values mix list/dict and expected values mix str/int/list/bool/float/null/dict; real formal Hidden visible_tests and train_hidden_tests exhibit the same Arrow failure"
+    - "business result-code 7b47ee0ebb1b4c6ab494944155ff0fbd6ebaa0e0 canonical-JSON encodes each trainer test case into Arrow-stable list<string> and strictly decodes it before reward verification; complex nested JSON values round-trip without changing verifier/Piston semantics"
+    - "post-fix targeted WP7 integration/unit suite passes 84/84; make lint including Ruff/format/mypy passes; make test passes 929 / 3 expected real-Piston opt-in skips / 0 failed; GTX1660 GPU smoke passes 3/3; real Piston passes 9/9"
+    - "complete formal Public and Hidden artifacts each materialize 2500-row trainer Datasets successfully; Public visible_tests and Hidden visible_tests/train_hidden_tests are Sequence[string]; the exact C3 formal-Dataset preflight heredoc also passes on the control-plane formal data"
+    - "C3 only quarantines the known C2 Public failure when run.json SHA, C2 git commit, failed attempt, empty checkpoints/logs, zero peak CUDA, stderr SHA and absent Hidden run all match; a read-only matcher against the real 4090 C2 artifacts passes"
+    - "C3 quarantine heredoc dry-run passes first quarantine and idempotent rerun, rejects changed run artifacts, and validates an existing quarantine manifest byte-for-semantics against the quarantined inventory; manifest tampering is rejected"
+    - "C3 bash syntax passes and all 15 embedded Python heredocs compile; there is one parameterized smoke-only train-grpo invocation, no validation-pilot command, and pilot appears only in the final evidence note that it was not started"
+  remaining_scope:
+    - "make the exact C3 checkpoint commit reachable on the RTX 4090 through Git, checkout/detach that exact commit, confirm clean checkout, recompute C3 run.sh SHA256 and run it manually in SSH/tmux; do not rerun C0/C1/C2"
+    - "C3 re-runs all target preflight gates including complete formal 2500+2500 trainer Dataset materialization, then quarantines only the exact known C2 pre-Trainer failure and starts a fresh canonical Public smoke; subsequent C3 reruns leave a C3 run untouched and use only strict trainer-checkpoint restart semantics"
+    - "C3 runs Public smoke then Hidden smoke from the same formal completed B and paired definition; Hidden never consumes the Public adapter/checkpoint; no pilot is started"
+    - "after C3 exits, sync operator-evidence.json, status, terminal.log, postcheck-summary.json, quarantine-manifest.json and required small run metadata byte-for-byte to the C3 control-plane receive directory, then explicitly invoke execution-router resume backend=web stage_id=WP7-c"
+    - "only after C3 smoke evidence is accepted may a distinct grpo-cd-pilot checkpoint be generated"
+  status: awaiting_operator
+```
+
+### C2 failure evidence and C3 repair notes
+
+- C2 terminal log records preflight PASS at `2026-08-20T12:24:23Z`, Public fresh-run dispatch at `12:24:24Z`, and the ArrowInvalid traceback ending at `12:24:31Z`; the exception occurs in `build_grpo_dataset()` / `Dataset.from_list()` before `_load_grpo_runtime()`, tokenizer/model loading, Trainer construction, or `trainer.train()`.
+- The real 4090 C2 canonical Public directory still exactly matches C3 quarantine prerequisites and has not been edited by Web GPT/CodexPro. The C3 quarantine check performed on the target was read-only.
+- C3 preserves C2 failure evidence rather than deleting it: an exact match is atomically moved under the external artifact-root quarantine namespace and accompanied by a deterministic manifest containing every quarantined file size/SHA. Unknown, changed, partially overlapping, symlinked, or inconsistent states fail closed.
+- No RTX 4090 target training command was started or monitored by Web GPT/CodexPro during this repair. All target-side connector work was read-only diagnosis/matching; all executable repair tests were control-plane CPU/1660/Piston or synthetic metadata-only dry-runs.
