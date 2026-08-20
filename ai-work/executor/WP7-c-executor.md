@@ -122,3 +122,63 @@ execution_checkpoint:
 - Business result-code HEAD for C1 is `9a7843aa96c566a8bcc8886e1f2f2941ea901f8c`; the only business change after C0 is the minimal read-only resume-validation durability fix plus its regression test.
 - No RTX 4090 target command was started, monitored, or simulated with a real model. All new audit executions were bounded 1660 Ti/control-plane checks or synthetic metadata-only dry-runs.
 - No pilot/formal/generation checkpoint has been created. C1 remains the first outstanding target-GPU gate.
+
+## C2 — Piston identity-label compatibility repair
+
+The operator ran C1 on the exact RTX 4090 checkpoint. C1 failed closed before GPU/model/data/training preflight because its Piston identity validator treated the documentation's minimum value `real_piston_acceptance=PASS` as the only legal spelling. The current validated machine provenance intentionally records the stronger value `PASS_9_OF_9_TUNNELED` together with `local_piston_acceptance=PASS_9_OF_9`. This is an operator-validator defect, not damaged target provenance. The persistent machine record is preserved byte-for-byte; C2 supersedes C1 and changes only the new tracked operator script plus this append-only report.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C2
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 925181820e86787b7374108d1f6c9ce7b970606b
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-smoke
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-smoke/C2/run.sh
+  operator_script_sha256: 5c451313fa9fb2f5a0dfb720367e517d042357c853c991392627771a138be848
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C2/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C2/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C2/operator-evidence.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-smoke/C2
+  supersedes_checkpoint_id: C1
+  supersedes_checkpoint_commit: 925181820e86787b7374108d1f6c9ce7b970606b
+  failed_c1_operator_evidence_sha256: 70cfb740dc6c1c45113a5b006386de5af3499fb5215a6408f237c0fab51845ca
+  failed_c1_status_sha256: a5e45837a2959db847f7e67a915d0ecaddd47f943af2af5fa6453be497faabca
+  failed_c1_terminal_log_sha256: 765ce8a7bc1911ff4ccccc9d6767c66a187f0d3ef3527b48ca796e1b0b0755f3
+  expected_artifacts:
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+  completed_scope:
+    - "C1 was run twice and both attempts failed in preflight with command_rc=125/postcheck_rc=125/gate_status=preflight_failed before GPU/model/data/training work; latest target evidence inventories every expected C/D artifact as absent"
+    - "target validation-machine.json is internally consistent: endpoint http://127.0.0.1:2000, host 1660ti-wsl, READY record, and the current Piston identity record; target record SHA256 is 19e978bacadea8ff1ac358b3e19efb68f395740200faa460b0f17b706c283d79"
+    - "the target Piston record contains deployment_mode=ssh_tunneled_remote, endpoint=http://127.0.0.1:2000, python_runtime=3.10.0, piston_host_id=1660ti-wsl, local_piston_acceptance=PASS_9_OF_9, real_piston_acceptance=PASS_9_OF_9_TUNNELED, pinned source/image identity, and the current tunnel helper reports the loopback tunnel healthy"
+    - "C2 keeps exact topology/runtime checks and accepts only either the documented minimum PASS spelling or PASS_9_OF_9_TUNNELED when it is accompanied by local_piston_acceptance=PASS_9_OF_9; unknown acceptance labels and inconsistent detailed provenance remain fail-closed"
+    - "the exact proposed C2 acceptance rule was executed read-only against the real 4090 machine record and passed; the exact C2 heredoc also passed a four-case matrix covering legacy PASS, detailed 9/9 PASS, missing local evidence rejection, and unknown-label rejection"
+    - "C2 bash syntax passes and all 13 embedded Python heredocs compile; C2 contains no C1 self-reference or old result-code reference and still has one parameterized smoke-only train-grpo invocation with no validation-pilot command"
+    - "post-repair control-plane acceptance is fresh PASS: make lint including Ruff/format/mypy; make test 927 passed / 3 expected real-Piston opt-in skips / 0 failed; real make test-piston 9 selected / 0 failed / 0 skipped"
+  remaining_scope:
+    - "make the exact C2 checkpoint commit reachable on the RTX 4090 through Git, checkout/detach that exact commit, confirm clean checkout, recompute C2 run.sh SHA256 and run it manually in SSH/tmux; do not rerun C0 or C1"
+    - "C2 will re-run all original target preflight gates after the corrected Piston identity check, then run Public smoke followed by Hidden smoke from the same formal B/pair; no pilot is started"
+    - "after C2 exits, sync operator-evidence.json, status, terminal.log, postcheck-summary.json and required small run metadata byte-for-byte to the C2 control-plane receive directory, then explicitly invoke execution-router resume backend=web stage_id=WP7-c"
+    - "only after C2 smoke evidence is accepted may a distinct grpo-cd-pilot checkpoint be generated"
+  status: awaiting_operator
+```
+
+### C1 failure evidence and C2 repair notes
+
+- C1 target terminal log records two attempts (`2026-08-20T11:52:20Z` and `2026-08-20T12:01:52Z`); both end in phase `preflight` with rc 125 and the same readiness/Piston identity mismatch. No `train-grpo` line was reached.
+- Latest C1 evidence binds checkpoint `925181820e86787b7374108d1f6c9ce7b970606b`, script SHA `ffc66388cf42c084a7a8a2e84fd7a3a9a7ee60e82f4d06882e4ea062219ee860`, target machine pointer SHA `b2230476c3d7600477108db5684ba2efbef95b89f746b8d8a1bc83b88ba5cab7`, readiness SHA `5e3a42ac4f99d8312f876bd4f7ac70b35d5b3db27a7ca7c8c96a7196b019e45d`, and Piston identity SHA `19e978bacadea8ff1ac358b3e19efb68f395740200faa460b0f17b706c283d79`.
+- The C1 failure produced no Public or Hidden smoke run metadata/checkpoint/log artifact; C2 therefore enters the same smoke namespace as a clean fresh run unless an operator independently creates incompatible files, which the existing fail-closed run-action logic would reject.
+- The 4090 machine provenance was not edited. C2 repairs only the tracked interpretation of an already validated, stronger Piston acceptance label.
