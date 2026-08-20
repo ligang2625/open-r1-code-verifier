@@ -51,7 +51,7 @@ The project deliberately separates **engineering development** from **real train
 4. A terminal development stage must carry a Development Completion Inventory that accounts for WP0–WP8; the absence of currently dependency-ready work is not enough. `DEV-CLOSEOUT` is valid only when all nine WP development deliverables are already finalized, and it is a SINGLE verification-only stage that may complete with `result_code_commit == plan_commit`. The terminal stage also must pass `make lint`, `make test`, `make test-gpu`, real `make test-piston` with no skips/failures, and the no-critical-stub/TODO/fake check.
 5. `stage-lifecycle finalize` is the only writer of the machine-readable completion block: an exact `## Development Complete Record` heading immediately followed by the required YAML record. After the finalization docs commit, lifecycle reports the exact `development_complete_commit` (`main HEAD`). Natural-language mentions of completion do not unlock validation.
 6. Keep the GTX 1660 Ti as the **control plane** after development closeout. Validation planner/bootstrap/router/reviewer, ordinary code/test work, data preparation, SFT prevalidation, Piston work, aggregation/error analysis/reporting all stay on the 1660 Ti and do not require the RTX 4090 to be online. A validation plan records `control_plane_hardware: GTX 1660 Ti (6GB)` separately from `target_hardware`; target is `GTX 1660 Ti (6GB)` when the stage only consumes existing formal evidence for aggregation/CI/analysis/reporting, and `24GB GPU` only when the stage executes new target-GPU work. The canonical Piston host is `1660ti-wsl`; `home-piston-01` is retired. A 4090 job that needs Piston uses the existing SSH loopback tunnel helper `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh`.
-7. Use the 4090 only for true target-GPU gates: Base/formal inference when it needs the target GPU, optimizer SFT B, Public/Hidden GRPO C/D, target-GPU numerical checks and other explicitly GPU-bound acceptance. Formal SFT visible-trajectory prevalidation remains on the 1660 Ti: run `prevalidate-sft` beside Piston and let `train-sft` consume the immutable manifest without contacting Piston. Target-local `artifact_root`, `hf_home`, `formal_data_root`, READY identity, model/data/cache and >=22 GiB GPU are checked when the target job starts, not when planner/router/reviewer runs on the control plane. Formal checkpoints remain outside stage worktrees and normally remain on the 4090.
+7. Use the 4090 only for true target-GPU gates: Base/formal inference when it needs the target GPU, optimizer SFT B, Public/Hidden GRPO C/D, target-GPU numerical checks and other explicitly GPU-bound acceptance. Formal SFT visible-trajectory prevalidation remains on the 1660 Ti: run `prevalidate-sft` beside Piston and let `train-sft` consume the immutable manifest without contacting Piston. Formal evaluation follows the same split: generate deterministic model outputs on the 4090, then sync the frozen generation bundle to the 1660 Ti for `verify-eval` through local Piston and `aggregate-eval`. Target-local `artifact_root`, `hf_home`, `formal_data_root`, READY identity, model/data/cache and >=22 GiB GPU are checked when the target job starts, not when planner/router/reviewer runs on the control plane. Formal checkpoints remain outside stage worktrees and normally remain on the 4090.
 8. Every validation gate that actually needs the 24GB target GPU uses a **portable operator handoff**, including short 4090-only smoke as well as long formal jobs. The 1660 Ti executor prepares/commits code/config and all control-plane checks, then creates one immutable secret-free tracked `ai-work/executor/operator/<stage>/<gate>/<checkpoint>/run.sh`; the operator checkpoint commit contains exactly the execution report plus that new script. The workflow never auto-pushes: make the exact checkpoint commit reachable on the 4090 through Git, checkout/detach to that commit, confirm a clean tree, recompute the script SHA256, and run the tracked script manually in SSH/tmux. The script fail-closes on Git/checkpoint/script provenance and target READY/GPU/roots/model/data/cache/Piston/storage, then runs target preflight → target command → mandatory short post-run acceptance. A zero target-command rc alone is not success: `gate_status=passed` requires `command_rc=0` and `postcheck_rc=0`. Each attempt emits a versioned secret-free `operator-evidence.json`; sync it plus necessary small manifests/metrics/logs byte-for-byte back to the 1660 Ti. Resume records the received evidence SHA256 in Git provenance, and reviewer-ex independently recomputes script/evidence/small-artifact hashes. Large checkpoints are not copied back by default; only an evidence gap justifies a brief read-only target check.
 9. A valid environment interruption after partial commits is resumable: record/retain the committed environment checkpoint, repair the environment, then explicitly resume. `stage-lifecycle retire_incomplete` is an explicit abandon path, not the mandatory recovery path. If a real 4090 run exposes a tracked bug, repair it through the same stage provenance loop on the 1660 Ti and rerun only the affected target gate; do not redesign features or silently change experiment definitions on the training machine.
 
@@ -402,20 +402,45 @@ make install-gpu
 
 `configs/eval/pass1.yaml` sets `device: auto` and `generation.dtype: float16`; on the 1660 Ti development machine the frozen generator runs on CUDA when torch reports it available, loads the 0.5B debug model in FP16, and the run's `environment.json` records the CUDA/GPU identity so resume fails closed on hardware drift.
 
-`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal Base evaluation uses the immutable 1.5B revision, CUDA, FP16, real Piston configuration, and an explicit prepared-dataset override so A/B/C/D share the same formal problem set. The routed executor prepares the SHA-bound portable operator-terminal `run.sh` on the 1660 Ti control plane; after checking out the exact operator-checkpoint commit on the 4090, run that hash-matching script manually rather than starting the long formal evaluation from an agent session:
+`configs/eval/pass1.yaml` retains `model_revision: null` for local/debug workflows. Formal evaluation uses the immutable 1.5B revision, CUDA, FP16, the same real-Piston definition, and an explicit prepared-dataset override so A/B/C/D share one formal problem set. The original one-process `evaluate` command remains supported for local/debug use and historical formal runs. For the current cross-machine workflow, the 1660 Ti control plane prepares the SHA-bound portable operator handoff, the 4090 performs only model-loading/generation work, and the frozen generation bundle is then transferred back for verification/aggregation on the 1660 Ti so the paid GPU does not idle on Piston sandbox work.
+
+On the 4090, the tracked operator script runs `generate-eval` to load the frozen Base/SFT/GRPO source and persist all 400 deterministic completions without constructing or contacting Piston:
 
 ```bash
 export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/open-r1-code-verifier-outputs
 export CODE_VERIFIER_DATA_ROOT=/absolute/persistent/open-r1-code-verifier-data-4090
-.venv/bin/code-verifier evaluate \
+.venv/bin/code-verifier generate-eval \
   --config configs/eval/base.yaml \
   --dataset-dir "$CODE_VERIFIER_DATA_ROOT/prepared" \
-  --model-id Qwen/Qwen2.5-Coder-1.5B-Instruct \
-  --run-name A-base-formal-seed42 \
+  --sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/B-sft-formal-seed42" \
+  --run-name B-sft-formal-seed42 \
   --seed 42
 ```
 
-When `--dataset-dir` is supplied, the CLI prints the previous and effective dataset paths on stderr before model/Piston/evaluation setup. The resolved config, dataset hash, run identity, and exact-prefix resume checks then use that effective path normally; omitting the option preserves the YAML value. The operator script additionally fixes the machine roots, validates GPU/Piston/model/data/storage/Git identity, takes an exclusive lock, and atomically records terminal status before `execution-router resume` accepts the persistent artifacts.
+The completed `generation/<run-name>/` bundle stores only the irrecoverable model outputs under `samples/generations.jsonl`; its non-sample metadata is payload-free. A path-independent contract hash binds model/revision/checkpoint, seed, split, decoding, ordered dataset content, and the exact Piston YAML SHA, while file hashes bind the transferred generation rows and environment. Generation resume is exact-prefix and never regenerates a durable row.
+
+Transfer that completed bundle together with the exact repository/dependency identity and formal prepared dataset to the Piston machine. `verify-eval` needs no model weights: it revalidates the bundle/content hashes, runs the unchanged visible → train-hidden → eval-hidden verifier through local Piston with bounded concurrency, preserves canonical problem order, and writes the existing `evaluation/<run-name>/` per-problem schema:
+
+```bash
+.venv/bin/code-verifier verify-eval \
+  --config configs/eval/base.yaml \
+  --dataset-dir /absolute/local/formal-data/prepared \
+  --generation-run-dir /absolute/local/generation/B-sft-formal-seed42 \
+  --run-name B-sft-formal-seed42 \
+  --seed 42 \
+  --workers 4 \
+  --output-dir /absolute/local/verified-outputs
+```
+
+After verification reaches the full split, aggregate on the same CPU/Piston machine (or any machine that can read the completed evaluation directory); this stage performs no generation and no Piston work:
+
+```bash
+.venv/bin/code-verifier aggregate-eval \
+  --run-dir /absolute/local/verified-outputs/evaluation/B-sft-formal-seed42 \
+  --seed 42
+```
+
+The generation and verification machines may use different absolute dataset/Piston paths; equality is content/semantic identity rather than path equality. Verification exact-prefix resume preserves already written result rows, and the final evaluation rows use the verifier machine's resolved config hash while retaining hashes/timestamps/GPU-hours of the originating generation bundle. `aggregate-eval` then writes the normal `summary.json` and `main_results.csv`. On the validation track, routed executors still place long generation work in SHA-bound operator-terminal scripts rather than starting it from the agent session.
 
 Each run is stored under `outputs/evaluation/<run-name>/`:
 
@@ -449,35 +474,55 @@ The evaluation path is read-only with respect to training: it does not modify th
 
 WP6-a normalizes every accepted SFT target to exactly one closed Python fenced block, parses the expected top-level function, verifies it only against the artifact's visible tests through `verify_completion()` and the configured `CodeExecutor`, and rejects failed, truncated, duplicate, repetitive, or over-length trajectories. After validation, the TRL dataset contains only conversational `prompt` and `completion` columns; tests, function names, and metadata are dropped before trainer construction.
 
-On the 24GB training machine, prepare the WP1 data, start the loopback Piston service, install the training extra, and use a **persistent artifact root outside the stage worktree**. Routed validation automatically uses the primary checkout's `outputs/`; for a separate disk or mount, set an absolute override:
+Formal SFT validation is split into two machine roles. On the GTX 1660 Ti/local Piston host, install the training-capable dependencies but do **not** start optimizer training. Run `prevalidate-sft` once against the exact formal train/validation files and exact frozen tokenizer revision. The command executes only visible tests through local Piston, checks the exact chat-template token count, prints bounded progress, and writes a new immutable payload-minimal manifest:
 
 ```bash
-export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/path/open-r1-code-verifier-outputs
-make install-train
-.venv/bin/code-verifier train-sft \
-  --config configs/sft/debug.yaml \
-  --seed 42 \
-  --log-level INFO
+export CODE_VERIFIER_DATA_ROOT=/absolute/local/formal-data
+export HF_HOME=/absolute/local/huggingface
+.venv/bin/code-verifier prevalidate-sft \
+  --config configs/sft/main.yaml \
+  --dataset-dir "$CODE_VERIFIER_DATA_ROOT/prepared" \
+  --output-manifest /absolute/persistent/sft-prevalidation/manifest.json \
+  --workers 4 \
+  --progress-every 25
 ```
 
-When `CODE_VERIFIER_ARTIFACT_ROOT` is set, the default SFT output becomes `$CODE_VERIFIER_ARTIFACT_ROOT/sft`; the default evaluation output becomes `$CODE_VERIFIER_ARTIFACT_ROOT`. An explicit `--output-dir` still overrides the CLI default, but validation workflow rules forbid pointing it back inside `.worktrees/...`.
+The manifest binds the train/validation file SHA256 values, ordered per-record hashes/problem ids, token counts, exact model/revision/max-sequence contract, Piston config/executor/runtime identity, and validator environment. It stores no prompts, completions, code, tests, function names, or sample metadata. The output path must not already exist. Sync this completed manifest byte-for-byte to the 4090 together with the exact formal data if that data is not already present there.
+
+On the 24GB training machine, install the training extra and use the validation-machine record's **persistent artifact root outside the stage worktree**. `train-sft` now requires `--prevalidation-manifest`, strictly rehashes the current formal data and every ordered record, checks the model/token/Piston definition bound by the manifest, and then proceeds without constructing or contacting Piston. Formal validation also uses its persistent formal-data and Hugging Face cache roots; the routed executor supplies these exact paths rather than falling back to repository-local outputs.
+
+For engineering smoke, `configs/sft/validation-smoke.yaml` uses the same frozen 1.5B model revision, BF16, LoRA settings, learning rate, and `max_seq_length=1536` as formal SFT, but runs only two optimizer steps with per-step logging/checkpointing and no validation set. It is runtime/telemetry evidence only, never a B checkpoint or research metric.
+
+Formal B training is prepared by the routed executor and run from its immutable operator-terminal script. The underlying command has this shape:
+
+```bash
+export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/open-r1-code-verifier-outputs
+export CODE_VERIFIER_DATA_ROOT=/absolute/persistent/open-r1-code-verifier-data-4090
+export HF_HOME=/absolute/persistent/huggingface
+.venv/bin/code-verifier train-sft \
+  --config configs/sft/main.yaml \
+  --dataset-dir "$CODE_VERIFIER_DATA_ROOT/prepared" \
+  --prevalidation-manifest /absolute/persistent/sft-prevalidation/manifest.json \
+  --run-name B-sft-formal-seed42 \
+  --seed 42
+```
+
+`--dataset-dir` binds SFT train data to `<prepared>/training/sft.jsonl`; when evaluation is enabled it also binds the independent `<prepared>/training/sft_validation.jsonl`. `--prevalidation-manifest` is mandatory and its SHA/provenance becomes part of run/resume identity. `--run-name` replaces the YAML run id and becomes part of the resolved config/run identity. Overrides are printed on stderr without printing sample payloads. When `CODE_VERIFIER_ARTIFACT_ROOT` is set, the default SFT output becomes `$CODE_VERIFIER_ARTIFACT_ROOT/sft`; an explicit `--output-dir` still overrides the CLI default, but validation workflow rules forbid pointing formal evidence back inside `.worktrees/...`.
 
 Resume is explicit:
 
 ```bash
 .venv/bin/code-verifier train-sft \
   --config configs/sft/debug.yaml \
+  --prevalidation-manifest /absolute/persistent/sft-prevalidation/debug-manifest.json \
   --seed 42 \
   --resume-from-checkpoint "$CODE_VERIFIER_ARTIFACT_ROOT/sft/debug/checkpoints/checkpoint-1"
 ```
 
 Resume accepts only a concrete `checkpoint-*` directory inside the already-existing run. The existing run's
-model, effective config/seed, train and validation datasets, repository/Open-R1 commits, dependency lock, and
-recorded cost must match; external or cross-run checkpoints are rejected. GPU-hours accumulate across attempts.
-If `--seed` is omitted, `train-sft` uses the YAML seed. An explicit different CLI seed is printed as an override
-and becomes the resolved run identity.
+model, effective config/seed, train and validation datasets, prevalidation manifest SHA/provenance, repository/Open-R1 commits, dependency lock, and recorded cost must match; external or cross-run checkpoints are rejected. GPU-hours accumulate across payload-free attempt records; each attempt stores start/end/status, resume source, and attempt GPU-hours. `gpu_hours_semantics` defines SFT cost as attempt wall time multiplied by the single GPU used, covering only the in-process manifest/data checks, model loading, training, and saving; the off-GPU Piston prevalidation cost is explicitly excluded. If `--seed` is omitted, `train-sft` uses the YAML seed. An explicit different CLI seed is printed as an override and becomes the resolved run identity.
 
-Each run uses `<artifact-root>/sft/<run-name>/` (default local path `outputs/sft/<run-name>/` when no artifact root is supplied) with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. `configs/sft/debug.yaml` is a short 0.5B/fp16 path with evaluation disabled. `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration and evaluates every 100 steps against the independent visible-only `training/sft_validation.jsonl` artifact. Both enforce a non-lowerable project minimum of 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
+Each run uses `<artifact-root>/sft/<run-name>/` (default local path `outputs/sft/<run-name>/` when no artifact root is supplied) with `resolved_config.yaml`, `environment.json`, `run.json`, `metrics.jsonl`, bounded stdout/stderr logs, and `checkpoints/`. These metadata artifacts never store prompts, completions, code, tests, function names, or sample metadata. Trainer history preserves every finite numeric scalar, while the final summary also stores the Trainer's finite numeric result metrics plus project-owned `global_step`, train/eval counts, peak CUDA allocated/reserved bytes, GPU count, attempt GPU-hours, and cumulative GPU-hours. Formal config disables NaN/Inf filtering, retains all numeric `checkpoint-*` directories (`save_total_limit=None`, `save_only_model=False`), and logs every optimizer step; non-finite numeric telemetry fails closed. `configs/sft/debug.yaml` remains the short 0.5B/fp16 development path. `configs/sft/main.yaml` is the frozen 1.5B/bf16 LoRA configuration and evaluates every 100 steps against the independent visible-only `training/sft_validation.jsonl` artifact. All SFT configs enforce a non-lowerable project minimum of 20 GiB CUDA memory, so the GTX 1660 Ti fails closed before model loading.
 
 WP6-a does not claim a real SFT checkpoint or B-group result. The final SFT validation still requires a 24GB GPU with at least 50 validated SFT examples and must complete the real 1–2 step smoke, finite-loss check, checkpoint reload, unified deterministic pass@1 evaluation, and cost recording; that validation does not block later dependency-ready code development.
 
@@ -485,19 +530,11 @@ WP6-a does not claim a real SFT checkpoint or B-group result. The final SFT vali
 
 `evaluate` accepts exactly one explicit model source. `--model-id` keeps the Base path. `--sft-run-dir` loads only a strict SFT artifact with `run.json` status `completed`, a complete pinned PEFT adapter under its direct `checkpoints/` directory, and valid non-sensitive run identity. The adapter config's base model must exactly match the completed run. Pinned TRL 0.18.0 / PEFT 0.14.0 normally leaves the adapter config revision unset, so the completed run's non-empty `model_revision` remains the source of truth for loading the base weights; if an adapter config does contain a revision, it must match that run metadata.
 
-After a real SFT run has completed on the 4090 validation machine, evaluate B with the same evaluation config, Piston executor, pass@1 evaluator, and aggregator used for Base:
+After a real SFT run has completed on the 4090 validation machine, B must use the same evaluation config, deterministic generator, Piston definition, three-layer verifier, and aggregator used for Base. `evaluate --sft-run-dir` remains the one-process reference implementation. Formal remote-Piston validation may use the equivalent `generate-eval --sft-run-dir` → transferred bundle → `verify-eval` workflow described above so only model generation occupies the 4090.
 
-```bash
-.venv/bin/code-verifier evaluate \
-  --config configs/eval/base.yaml \
-  --sft-run-dir "$CODE_VERIFIER_ARTIFACT_ROOT/sft/<completed-run>" \
-  --run-name sft-b-main-r1 \
-  --seed 42
-```
+The effective generation identity records the SFT run's base `model_id` and `model_revision` plus the resolved adapter `checkpoints/` path. The cross-machine contract also binds the same seed, problem set/order, decoding settings, and Piston YAML digest. Verification then reuses `evaluate_completion()` and the existing final evaluation schema rather than introducing a second verdict or metric definition. Unit equivalence tests require staged and one-process evaluation records to match exactly for the same completions, and transferred-bundle tests require different local absolute paths to preserve the same semantic identity.
 
-The effective evaluation identity records the SFT run's base `model_id` and `model_revision` plus the resolved adapter `checkpoints/` path. Existing config hashing and exact-prefix resume therefore reject a different SFT run or checkpoint. The SFT path does not introduce a second evaluator, result schema, or metric definition.
-
-On the GTX 1660 Ti, fixture adapters and fake Transformers/PEFT runtimes validate this loader, CLI, resume, artifact, and aggregation contract without optimizer steps or model downloads. Those fixtures are engineering evidence only: they are not real B checkpoints, B metrics, loss, or cost evidence. A formal B result exists only after a user-run 4090 target-GPU SFT gate produces a real completed SFT run and that checkpoint is evaluated through the same formal contract.
+On the GTX 1660 Ti, the verification phase requires no model weights or optimizer work: after syncing the exact code/dependency commit, formal data, and completed generation bundle, it runs the real local Piston service with bounded workers and preserves the same final evaluation schema. Fixture adapters and fake Transformers/PEFT runtimes remain engineering evidence only; a formal B result exists only after the real 4090 SFT/generation gate and real three-layer Piston verification both complete and the final evaluation artifacts are accepted under the shared contract.
 
 ## WP7-a GRPO control plane
 

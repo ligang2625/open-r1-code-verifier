@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from datasets import Dataset  # type: ignore[import-untyped]
 
@@ -27,6 +27,16 @@ class SFTExample:
     problem_id: str
     prompt: str
     completion: str
+
+
+@dataclass(frozen=True)
+class _PreparedSFTRecord:
+    """Validated non-executed SFT record used by both inline and manifest paths."""
+
+    example: SFTExample
+    function_name: str
+    tests: Sequence[Mapping[str, object]]
+    metadata: Mapping[str, object]
 
 
 class SFTDataError(ValueError):
@@ -106,8 +116,8 @@ def normalize_sft_completion(response: str, *, expected_function_name: str) -> s
     return f"```python\n{code}\n```"
 
 
-def validate_sft_record(record: Mapping[str, object], *, executor: CodeExecutor) -> SFTExample:
-    """Validate one training artifact row using only its caller-selected visible tests."""
+def _prepare_sft_record(record: Mapping[str, object]) -> _PreparedSFTRecord:
+    """Validate payload shape/leakage and normalize one SFT completion without execution."""
     try:
         check_training_record(record, kind=TrainingArtifactKind.SFT)
     except LeakageError as error:
@@ -135,13 +145,30 @@ def validate_sft_record(record: Mapping[str, object], *, executor: CodeExecutor)
         raise SFTDataError("sft record requires metadata")
 
     completion = normalize_sft_completion(response, expected_function_name=function_name)
+    return _PreparedSFTRecord(
+        example=SFTExample(problem_id=problem_id, prompt=prompt, completion=completion),
+        function_name=function_name,
+        tests=cast(Sequence[Mapping[str, object]], tests),
+        metadata=metadata,
+    )
+
+
+def validate_sft_record(record: Mapping[str, object], *, executor: CodeExecutor) -> SFTExample:
+    """Validate one training artifact row using only its caller-selected visible tests."""
+    prepared = _prepare_sft_record(record)
     try:
-        result = verify_completion(completion, tests, function_name, metadata, executor)
+        result = verify_completion(
+            prepared.example.completion,
+            prepared.tests,
+            prepared.function_name,
+            prepared.metadata,
+            executor,
+        )
     except VerificationContractError as error:
         raise SFTDataError(str(error)) from None
     if result.status is not ExecutionStatus.PASSED or result.passed_tests != result.total_tests:
         raise SFTDataError(f"SFT trajectory failed visible verification with status {result.status.value}")
-    return SFTExample(problem_id=problem_id, prompt=prompt, completion=completion)
+    return prepared.example
 
 
 def _chat_token_count(tokenizer: Any, example: SFTExample) -> int:
@@ -160,6 +187,35 @@ def _chat_token_count(tokenizer: Any, example: SFTExample) -> int:
     if length <= 0:
         raise SFTDataError("tokenizer produced an empty SFT chat sequence")
     return length
+
+
+def sft_example_token_count(tokenizer: Any, example: SFTExample) -> int:
+    """Return the exact chat-template token count used by the SFT prevalidation contract."""
+    return _chat_token_count(tokenizer, example)
+
+
+def build_prevalidated_sft_dataset(records: Sequence[Mapping[str, object]]) -> Dataset:
+    """Map manifest-validated SFT rows to the payload-minimal TRL dataset.
+
+    No Piston call or token-length recomputation occurs here. Those properties
+    are bound by the consumed prevalidation manifest; lightweight schema,
+    leakage, and completion-normalization checks are repeated before training.
+    """
+    if isinstance(records, str | bytes | bytearray) or not isinstance(records, Sequence) or not records:
+        raise SFTDataError("SFT records must be a non-empty sequence")
+    trainer_rows: list[dict[str, list[dict[str, str]]]] = []
+    for index, record in enumerate(records, start=1):
+        try:
+            prepared = _prepare_sft_record(record)
+        except SFTDataError as error:
+            raise SFTDataError(f"SFT record {index}: {error}") from None
+        trainer_rows.append(
+            {
+                "prompt": [{"role": "user", "content": prepared.example.prompt}],
+                "completion": [{"role": "assistant", "content": prepared.example.completion}],
+            }
+        )
+    return Dataset.from_list(trainer_rows)
 
 
 def build_sft_dataset(

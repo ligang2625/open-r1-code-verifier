@@ -26,7 +26,20 @@ from code_verifier.training.sft import (
     run_sft_training,
     validate_sft_training_hardware,
 )
-from code_verifier.training.sft_data import SFTDataError, SFTExample, build_sft_dataset, validate_sft_record
+from code_verifier.training.sft_data import (
+    SFTDataError,
+    SFTExample,
+    build_prevalidated_sft_dataset,
+    build_sft_dataset,
+    validate_sft_record,
+)
+from code_verifier.training.sft_prevalidation import (
+    SFTPrevalidationError,
+    SFTPrevalidationEvidence,
+    SFTPrevalidationSummary,
+    run_sft_prevalidation,
+    validate_sft_prevalidation_manifest,
+)
 
 __all__ = [
     "GRPOCheckpointIdentity",
@@ -37,11 +50,15 @@ __all__ = [
     "SFTCheckpointIdentity",
     "SFTDataError",
     "SFTExample",
+    "SFTPrevalidationError",
+    "SFTPrevalidationEvidence",
+    "SFTPrevalidationSummary",
     "SFTTrainingConfig",
     "SFTTrainingError",
     "SFTTrainingSummary",
     "build_grpo_dataset",
     "build_grpo_reward_callback",
+    "build_prevalidated_sft_dataset",
     "build_sft_dataset",
     "grpo_evaluation_checkpoint_id",
     "grpo_training_config_from_mapping",
@@ -50,10 +67,12 @@ __all__ = [
     "load_grpo_training_config",
     "load_sft_training_config",
     "run_grpo_training",
+    "run_sft_prevalidation",
     "run_sft_training",
     "validate_grpo_artifact_pair",
     "validate_grpo_config_pair",
     "validate_grpo_training_hardware",
+    "validate_sft_prevalidation_manifest",
     "validate_sft_record",
     "validate_sft_training_hardware",
 ]

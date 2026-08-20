@@ -697,3 +697,30 @@ WP5-a/WP5-b 已完成统一评测的 development 工程合同，WP5-c 现进一�
 - 4090 target script 必须执行 start preflight → target command → mandatory post-run acceptance。`command_rc=0` 单独不构成 PASS；只有 `command_rc=0 && postcheck_rc=0` 才允许 `gate_status=passed`。postcheck 必须按 sealed plan 对 completed run/checkpoint、metrics/schema、artifact identity 做短时 strict validation。
 - 每次 target attempt 必须输出 versioned secret-free `operator-evidence.json`，绑定 plan/operator checkpoint/result code/script SHA、target machine-record SHA、GPU/roots/Piston、command/postcheck rc、formal run identity 与 expected-artifact inventory。evidence byte SHA256 由 1660 Ti resume 计算并写入 completed execution record，reviewer 独立重算；证据不能证明的大 artifact property 才允许短时只读 4090 check。
 - 这些加固提高可重现性与 fail-closed acceptance，不增加正式 GPU job 次数，也不要求 4090 为 planner/reviewer/analysis 保持在线。
+
+---
+
+## WP6-d：Formal SFT B validation 与正式 B 统一评测
+
+- **完成日期**：2026-08-20
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP6-d-review.md` R2）
+- **执行计划**：`ai-work/planner/WP6-d-plan.md`
+- **实施范围**：在 24GB validation track 上完成正式 SFT B optimizer run、completed checkpoint/训练曲线/成本验收、B 组 400 题 deterministic generation、真实 Piston verification 与统一 aggregation，并修复 staged evaluation / operator-terminal provenance 在正式 validation 中暴露的 durability 缺口；未进入 GRPO C/D 或最终 A–D 结论。
+
+### 本阶段完成的功能与正式证据
+
+- 正式 B 使用 `Qwen/Qwen2.5-Coder-1.5B-Instruct`、固定 revision 与 seed 42 完成 2 epochs / global step 314；最终 `train_loss=0.21536325907726198`，成功训练 attempt 的 `gpu_hours=0.5215871774233367`，`checkpoint-100/200/300/314` 均保留完整 Trainer/adapter 状态。一次 operator 中断的早期失败 attempt 作为独立 quarantine evidence 保留，没有覆盖成功 run。
+- 正式 B evaluation 对 Base A 的同一 400 个唯一 test problems 完成 deterministic generation 与真实 Piston verification；exact-prefix readback 为 `resumed=400, verified=0`，strict pairing 证明 dataset/seed/model/revision/Piston/evaluation definition 与 A 基线一致。
+- B 正式指标：Visible Pass@1 `0.3525`、Train-Hidden Pass@1 `0.335`、Eval-Hidden Pass@1 `0.3775`，Eval-Hidden 95% 10,000-resample bootstrap CI `[0.33, 0.425]`，Eval-Hidden average test pass rate `0.4525`，public/eval gap `-0.025`；generation GPU-hours `0.7607846797258146`。
+- R2 独立审查确认 R1-M1 已由真实 C8 operator verification attempt 修复：immutable script/status/log/evidence 与 generation/data/verifier/Open-R1/dependency/Piston identity 完整绑定，fresh 400-row verification 与 canonical B 在除 attempt-local runtime/config-hash 外的语义完全一致。
+- 最终独立验收：`make lint` PASS；`make test` 为 `910 passed, 3 skipped`；`make test-gpu` 为 `3/3 passed`；真实 `make test-piston` 为 `9 passed, 0 skipped`。
+
+### 配置影响与验收结论
+
+- 新增 validation staged evaluation / SFT prevalidation 实现与 `configs/sft/validation-smoke.yaml`，并调整正式 SFT 配置；`pyproject.toml`、`uv.lock` 与 `third_party/open-r1` gitlink 未修改，没有依赖升级或上游 submodule 变更。
+- WP6-d merge commit：`5741ccd8432f530edc9edcca914ebba5339dc800`。
+
+### WP6 聚合状态
+
+WP6-a/WP6-c 已完成 SFT 数据、训练控制面、completed checkpoint identity、PEFT reload 与统一 B 组评测的 development 工程合同；WP6-d 现进一步完成正式 optimizer-based SFT B、checkpoint/成本与 400 题 B numerical validation。归档的旧 WP6-b blocked history 仍仅作为审计历史，不代表被 main 接受的独立 stage。至此 WP6 的 development + formal B validation 范围完成，后续 validation 依赖转入 WP7 的 Public/Hidden GRPO C/D 正式训练与评测。

@@ -35,9 +35,19 @@ from code_verifier.data.prepare import (
 )
 from code_verifier.data.schema import SchemaError
 from code_verifier.environment import write_environment_record
-from code_verifier.evaluation.evaluate import EvaluationError, load_evaluation_config, run_pass1_evaluation
+from code_verifier.evaluation.evaluate import (
+    EvaluationConfig,
+    EvaluationError,
+    load_evaluation_config,
+    run_pass1_evaluation,
+)
 from code_verifier.evaluation.generate import GenerationError, TransformersCompletionGenerator
 from code_verifier.evaluation.metrics import MetricsError, aggregate_evaluation_run
+from code_verifier.evaluation.staged import (
+    load_generation_bundle_source,
+    run_generation_bundle,
+    run_verification_from_generation_bundle,
+)
 from code_verifier.execution import (
     BatchExecutionConfig,
     BatchExecutionError,
@@ -62,9 +72,12 @@ from code_verifier.execution import (
 )
 from code_verifier.parsing import extract_python_code
 from code_verifier.training import (
+    GRPOCheckpointIdentity,
     GRPODataError,
     GRPOTrainingError,
+    SFTCheckpointIdentity,
     SFTDataError,
+    SFTPrevalidationError,
     SFTTrainingError,
     grpo_evaluation_checkpoint_id,
     load_completed_grpo_checkpoint,
@@ -72,6 +85,7 @@ from code_verifier.training import (
     load_grpo_training_config,
     load_sft_training_config,
     run_grpo_training,
+    run_sft_prevalidation,
     run_sft_training,
 )
 
@@ -94,7 +108,7 @@ EXECUTION_ERRORS = (
     UnicodeError,
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
-TRAINING_ERRORS = (SFTDataError, SFTTrainingError, GRPODataError, GRPOTrainingError)
+TRAINING_ERRORS = (SFTDataError, SFTPrevalidationError, SFTTrainingError, GRPODataError, GRPOTrainingError)
 ANALYSIS_ERRORS = (AnalysisError,)
 ARTIFACT_ROOT_ENV = "CODE_VERIFIER_ARTIFACT_ROOT"
 
@@ -339,6 +353,125 @@ def _nonempty_model_id(value: str) -> str:
     return value
 
 
+def _resolve_generation_source(
+    args: argparse.Namespace, config: EvaluationConfig
+) -> tuple[EvaluationConfig, str, SFTCheckpointIdentity | None, GRPOCheckpointIdentity | None]:
+    """Resolve a strict evaluation checkpoint without constructing an executor."""
+    sft_checkpoint: SFTCheckpointIdentity | None = None
+    grpo_checkpoint: GRPOCheckpointIdentity | None = None
+    if args.model_id is not None:
+        model_id = str(args.model_id)
+    elif args.sft_run_dir is not None:
+        sft_checkpoint = load_completed_sft_checkpoint(Path(str(args.sft_run_dir)))
+        model_id = sft_checkpoint.model_id
+        config = replace(
+            config,
+            model_revision=sft_checkpoint.model_revision,
+            checkpoint=str(sft_checkpoint.checkpoint_dir),
+        )
+    else:
+        grpo_checkpoint = load_completed_grpo_checkpoint(Path(str(args.grpo_run_dir)))
+        model_id = grpo_checkpoint.parent_sft.model_id
+        config = replace(
+            config,
+            model_revision=grpo_checkpoint.parent_sft.model_revision,
+            checkpoint=grpo_evaluation_checkpoint_id(grpo_checkpoint),
+        )
+    return config, model_id, sft_checkpoint, grpo_checkpoint
+
+
+def _build_generation_model(
+    config: EvaluationConfig,
+    model_id: str,
+    sft_checkpoint: SFTCheckpointIdentity | None,
+    grpo_checkpoint: GRPOCheckpointIdentity | None,
+) -> TransformersCompletionGenerator:
+    """Load only the frozen generation model for a resolved evaluation source."""
+    if sft_checkpoint is None and grpo_checkpoint is None:
+        return TransformersCompletionGenerator.from_pretrained(
+            model_id,
+            model_revision=config.model_revision,
+            device=config.device,
+            config=config.generation,
+        )
+    if sft_checkpoint is not None:
+        return TransformersCompletionGenerator.from_peft_checkpoint(
+            base_model_id=sft_checkpoint.model_id,
+            base_model_revision=sft_checkpoint.model_revision,
+            adapter_dir=sft_checkpoint.checkpoint_dir,
+            device=config.device,
+            config=config.generation,
+        )
+    assert grpo_checkpoint is not None
+    return TransformersCompletionGenerator.from_grpo_checkpoint(
+        base_model_id=grpo_checkpoint.parent_sft.model_id,
+        base_model_revision=grpo_checkpoint.parent_sft.model_revision,
+        parent_sft_adapter_dir=grpo_checkpoint.parent_sft.checkpoint_dir,
+        grpo_adapter_dir=grpo_checkpoint.checkpoint_dir,
+        device=config.device,
+        config=config.generation,
+    )
+
+
+def _generate_eval(args: argparse.Namespace) -> int:
+    """Generate a durable evaluation bundle without contacting Piston."""
+    config = load_evaluation_config(Path(str(args.config)))
+    if args.dataset_dir is not None:
+        dataset_dir = Path(str(args.dataset_dir))
+        print(f"override: dataset_dir: {config.dataset_dir} -> {dataset_dir}", file=sys.stderr)
+        config = replace(config, dataset_dir=dataset_dir)
+    config, model_id, sft_checkpoint, grpo_checkpoint = _resolve_generation_source(args, config)
+    generator = _build_generation_model(config, model_id, sft_checkpoint, grpo_checkpoint)
+    summary = run_generation_bundle(
+        config=config,
+        model_id=model_id,
+        generator=generator,
+        run_id=str(args.run_name),
+        output_root=Path(str(args.output_dir)),
+        seed=int(args.seed),
+    )
+    print(
+        f"generated {summary.total_problems} evaluation prompts "
+        f"(resumed={summary.completed_before_run}, generated={summary.generated_this_run})"
+    )
+    print(f"generation_run={summary.run_dir}")
+    print(f"generations={summary.records_path}")
+    return 0
+
+
+def _verify_eval(args: argparse.Namespace) -> int:
+    """Verify a completed generation bundle through the configured local Piston service."""
+    config = load_evaluation_config(Path(str(args.config)))
+    if args.dataset_dir is not None:
+        dataset_dir = Path(str(args.dataset_dir))
+        print(f"override: dataset_dir: {config.dataset_dir} -> {dataset_dir}", file=sys.stderr)
+        config = replace(config, dataset_dir=dataset_dir)
+    generation_run_dir = Path(str(args.generation_run_dir))
+    source = load_generation_bundle_source(generation_run_dir)
+    if str(args.run_name) != source.run_id:
+        raise EvaluationError("verify-eval run-name must match the completed generation bundle")
+    if int(args.seed) != source.seed:
+        raise EvaluationError("verify-eval seed must match the completed generation bundle")
+    config = replace(config, model_revision=source.model_revision, checkpoint=source.checkpoint)
+    piston_config = load_piston_executor_config(config.piston_config)
+    PistonExecutor(piston_config).validate_runtime()
+    summary = run_verification_from_generation_bundle(
+        config=config,
+        generation_run_dir=generation_run_dir,
+        executor_factory=lambda: PistonExecutor(piston_config),
+        run_id=source.run_id,
+        output_root=Path(str(args.output_dir)),
+        seed=source.seed,
+        workers=int(args.workers),
+    )
+    print(
+        f"verified {summary.total_problems} generated completions "
+        f"(resumed={summary.completed_before_run}, verified={summary.verified_this_run})"
+    )
+    print(f"results={summary.results_path}")
+    return 0
+
+
 def _evaluate(args: argparse.Namespace) -> int:
     """Run one deterministic, resumable pass@1 evaluation."""
     config = load_evaluation_config(Path(str(args.config)))
@@ -417,22 +550,109 @@ def _evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _train_sft(args: argparse.Namespace) -> int:
-    """Run one strict visible-only LoRA SFT workflow through loopback Piston validation."""
+def _aggregate_eval(args: argparse.Namespace) -> int:
+    """Aggregate one completed verification run without model or Piston work."""
+    summary = aggregate_evaluation_run(Path(str(args.run_dir)), bootstrap_seed=int(args.seed))
+    print(f"aggregated {summary.total_problems} problems")
+    print(f"summary={summary.summary_path}")
+    print(f"main_results={summary.main_results_path}")
+    return 0
+
+
+def _prevalidate_sft(args: argparse.Namespace) -> int:
+    """Run the visible-only SFT data gate on a non-training Piston host."""
     config = load_sft_training_config(Path(str(args.config)))
+    if args.dataset_dir is not None:
+        prepared_dir = Path(str(args.dataset_dir))
+        dataset_path = prepared_dir / "training" / "sft.jsonl"
+        validation_dataset_path = (
+            None if config.eval_strategy == "no" else prepared_dir / "training" / "sft_validation.jsonl"
+        )
+        print(f"override: dataset_path: {config.dataset_path} -> {dataset_path}", file=sys.stderr)
+        if config.eval_strategy != "no":
+            print(
+                f"override: validation_dataset_path: {config.validation_dataset_path} -> {validation_dataset_path}",
+                file=sys.stderr,
+            )
+        config = replace(
+            config,
+            dataset_path=dataset_path,
+            validation_dataset_path=validation_dataset_path,
+        )
+
+    workers = int(args.workers)
+    progress_every = int(args.progress_every)
+
+    def progress(split: str, completed: int, total: int, elapsed_seconds: float) -> None:
+        rate = completed / elapsed_seconds if elapsed_seconds > 0 else 0.0
+        print(
+            f"prevalidation-progress split={split} completed={completed}/{total} "
+            f"elapsed_seconds={elapsed_seconds:.1f} rate={rate:.2f}_records_per_second",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    print(
+        f"prevalidation-start workers={workers} train={config.dataset_path} "
+        f"validation={config.validation_dataset_path}",
+        file=sys.stderr,
+        flush=True,
+    )
+    summary = run_sft_prevalidation(
+        dataset_path=config.dataset_path,
+        validation_dataset_path=config.validation_dataset_path,
+        model_id=config.model_id,
+        model_revision=config.model_revision,
+        max_seq_length=config.max_seq_length,
+        piston_config_path=config.piston_config,
+        output_manifest=Path(str(args.output_manifest)),
+        workers=workers,
+        progress_every=progress_every,
+        progress_callback=progress,
+    )
+    print(
+        f"prevalidated {summary.total_samples} samples "
+        f"(train={summary.train_samples}, validation={summary.validation_samples}, "
+        f"max_tokens={summary.max_token_count}, elapsed_seconds={summary.elapsed_seconds:.1f})"
+    )
+    print(f"manifest={summary.manifest_path}")
+    return 0
+
+
+def _train_sft(args: argparse.Namespace) -> int:
+    """Run LoRA SFT only after strict off-GPU prevalidation evidence is supplied."""
+    config = load_sft_training_config(Path(str(args.config)))
+    if args.dataset_dir is not None:
+        prepared_dir = Path(str(args.dataset_dir))
+        dataset_path = prepared_dir / "training" / "sft.jsonl"
+        validation_dataset_path = (
+            None if config.eval_strategy == "no" else prepared_dir / "training" / "sft_validation.jsonl"
+        )
+        print(f"override: dataset_path: {config.dataset_path} -> {dataset_path}", file=sys.stderr)
+        if config.eval_strategy != "no":
+            print(
+                f"override: validation_dataset_path: {config.validation_dataset_path} -> {validation_dataset_path}",
+                file=sys.stderr,
+            )
+        config = replace(
+            config,
+            dataset_path=dataset_path,
+            validation_dataset_path=validation_dataset_path,
+        )
+    if args.run_name is not None:
+        run_name = str(args.run_name)
+        print(f"override: run_name: {config.run_name} -> {run_name}", file=sys.stderr)
+        config = replace(config, run_name=run_name)
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = config.seed if cli_seed is None else cli_seed
     if cli_seed is not None and cli_seed != config.seed:
         print(f"override: seed: {config.seed} -> {cli_seed}", file=sys.stderr)
-    piston_config = load_piston_executor_config(config.piston_config)
-    executor = PistonExecutor(piston_config)
-    executor.validate_runtime()
     resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
     summary = run_sft_training(
         config,
         output_root=Path(str(args.output_dir)),
         seed=effective_seed,
-        executor=executor,
+        prevalidation_manifest=Path(str(args.prevalidation_manifest)),
         resume_from_checkpoint=resume,
     )
     print(f"trained {summary.train_samples} samples (train_loss={summary.train_loss:g})")
@@ -599,9 +819,132 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate_parser.set_defaults(handler=_evaluate)
 
+    generate_eval_parser = subparsers.add_parser(
+        "generate-eval",
+        help="generate a resumable evaluation bundle without contacting Piston",
+    )
+    generation_source = generate_eval_parser.add_mutually_exclusive_group(required=True)
+    generation_source.add_argument("--model-id", type=_nonempty_model_id, help="base model or checkpoint id")
+    generation_source.add_argument(
+        "--sft-run-dir",
+        type=Path,
+        help="completed SFT run containing the PEFT checkpoint to generate from",
+    )
+    generation_source.add_argument(
+        "--grpo-run-dir",
+        type=Path,
+        help="completed GRPO run containing the C/D PEFT checkpoint to generate from",
+    )
+    generate_eval_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override",
+    )
+    generate_eval_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="safe evaluation run id")
+    _add_common_arguments(
+        generate_eval_parser,
+        config_required=True,
+        output_dir_default=_default_artifact_output(),
+        output_dir_required=False,
+    )
+    generate_eval_parser.set_defaults(handler=_generate_eval)
+
+    verify_eval_parser = subparsers.add_parser(
+        "verify-eval",
+        help="verify a completed generation bundle through local Piston",
+    )
+    verify_eval_parser.add_argument(
+        "--generation-run-dir",
+        type=Path,
+        required=True,
+        help="completed generation/<run> bundle directory",
+    )
+    verify_eval_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override",
+    )
+    verify_eval_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="same run id as the bundle")
+    verify_eval_parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="bounded concurrent local-Piston verification workers (default: 4, maximum: 32)",
+    )
+    _add_common_arguments(
+        verify_eval_parser,
+        config_required=True,
+        output_dir_default=_default_artifact_output(),
+        output_dir_required=False,
+    )
+    verify_eval_parser.set_defaults(handler=_verify_eval)
+
+    aggregate_eval_parser = subparsers.add_parser(
+        "aggregate-eval",
+        help="aggregate one completed evaluation run without generation or Piston work",
+    )
+    aggregate_eval_parser.add_argument(
+        "--run-dir", type=Path, required=True, help="completed evaluation run directory"
+    )
+    aggregate_eval_parser.add_argument("--seed", type=int, default=42, help="bootstrap seed (default: 42)")
+    aggregate_eval_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
+    aggregate_eval_parser.set_defaults(handler=_aggregate_eval)
+
+    prevalidate_sft_parser = subparsers.add_parser(
+        "prevalidate-sft",
+        help="validate SFT trajectories through local Piston and write a durable manifest",
+    )
+    prevalidate_sft_parser.add_argument("--config", type=Path, required=True, help="SFT YAML config path")
+    prevalidate_sft_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override for SFT train/validation artifacts",
+    )
+    prevalidate_sft_parser.add_argument(
+        "--output-manifest",
+        type=Path,
+        required=True,
+        help="new immutable prevalidation manifest path",
+    )
+    prevalidate_sft_parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="bounded concurrent Piston workers (default: 4, maximum: 32)",
+    )
+    prevalidate_sft_parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=25,
+        help="print progress after this many completed records (default: 25)",
+    )
+    prevalidate_sft_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
+    prevalidate_sft_parser.set_defaults(handler=_prevalidate_sft)
+
     train_sft_parser = subparsers.add_parser(
         "train-sft",
         help="run visible-validated LoRA supervised fine-tuning",
+    )
+    train_sft_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override for SFT train/validation artifacts",
+    )
+    train_sft_parser.add_argument(
+        "--run-name",
+        type=_safe_run_name,
+        default=None,
+        help="optional safe SFT run id override",
+    )
+    train_sft_parser.add_argument(
+        "--prevalidation-manifest",
+        type=Path,
+        required=True,
+        help="completed off-GPU SFT prevalidation manifest",
     )
     train_sft_parser.add_argument(
         "--resume-from-checkpoint",

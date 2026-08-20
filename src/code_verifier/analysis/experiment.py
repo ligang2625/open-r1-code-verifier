@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,8 +180,14 @@ def _load_evaluation_run(
         raise AnalysisError(f"{method} resolved evaluation config is invalid")
     if not records:
         raise AnalysisError(f"{method} evaluation must contain records")
+    piston_config_sha256 = metadata.get("piston_config_sha256")
+    if not isinstance(piston_config_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", piston_config_sha256) is None:
+        raise AnalysisError(f"{method} evaluation has invalid piston_config_sha256 provenance")
     try:
-        resolved_config_hash = resolved_evaluation_config_hash(resolved_value)
+        resolved_config_hash = resolved_evaluation_config_hash(
+            resolved_value,
+            piston_config_sha256=piston_config_sha256,
+        )
     except EvaluationError:
         raise AnalysisError(f"{method} resolved evaluation config identity is invalid") from None
     if resolved_config_hash != metadata.get("config_hash"):
@@ -212,14 +218,11 @@ def _load_evaluation_run(
     return records, metadata, cast(Mapping[str, object], resolved_value)
 
 
-def _piston_definition_hash(resolved: Mapping[str, object], *, method: str) -> str:
-    value = resolved.get("piston_config")
-    if not isinstance(value, str) or not value.strip():
-        raise AnalysisError(f"{method} resolved evaluation config has invalid piston_config")
-    try:
-        return hashlib.sha256(Path(value).read_bytes()).hexdigest()
-    except OSError:
-        raise AnalysisError(f"{method} Piston definition is unreadable") from None
+def _piston_definition_hash(metadata: Mapping[str, object], *, method: str) -> str:
+    value = metadata.get("piston_config_sha256")
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise AnalysisError(f"{method} evaluation has invalid piston_config_sha256 provenance")
+    return value
 
 
 def _validate_shared_evaluation_contract(
@@ -237,7 +240,7 @@ def _validate_shared_evaluation_contract(
     for field in ("split", "device", "generation"):
         if len({json.dumps(resolved[method].get(field), sort_keys=True, allow_nan=False) for method in _METHODS}) != 1:
             raise AnalysisError(f"A-D evaluations must use the same {field}")
-    if len({_piston_definition_hash(resolved[method], method=method) for method in _METHODS}) != 1:
+    if len({_piston_definition_hash(metadata[method], method=method) for method in _METHODS}) != 1:
         raise AnalysisError("A-D evaluations must use the same Piston definition")
 
 
