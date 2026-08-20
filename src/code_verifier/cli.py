@@ -665,6 +665,23 @@ def _train_grpo(args: argparse.Namespace) -> int:
     """Validate one complete C/D definition pair, then run the selected mode."""
     public_config = load_grpo_training_config(Path(str(args.public_config)))
     hidden_config = load_grpo_training_config(Path(str(args.hidden_config)))
+    if args.dataset_dir is not None:
+        prepared_dir = Path(str(args.dataset_dir))
+        public_dataset_path = prepared_dir / "training" / "public_grpo.jsonl"
+        hidden_dataset_path = prepared_dir / "training" / "hidden_grpo.jsonl"
+        print(f"override: public dataset_path: {public_config.dataset_path} -> {public_dataset_path}", file=sys.stderr)
+        print(f"override: hidden dataset_path: {hidden_config.dataset_path} -> {hidden_dataset_path}", file=sys.stderr)
+        public_config = replace(public_config, dataset_path=public_dataset_path)
+        hidden_config = replace(hidden_config, dataset_path=hidden_dataset_path)
+    if (args.public_run_name is None) != (args.hidden_run_name is None):
+        raise GRPOTrainingError("--public-run-name and --hidden-run-name must be provided together")
+    if args.public_run_name is not None:
+        public_run_name = str(args.public_run_name)
+        hidden_run_name = str(args.hidden_run_name)
+        print(f"override: public run_name: {public_config.run_name} -> {public_run_name}", file=sys.stderr)
+        print(f"override: hidden run_name: {hidden_config.run_name} -> {hidden_run_name}", file=sys.stderr)
+        public_config = replace(public_config, run_name=public_run_name)
+        hidden_config = replace(hidden_config, run_name=hidden_run_name)
     selected_config = public_config if args.reward_mode == "public" else hidden_config
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = selected_config.seed if cli_seed is None else cli_seed
@@ -976,6 +993,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Hidden GRPO YAML config path",
+    )
+    train_grpo_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override for the complete Public/Hidden pair",
+    )
+    train_grpo_parser.add_argument(
+        "--public-run-name",
+        type=_safe_run_name,
+        default=None,
+        help="optional safe Public GRPO run id override; requires --hidden-run-name",
+    )
+    train_grpo_parser.add_argument(
+        "--hidden-run-name",
+        type=_safe_run_name,
+        default=None,
+        help="optional safe Hidden GRPO run id override; requires --public-run-name",
     )
     train_grpo_parser.add_argument(
         "--public-sft-run-dir",

@@ -1425,6 +1425,9 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
     for option in (
         "--public-config",
         "--hidden-config",
+        "--dataset-dir",
+        "--public-run-name",
+        "--hidden-run-name",
         "--public-sft-run-dir",
         "--hidden-sft-run-dir",
         "--reward-mode",
@@ -1462,6 +1465,111 @@ def test_train_grpo_defaults_to_persistent_artifact_root(
     )
     assert args.output_dir == tmp_path / "persistent" / "grpo"
     assert not hasattr(args, "model_id")
+
+
+def test_train_grpo_overrides_complete_dataset_and_run_name_pair_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    public = cli_module.load_grpo_training_config(Path("configs/grpo/public.yaml"))
+    hidden = cli_module.load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
+    configs = {Path("public.yaml"): public, Path("hidden.yaml"): hidden}
+    seen: dict[str, object] = {}
+
+    class FakePistonExecutor:
+        def __init__(self, config: object) -> None:
+            assert config == "PISTON_CONFIG"
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    def fake_run(public_config: object, hidden_config: object, **kwargs: object) -> SimpleNamespace:
+        seen["public_config"] = public_config
+        seen["hidden_config"] = hidden_config
+        seen.update(kwargs)
+        return SimpleNamespace(
+            train_samples=2,
+            train_loss=0.125,
+            reward_mode="public",
+            run_dir=Path("outputs/grpo/public"),
+            checkpoint_dir=Path("outputs/grpo/public/checkpoints"),
+        )
+
+    monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: configs[path])
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: "PISTON_CONFIG")
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "run_grpo_training", fake_run)
+    dataset_dir = tmp_path / "prepared"
+
+    assert (
+        main(
+            [
+                "train-grpo",
+                "--public-config",
+                "public.yaml",
+                "--hidden-config",
+                "hidden.yaml",
+                "--dataset-dir",
+                str(dataset_dir),
+                "--public-run-name",
+                "C-public-formal",
+                "--hidden-run-name",
+                "D-hidden-formal",
+                "--public-sft-run-dir",
+                "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
+            ]
+        )
+        == 0
+    )
+    public_seen = cast(Any, seen["public_config"])
+    hidden_seen = cast(Any, seen["hidden_config"])
+    assert public_seen.dataset_path == dataset_dir / "training" / "public_grpo.jsonl"
+    assert hidden_seen.dataset_path == dataset_dir / "training" / "hidden_grpo.jsonl"
+    assert public_seen.run_name == "C-public-formal"
+    assert hidden_seen.run_name == "D-hidden-formal"
+    output = capsys.readouterr()
+    assert "override: public dataset_path:" in output.err
+    assert "override: hidden dataset_path:" in output.err
+    assert "override: public run_name:" in output.err
+    assert "override: hidden run_name:" in output.err
+
+
+def test_train_grpo_rejects_single_sided_run_name_override(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    public = cli_module.load_grpo_training_config(Path("configs/grpo/public.yaml"))
+    hidden = cli_module.load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
+    configs = {Path("public.yaml"): public, Path("hidden.yaml"): hidden}
+    monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: configs[path])
+
+    assert (
+        main(
+            [
+                "train-grpo",
+                "--public-config",
+                "public.yaml",
+                "--hidden-config",
+                "hidden.yaml",
+                "--public-run-name",
+                "C-only",
+                "--public-sft-run-dir",
+                "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
+            ]
+        )
+        == 2
+    )
+    assert "must be provided together" in capsys.readouterr().err
 
 
 def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
