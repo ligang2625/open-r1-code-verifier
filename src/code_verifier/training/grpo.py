@@ -34,7 +34,12 @@ from code_verifier.execution.base import CodeExecutor
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.open_r1_adapter import import_open_r1_module
-from code_verifier.training.sft import SFTCheckpointIdentity, SFTTrainingError, load_completed_sft_checkpoint
+from code_verifier.training.sft import (
+    SFTCheckpointIdentity,
+    SFTTrainingError,
+    _without_unconfigured_deepspeed_backend,
+    load_completed_sft_checkpoint,
+)
 
 
 @dataclass(frozen=True)
@@ -1310,50 +1315,51 @@ def run_grpo_training(
         tokenizer = runtime.get_tokenizer(model_args, training_args)
         _reset_cuda_peak_memory()
         peak_reset = True
-        model = _load_merged_sft_policy(
-            parent_sft=parent_sft,
-            model_args=model_args,
-            training_args=training_args,
-            runtime=runtime,
-        )
-        reward_callback = build_grpo_reward_callback(
-            reward_mode=config.reward_mode,
-            executor=executor,
-            rollout_log_path=run_dir / "rollouts.jsonl",
-            reward_log_path=run_dir / "rewards.jsonl",
-            group_metrics_log_path=run_dir / "group_metrics.jsonl",
-            num_generations=config.num_generations,
-            max_completion_length=config.max_completion_length,
-        )
-        trainer = runtime.trainer_type(
-            model=model,
-            reward_funcs=reward_callback,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=None,
-            processing_class=tokenizer,
-            peft_config=runtime.get_peft_config(model_args),
-        )
-        train_result = trainer.train(resume_from_checkpoint=resume_path)
-        raw_train_metrics = getattr(train_result, "metrics", {})
-        if isinstance(raw_train_metrics, Mapping):
-            raw_train_loss = raw_train_metrics.get("train_loss")
-            if (
-                isinstance(raw_train_loss, int | float)
-                and not isinstance(raw_train_loss, bool)
-                and not math.isfinite(float(raw_train_loss))
-            ):
+        with _without_unconfigured_deepspeed_backend():
+            model = _load_merged_sft_policy(
+                parent_sft=parent_sft,
+                model_args=model_args,
+                training_args=training_args,
+                runtime=runtime,
+            )
+            reward_callback = build_grpo_reward_callback(
+                reward_mode=config.reward_mode,
+                executor=executor,
+                rollout_log_path=run_dir / "rollouts.jsonl",
+                reward_log_path=run_dir / "rewards.jsonl",
+                group_metrics_log_path=run_dir / "group_metrics.jsonl",
+                num_generations=config.num_generations,
+                max_completion_length=config.max_completion_length,
+            )
+            trainer = runtime.trainer_type(
+                model=model,
+                reward_funcs=reward_callback,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=None,
+                processing_class=tokenizer,
+                peft_config=runtime.get_peft_config(model_args),
+            )
+            train_result = trainer.train(resume_from_checkpoint=resume_path)
+            raw_train_metrics = getattr(train_result, "metrics", {})
+            if isinstance(raw_train_metrics, Mapping):
+                raw_train_loss = raw_train_metrics.get("train_loss")
+                if (
+                    isinstance(raw_train_loss, int | float)
+                    and not isinstance(raw_train_loss, bool)
+                    and not math.isfinite(float(raw_train_loss))
+                ):
+                    raise GRPOTrainingError("GRPO training must produce a finite train_loss")
+            train_metrics = _finite_numeric_mapping(
+                raw_train_metrics,
+                context="GRPO train result metrics",
+            )
+            raw_loss = train_metrics.get("train_loss")
+            if raw_loss is None:
                 raise GRPOTrainingError("GRPO training must produce a finite train_loss")
-        train_metrics = _finite_numeric_mapping(
-            raw_train_metrics,
-            context="GRPO train result metrics",
-        )
-        raw_loss = train_metrics.get("train_loss")
-        if raw_loss is None:
-            raise GRPOTrainingError("GRPO training must produce a finite train_loss")
-        train_loss = raw_loss
-        trainer.save_state()
-        trainer.save_model(str(checkpoint_dir))
+            train_loss = raw_loss
+            trainer.save_state()
+            trainer.save_model(str(checkpoint_dir))
         trainer_state = getattr(trainer, "state", None)
         raw_global_step = getattr(trainer_state, "global_step", None)
         if isinstance(raw_global_step, bool) or not isinstance(raw_global_step, int) or raw_global_step < 0:

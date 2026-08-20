@@ -1067,6 +1067,61 @@ def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
             assert forbidden not in contents
 
 
+def test_grpo_run_keeps_unused_deepspeed_probe_disabled_through_trainer_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    active = {"value": False}
+
+    class Guard:
+        def __enter__(self) -> None:
+            assert active["value"] is False
+            active["value"] = True
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            active["value"] = False
+
+    class GuardAwareTrainer(_FakeTrainer):
+        def __init__(self, **kwargs: object) -> None:
+            assert active["value"] is True
+            super().__init__(**kwargs)
+
+        def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
+            assert active["value"] is True
+            return super().train(resume_from_checkpoint=resume_from_checkpoint)
+
+        @staticmethod
+        def save_state() -> None:
+            assert active["value"] is True
+
+        @staticmethod
+        def save_model(path: str) -> None:
+            assert active["value"] is True
+            assert Path(path).name == "checkpoints"
+
+    monkeypatch.setattr(grpo_module, "_without_unconfigured_deepspeed_backend", Guard)
+    monkeypatch.setattr(
+        grpo_module,
+        "_load_grpo_runtime",
+        lambda: replace(_fake_grpo_runtime(), trainer_type=GuardAwareTrainer),
+    )
+
+    summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+
+    assert summary.train_loss == 0.25
+    assert active["value"] is False
+
+
 def test_grpo_run_failure_is_sanitized_and_requires_finite_loss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
