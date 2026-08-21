@@ -381,3 +381,71 @@ execution_checkpoint:
 - If the target C3 directory unexpectedly contains a complete cadence-valid Trainer checkpoint, C5 refuses quarantine and stops with a strict same-run resume requirement. Incomplete/unknown checkpoint state also fails closed; it is never converted into a fresh run by deletion or overwrite.
 - The C5 constructor probe is real pinned TRL/Transformers code, CPU-only and constructor-only. It exercises the gradient-checkpointing initialization path under `_without_unconfigured_deepspeed_backend()` and deliberately never calls `trainer.train()`.
 - No RTX4090 target command was started or monitored while preparing C5. C5 is the final executable smoke checkpoint; C6 was not created.
+
+
+### C6 — accepted C5 smoke; paired 100-step pilot operator handoff
+
+C5 target evidence has now been received byte-for-byte on the GTX 1660 Ti control plane and accepted before any pilot command is allowed. The accepted evidence SHA256 is `f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e`; its postcheck SHA256 is `94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a`. The accepted smoke pair completed Public/Hidden at global step 20, retained complete checkpoint-10/checkpoint-20 state on the target, and reported a maximum complete Trainer checkpoint footprint of 42184437 bytes / 15 inodes. No pilot or formal command was executed during this resume.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C6
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C6/run.sh
+  operator_script_sha256: 8d37f8c775fe5122988106b5b098f074b3d379ece4776cd47a9370e5b9ebb96e
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C6/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C6/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C6/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C6/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C6
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  pilot_pair_sha256: a82c7521551d8a4520a0126783c3c4c4dd3f36f57a5b3dd43484e59dda7a34b5
+  smoke_max_complete_trainer_checkpoint_bytes: 42184437
+  smoke_max_complete_trainer_checkpoint_inodes: 15
+  target_required_free_bytes: 32212254720
+  target_required_free_inodes: 100000
+  expected_artifacts:
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/checkpoints/adapter_model.safetensors"
+  completed_scope:
+    - "C5 operator evidence was accepted from /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-smoke/C5 with exact checkpoint/result/script identity, status=0, command_rc=0, postcheck_rc=0 and gate_status=passed"
+    - "received C5 machine pointer/readiness/Piston records match target evidence SHA256; all 19 expected inventory entries and C2/C3 quarantine manifests/inventories match byte-for-byte, including direct 4090/1660 SHA equality for both smoke rollouts and final LoRA adapters"
+    - "control-plane pilot prevalidation reloaded formal Public/Hidden 2500+2500 artifacts and the frozen formal B, validated pair fairness/cadence max_steps=100 save_steps=50, and certified pilot paired_definition_sha256 a82c7521551d8a4520a0126783c3c4c4dd3f36f57a5b3dd43484e59dda7a34b5"
+    - "C6 target preflight binds its parent directly to accepted C5, requires report+new-script-only checkpoint scope and byte-for-byte append-only report history, preserves .ai-bridge as untracked machine state, and requires the exact accepted target machine/readiness/Piston hashes"
+    - "C6 revalidates exact RTX4090/VRAM/CC8.9/BF16, Python/CUDA/package lock/Open-R1, offline base-model SHA, formal B adapter SHAs, formal data, pilot pair, Piston tunnel/runtime, and accepted C5 target evidence plus complete smoke checkpoint-10/checkpoint-20 before pilot execution"
+    - "pilot restart is trainer_checkpoint: absent run starts fresh from formal B; incomplete same-C6 run may resume only its latest complete cadence checkpoint; different-checkpoint/unknown/incomplete-without-valid-checkpoint state fails closed without deletion or quarantine"
+    - "pilot postcheck requires completed independent Public/Hidden global_step=100 runs, complete checkpoint-50/checkpoint-100, finite metrics/reward/group/cost data, distinct visible-tests vs train-hidden reward sources, and emits raw spec 12.4 reward/std/KL/loss/completion/parse/execute/timeout/pass/executor-runtime telemetry without inventing numerical stopping thresholds"
+    - "C6 shell syntax PASS; all 13 embedded Python heredocs compile; train-grpo has exactly one command site; formal public/hidden configs and historical C2/C3 recovery logic are absent"
+    - "fresh control-plane regression PASS after C5 acceptance: pinned GRPOTrainer constructor 1/1; make lint; make test 931 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9 with 0 skips"
+    - "C6 run.sh is mode 0755 and frozen SHA256 8d37f8c775fe5122988106b5b098f074b3d379ece4776cd47a9370e5b9ebb96e; no RTX4090 pilot/formal/generation command was started, no formal data/B/dependency mutation occurred, and no push was performed"
+  remaining_scope:
+    - "make the exact C6 checkpoint commit reachable on the RTX 4090 through ordinary Git transport, checkout/detach that exact commit, verify a clean checkout and the recorded C6 run.sh SHA256, then run only the tracked C6 script manually in SSH/tmux"
+    - "C6 target start must pass accepted-C5 provenance, exact target machine/runtime/model/data/B/Piston/storage gates before either Public or Hidden pilot starts; do not manually bypass a failed preflight"
+    - "after C6 exits, sync operator-evidence.json, status, terminal.log, postcheck-summary.json, required small pilot metadata/metrics/rewards/group data and final C/D pilot LoRA adapters byte-for-byte to the C6 control-plane receive directory; numeric Trainer checkpoints remain on the 4090 by default"
+    - "explicitly invoke execution-router resume backend=web stage_id=WP7-c after C6 evidence is received; executor must inspect the raw spec-12.4 telemetry for an explicit stop signal before any grpo-cd-formal operator checkpoint can be generated"
+  status: awaiting_operator
+```
+
+### C6 pilot boundary notes
+
+- C6 is a new gate after accepted C5, not a smoke repair. Historical C5 text saying C6 had not yet been created remains true for the C5 checkpoint and is intentionally not rewritten; this section is append-only continuation after C5 evidence acceptance.
+- Public and Hidden pilot runs remain independent children of the same formal B. Neither consumes the C5 smoke adapter nor the other pilot branch; C5 artifacts are used only as accepted gate evidence and checkpoint-size input for the pilot storage bound.
+- The operator postcheck records the raw spec §12.4 signals available in production artifacts. The project does not currently persist a separate rollout-runtime field, so C6 records `rollout_runtime_seconds_recorded=false` rather than fabricating one; executor resume will interpret only the actually recorded raw evidence and will not invent unsealed numerical thresholds.
+- No RTX4090 command was started or monitored while preparing C6. This execution conversation stops at the portable target-GPU operator boundary.
