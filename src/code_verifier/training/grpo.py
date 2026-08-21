@@ -173,7 +173,7 @@ _GRPO_RUN_LAYOUT = {
     "stderr.log",
     "checkpoints",
 }
-_PAIR_SCHEMA_VERSION = 1
+_PAIR_SCHEMA_VERSION = 2
 _GPU_HOURS_SEMANTICS = (
     "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
     "model load, train, and save"
@@ -1043,6 +1043,23 @@ def _config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _paired_config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
+    """Return a machine-portable config fingerprint for the C/D pair identity."""
+    resolved = _resolved_config_mapping(config, effective_seed=seed)
+    resolved["dataset_path"] = {
+        "sha256": _file_hash(config.dataset_path, description=f"{config.reward_mode} GRPO dataset")
+    }
+    resolved["piston_config"] = {"sha256": _file_hash(config.piston_config, description="Piston config")}
+    encoded = json.dumps(
+        resolved,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _safe_run_dir(output_root: Path, run_name: str) -> Path:
     root = output_root.resolve(strict=False)
     if root == Path(root.anchor) or root == Path.cwd().resolve():
@@ -1067,6 +1084,14 @@ def _parent_identity_mapping(parent_sft: SFTCheckpointIdentity) -> dict[str, obj
     }
 
 
+def _portable_parent_identity_mapping(parent_sft: SFTCheckpointIdentity) -> dict[str, object]:
+    """Return the semantic SFT identity without machine-local artifact paths."""
+    value = _parent_identity_mapping(parent_sft)
+    value.pop("parent_sft_run_path")
+    value.pop("parent_sft_checkpoint_path")
+    return value
+
+
 def _paired_definition(
     public_config: GRPOTrainingConfig,
     hidden_config: GRPOTrainingConfig,
@@ -1077,12 +1102,12 @@ def _paired_definition(
     """Build one payload-free canonical identity for the complete C/D definition pair."""
     components: dict[str, object] = {
         "paired_definition_version": _PAIR_SCHEMA_VERSION,
-        "paired_public_config_hash": _config_hash(public_config, seed=seed),
-        "paired_hidden_config_hash": _config_hash(hidden_config, seed=seed),
+        "paired_public_config_hash": _paired_config_hash(public_config, seed=seed),
+        "paired_hidden_config_hash": _paired_config_hash(hidden_config, seed=seed),
         "paired_public_dataset_hash": _file_hash(public_config.dataset_path, description="Public GRPO dataset"),
         "paired_hidden_dataset_hash": _file_hash(hidden_config.dataset_path, description="Hidden GRPO dataset"),
     }
-    canonical = {**components, "seed": seed, "parent_sft": _parent_identity_mapping(parent_sft)}
+    canonical = {**components, "seed": seed, "parent_sft": _portable_parent_identity_mapping(parent_sft)}
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), components
 

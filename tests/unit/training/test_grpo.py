@@ -36,7 +36,7 @@ from code_verifier.training.grpo import (
     validate_grpo_config_pair,
     validate_grpo_training_hardware,
 )
-from code_verifier.training.sft import SFTCheckpointIdentity
+from code_verifier.training.sft import SFTCheckpointIdentity, load_completed_sft_checkpoint
 
 
 def _config_mapping(tmp_path: Path, *, reward_mode: str = "public") -> dict[str, object]:
@@ -1146,7 +1146,7 @@ def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
     assert run_metadata["parent_sft_run_id"] == "completed-b"
     assert run_metadata["parent_sft_checkpoint_path"] == str((sft_run_dir / "checkpoints").resolve())
     assert re.fullmatch(r"[0-9a-f]{64}", run_metadata["paired_definition_sha256"])
-    assert run_metadata["paired_definition_version"] == 1
+    assert run_metadata["paired_definition_version"] == 2
     assert run_metadata["gpu_count_used"] == 1
     assert run_metadata["global_step"] == 1
     assert run_metadata["peak_cuda_memory_allocated_bytes"] == 123
@@ -1382,6 +1382,37 @@ def test_grpo_public_and_hidden_runs_share_paired_definition_sha256(
     assert public_metadata["paired_hidden_config_hash"] == hidden_metadata["paired_hidden_config_hash"]
     assert public_metadata["paired_public_dataset_hash"] == hidden_metadata["paired_public_dataset_hash"]
     assert public_metadata["paired_hidden_dataset_hash"] == hidden_metadata["paired_hidden_dataset_hash"]
+
+
+def test_grpo_paired_definition_is_portable_across_local_roots(tmp_path: Path) -> None:
+    results: list[tuple[str, dict[str, object], str, str]] = []
+    for root_name in ("control-plane", "target-gpu"):
+        root = tmp_path / root_name
+        root.mkdir()
+        public = grpo_training_config_from_mapping(_config_mapping(root))
+        hidden = grpo_training_config_from_mapping(_config_mapping(root, reward_mode="hidden"))
+        _write_grpo_artifact(public.dataset_path)
+        _write_grpo_artifact(hidden.dataset_path, reward_mode="hidden")
+        public.piston_config.write_text("endpoint: fake\n", encoding="utf-8")
+        sft_run = root / "sft-run"
+        _write_completed_sft_run(sft_run)
+        parent = load_completed_sft_checkpoint(sft_run)
+        pair_sha, components = grpo_module._paired_definition(public, hidden, seed=42, parent_sft=parent)
+        results.append(
+            (
+                pair_sha,
+                components,
+                grpo_module._config_hash(public, seed=42),
+                grpo_module._config_hash(hidden, seed=42),
+            )
+        )
+
+    first, second = results
+    assert first[0] == second[0]
+    assert first[1] == second[1]
+    assert first[1]["paired_definition_version"] == 2
+    assert first[2] != second[2]
+    assert first[3] != second[3]
 
 
 def test_grpo_resume_is_bound_and_appends_logs(
