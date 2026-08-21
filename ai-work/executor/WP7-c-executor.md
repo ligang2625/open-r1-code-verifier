@@ -313,3 +313,71 @@ execution_checkpoint:
 - The C3 failure occurred later than C2: formal Dataset materialization had passed and the merged B model was loaded before `GRPOTrainer.__init__` failed. C4 therefore refuses to treat it as a Trainer resume unless a complete cadence-valid Trainer checkpoint exists; the known no-checkpoint C3 state is instead preserved under a distinct external quarantine namespace.
 - The 4090 CodexPro connector became unavailable during this repair, so control-plane code does not invent target C3 run/evidence hashes. C4 validates C3 evidence/status/terminal and run semantics on-target before any move, then records the actual target hashes and every quarantined file hash in its deterministic quarantine manifest. Any mismatch fails closed.
 - No RTX4090 target training command was started or monitored by Web GPT/CodexPro during C4 preparation. All executable validation was on the GTX1660 control plane or synthetic metadata-only recovery dry-runs.
+
+## C5 — final GRPO constructor/preflight/recovery certification checkpoint
+
+C5 supersedes C4 without executing any earlier operator script. Business result-code `e1592bfc89c5e3f276c4b42d089597a23ccfe4c2` adds the pinned real `GRPOTrainer` constructor regression plus the established unconfigured-DeepSpeed guard coverage; C5 freezes the final operator preflight/recovery contract around that result. No 20-step smoke or pilot was started while preparing this checkpoint.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C5
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: e1592bfc89c5e3f276c4b42d089597a23ccfe4c2
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-smoke
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-smoke/C5/run.sh
+  operator_script_sha256: df2f79b3d628825c690b7b450d8d3fa6b497508df86d7406ef136dd9ac595049
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C5/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C5/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-smoke/C5/operator-evidence.json"
+  target_quarantine_manifest_template: "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/quarantine/WP7-c/grpo-cd-smoke/C3/quarantine-manifest.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-smoke/C5
+  supersedes_checkpoint_id: C4
+  supersedes_checkpoint_commit: d5211049e9b3dd9a37a0e768c79b69ac8483ced2
+  failed_c3_public_stderr_sha256: cc0e697f76fe85b5ad6186baae92dcb29572e91a63ee09e1e687b25c1ffc21ea
+  expected_artifacts:
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/C-public-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/smoke/D-hidden-grpo-smoke20-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/quarantine/WP7-c/grpo-cd-smoke/C2/quarantine-manifest.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/quarantine/WP7-c/grpo-cd-smoke/C3/quarantine-manifest.json"
+  completed_scope:
+    - "business result-code e1592bfc89c5e3f276c4b42d089597a23ccfe4c2 is based directly on C4 checkpoint d5211049e9b3dd9a37a0e768c79b69ac8483ced2 and adds the real pinned TRL 0.18.0 / Accelerate 1.4.0 / Transformers Qwen2 GRPOTrainer constructor regression with gradient_checkpointing=True; trainer.train() is never called"
+    - "C5 Git preflight proves checkpoint parent=result-code, result-code parent=C4 checkpoint, sealed plan unchanged, report byte-for-byte append-only, checkpoint diff exactly modified execution report plus newly added executable C5 script, and tracked script SHA equals the checkpoint record"
+    - "C5 machine preflight uses exact validation-machine/readiness/Piston schemas and validates READY gates, persistent roots, formal-data counts, exact model identity, deployment ssh_tunneled_remote, host 1660ti-wsl, endpoint http://127.0.0.1:2000, Piston Python 3.10.0, source ref and image digest"
+    - "C5 frozen-runtime preflight requires formal-B Python 3.10.21, CUDA 12.4, NVIDIA GeForce RTX 4090, compute capability 8.9, native BF16, exact package map accelerate 1.4.0 / datasets 3.2.0 / open-r1 0.1.0.dev0 / peft 0.14.0 / torch 2.6.0+cu124 / transformers 4.52.3 / trl 0.18.0, and exact dependency-lock identity"
+    - "C5 model/B certification binds Qwen/Qwen2.5-Coder-1.5B-Instruct@2e1fd397ee46e1388853d2af2c993145b0f1098a, model.safetensors SHA c1b9b30e907950516ba3c646bdf570d8084c25a6410a0cdca80cf04b11bc13a8, B adapter_model SHA 51042ea9c52d2d24976c2ca4e777f1a5f792e3943ff171d03e55b959463a7a67, and B adapter_config SHA 3738f9ef0ac56f90a48497ab4c0a1f172770864aa61dad56e8d9751050f34344"
+    - "formal Public/Hidden GRPO data revalidated at 2500/2500 rows with sealed byte SHAs; trainer materialization PASS and visible_tests/train_hidden_tests are Arrow Sequence[string]"
+    - "C2/C3 recovery matrices PASS manifest-first validation, deterministic SHA inventory, tamper fail-closed, idempotent rerun, preservation of future C5 runs, and no movement of unknown failed runs; C3 complete cadence-valid Trainer checkpoints explicitly prohibit quarantine and require strict same-run resume"
+    - "C5 shell syntax PASS; all 19 embedded Python heredocs compile; exact C5 GRPO constructor block executes successfully with train_not_called=true"
+    - "fresh control-plane acceptance PASS: make lint; make test 931 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9 with 0 skips"
+    - "read-only exported 4090 cross-check PASS for exact readiness/Piston identity, formal-B runtime/package map, dependency lock, B adapter SHA pair and base-model weight SHA; target-only absolute-path equality remains intentionally fail-closed and is rechecked only on the 4090"
+    - "C5 run.sh is mode 0755 and frozen SHA256 df2f79b3d628825c690b7b450d8d3fa6b497508df86d7406ef136dd9ac595049; no C0/C1/C2/C3/C4 script, 20-step target smoke, pilot, formal training, formal data mutation, formal B mutation, uv.lock change, setuptools install, force-push or failed-artifact deletion occurred"
+  remaining_scope:
+    - "make the exact C5 checkpoint commit reachable on the RTX 4090 through Git, checkout/detach that exact commit, confirm clean checkout, recompute C5 run.sh SHA256 and run it manually in SSH/tmux; do not execute C0/C1/C2/C3/C4"
+    - "C5 target start revalidates exact Git/result/checkpoint provenance, target machine pointer/readiness/Piston identity, RTX4090/BF16/runtime/package lock, offline base-model SHA, formal B adapter SHAs, formal Public/Hidden 2500+2500 materialization, real Piston and storage before recovery or training"
+    - "C5 re-inspects the actual C3 run.json/status/attempts/global_step/checkpoints/metrics/rewards/rollouts/group_metrics/stderr plus C3 operator evidence/status/terminal log; only the exact known no-Trainer-checkpoint failure may be atomically quarantined with deterministic manifest, while any complete cadence-valid Trainer checkpoint forbids quarantine and stops for strict same-run resume"
+    - "after recovery, C5 runs only the paired Public then Hidden 20-step smoke from the same formal B/pair, using strict same-run trainer-checkpoint resume/completed semantics; no pilot is started"
+    - "after C5 exits, sync operator-evidence.json, status, terminal.log, postcheck-summary.json, C2/C3 quarantine manifests and required small run metadata byte-for-byte to the C5 control-plane receive directory, then explicitly invoke execution-router resume backend=web stage_id=WP7-c"
+    - "only after C5 smoke evidence is accepted may a distinct grpo-cd-pilot checkpoint be generated"
+  status: awaiting_operator
+```
+
+### C5 certification and C3 recovery notes
+
+- Historical C3 evidence records a constructor-time failure before `trainer.train()` with `global_step=null`, empty Trainer checkpoints and empty metrics/reward/rollout/group outputs; C5 does not trust that prose alone. The target script revalidates the actual run directory, stderr, operator status/evidence/terminal log and every quarantined file hash before moving anything.
+- Existing C2/C3 quarantine manifests are authenticated before canonical-run classification. A tampered manifest therefore cannot be bypassed merely because a later C5 run already occupies the canonical run name. Existing quarantine validation is independent of future Hidden-run presence, so later valid C5 artifacts are neither moved nor misclassified as historical C2/C3 state.
+- If the target C3 directory unexpectedly contains a complete cadence-valid Trainer checkpoint, C5 refuses quarantine and stops with a strict same-run resume requirement. Incomplete/unknown checkpoint state also fails closed; it is never converted into a fresh run by deletion or overwrite.
+- The C5 constructor probe is real pinned TRL/Transformers code, CPU-only and constructor-only. It exercises the gradient-checkpointing initialization path under `_without_unconfigured_deepspeed_backend()` and deliberately never calls `trainer.train()`.
+- No RTX4090 target command was started or monitored while preparing C5. C5 is the final executable smoke checkpoint; C6 was not created.
