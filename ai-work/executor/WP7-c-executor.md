@@ -525,3 +525,72 @@ execution_checkpoint:
 - The pilot now leaves enough structured evidence to attribute expensive wall time among generation, whole rollout, no-grad reference/KL log-prob, remaining policy forward/backward+optimizer work, and Piston execution. Together with reward component rows, group variance/all-equal, completion lengths/truncation, parse/execute/timeout/pass status, KL/loss, GPU-hours, peak CUDA memory and checkpoint inventory, this is sufficient for the planned final performance/cost/reward analysis without rerunning merely to recover missing timing fields.
 - C6 remains in immutable Git/report history as an unexecuted operator checkpoint. C7 is the only current pilot handoff and supersedes it explicitly.
 - No RTX4090 target command was started or monitored while preparing C7.
+
+
+### C8 — portable GRPO pair identity repair after C7 preflight failure
+
+C7 was executed on the RTX 4090 but failed safely during preflight before either pilot branch was created. Read-only target inspection proved `command_rc=125`, `postcheck_rc=125`, `gate_status=preflight_failed`, no postcheck file, every expected pilot inventory entry `exists=false`, and no Public/Hidden pilot run directory. The failure was traced to paired-definition schema v1 hashing machine-local absolute dataset/Piston/SFT paths. Result-code commit `9e55b4175e5d86804d1ce182e04489e4b5f99a87` fixes the root cause by introducing paired-definition schema v2: single-run config/resume hashes remain unchanged, while only the C/D pair fingerprint replaces dataset/Piston paths with content SHA256 and removes parent-SFT artifact paths from the pair canonical payload.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C8
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 9e55b4175e5d86804d1ce182e04489e4b5f99a87
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C8/run.sh
+  operator_script_sha256: 18bbbaddbe00a5c0f610a49b65307d583172eea5c32381cd97be7444fbb21c06
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C8/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C8/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C8/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C8/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C8
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  pilot_pair_schema_version: 2
+  pilot_pair_sha256: b889cf144b787854c73a6b97c9a26d1a0378dee9ba1e822b965c1ef85c637be2
+  pilot_public_config_hash: e288b89419ea0aa2a780cf03b6ed72921d4f6395e4feaf5169e2db2dcb57100c
+  pilot_hidden_config_hash: 97ee2444a5a3e6709f9347d606f391d0b6ec3b380d3ce74e230b972631958b07
+  supersedes_checkpoint_id: C7
+  supersedes_checkpoint_commit: ef89d8898cbc2c6d3da2a5c327afc5b22cb83beb
+  superseded_result_code_commit: 8f8e3e0f5040574e6fcca9401a71281e1e9660ad
+  superseded_operator_script_sha256: 97e2212aec51938d14c322b5a8f54ddf852958ae81edadcdeb8a3c3792b67108
+  superseded_operator_evidence_sha256: 1e3a20e6edff2b9e4949bb38a45d12951fc3d86a4032964b7e2bb2b726f2485a
+  superseded_status_sha256: a5e45837a2959db847f7e67a915d0ecaddd47f943af2af5fa6453be497faabca
+  superseded_terminal_log_sha256: 19835ff50a5d9cb907b54fb4500278d6c3642a0c011478069c8416c8f113d1eb
+  smoke_max_complete_trainer_checkpoint_bytes: 42184437
+  smoke_max_complete_trainer_checkpoint_inodes: 15
+  target_required_free_bytes: 32212254720
+  target_required_free_inodes: 100000
+  completed_scope:
+    - "C7 target failure was revalidated read-only on the 4090: exact evidence/status/log SHAs, rc=125, preflight_failed, no postcheck, paired_definition_sha256=null, all expected artifact inventory entries absent and both pilot run directories absent"
+    - "root cause confirmed: paired-definition schema v1 transitively included absolute dataset_path and piston_config through _config_hash plus parent_sft_run_path/checkpoint_path, so identical semantic experiments differed across 1660ti and 4090"
+    - "result-code 9e55b4175e5d86804d1ce182e04489e4b5f99a87 bumps paired-definition schema to v2 and adds a dedicated portable pair config hash using dataset/Piston content SHA256 plus a parent SFT semantic mapping without local artifact paths; single-run _config_hash and resume identity remain unchanged"
+    - "new portability regression constructs byte-identical C/D/Piston/B inputs under two different absolute roots: old single-run config hashes remain different while v2 pair components and pair SHA are exactly equal"
+    - "formal v2 control-plane certification yields pair SHA b889cf144b787854c73a6b97c9a26d1a0378dee9ba1e822b965c1ef85c637be2, Public pair-config SHA e288b89419ea0aa2a780cf03b6ed72921d4f6395e4feaf5169e2db2dcb57100c and Hidden pair-config SHA 97ee2444a5a3e6709f9347d606f391d0b6ec3b380d3ce74e230b972631958b07"
+    - "post-repair verification PASS: focused GRPO/WP7a/WP7b 83/83; make lint/ruff/mypy PASS; full make test 933 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9"
+    - "C8 retains C7 timing/performance instrumentation and postcheck, rebinds all fresh/resume/completed semantics to portable v2 pair identity, and validates exact C7 failure evidence before Piston or training"
+    - "C8 bash syntax PASS; all 14 Python heredocs compile; stale v1 pair SHA and C6 semantics are absent; train-grpo has exactly one command site"
+  remaining_scope:
+    - "push the exact C8 checkpoint through ordinary Git, checkout/detach it on the RTX 4090, verify clean checkout and C8 script SHA, then run only C8; do not rerun C7"
+    - "C8 must authenticate the preserved C7 preflight failure and zero-pilot-artifact state, then recompute portable pair v2 and match the exact control-plane pair/components before Public training starts"
+    - "after C8 exits, sync C8 operator evidence/status/log/postcheck and required small pilot artifacts/final adapters back to the C8 control-plane receive directory, then invoke execution-router resume backend=web stage_id=WP7-c"
+  status: awaiting_operator
+```
+
+### C8 repair notes
+
+- C7 failure evidence remains immutable on the 4090; C8 neither deletes nor rewrites it.
+- The fix changes only experiment identity portability. It does not change GRPO batch size, gradient accumulation, optimization hyperparameters, LoRA, reward math, dataset bytes, formal B, Piston definition or timing instrumentation.
+- No C8 target command was started while preparing this checkpoint.
