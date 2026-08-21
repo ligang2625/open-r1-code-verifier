@@ -109,6 +109,25 @@ def _result() -> ExecutionResult:
     )
 
 
+def _sandbox_result() -> ExecutionResult:
+    return ExecutionResult(
+        status=ExecutionStatus.SANDBOX_ERROR,
+        passed_tests=0,
+        total_tests=1,
+        pass_rate=0.0,
+        runtime_ms=1.0,
+        test_results=[
+            ExecutionTestCaseResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed=False,
+                runtime_ms=1.0,
+                stdout="",
+                stderr="",
+            )
+        ],
+    )
+
+
 def _callback(tmp_path: Path, *, reward_mode: str, executor: MockExecutor) -> Callable[..., list[float]]:
     return build_grpo_reward_callback(
         reward_mode=reward_mode,
@@ -178,6 +197,32 @@ def test_wp7a_public_reward_scores_only_visible_tests(tmp_path: Path) -> None:
 def test_wp7a_hidden_reward_scores_only_train_hidden_tests(tmp_path: Path) -> None:
     executor = _invoke_callback(tmp_path, reward_mode="hidden")
     assert executor.calls[0].tests == [{"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}]
+
+
+def test_wp7a_reward_callback_fails_closed_after_logging_infrastructure_failure(tmp_path: Path) -> None:
+    executor = MockExecutor([_sandbox_result()])
+    callback = _callback(tmp_path, reward_mode="public", executor=executor)
+
+    with pytest.raises(GRPOTrainingError, match="infrastructure failure in 1/1 completions"):
+        callback(
+            prompts=[[{"role": "user", "content": "PROMPT_SENTINEL"}]],
+            completions=["```python\ndef solve(value):\n    return value\n```"],
+            completion_ids=[[1, 2]],
+            problem_id=["wp7a-1"],
+            function_name=["solve"],
+            metadata=[_metadata()],
+            visible_tests=[[{"input": "VISIBLE_SENTINEL", "expected": "VISIBLE_SENTINEL"}]],
+        )
+
+    rewards = [json.loads(line) for line in (tmp_path / "public" / "rewards.jsonl").read_text().splitlines()]
+    rollouts = [json.loads(line) for line in (tmp_path / "public" / "rollouts.jsonl").read_text().splitlines()]
+    groups = [json.loads(line) for line in (tmp_path / "public" / "group_metrics.jsonl").read_text().splitlines()]
+    assert len(rewards) == len(rollouts) == len(groups) == 1
+    assert rewards[0]["status"] == ExecutionStatus.SANDBOX_ERROR.value
+    assert rewards[0]["infrastructure_failure"] is True
+    assert rewards[0]["total_reward"] == 0.0
+    assert rollouts[0]["total_reward"] == 0.0
+    assert groups[0]["mean"] == 0.0
 
 
 class _Constructor:

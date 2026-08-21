@@ -620,6 +620,9 @@ def build_grpo_reward_callback(
             raise GRPOTrainingError("GRPO reward core returned a misaligned batch")
         if any(not math.isfinite(reward) for reward in rewards):
             raise GRPOTrainingError("GRPO rewards must be finite")
+        infrastructure_failure_count = sum(
+            record.get("infrastructure_failure") is True for record in component_records
+        )
 
         completion_values = cast(Sequence[object], completions)
         completion_id_values = cast(Sequence[object], completion_ids)
@@ -682,6 +685,11 @@ def build_grpo_reward_callback(
         _append_lines(rollout_log_path, rollout_lines)
         _append_lines(reward_log_path, reward_lines)
         _append_lines(group_metrics_log_path, group_lines)
+        if infrastructure_failure_count:
+            raise GRPOTrainingError(
+                "GRPO reward execution infrastructure failure in "
+                f"{infrastructure_failure_count}/{batch_size} completions; aborting before optimizer update"
+            )
         return rewards
 
     reward_callback.__name__ = f"{reward_mode}_code_reward"
