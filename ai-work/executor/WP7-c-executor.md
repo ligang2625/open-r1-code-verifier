@@ -449,3 +449,79 @@ execution_checkpoint:
 - Public and Hidden pilot runs remain independent children of the same formal B. Neither consumes the C5 smoke adapter nor the other pilot branch; C5 artifacts are used only as accepted gate evidence and checkpoint-size input for the pilot storage bound.
 - The operator postcheck records the raw spec §12.4 signals available in production artifacts. The project does not currently persist a separate rollout-runtime field, so C6 records `rollout_runtime_seconds_recorded=false` rather than fabricating one; executor resume will interpret only the actually recorded raw evidence and will not invent unsealed numerical thresholds.
 - No RTX4090 command was started or monitored while preparing C6. This execution conversation stops at the portable target-GPU operator boundary.
+
+### C7 — GRPO inference optimization + complete pilot timing telemetry
+
+C6 was never executed on the RTX 4090. Before paying for the paired 100-step pilot, the training path was re-audited against the accepted C5 smoke logs. The smoke showed Piston executor time below 1% of train time while CUDA allocated/reserved memory stayed far below the 4090's 24 GB capacity. The actionable bottleneck was instead inference-only work inheriting gradient checkpointing from the training model: regular generation and the beta=0.01 no-grad reference log-prob forward. Result-code commit `8f8e3e0f5040574e6fcca9401a71281e1e9660ad` adds a narrow project-local shim that disables gradient checkpointing only around those inference-only calls, always restores it, leaves the grad-enabled policy forward unchanged, and records generation/rollout/no-grad-logps/optimizer-step wall time into the existing Trainer metric stream. C7 supersedes the unexecuted C6 operator handoff without deleting it.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C7
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 8f8e3e0f5040574e6fcca9401a71281e1e9660ad
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C7/run.sh
+  operator_script_sha256: 97e2212aec51938d14c322b5a8f54ddf852958ae81edadcdeb8a3c3792b67108
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C7/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C7/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C7/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C7/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C7
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  pilot_pair_sha256: a82c7521551d8a4520a0126783c3c4c4dd3f36f57a5b3dd43484e59dda7a34b5
+  supersedes_checkpoint_id: C6
+  supersedes_checkpoint_commit: db42c382a6499ca771ae95a7d8b2472c3960a8b8
+  smoke_max_complete_trainer_checkpoint_bytes: 42184437
+  smoke_max_complete_trainer_checkpoint_inodes: 15
+  target_required_free_bytes: 32212254720
+  target_required_free_inodes: 100000
+  expected_artifacts:
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/metrics.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/rollouts.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/rewards.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/group_metrics.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/C-public-grpo-pilot100-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/metrics.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/rollouts.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/rewards.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/group_metrics.jsonl"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/checkpoints/adapter_model.safetensors"
+  completed_scope:
+    - "C5 smoke performance evidence was re-audited before pilot: Public train runtime about 1400 s with executor about 12 s, Hidden about 1639 s with executor about 13.4 s; executor share is below 1%, while smoke peak CUDA allocated/reserved remained far below 24 GB, so Piston concurrency and sealed batch hyperparameters were not changed"
+    - "result-code 8f8e3e0f5040574e6fcca9401a71281e1e9660ad keeps batch=1, gradient_accumulation_steps=8, gradient_checkpointing=true, LoRA/reward/seed/pair semantics unchanged; it disables gradient checkpointing only for regular generation and torch.no_grad reference log-prob work, restores it in finally blocks, and leaves the grad-enabled policy forward untouched"
+    - "the same runtime shim records generation_runtime_seconds, rollout_runtime_seconds, no_grad_logps_runtime_seconds, no_grad_logps_calls and step_runtime_seconds through TRL's existing _metrics/log_history path; artifact tests prove the scalars persist to metrics.jsonl and remain readable by load_training_curve_rows"
+    - "real pinned TRL 0.18.0 + tiny Qwen2 + PEFT one-step train PASS under the production DeepSpeed guard: gradient checkpointing is restored after inference-only calls; generation/rollout/no-grad-logps/step timings are finite; beta=0.01 produces one no-grad reference call per micro-batch; the previous generation/cache and no-grad checkpoint warnings are absent"
+    - "post-optimization regression PASS: focused GRPO/WP7a/WP7b suite 82/82; make lint/ruff/mypy PASS; full make test 932 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9"
+    - "C7 postcheck requires complete steps 1..100 telemetry for reward/reward_std/KL/loss/completion plus generation/rollout/no-grad-logps/step timing; requires no_grad_logps_calls=8 per optimizer step and validates rollout>=generation and step>=rollout+no-grad-logps"
+    - "C7 postcheck emits per-step timing series plus mean/p95/max, generation/rollout/no-grad-logps fractions of optimizer-step wall time, executor fraction of train and rollout time, and generated-token throughput; it still records raw metrics only and invents no numerical stopping threshold"
+    - "C7 provenance requires checkpoint parent=result-code 8f8e3e0..., result-code parent=superseded C6 checkpoint db42c382..., accepted C5 smoke evidence unchanged, checkpoint scope exactly append-only execution report + new executable C7 script, and tracked script SHA equal to this record"
+    - "C7 shell syntax PASS; all 13 Python heredocs compile; only two C6 references remain and both are explicit supersession provenance; train-grpo still has one command site; no RTX4090 pilot/formal command was started while preparing C7"
+  remaining_scope:
+    - "make the exact C7 checkpoint commit reachable on the RTX 4090 through ordinary Git transport, checkout/detach that exact commit, verify a clean checkout and recorded C7 run.sh SHA256, then run only the tracked C7 script manually in SSH/tmux; do not run C6"
+    - "C7 target start must pass checkpoint/result/supersession provenance, accepted-C5 evidence, exact machine/runtime/model/data/B/Piston/storage gates before Public or Hidden pilot starts; do not bypass a failed preflight"
+    - "after C7 exits, sync operator-evidence.json, status, terminal.log, postcheck-summary.json and the required small pilot metadata/metrics/reward/group/final-adapter evidence byte-for-byte into the C7 control-plane receive directory; numeric Trainer checkpoints remain on the 4090 by default"
+    - "explicitly invoke execution-router resume backend=web stage_id=WP7-c after C7 evidence is received; executor must analyze the newly complete timing + reward/KL/completion/execution telemetry before any formal C/D operator checkpoint is generated"
+  status: awaiting_operator
+```
+
+### C7 performance/data-analysis notes
+
+- This change intentionally does **not** increase `per_device_train_batch_size`, reduce gradient accumulation, disable training gradient checkpointing, enable vLLM, change LoRA, alter max completion length, or modify reward execution. Those are sealed C/D fairness or semantic choices; the pre-pilot optimization is restricted to inference-only implementation overhead.
+- The pilot now leaves enough structured evidence to attribute expensive wall time among generation, whole rollout, no-grad reference/KL log-prob, remaining policy forward/backward+optimizer work, and Piston execution. Together with reward component rows, group variance/all-equal, completion lengths/truncation, parse/execute/timeout/pass status, KL/loss, GPU-hours, peak CUDA memory and checkpoint inventory, this is sufficient for the planned final performance/cost/reward analysis without rerunning merely to recover missing timing fields.
+- C6 remains in immutable Git/report history as an unexecuted operator checkpoint. C7 is the only current pilot handoff and supersedes it explicitly.
+- No RTX4090 target command was started or monitored while preparing C7.
