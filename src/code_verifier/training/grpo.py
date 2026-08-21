@@ -12,11 +12,12 @@ import shutil
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from types import ModuleType
+from types import MethodType, ModuleType
 from typing import Any, cast
 
 import yaml
@@ -742,6 +743,140 @@ def _load_grpo_runtime() -> _GRPORuntime:
         raise GRPOTrainingError(f"pinned GRPO runtime contract is unavailable: {type(error).__name__}") from None
 
 
+def _install_grpo_runtime_telemetry(trainer: Any) -> None:
+    """Install timing hooks and disable checkpointing only for inference-only GRPO work."""
+    required = (
+        "_generate_and_score_completions",
+        "_get_per_token_logps",
+        "training_step",
+        "_maybe_log_save_evaluate",
+        "_metrics",
+        "accelerator",
+        "model",
+        "model_wrapped",
+        "args",
+        "state",
+    )
+    if any(not hasattr(trainer, name) for name in required):
+        return
+
+    original_rollout = trainer._generate_and_score_completions
+    original_logps = trainer._get_per_token_logps
+    original_training_step = trainer.training_step
+    original_maybe_log = trainer._maybe_log_save_evaluate
+    torch_runtime = _load_torch_runtime()
+    step_started_at: float | None = None
+    last_timed_global_step = int(getattr(trainer.state, "global_step", 0) or 0)
+    no_grad_logps_runtime_seconds = 0.0
+    no_grad_logps_calls = 0
+
+    def timed_rollout(self: Any, inputs: object) -> object:
+        mode = "train" if self.model.training else "eval"
+        unwrapped_model = self.accelerator.unwrap_model(self.model_wrapped)
+        original_generate = getattr(unwrapped_model, "generate", None)
+        if not callable(original_generate):
+            raise GRPOTrainingError("pinned GRPO model does not provide callable generation")
+        instance_dict = getattr(unwrapped_model, "__dict__", {})
+        had_instance_generate = isinstance(instance_dict, dict) and "generate" in instance_dict
+        previous_instance_generate = instance_dict.get("generate") if had_instance_generate else None
+
+        def generate_without_checkpointing(*args: object, **kwargs: object) -> object:
+            was_checkpointing = bool(getattr(unwrapped_model, "is_gradient_checkpointing", False))
+            if was_checkpointing:
+                disable = getattr(unwrapped_model, "gradient_checkpointing_disable", None)
+                enable = getattr(unwrapped_model, "gradient_checkpointing_enable", None)
+                if not callable(disable) or not callable(enable):
+                    raise GRPOTrainingError("pinned GRPO model cannot safely toggle gradient checkpointing")
+                disable()
+            generation_started = time.perf_counter()
+            try:
+                return original_generate(*args, **kwargs)
+            finally:
+                generation_elapsed = time.perf_counter() - generation_started
+                if was_checkpointing:
+                    unwrapped_model.gradient_checkpointing_enable()
+                if not math.isfinite(generation_elapsed) or generation_elapsed < 0.0:
+                    raise GRPOTrainingError("GRPO generation runtime must be finite and non-negative")
+                self._metrics[mode]["generation_runtime_seconds"].append(generation_elapsed)
+
+        unwrapped_model.generate = generate_without_checkpointing
+        started = time.perf_counter()
+        try:
+            return original_rollout(inputs)
+        finally:
+            elapsed = time.perf_counter() - started
+            if had_instance_generate:
+                unwrapped_model.generate = previous_instance_generate
+            else:
+                with suppress(AttributeError):
+                    del unwrapped_model.generate
+            if not math.isfinite(elapsed) or elapsed < 0.0:
+                raise GRPOTrainingError("GRPO rollout runtime must be finite and non-negative")
+            self._metrics[mode]["rollout_runtime_seconds"].append(elapsed)
+
+    def timed_logps(self: Any, model: Any, *args: object, **kwargs: object) -> object:
+        nonlocal no_grad_logps_calls, no_grad_logps_runtime_seconds
+        if bool(torch_runtime.is_grad_enabled()):
+            return original_logps(model, *args, **kwargs)
+        was_checkpointing = bool(getattr(model, "is_gradient_checkpointing", False))
+        if was_checkpointing:
+            disable = getattr(model, "gradient_checkpointing_disable", None)
+            enable = getattr(model, "gradient_checkpointing_enable", None)
+            if not callable(disable) or not callable(enable):
+                raise GRPOTrainingError("pinned GRPO model cannot safely toggle inference gradient checkpointing")
+            disable()
+        started = time.perf_counter()
+        try:
+            return original_logps(model, *args, **kwargs)
+        finally:
+            elapsed = time.perf_counter() - started
+            if was_checkpointing:
+                model.gradient_checkpointing_enable()
+            if not math.isfinite(elapsed) or elapsed < 0.0:
+                raise GRPOTrainingError("GRPO no-grad log-prob runtime must be finite and non-negative")
+            if self.model.training:
+                no_grad_logps_runtime_seconds += elapsed
+                no_grad_logps_calls += 1
+            else:
+                self._metrics["eval"]["no_grad_logps_runtime_seconds"].append(elapsed)
+                self._metrics["eval"]["no_grad_logps_calls"].append(1.0)
+
+    def timed_training_step(self: Any, *args: object, **kwargs: object) -> object:
+        nonlocal step_started_at
+        if step_started_at is None:
+            step_started_at = time.perf_counter()
+        try:
+            return original_training_step(*args, **kwargs)
+        except BaseException:
+            step_started_at = None
+            raise
+
+    def timed_maybe_log(self: Any, *args: object, **kwargs: object) -> object:
+        nonlocal last_timed_global_step, no_grad_logps_calls, no_grad_logps_runtime_seconds, step_started_at
+        raw_global_step = getattr(self.state, "global_step", None)
+        if (
+            step_started_at is not None
+            and isinstance(raw_global_step, int)
+            and raw_global_step > last_timed_global_step
+        ):
+            elapsed = time.perf_counter() - step_started_at
+            step_started_at = None
+            if not math.isfinite(elapsed) or elapsed < 0.0:
+                raise GRPOTrainingError("GRPO step runtime must be finite and non-negative")
+            self._metrics["train"]["step_runtime_seconds"].append(elapsed)
+            self._metrics["train"]["no_grad_logps_runtime_seconds"].append(no_grad_logps_runtime_seconds)
+            self._metrics["train"]["no_grad_logps_calls"].append(float(no_grad_logps_calls))
+            no_grad_logps_runtime_seconds = 0.0
+            no_grad_logps_calls = 0
+            last_timed_global_step = raw_global_step
+        return original_maybe_log(*args, **kwargs)
+
+    trainer._generate_and_score_completions = MethodType(timed_rollout, trainer)
+    trainer._get_per_token_logps = MethodType(timed_logps, trainer)
+    trainer.training_step = MethodType(timed_training_step, trainer)
+    trainer._maybe_log_save_evaluate = MethodType(timed_maybe_log, trainer)
+
+
 def _runtime_arguments(
     config: GRPOTrainingConfig,
     *,
@@ -1340,6 +1475,7 @@ def run_grpo_training(
                 processing_class=tokenizer,
                 peft_config=runtime.get_peft_config(model_args),
             )
+            _install_grpo_runtime_telemetry(trainer)
             train_result = trainer.train(resume_from_checkpoint=resume_path)
             raw_train_metrics = getattr(train_result, "metrics", {})
             if isinstance(raw_train_metrics, Mapping):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -924,7 +925,21 @@ class _FakeTrainer:
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = dict(kwargs)
         self.resume_from_checkpoint: str | None = None
-        self.state = SimpleNamespace(log_history=[{"loss": 0.3, "step": 1, "ignored": "text"}], global_step=1)
+        self.state = SimpleNamespace(
+            log_history=[
+                {
+                    "loss": 0.3,
+                    "step": 1,
+                    "generation_runtime_seconds": 0.5,
+                    "no_grad_logps_calls": 8.0,
+                    "no_grad_logps_runtime_seconds": 0.2,
+                    "rollout_runtime_seconds": 0.75,
+                    "step_runtime_seconds": 1.0,
+                    "ignored": "text",
+                }
+            ],
+            global_step=1,
+        )
         self.__class__.instances.append(self)
 
     def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
@@ -948,6 +963,86 @@ class _FakeTrainer:
     @staticmethod
     def save_model(path: str) -> None:
         assert Path(path).name == "checkpoints"
+
+
+def test_grpo_runtime_telemetry_times_generation_rollout_and_optimizer_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torch
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.training = True
+            self.is_gradient_checkpointing = True
+            self.generate_states: list[tuple[bool, bool]] = []
+
+        def gradient_checkpointing_disable(self) -> None:
+            assert self.is_gradient_checkpointing is True
+            self.is_gradient_checkpointing = False
+
+        def gradient_checkpointing_enable(self) -> None:
+            self.is_gradient_checkpointing = True
+
+        def generate(self) -> str:
+            self.generate_states.append((self.training, self.is_gradient_checkpointing))
+            return "generated"
+
+    class FakeAccelerator:
+        def __init__(self, model: FakeModel) -> None:
+            self.model = model
+
+        def unwrap_model(self, model: object) -> FakeModel:
+            assert model is self.model
+            return self.model
+
+    class FakeTrainer:
+        def __init__(self) -> None:
+            self.model = FakeModel()
+            self.model_wrapped = self.model
+            self.accelerator = FakeAccelerator(self.model)
+            self.args = SimpleNamespace(gradient_accumulation_steps=8)
+            self.state = SimpleNamespace(global_step=0)
+            self.logps_states: list[tuple[bool, bool]] = []
+            self._metrics: dict[str, defaultdict[str, list[float]]] = {
+                "train": defaultdict(list),
+                "eval": defaultdict(list),
+            }
+
+        def _generate_and_score_completions(self, inputs: object) -> object:
+            assert self.model_wrapped.generate() == "generated"
+            return inputs
+
+        def _get_per_token_logps(self, model: FakeModel) -> str:
+            self.logps_states.append((torch.is_grad_enabled(), model.is_gradient_checkpointing))
+            return "logps"
+
+        def training_step(self) -> str:
+            return "loss"
+
+        def _maybe_log_save_evaluate(self) -> str:
+            return "logged"
+
+    trainer = FakeTrainer()
+    times = iter([10.0, 11.0, 13.5, 14.0, 15.0, 17.0, 20.0, 24.0])
+    monkeypatch.setattr("code_verifier.training.grpo.time.perf_counter", lambda: next(times))
+    grpo_module._install_grpo_runtime_telemetry(trainer)
+    result = trainer._generate_and_score_completions([{"prompt": "hello"}])
+    assert result == [{"prompt": "hello"}]
+    assert trainer.model.generate_states == [(True, False)]
+    assert trainer.model.is_gradient_checkpointing is True
+    assert trainer._metrics["train"]["generation_runtime_seconds"] == [pytest.approx(2.5)]
+    assert trainer._metrics["train"]["rollout_runtime_seconds"] == [pytest.approx(4.0)]
+    with torch.no_grad():
+        assert trainer._get_per_token_logps(trainer.model) == "logps"
+    assert trainer.logps_states == [(False, False)]
+    assert trainer.model.is_gradient_checkpointing is True
+    assert trainer.training_step() == "loss"
+    trainer.state.global_step = 1
+    assert trainer._maybe_log_save_evaluate() == "logged"
+    assert trainer._metrics["train"]["step_runtime_seconds"] == [pytest.approx(4.0)]
+    assert trainer._metrics["train"]["no_grad_logps_runtime_seconds"] == [pytest.approx(2.0)]
+    assert trainer._metrics["train"]["no_grad_logps_calls"] == [1.0]
+    assert "generate" not in trainer.model.__dict__
 
 
 def _fake_grpo_runtime() -> _GRPORuntime:
@@ -1035,7 +1130,14 @@ def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
     assert metrics[-1]["peak_cuda_memory_allocated_bytes"] == 123
     assert metrics[-1]["peak_cuda_memory_reserved_bytes"] == 456
     curve_rows = load_training_curve_rows(summary.run_dir, method="Public-RLVR")
-    assert [(row.metric, row.value) for row in curve_rows] == [("loss", 0.3)]
+    assert {(row.metric, row.value) for row in curve_rows} == {
+        ("generation_runtime_seconds", 0.5),
+        ("loss", 0.3),
+        ("no_grad_logps_calls", 8.0),
+        ("no_grad_logps_runtime_seconds", 0.2),
+        ("rollout_runtime_seconds", 0.75),
+        ("step_runtime_seconds", 1.0),
+    }
     cost_row = build_cost_row(summary.run_dir, method="Public-RLVR", gpu_hour_cost_usd=None)
     assert cost_row.rollouts == 4
     assert cost_row.gpu_hours == pytest.approx(summary.gpu_hours)
