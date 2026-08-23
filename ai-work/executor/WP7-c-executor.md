@@ -754,3 +754,83 @@ execution_checkpoint:
 - C8 remains immutable infrastructure-invalid history and is never a parent or resume source for retry1.
 - The audit hardening changes recovery/evidence semantics and executor failure handling only. It does not change batch size, gradient accumulation, learning rate, reward formula/source, LoRA, seed, max steps, data bytes, formal B or the paired experiment definition.
 - No C10 target command was started while preparing this checkpoint.
+
+## C11 — stale-running recovery guard handoff
+
+C9 and C10 were not executed. The final pre-push recovery audit added one conservative business guard after C10: a GRPO run left as `status=running` by a hard interruption is not automatically resumable, because its attempt cost/end-state was never durably finalized. Only a run that the training process has gracefully closed to `status=failed` may resume from a validated Trainer checkpoint. C11 supersedes the unexecuted C10 and retains the same retry1 C/D pair, fail-closed Piston behavior, canonical-log sidecars, and 10-step checkpoint cadence.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C11
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: e6622a40c0449477079710e0fe875e216278e13c
+  recovery_hardening_commit: 24685d7e9587fdd9e072fa871d0a66f22bff9caf
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C11/run.sh
+  operator_script_sha256: d390dcd95c0f48702dbb14014b4efb6c3d848634d2c258fa74d30c1a6503af84
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C11/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C11/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C11/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C11/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C11
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  pilot_pair_schema_version: 2
+  pilot_pair_sha256: bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f
+  pilot_public_config_hash: da543a9ac2719076fd81696dbcb98f1df9c9254adc9e9f519569b3b0d2e09dac
+  pilot_hidden_config_hash: 5036e0aa8be941f145f52e08269e808948f091c80d5d0972ef50326417934658
+  pilot_public_run_name: C-public-grpo-pilot100-retry1-seed42
+  pilot_hidden_run_name: D-hidden-grpo-pilot100-retry1-seed42
+  pilot_max_steps: 100
+  pilot_save_steps: 10
+  expected_trainer_checkpoints: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  checkpoint_log_state_file: code_verifier_log_state.json
+  recovery_history_dir: checkpoints/recovery-history
+  supersedes_checkpoint_id: C10
+  supersedes_checkpoint_commit: d9af548d49cc8f781984f31ea70817e4afa9f1b1
+  superseded_result_code_commit: 24685d7e9587fdd9e072fa871d0a66f22bff9caf
+  superseded_operator_script_sha256: 06499d2b00b0799f4b277b130d095e498ec1fafe5753eb862c33824735739b49
+  superseded_execution_state: unexecuted_by_operator
+  unexecuted_c9_checkpoint_commit: 792f637f34ccabebbc61fde61bd861f20887f217
+  unexecuted_c9_operator_script_sha256: bae1e5ec8f0b4c29b86401e547ced8fc818b1b90af6c7d0d6b4bde708d15dcfa
+  preserved_invalid_c8_checkpoint_commit: 32ab2697b33c9a211c37c78f0871808de069b658
+  preserved_invalid_c8_operator_evidence_sha256: def49dcb2d838e8ff8a740250ad392a3dee34c54774d808c3c4b82630451b594
+  smoke_max_complete_trainer_checkpoint_bytes: 42184437
+  smoke_max_complete_trainer_checkpoint_inodes: 15
+  target_required_free_bytes: 32212254720
+  target_required_free_inodes: 100000
+  completed_scope:
+    - "result-code e6622a40c0449477079710e0fe875e216278e13c is a narrow post-C10 business guard: its diff is exactly src/code_verifier/training/grpo.py plus tests/unit/training/test_grpo.py"
+    - "resume metadata validation now accepts only status=failed; stale status=running from hard power/process loss fails closed instead of appending a new attempt with unverifiable prior cost/end state"
+    - "test_grpo_resume_rejects_stale_running_attempt_after_hard_interruption locks that behavior; intentional Ctrl-C/KeyboardInterrupt still passes through the existing BaseException finalizer, which writes status=failed and cumulative attempt gpu_hours before re-raising"
+    - "the preceding recovery-hardening commit remains unchanged: each Trainer checkpoint carries code_verifier_log_state.json, failed-attempt stream suffixes are archived under checkpoints/recovery-history, and canonical reward/rollout/group logs are restored to the selected checkpoint prefix before resume"
+    - "the attempt-local Piston circuit breaker and fail-closed reward callback remain unchanged: the first infrastructure failure stops repeated remote calls and the failed reward batch is logged then raises before optimizer update"
+    - "real pinned TRL regressions remain present: timing/checkpoint hooks compose on real GRPOTrainer; reward exception leaves global_step=0, no checkpoint, and all model parameters unchanged"
+    - "current result-code verification PASS: focused GRPO/WP7a/WP7b 91/91; make lint/ruff/mypy PASS; full make test 941 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9"
+    - "C11 changes no training execution logic relative to C10 after result-code preflight: from resolve_run_action through train-grpo and postcheck, the scripts are byte-identical after checkpoint-id normalization"
+    - "C11 resume still selects only the highest complete 10-step checkpoint with a valid canonical-log sidecar; postcheck requires sidecars on checkpoint-10 through checkpoint-100 for both Public and Hidden"
+    - "C11 target preflight requires both C10 and C9 operator roots to be absent, matching the operator statement that neither was executed; preserved C8 infrastructure-invalid evidence remains independently authenticated"
+    - "C11 bash syntax PASS; all 15 Python heredocs compile; actual train-grpo command site count=1"
+  remaining_scope:
+    - "push only the exact C11 checkpoint through ordinary Git, checkout/detach it on the RTX 4090, verify clean checkout and C11 script SHA, then run only C11; do not run C9/C10 or rerun C8"
+    - "C11 must authenticate C10 and C9 as unexecuted, authenticate preserved C8 infrastructure-invalid evidence, recompute the unchanged retry pair v2, ensure the Piston tunnel before each branch and start/continue only the retry1 runs"
+    - "for intentional pauses use Ctrl-C/TERM and wait for the process to finish writing status=failed before powering off; a stale status=running is intentionally not auto-resumable"
+    - "after C11 exits successfully, sync C11 operator evidence/status/log/postcheck and required small retry pilot artifacts/final adapters back to the C11 control-plane receive directory, then invoke execution-router resume backend=web stage_id=WP7-c"
+  status: awaiting_operator
+```
+
+### C11 audit notes
+
+- C10 and C9 remain immutable and unexecuted; C11 supersedes them before target execution.
+- C8 remains immutable infrastructure-invalid history and is never a parent or resume source for retry1.
+- C11 preserves batch size, gradient accumulation, learning rate, reward formula/source, LoRA, seed, max steps, data bytes, formal B, pair identity and save_steps=10.
+- No C11 target command was started while preparing this checkpoint.
