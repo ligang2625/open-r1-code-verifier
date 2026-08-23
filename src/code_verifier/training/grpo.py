@@ -31,7 +31,7 @@ from code_verifier.data.leakage_checks import (
     load_training_artifact,
 )
 from code_verifier.environment import collect_environment
-from code_verifier.execution.base import CodeExecutor
+from code_verifier.execution.base import CodeExecutor, ExecutionResult, ExecutionStatus
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.open_r1_adapter import import_open_r1_module
@@ -173,6 +173,10 @@ _GRPO_RUN_LAYOUT = {
     "stderr.log",
     "checkpoints",
 }
+_GRPO_STREAM_LOG_NAMES = ("rollouts.jsonl", "rewards.jsonl", "group_metrics.jsonl")
+_GRPO_LOG_STATE_FILENAME = "code_verifier_log_state.json"
+_GRPO_RECOVERY_HISTORY_DIR = "recovery-history"
+_GRPO_LOG_STATE_VERSION = 1
 _PAIR_SCHEMA_VERSION = 2
 _GPU_HOURS_SEMANTICS = (
     "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
@@ -549,6 +553,39 @@ def _append_lines(path: Path, lines: Sequence[str]) -> None:
         os.fsync(handle.fileno())
 
 
+class _TrainingExecutorCircuitBreaker:
+    """Stop repeated remote executor calls after the first infrastructure failure in one training attempt."""
+
+    def __init__(self, executor: CodeExecutor) -> None:
+        self._executor = executor
+        self._tripped = False
+
+    def execute(
+        self,
+        code: str,
+        function_name: str,
+        tests: list[dict[str, Any]],
+        timeout_seconds: float,
+        memory_limit_mb: int,
+    ) -> ExecutionResult:
+        if self._tripped:
+            raise RuntimeError("GRPO training executor circuit breaker is open")
+        try:
+            result = self._executor.execute(
+                code,
+                function_name,
+                tests,
+                timeout_seconds,
+                memory_limit_mb,
+            )
+        except Exception:
+            self._tripped = True
+            raise
+        if result.status is ExecutionStatus.SANDBOX_ERROR:
+            self._tripped = True
+        return result
+
+
 def build_grpo_reward_callback(
     *,
     reward_mode: str,
@@ -574,6 +611,7 @@ def build_grpo_reward_callback(
     expected_columns = {"problem_id", "function_name", "metadata", "visible_tests"}
     if reward_mode == "hidden":
         expected_columns.add("train_hidden_tests")
+    training_executor = _TrainingExecutorCircuitBreaker(executor)
 
     def reward_callback(
         *,
@@ -611,7 +649,7 @@ def build_grpo_reward_callback(
                 selected_tests,
                 columns["function_name"],
                 columns["metadata"],
-                executor,
+                training_executor,
                 reward_mode,
             )
         except RewardContractError as error:
@@ -885,6 +923,35 @@ def _install_grpo_runtime_telemetry(trainer: Any) -> None:
     trainer._maybe_log_save_evaluate = MethodType(timed_maybe_log, trainer)
 
 
+def _install_grpo_checkpoint_log_snapshots(trainer: Any, *, run_dir: Path) -> None:
+    """Attach one post-save hook that binds canonical streaming logs to each Trainer checkpoint."""
+    original_save = getattr(trainer, "_save_checkpoint", None)
+    if not callable(original_save):
+        raise GRPOTrainingError("pinned GRPO trainer does not expose checkpoint save hook")
+    args = getattr(trainer, "args", None)
+    output_dir = getattr(args, "output_dir", None)
+    if not isinstance(output_dir, str) or not output_dir:
+        raise GRPOTrainingError("pinned GRPO trainer output_dir is unavailable")
+    try:
+        expected_root = (run_dir / "checkpoints").resolve(strict=True)
+        actual_root = Path(output_dir).resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("pinned GRPO trainer checkpoint root is unavailable") from None
+    if actual_root != expected_root:
+        raise GRPOTrainingError("pinned GRPO trainer checkpoint root differs from the GRPO run")
+
+    def save_with_log_snapshot(self: Any, model: object, trial: object) -> object:
+        result = original_save(model, trial)
+        raw_step = getattr(self.state, "global_step", None)
+        if isinstance(raw_step, bool) or not isinstance(raw_step, int) or raw_step <= 0:
+            raise GRPOTrainingError("pinned GRPO trainer saved a checkpoint without a valid global_step")
+        checkpoint_dir = expected_root / f"checkpoint-{raw_step}"
+        _write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint_dir, global_step=raw_step)
+        return result
+
+    trainer._save_checkpoint = MethodType(save_with_log_snapshot, trainer)
+
+
 def _runtime_arguments(
     config: GRPOTrainingConfig,
     *,
@@ -1038,6 +1105,273 @@ def _file_hash(path: Path, *, description: str) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as error:
         raise GRPOTrainingError(f"could not read {description}: {type(error).__name__}") from None
+
+
+def _stream_log_file_state(path: Path, *, limit_bytes: int | None = None) -> dict[str, object]:
+    """Return a finite JSONL prefix identity for one canonical streaming evidence file."""
+    if not path.is_file() or path.is_symlink():
+        raise GRPOTrainingError("GRPO streaming evidence file is missing or unsafe")
+    try:
+        size = path.stat().st_size
+        if limit_bytes is None:
+            selected_size = size
+        else:
+            if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int) or limit_bytes < 0:
+                raise GRPOTrainingError("GRPO checkpoint log boundary is invalid")
+            if size < limit_bytes:
+                raise GRPOTrainingError("GRPO streaming evidence is shorter than its checkpoint boundary")
+            selected_size = limit_bytes
+        digest = hashlib.sha256()
+        line_count = 0
+        remaining = selected_size
+        last_byte = b""
+        with path.open("rb") as handle:
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise GRPOTrainingError("GRPO streaming evidence ended before its checkpoint boundary")
+                digest.update(chunk)
+                line_count += chunk.count(b"\n")
+                last_byte = chunk[-1:]
+                remaining -= len(chunk)
+        if selected_size and last_byte != b"\n":
+            raise GRPOTrainingError("GRPO checkpoint log boundary does not end on a complete JSONL row")
+        return {
+            "size_bytes": selected_size,
+            "line_count": line_count,
+            "sha256": digest.hexdigest(),
+        }
+    except GRPOTrainingError:
+        raise
+    except OSError as error:
+        raise GRPOTrainingError(f"could not read GRPO streaming evidence: {type(error).__name__}") from None
+
+
+def _checkpoint_step(checkpoint_dir: Path) -> int:
+    match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", checkpoint_dir.name)
+    if match is None:
+        raise GRPOTrainingError("GRPO checkpoint directory name is invalid")
+    return int(match.group(1))
+
+
+def _write_grpo_log_checkpoint_state(*, run_dir: Path, checkpoint_dir: Path, global_step: int) -> None:
+    """Persist the exact streaming-log boundary that belongs to one Trainer checkpoint."""
+    if isinstance(global_step, bool) or not isinstance(global_step, int) or global_step <= 0:
+        raise GRPOTrainingError("GRPO checkpoint global_step is invalid")
+    try:
+        resolved_run = run_dir.resolve(strict=True)
+        checkpoint_root = (resolved_run / "checkpoints").resolve(strict=True)
+        resolved_checkpoint = checkpoint_dir.resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("GRPO checkpoint log-state path is unavailable") from None
+    if (
+        resolved_checkpoint.parent != checkpoint_root
+        or _checkpoint_step(resolved_checkpoint) != global_step
+        or resolved_checkpoint.is_symlink()
+    ):
+        raise GRPOTrainingError("GRPO checkpoint log-state path does not match trainer global_step")
+    logs = {name: _stream_log_file_state(resolved_run / name) for name in _GRPO_STREAM_LOG_NAMES}
+    _write_json(
+        resolved_checkpoint / _GRPO_LOG_STATE_FILENAME,
+        {
+            "version": _GRPO_LOG_STATE_VERSION,
+            "global_step": global_step,
+            "logs": logs,
+        },
+    )
+
+
+def _validate_resume_log_checkpoint(run_dir: Path, checkpoint_dir: Path) -> dict[str, object]:
+    """Read-only validation that current canonical logs contain the selected checkpoint prefix exactly."""
+    try:
+        resolved_run = run_dir.resolve(strict=True)
+        resolved_checkpoint = checkpoint_dir.resolve(strict=True)
+        state_path = resolved_checkpoint / _GRPO_LOG_STATE_FILENAME
+        if not state_path.is_file() or state_path.is_symlink():
+            raise GRPOTrainingError("resume checkpoint is missing canonical GRPO log-state evidence")
+        value = json.loads(state_path.read_text(encoding="utf-8"))
+    except GRPOTrainingError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state evidence is unreadable") from None
+    if not isinstance(value, dict) or set(value) != {"version", "global_step", "logs"}:
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state schema is invalid")
+    step = _checkpoint_step(resolved_checkpoint)
+    if value.get("version") != _GRPO_LOG_STATE_VERSION or value.get("global_step") != step:
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state identity is invalid")
+    raw_logs = value.get("logs")
+    if not isinstance(raw_logs, Mapping) or set(raw_logs) != set(_GRPO_STREAM_LOG_NAMES):
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state files are invalid")
+    normalized_logs: dict[str, dict[str, object]] = {}
+    for name in _GRPO_STREAM_LOG_NAMES:
+        raw_state = raw_logs[name]
+        if not isinstance(raw_state, Mapping) or set(raw_state) != {"size_bytes", "line_count", "sha256"}:
+            raise GRPOTrainingError("resume checkpoint canonical GRPO log-state record is invalid")
+        size_bytes = raw_state.get("size_bytes")
+        line_count = raw_state.get("line_count")
+        digest = raw_state.get("sha256")
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or isinstance(line_count, bool)
+            or not isinstance(line_count, int)
+            or line_count < 0
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise GRPOTrainingError("resume checkpoint canonical GRPO log-state values are invalid")
+        expected = {"size_bytes": size_bytes, "line_count": line_count, "sha256": digest}
+        actual = _stream_log_file_state(resolved_run / name, limit_bytes=size_bytes)
+        if actual != expected:
+            raise GRPOTrainingError("canonical GRPO streaming evidence prefix differs from resume checkpoint")
+        normalized_logs[name] = expected
+    return {"version": _GRPO_LOG_STATE_VERSION, "global_step": step, "logs": normalized_logs}
+
+
+def _copy_file_with_fsync(source: Path, destination: Path) -> None:
+    try:
+        with source.open("rb") as src, destination.open("xb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+            dst.flush()
+            os.fsync(dst.fileno())
+    except OSError as error:
+        raise GRPOTrainingError(f"could not archive GRPO recovery evidence: {type(error).__name__}") from None
+
+
+def _restore_stream_log_prefix(path: Path, *, size_bytes: int, staging_dir: Path) -> None:
+    temporary: Path | None = None
+    try:
+        mode = path.stat().st_mode & 0o777
+        with (
+            path.open("rb") as source,
+            tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=staging_dir,
+                prefix=f".{path.name}.resume-",
+                suffix=".tmp",
+                delete=False,
+            ) as destination,
+        ):
+            temporary = Path(destination.name)
+            remaining = size_bytes
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise GRPOTrainingError("GRPO streaming evidence became shorter during resume restoration")
+                destination.write(chunk)
+                remaining -= len(chunk)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except GRPOTrainingError:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+    except OSError as error:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise GRPOTrainingError(f"could not restore GRPO streaming evidence: {type(error).__name__}") from None
+
+
+def _archive_future_grpo_checkpoints(
+    *,
+    run_dir: Path,
+    selected_step: int,
+    archive_dir: Path,
+) -> list[str]:
+    """Move every checkpoint newer than the selected resume point into preserved recovery history."""
+    if isinstance(selected_step, bool) or not isinstance(selected_step, int) or selected_step <= 0:
+        raise GRPOTrainingError("selected GRPO resume checkpoint step is invalid")
+    try:
+        checkpoint_root = (run_dir / "checkpoints").resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("GRPO checkpoint root is unavailable during resume recovery") from None
+    future_root = archive_dir / "superseded-future-checkpoints"
+    archived: list[str] = []
+    candidates: list[tuple[int, Path]] = []
+    for candidate in checkpoint_root.glob("checkpoint-*"):
+        match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", candidate.name)
+        if match is None:
+            continue
+        step = int(match.group(1))
+        if step <= selected_step:
+            continue
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise GRPOTrainingError("superseded future GRPO checkpoint path is unsafe")
+        candidates.append((step, candidate))
+    for _, candidate in sorted(candidates):
+        future_root.mkdir(exist_ok=True)
+        try:
+            os.replace(candidate, future_root / candidate.name)
+        except OSError as error:
+            raise GRPOTrainingError(
+                f"could not archive superseded future GRPO checkpoint: {type(error).__name__}"
+            ) from None
+        archived.append(candidate.name)
+    return archived
+
+
+def _archive_and_restore_grpo_logs(
+    *,
+    run_dir: Path,
+    checkpoint_dir: Path,
+    attempt_number: int,
+) -> Path:
+    """Archive a failed-attempt suffix, then restore canonical streaming logs to a checkpoint boundary."""
+    if isinstance(attempt_number, bool) or not isinstance(attempt_number, int) or attempt_number < 2:
+        raise GRPOTrainingError("GRPO resume attempt number is invalid")
+    state = _validate_resume_log_checkpoint(run_dir, checkpoint_dir)
+    step = cast(int, state["global_step"])
+    target_logs = cast(dict[str, dict[str, object]], state["logs"])
+    history_root = run_dir / "checkpoints" / _GRPO_RECOVERY_HISTORY_DIR
+    history_root.mkdir(parents=False, exist_ok=True)
+    archive = history_root / f"before-attempt-{attempt_number}-resume-checkpoint-{step}"
+    if archive.exists():
+        raise GRPOTrainingError("GRPO recovery archive already exists for this attempt")
+    incomplete = Path(tempfile.mkdtemp(prefix=f".{archive.name}.incomplete-", dir=history_root))
+    before_logs: dict[str, dict[str, object]] = {}
+    manifest: dict[str, object] = {
+        "version": 1,
+        "attempt": attempt_number,
+        "resume_checkpoint": checkpoint_dir.name,
+        "global_step": step,
+        "before_logs": before_logs,
+        "restored_checkpoint_logs": target_logs,
+        "superseded_future_checkpoints": [],
+    }
+    try:
+        for name in _GRPO_STREAM_LOG_NAMES:
+            source = run_dir / name
+            before_logs[name] = _stream_log_file_state(source)
+            _copy_file_with_fsync(source, incomplete / name)
+        _write_json(incomplete / "manifest.json", manifest)
+        os.replace(incomplete, archive)
+    except Exception:
+        shutil.rmtree(incomplete, ignore_errors=True)
+        raise
+    future_checkpoints = _archive_future_grpo_checkpoints(
+        run_dir=run_dir,
+        selected_step=step,
+        archive_dir=archive,
+    )
+    manifest["superseded_future_checkpoints"] = future_checkpoints
+    _write_json(archive / "manifest.json", manifest)
+    for name in _GRPO_STREAM_LOG_NAMES:
+        path = run_dir / name
+        expected = target_logs[name]
+        current = _stream_log_file_state(path)
+        if current == expected:
+            continue
+        _restore_stream_log_prefix(
+            path,
+            size_bytes=cast(int, expected["size_bytes"]),
+            staging_dir=history_root,
+        )
+        if _stream_log_file_state(path) != expected:
+            raise GRPOTrainingError("GRPO streaming evidence restoration did not reach checkpoint boundary")
+    return archive
 
 
 def _config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
@@ -1433,6 +1767,7 @@ def run_grpo_training(
         if not run_dir.is_dir():
             raise GRPOTrainingError("resume requires an existing GRPO run directory")
         resolved_resume, resume_source = _resolve_resume_checkpoint(run_dir, resume_from_checkpoint)
+        _validate_resume_log_checkpoint(run_dir, resolved_resume)
         resume_path = str(resolved_resume)
         run_metadata = _validate_resume_run(
             run_dir=run_dir,
@@ -1471,6 +1806,19 @@ def run_grpo_training(
     started = time.perf_counter()
     peak_reset = False
     try:
+        if resume_path is not None:
+            attempts = run_metadata.get("attempts")
+            if not isinstance(attempts, list) or len(attempts) < 2:
+                raise GRPOTrainingError("GRPO resume attempt history is invalid")
+            recovery_archive = _archive_and_restore_grpo_logs(
+                run_dir=run_dir,
+                checkpoint_dir=Path(resume_path),
+                attempt_number=len(attempts),
+            )
+            with (run_dir / "stdout.log").open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"restored canonical streaming logs from {resume_source}; archive={recovery_archive.name}\n"
+                )
         train_dataset = build_grpo_dataset(records, reward_mode=config.reward_mode)
         runtime = _load_grpo_runtime()
         model_args, training_args = _runtime_arguments(
@@ -1509,6 +1857,7 @@ def run_grpo_training(
                 peft_config=runtime.get_peft_config(model_args),
             )
             _install_grpo_runtime_telemetry(trainer)
+            _install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir)
             train_result = trainer.train(resume_from_checkpoint=resume_path)
             raw_train_metrics = getattr(train_result, "metrics", {})
             if isinstance(raw_train_metrics, Mapping):

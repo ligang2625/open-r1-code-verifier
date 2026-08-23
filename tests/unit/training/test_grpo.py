@@ -1076,11 +1076,19 @@ def _prepare_fake_grpo_run(
     monkeypatch.setattr(grpo_module, "_load_grpo_runtime", _fake_grpo_runtime)
     monkeypatch.setattr(grpo_module, "_reset_cuda_peak_memory", lambda: None)
     monkeypatch.setattr(grpo_module, "_peak_cuda_memory_bytes", lambda: (123, 456))
+    monkeypatch.setattr(grpo_module, "_install_grpo_checkpoint_log_snapshots", lambda *args, **kwargs: None)
     return public_config, hidden_config, sft_run_dir, tmp_path / "outputs"
 
 
 def _passing_results(count: int) -> list[ExecutionResult]:
     return [_execution_result(passed=True) for _ in range(count)]
+
+
+def _create_fake_resume_checkpoint(run_dir: Path, *, step: int = 1) -> Path:
+    checkpoint = run_dir / "checkpoints" / f"checkpoint-{step}"
+    checkpoint.mkdir()
+    grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=step)
+    return checkpoint
 
 
 def test_grpo_run_uses_merged_b_new_lora_and_writes_strict_sanitized_artifacts(
@@ -1297,6 +1305,175 @@ def test_pinned_grpo_trainer_constructor_succeeds_under_plain_training_deepspeed
     assert isinstance(trainer, trl_module.GRPOTrainer)
 
 
+def test_pinned_grpo_runtime_and_checkpoint_hooks_compose_on_real_train(tmp_path: Path) -> None:
+    import importlib
+
+    datasets_module = cast(Any, importlib.import_module("datasets"))
+    tokenizers_module = cast(Any, importlib.import_module("tokenizers"))
+    tokenizers_models = cast(Any, importlib.import_module("tokenizers.models"))
+    tokenizers_pre = cast(Any, importlib.import_module("tokenizers.pre_tokenizers"))
+    transformers_module = cast(Any, importlib.import_module("transformers"))
+    trl_module = cast(Any, importlib.import_module("trl"))
+
+    run_dir = tmp_path / "real-hook-run"
+    checkpoint_root = run_dir / "checkpoints"
+    checkpoint_root.mkdir(parents=True)
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        (run_dir / name).touch()
+
+    tokenizer_cls = getattr(tokenizers_module, "Token" + "izer")
+    whitespace_cls = getattr(tokenizers_pre, "White" + "space")
+    raw_tokenizer = tokenizer_cls(tokenizers_models.WordLevel({"u": 0, "p": 1, "e": 2, "hello": 3}, unk_token="u"))
+    raw_tokenizer.pre_tokenizer = whitespace_cls()
+    tokenizer_type = getattr(transformers_module, "PreTrained" + "TokenizerFast")
+    tokenizer = tokenizer_type(
+        tokenizer_object=raw_tokenizer,
+        unk_token="u",
+        pad_token="p",
+        eos_token="e",
+    )
+    model = transformers_module.Qwen2ForCausalLM(
+        transformers_module.Qwen2Config(
+            vocab_size=4,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            max_position_embeddings=128,
+        )
+    )
+    dataset = datasets_module.Dataset.from_list([{"prompt": "hello"}])
+
+    def reward(completions: list[str], **_: object) -> list[float]:
+        for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+            with (run_dir / name).open("a", encoding="utf-8") as handle:
+                for index in range(len(completions)):
+                    handle.write(json.dumps({"index": index}) + "\n")
+                handle.flush()
+        return [0.0 for _ in completions]
+
+    args = trl_module.GRPOConfig(
+        output_dir=str(checkpoint_root),
+        do_train=True,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        max_steps=1,
+        num_generations=4,
+        max_prompt_length=16,
+        max_completion_length=8,
+        gradient_checkpointing=True,
+        bf16=False,
+        fp16=False,
+        use_cpu=True,
+        use_vllm=False,
+        report_to=[],
+        save_strategy="steps",
+        save_steps=1,
+        logging_steps=1,
+    )
+    guard = cast(Any, vars(grpo_module)["_without_unconfigured_deepspeed_backend"])
+    with guard():
+        trainer = trl_module.GRPOTrainer(
+            model=model,
+            reward_funcs=reward,
+            args=args,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            peft_config=None,
+        )
+        grpo_module._install_grpo_runtime_telemetry(trainer)
+        grpo_module._install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir)
+        trainer.train()
+
+    checkpoint = checkpoint_root / "checkpoint-1"
+    state = json.loads((checkpoint / grpo_module._GRPO_LOG_STATE_FILENAME).read_text(encoding="utf-8"))
+    assert state["global_step"] == 1
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        assert state["logs"][name] == grpo_module._stream_log_file_state(run_dir / name)
+    assert model.is_gradient_checkpointing is True
+
+
+def test_pinned_grpo_reward_exception_aborts_before_optimizer_update(tmp_path: Path) -> None:
+    import importlib
+
+    datasets_module = cast(Any, importlib.import_module("datasets"))
+    tokenizers_module = cast(Any, importlib.import_module("tokenizers"))
+    tokenizers_models = cast(Any, importlib.import_module("tokenizers.models"))
+    tokenizers_pre = cast(Any, importlib.import_module("tokenizers.pre_tokenizers"))
+    transformers_module = cast(Any, importlib.import_module("transformers"))
+    trl_module = cast(Any, importlib.import_module("trl"))
+    torch_module = cast(Any, importlib.import_module("torch"))
+
+    tokenizer_cls = getattr(tokenizers_module, "Token" + "izer")
+    whitespace_cls = getattr(tokenizers_pre, "White" + "space")
+    raw_tokenizer = tokenizer_cls(tokenizers_models.WordLevel({"u": 0, "p": 1, "e": 2, "hello": 3}, unk_token="u"))
+    raw_tokenizer.pre_tokenizer = whitespace_cls()
+    tokenizer_type = getattr(transformers_module, "PreTrained" + "TokenizerFast")
+    tokenizer = tokenizer_type(
+        tokenizer_object=raw_tokenizer,
+        unk_token="u",
+        pad_token="p",
+        eos_token="e",
+    )
+    model = transformers_module.Qwen2ForCausalLM(
+        transformers_module.Qwen2Config(
+            vocab_size=4,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            max_position_embeddings=128,
+        )
+    )
+    before = [parameter.detach().clone() for parameter in model.parameters()]
+    dataset = datasets_module.Dataset.from_list([{"prompt": "hello"}])
+
+    def reward(*_: object, **__: object) -> list[float]:
+        raise GRPOTrainingError("synthetic infrastructure failure")
+
+    output_dir = tmp_path / "fail-before-update"
+    args = trl_module.GRPOConfig(
+        output_dir=str(output_dir),
+        do_train=True,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        max_steps=1,
+        num_generations=4,
+        max_prompt_length=16,
+        max_completion_length=8,
+        gradient_checkpointing=True,
+        bf16=False,
+        fp16=False,
+        use_cpu=True,
+        use_vllm=False,
+        report_to=[],
+        save_strategy="steps",
+        save_steps=1,
+        logging_steps=1,
+    )
+    guard = cast(Any, vars(grpo_module)["_without_unconfigured_deepspeed_backend"])
+    with guard():
+        trainer = trl_module.GRPOTrainer(
+            model=model,
+            reward_funcs=reward,
+            args=args,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            peft_config=None,
+        )
+        with pytest.raises(GRPOTrainingError, match="synthetic infrastructure failure"):
+            trainer.train()
+
+    assert trainer.state.global_step == 0
+    assert not (output_dir / "checkpoint-1").exists()
+    assert all(
+        torch_module.equal(previous, current.detach())
+        for previous, current in zip(before, model.parameters(), strict=True)
+    )
+
+
 def test_grpo_run_failure_is_sanitized_and_requires_finite_loss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1415,6 +1592,107 @@ def test_grpo_paired_definition_is_portable_across_local_roots(tmp_path: Path) -
     assert first[3] != second[3]
 
 
+def test_grpo_checkpoint_snapshot_binds_stream_logs_after_trainer_save(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    checkpoint_root = run_dir / "checkpoints"
+    checkpoint_root.mkdir(parents=True)
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        (run_dir / name).write_text('{"row":1}\n', encoding="utf-8")
+
+    class FakeTrainer:
+        def __init__(self) -> None:
+            self.args = SimpleNamespace(output_dir=str(checkpoint_root))
+            self.state = SimpleNamespace(global_step=10)
+
+        def _save_checkpoint(self, model: object, trial: object) -> None:
+            del model, trial
+            (checkpoint_root / "checkpoint-10").mkdir()
+
+    trainer = FakeTrainer()
+    grpo_module._install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir)
+    trainer._save_checkpoint(None, None)
+
+    state_path = checkpoint_root / "checkpoint-10" / grpo_module._GRPO_LOG_STATE_FILENAME
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["version"] == 1
+    assert state["global_step"] == 10
+    assert set(state["logs"]) == set(grpo_module._GRPO_STREAM_LOG_NAMES)
+    assert all(item["line_count"] == 1 for item in state["logs"].values())
+
+
+def test_grpo_resume_archives_failed_suffix_and_restores_checkpoint_prefix(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    checkpoint = run_dir / "checkpoints" / "checkpoint-30"
+    checkpoint.mkdir(parents=True)
+    prefix_bytes: dict[str, bytes] = {}
+    failed_bytes: dict[str, bytes] = {}
+    for index, name in enumerate(grpo_module._GRPO_STREAM_LOG_NAMES, 1):
+        path = run_dir / name
+        path.write_text(f'{{"step":30,"kind":{index}}}\n', encoding="utf-8")
+        prefix_bytes[name] = path.read_bytes()
+    grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=30)
+    for index, name in enumerate(grpo_module._GRPO_STREAM_LOG_NAMES, 1):
+        path = run_dir / name
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f'{{"step":31,"failed":{index}}}\n')
+        failed_bytes[name] = path.read_bytes()
+    future_checkpoint = run_dir / "checkpoints" / "checkpoint-40"
+    future_checkpoint.mkdir()
+    (future_checkpoint / "partial-state.bin").write_bytes(b"preserve-me")
+
+    archive = grpo_module._archive_and_restore_grpo_logs(
+        run_dir=run_dir,
+        checkpoint_dir=checkpoint,
+        attempt_number=2,
+    )
+
+    assert archive.parent == run_dir / "checkpoints" / grpo_module._GRPO_RECOVERY_HISTORY_DIR
+    assert archive.name == "before-attempt-2-resume-checkpoint-30"
+    manifest = json.loads((archive / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["attempt"] == 2
+    assert manifest["global_step"] == 30
+    assert manifest["superseded_future_checkpoints"] == ["checkpoint-40"]
+    assert not future_checkpoint.exists()
+    assert (
+        archive / "superseded-future-checkpoints" / "checkpoint-40" / "partial-state.bin"
+    ).read_bytes() == b"preserve-me"
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        assert (run_dir / name).read_bytes() == prefix_bytes[name]
+        assert (archive / name).read_bytes() == failed_bytes[name]
+
+    second_failed_bytes: dict[str, bytes] = {}
+    for index, name in enumerate(grpo_module._GRPO_STREAM_LOG_NAMES, 1):
+        path = run_dir / name
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f'{{"step":31,"second_failed":{index}}}\n')
+        second_failed_bytes[name] = path.read_bytes()
+    second_archive = grpo_module._archive_and_restore_grpo_logs(
+        run_dir=run_dir,
+        checkpoint_dir=checkpoint,
+        attempt_number=3,
+    )
+    assert second_archive.name == "before-attempt-3-resume-checkpoint-30"
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        assert (run_dir / name).read_bytes() == prefix_bytes[name]
+        assert (second_archive / name).read_bytes() == second_failed_bytes[name]
+    history = run_dir / "checkpoints" / grpo_module._GRPO_RECOVERY_HISTORY_DIR
+    assert sorted(path.name for path in history.iterdir()) == [
+        "before-attempt-2-resume-checkpoint-30",
+        "before-attempt-3-resume-checkpoint-30",
+    ]
+    assert not any(path.name.startswith(".") and ".resume-" in path.name for path in history.iterdir())
+
+
+def test_grpo_resume_rejects_checkpoint_without_log_boundary(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    checkpoint = run_dir / "checkpoints" / "checkpoint-10"
+    checkpoint.mkdir(parents=True)
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        (run_dir / name).write_text('{"row":1}\n', encoding="utf-8")
+    with pytest.raises(GRPOTrainingError, match="missing canonical GRPO log-state"):
+        grpo_module._validate_resume_log_checkpoint(run_dir, checkpoint)
+
+
 def test_grpo_resume_is_bound_and_appends_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1430,8 +1708,13 @@ def test_grpo_resume_is_bound_and_appends_logs(
         seed=7,
         executor=MockExecutor(_passing_results(4)),
     )
-    checkpoint = summary.checkpoint_dir / "checkpoint-1"
-    checkpoint.mkdir()
+    checkpoint = _create_fake_resume_checkpoint(summary.run_dir)
+    failed_attempt_logs: dict[str, bytes] = {}
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        path = summary.run_dir / name
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"failed_attempt_suffix":true}\n')
+        failed_attempt_logs[name] = path.read_bytes()
     metadata_value = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     metadata_value["status"] = "failed"
     metadata_value["gpu_hours"] = 1.25
@@ -1460,6 +1743,17 @@ def test_grpo_resume_is_bound_and_appends_logs(
     )
     assert len(_read_jsonl(resumed.run_dir / "rollouts.jsonl")) == 8
     assert len(_read_jsonl(resumed.run_dir / "metrics.jsonl")) == 2
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        assert b"failed_attempt_suffix" not in (resumed.run_dir / name).read_bytes()
+    archive = (
+        resumed.run_dir
+        / "checkpoints"
+        / grpo_module._GRPO_RECOVERY_HISTORY_DIR
+        / "before-attempt-2-resume-checkpoint-1"
+    )
+    assert archive.is_dir()
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        assert (archive / name).read_bytes() == failed_attempt_logs[name]
 
 
 def test_grpo_resume_validation_is_read_only_until_attempt_begin(
@@ -1477,8 +1771,7 @@ def test_grpo_resume_validation_is_read_only_until_attempt_begin(
         seed=42,
         executor=MockExecutor(_passing_results(4)),
     )
-    checkpoint = summary.checkpoint_dir / "checkpoint-1"
-    checkpoint.mkdir()
+    checkpoint = _create_fake_resume_checkpoint(summary.run_dir)
     metadata_value = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     metadata_value["status"] = "failed"
     metadata_value["end_time"] = "preserved-end-time"
@@ -1528,8 +1821,7 @@ def test_grpo_resume_rejects_identity_drift(
         seed=42,
         executor=MockExecutor(_passing_results(4)),
     )
-    checkpoint = summary.checkpoint_dir / "checkpoint-1"
-    checkpoint.mkdir()
+    checkpoint = _create_fake_resume_checkpoint(summary.run_dir)
     run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     run_metadata["status"] = "failed"
     if drift == "dependency":
@@ -1576,8 +1868,7 @@ def test_grpo_resume_rejects_counterpart_only_dataset_drift(
         seed=42,
         executor=MockExecutor(_passing_results(4)),
     )
-    checkpoint = summary.checkpoint_dir / "checkpoint-1"
-    checkpoint.mkdir()
+    checkpoint = _create_fake_resume_checkpoint(summary.run_dir)
     run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     run_metadata["status"] = "failed"
     (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")
