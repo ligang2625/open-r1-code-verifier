@@ -177,6 +177,15 @@ _GRPO_STREAM_LOG_NAMES = ("rollouts.jsonl", "rewards.jsonl", "group_metrics.json
 _GRPO_LOG_STATE_FILENAME = "code_verifier_log_state.json"
 _GRPO_RECOVERY_HISTORY_DIR = "recovery-history"
 _GRPO_LOG_STATE_VERSION = 1
+_GRPO_TRAINER_RESUME_FILES = (
+    "adapter_config.json",
+    "adapter_model.safetensors",
+    "optimizer.pt",
+    "scheduler.pt",
+    "rng_state.pth",
+    "trainer_state.json",
+    "training_args.bin",
+)
 _PAIR_SCHEMA_VERSION = 2
 _GPU_HOURS_SEMANTICS = (
     "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
@@ -1229,6 +1238,41 @@ def _validate_resume_log_checkpoint(run_dir: Path, checkpoint_dir: Path) -> dict
     return {"version": _GRPO_LOG_STATE_VERSION, "global_step": step, "logs": normalized_logs}
 
 
+def _latest_valid_resume_checkpoint(run_dir: Path, config: GRPOTrainingConfig) -> Path | None:
+    """Return the highest cadence checkpoint that is complete and bound to canonical log evidence."""
+    checkpoint_path = run_dir / "checkpoints"
+    if not checkpoint_path.is_dir() or checkpoint_path.is_symlink():
+        raise GRPOTrainingError("GRPO checkpoint root is unsafe during resume selection")
+    try:
+        checkpoint_root = checkpoint_path.resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("GRPO checkpoint root is unavailable during resume selection") from None
+
+    valid: list[tuple[int, Path]] = []
+    for candidate in checkpoint_root.glob("checkpoint-*"):
+        match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", candidate.name)
+        if match is None or not candidate.is_dir() or candidate.is_symlink():
+            continue
+        step = int(match.group(1))
+        if step > config.max_steps or step % config.save_steps != 0:
+            continue
+        required = [candidate / name for name in _GRPO_TRAINER_RESUME_FILES]
+        if any(not path.is_file() or path.is_symlink() or path.stat().st_size <= 0 for path in required):
+            continue
+        try:
+            trainer_state = json.loads((candidate / "trainer_state.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(trainer_state, dict) or trainer_state.get("global_step") != step:
+            continue
+        try:
+            _validate_resume_log_checkpoint(run_dir, candidate)
+        except GRPOTrainingError:
+            continue
+        valid.append((step, candidate))
+    return max(valid)[1] if valid else None
+
+
 def _copy_file_with_fsync(source: Path, destination: Path) -> None:
     try:
         with source.open("rb") as src, destination.open("xb") as dst:
@@ -1284,8 +1328,11 @@ def _archive_future_grpo_checkpoints(
     """Move every checkpoint newer than the selected resume point into preserved recovery history."""
     if isinstance(selected_step, bool) or not isinstance(selected_step, int) or selected_step <= 0:
         raise GRPOTrainingError("selected GRPO resume checkpoint step is invalid")
+    checkpoint_path = run_dir / "checkpoints"
+    if not checkpoint_path.is_dir() or checkpoint_path.is_symlink():
+        raise GRPOTrainingError("GRPO checkpoint root is unsafe during resume recovery")
     try:
-        checkpoint_root = (run_dir / "checkpoints").resolve(strict=True)
+        checkpoint_root = checkpoint_path.resolve(strict=True)
     except OSError:
         raise GRPOTrainingError("GRPO checkpoint root is unavailable during resume recovery") from None
     future_root = archive_dir / "superseded-future-checkpoints"
@@ -1326,6 +1373,8 @@ def _archive_and_restore_grpo_logs(
     step = cast(int, state["global_step"])
     target_logs = cast(dict[str, dict[str, object]], state["logs"])
     history_root = run_dir / "checkpoints" / _GRPO_RECOVERY_HISTORY_DIR
+    if history_root.exists() and (not history_root.is_dir() or history_root.is_symlink()):
+        raise GRPOTrainingError("GRPO recovery-history path is unsafe")
     history_root.mkdir(parents=False, exist_ok=True)
     archive = history_root / f"before-attempt-{attempt_number}-resume-checkpoint-{step}"
     if archive.exists():
@@ -1469,7 +1518,7 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
         if not isinstance(value, Mapping) or value.get("attempt") != index:
             raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
         status = value.get("status")
-        if status not in {"completed", "failed"}:
+        if status not in {"running", "completed", "failed"}:
             raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
         gpu_hours = value.get("gpu_hours")
         if (
@@ -1479,6 +1528,8 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
             or float(gpu_hours) < 0.0
         ):
             raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        if status == "running" and (float(gpu_hours) != 0.0 or value.get("end_time") is not None):
+            raise GRPOTrainingError("GRPO interrupted attempt metadata is invalid")
         total += float(gpu_hours)
     return total
 
@@ -1662,10 +1713,18 @@ def _validate_resume_run(
         raise GRPOTrainingError("existing GRPO run identity does not match the requested resume")
     if {path.name for path in run_dir.iterdir()} != _GRPO_RUN_LAYOUT:
         raise GRPOTrainingError("existing GRPO run does not match the strict artifact layout")
-    if value.get("status") != "failed":
-        raise GRPOTrainingError("only a gracefully failed GRPO run may be resumed")
+    run_status = value.get("status")
+    if run_status not in {"running", "failed"}:
+        raise GRPOTrainingError("only an interrupted or failed GRPO run may be resumed")
+    attempts = value.get("attempts")
+    if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], Mapping):
+        raise GRPOTrainingError("existing GRPO run has invalid attempt history")
+    if attempts[-1].get("status") != run_status:
+        raise GRPOTrainingError("existing GRPO run status does not match its latest attempt")
+    if run_status == "running" and value.get("end_time") is not None:
+        raise GRPOTrainingError("interrupted GRPO run must not have an end_time")
     previous_gpu_hours = value.get("gpu_hours")
-    attempts_total = _attempt_gpu_hours_total(value.get("attempts"))
+    attempts_total = _attempt_gpu_hours_total(attempts)
     if (
         isinstance(previous_gpu_hours, bool)
         or not isinstance(previous_gpu_hours, int | float)

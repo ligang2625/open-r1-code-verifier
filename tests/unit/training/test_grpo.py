@@ -1683,6 +1683,53 @@ def test_grpo_resume_archives_failed_suffix_and_restores_checkpoint_prefix(tmp_p
     assert not any(path.name.startswith(".") and ".resume-" in path.name for path in history.iterdir())
 
 
+def test_grpo_resume_recovery_survives_stale_transaction_staging(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    checkpoint = run_dir / "checkpoints" / "checkpoint-30"
+    checkpoint.mkdir(parents=True)
+    prefix_bytes: dict[str, bytes] = {}
+    for index, name in enumerate(grpo_module._GRPO_STREAM_LOG_NAMES, 1):
+        path = run_dir / name
+        path.write_text(f'{{"step":30,"kind":{index}}}\n', encoding="utf-8")
+        prefix_bytes[name] = path.read_bytes()
+    grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=30)
+
+    history = run_dir / "checkpoints" / grpo_module._GRPO_RECOVERY_HISTORY_DIR
+    history.mkdir()
+    stale_archive_stage = history / ".before-attempt-2-resume-checkpoint-30.incomplete-deadbeef"
+    stale_archive_stage.mkdir()
+    (stale_archive_stage / "rollouts.jsonl").write_bytes(prefix_bytes["rollouts.jsonl"])
+    stale_restore_stage = history / ".rewards.jsonl.resume-deadbeef.tmp"
+    stale_restore_stage.write_bytes(prefix_bytes["rewards.jsonl"])
+    for index, name in enumerate(grpo_module._GRPO_STREAM_LOG_NAMES, 1):
+        with (run_dir / name).open("a", encoding="utf-8") as handle:
+            handle.write(f'{{"step":31,"failed":{index}}}\n')
+
+    archive = grpo_module._archive_and_restore_grpo_logs(
+        run_dir=run_dir,
+        checkpoint_dir=checkpoint,
+        attempt_number=3,
+    )
+
+    assert archive.name == "before-attempt-3-resume-checkpoint-30"
+    assert stale_archive_stage.is_dir()
+    assert stale_restore_stage.is_file()
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        assert (run_dir / name).read_bytes() == prefix_bytes[name]
+
+
+def test_latest_valid_resume_checkpoint_rejects_symlink_checkpoint_root(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    actual_root = tmp_path / "actual-checkpoints"
+    actual_root.mkdir()
+    (run_dir / "checkpoints").symlink_to(actual_root, target_is_directory=True)
+    config = replace(grpo_training_config_from_mapping(_config_mapping(tmp_path)), max_steps=100, save_steps=10)
+
+    with pytest.raises(GRPOTrainingError, match="checkpoint root is unsafe"):
+        grpo_module._latest_valid_resume_checkpoint(run_dir, config)
+
+
 def test_grpo_resume_rejects_checkpoint_without_log_boundary(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     checkpoint = run_dir / "checkpoints" / "checkpoint-10"
@@ -1693,7 +1740,96 @@ def test_grpo_resume_rejects_checkpoint_without_log_boundary(tmp_path: Path) -> 
         grpo_module._validate_resume_log_checkpoint(run_dir, checkpoint)
 
 
-def test_grpo_resume_rejects_stale_running_attempt_after_hard_interruption(
+def test_latest_valid_resume_checkpoint_skips_newer_checkpoint_without_log_sidecar(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    checkpoint_root = run_dir / "checkpoints"
+    checkpoint_root.mkdir(parents=True)
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        (run_dir / name).write_text('{"step":20}\n', encoding="utf-8")
+
+    def write_candidate(step: int, *, with_sidecar: bool) -> Path:
+        checkpoint = checkpoint_root / f"checkpoint-{step}"
+        checkpoint.mkdir()
+        for name in grpo_module._GRPO_TRAINER_RESUME_FILES:
+            path = checkpoint / name
+            if name == "trainer_state.json":
+                path.write_text(json.dumps({"global_step": step}), encoding="utf-8")
+            else:
+                path.write_bytes(b"complete")
+        if with_sidecar:
+            grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=step)
+        return checkpoint
+
+    checkpoint_20 = write_candidate(20, with_sidecar=True)
+    for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+        with (run_dir / name).open("a", encoding="utf-8") as handle:
+            handle.write('{"step":21,"failed_suffix":true}\n')
+    write_candidate(30, with_sidecar=False)
+    config = replace(grpo_training_config_from_mapping(_config_mapping(tmp_path)), max_steps=100, save_steps=10)
+
+    selected = grpo_module._latest_valid_resume_checkpoint(run_dir, config)
+
+    assert selected == checkpoint_20
+
+
+def test_grpo_resume_accepts_repeated_hard_interruptions_and_preserves_recovery_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+    checkpoint = _create_fake_resume_checkpoint(summary.run_dir)
+
+    for interruption_number in (1, 2):
+        failed_suffix = f'{{"hard_interruption":{interruption_number}}}\n'.encode()
+        for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+            with (summary.run_dir / name).open("ab") as handle:
+                handle.write(failed_suffix)
+        metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+        metadata["status"] = "running"
+        metadata["end_time"] = None
+        metadata["attempts"][-1]["status"] = "running"
+        metadata["attempts"][-1]["end_time"] = None
+        metadata["attempts"][-1]["gpu_hours"] = 0.0
+        metadata["gpu_hours"] = sum(float(attempt["gpu_hours"]) for attempt in metadata["attempts"])
+        (summary.run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+        summary = run_grpo_training(
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=sft_run_dir,
+            hidden_sft_run_dir=sft_run_dir,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor(_passing_results(4)),
+            resume_from_checkpoint=checkpoint,
+        )
+        resumed_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+        assert resumed_metadata["status"] == "completed"
+        assert resumed_metadata["attempts"][-2]["status"] == "running"
+        assert resumed_metadata["attempts"][-2]["gpu_hours"] == 0.0
+        assert resumed_metadata["attempts"][-1]["status"] == "completed"
+        for name in grpo_module._GRPO_STREAM_LOG_NAMES:
+            assert failed_suffix not in (summary.run_dir / name).read_bytes()
+
+    history = summary.run_dir / "checkpoints" / grpo_module._GRPO_RECOVERY_HISTORY_DIR
+    assert sorted(path.name for path in history.iterdir()) == [
+        "before-attempt-2-resume-checkpoint-1",
+        "before-attempt-3-resume-checkpoint-1",
+    ]
+
+
+def test_grpo_resume_rejects_incoherent_running_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1712,13 +1848,9 @@ def test_grpo_resume_rejects_stale_running_attempt_after_hard_interruption(
     metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     metadata["status"] = "running"
     metadata["end_time"] = None
-    metadata["gpu_hours"] = 0.0
-    metadata["attempts"][-1]["status"] = "running"
-    metadata["attempts"][-1]["end_time"] = None
-    metadata["attempts"][-1]["gpu_hours"] = 0.0
     (summary.run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
 
-    with pytest.raises(GRPOTrainingError, match="gracefully failed"):
+    with pytest.raises(GRPOTrainingError, match="latest attempt"):
         run_grpo_training(
             public_config,
             hidden_config,
@@ -1757,6 +1889,7 @@ def test_grpo_resume_is_bound_and_appends_logs(
     metadata_value = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     metadata_value["status"] = "failed"
     metadata_value["gpu_hours"] = 1.25
+    metadata_value["attempts"][-1]["status"] = "failed"
     metadata_value["attempts"][-1]["gpu_hours"] = 1.25
     (summary.run_dir / "run.json").write_text(json.dumps(metadata_value), encoding="utf-8")
 
