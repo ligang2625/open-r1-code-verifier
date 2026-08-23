@@ -339,6 +339,41 @@ def test_grpo_reward_callback_selects_only_configured_test_source_and_writes_san
             assert forbidden not in contents
 
 
+def test_grpo_unrecovered_infrastructure_failure_trips_circuit_breaker_and_aborts_callback(tmp_path: Path) -> None:
+    sandbox_result = ExecutionResult(
+        status=ExecutionStatus.SANDBOX_ERROR,
+        passed_tests=0,
+        total_tests=1,
+        pass_rate=0.0,
+        runtime_ms=1.0,
+        test_results=[
+            ExecutionTestCaseResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed=False,
+                runtime_ms=1.0,
+                stdout="",
+                stderr="piston transport failed",
+            )
+        ],
+    )
+    executor = MockExecutor([sandbox_result, _execution_result(passed=True)])
+    callback = _callback(tmp_path, reward_mode="public", executor=executor)
+    columns = _reward_columns(hidden=False)
+
+    with pytest.raises(GRPOTrainingError, match="infrastructure failure"):
+        callback(
+            prompts=[[{"role": "user", "content": "prompt"}]] * 2,
+            completions=["```python\ndef solve(value): return value\n```"] * 2,
+            completion_ids=[[1], [1]],
+            **columns,
+        )
+
+    assert len(executor.calls) == 1
+    reward_rows = _read_jsonl(tmp_path / "public" / "rewards.jsonl")
+    assert len(reward_rows) == 2
+    assert all(row["infrastructure_failure"] is True for row in reward_rows)
+
+
 def test_grpo_reward_callback_restores_heterogeneous_json_test_values(tmp_path: Path) -> None:
     executor = MockExecutor([_execution_result(passed=True), _execution_result(passed=True)])
     callback = _callback(tmp_path, reward_mode="public", executor=executor)

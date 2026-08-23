@@ -7,13 +7,16 @@ configuration intentionally accepts only loopback HTTP endpoints in either mode.
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import math
 import secrets
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -31,6 +34,7 @@ from code_verifier.execution.base import (
     validate_execution_result,
 )
 from code_verifier.execution.harness import HarnessReport, build_python_test_program, parse_harness_report
+from code_verifier.execution.piston_resilience import PistonTransportPolicy, PistonTransportTelemetry, sleep_backoff
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _CONFIG_FIELDS = frozenset(
@@ -47,8 +51,46 @@ _CONFIG_FIELDS = frozenset(
 PISTON_EXECUTOR_IMPLEMENTATION_VERSION = "piston-executor-v1"
 
 
+class PistonTransportFailureKind(str, Enum):
+    """Sanitized failure classes used for fail-closed transport decisions."""
+
+    CONNECTION_REFUSED = "connection_refused"
+    PRECONNECT_FAILURE = "preconnect_failure"
+    CONNECTION_RESET = "connection_reset"
+    READ_TIMEOUT = "read_timeout"
+    HTTP_ERROR = "http_error"
+    INVALID_RESPONSE = "invalid_response"
+    OVERSIZED_RESPONSE = "oversized_response"
+    INVALID_REQUEST = "invalid_request"
+    OTHER = "other"
+
+
 class PistonTransportError(RuntimeError):
     """Raised when the loopback Piston HTTP boundary cannot return a valid bounded response."""
+
+    def __init__(self, message: str, *, kind: PistonTransportFailureKind | None = None) -> None:
+        super().__init__(message)
+        self.kind = PistonTransportFailureKind.OTHER if kind is None else kind
+
+    @property
+    def safe_to_retry(self) -> bool:
+        """Return true only when the execute request is proven not to have reached Piston."""
+        return self.kind in {
+            PistonTransportFailureKind.CONNECTION_REFUSED,
+            PistonTransportFailureKind.PRECONNECT_FAILURE,
+        }
+
+    @property
+    def remote_execution_ambiguous(self) -> bool:
+        """Return true when a candidate POST may have reached the remote service."""
+        return self.kind in {
+            PistonTransportFailureKind.CONNECTION_RESET,
+            PistonTransportFailureKind.READ_TIMEOUT,
+            PistonTransportFailureKind.HTTP_ERROR,
+            PistonTransportFailureKind.INVALID_RESPONSE,
+            PistonTransportFailureKind.OVERSIZED_RESPONSE,
+            PistonTransportFailureKind.OTHER,
+        }
 
 
 @dataclass(frozen=True)
@@ -125,7 +167,9 @@ class UrlLibPistonTransport:
         try:
             body = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         except (TypeError, ValueError, RecursionError, UnicodeEncodeError):
-            raise PistonTransportError("invalid piston request") from None
+            raise PistonTransportError(
+                "invalid piston request", kind=PistonTransportFailureKind.INVALID_REQUEST
+            ) from None
         request = Request(
             f"{self._base_url}/api/v2/execute",
             data=body,
@@ -136,31 +180,59 @@ class UrlLibPistonTransport:
 
     def _request_json(self, request: Request, *, timeout_seconds: float, max_response_bytes: int) -> object:
         if not _is_finite_positive_number(timeout_seconds):
-            raise PistonTransportError("invalid piston timeout")
+            raise PistonTransportError("invalid piston timeout", kind=PistonTransportFailureKind.INVALID_REQUEST)
         if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) or max_response_bytes <= 0:
-            raise PistonTransportError("invalid piston response limit")
+            raise PistonTransportError(
+                "invalid piston response limit", kind=PistonTransportFailureKind.INVALID_REQUEST
+            )
         try:
             with self._opener.open(request, timeout=float(timeout_seconds)) as response:
                 content_type = response.headers.get_content_type().lower()
                 if content_type != "application/json" and not (
                     content_type.startswith("application/") and content_type.endswith("+json")
                 ):
-                    raise PistonTransportError("piston returned non-json content")
+                    raise PistonTransportError(
+                        "piston returned non-json content", kind=PistonTransportFailureKind.INVALID_RESPONSE
+                    )
                 raw = response.read(max_response_bytes + 1)
         except PistonTransportError:
             raise
         except HTTPError:
-            raise PistonTransportError("piston http request failed") from None
-        except (URLError, TimeoutError, OSError):
-            raise PistonTransportError("piston transport failed") from None
+            raise PistonTransportError(
+                "piston http request failed", kind=PistonTransportFailureKind.HTTP_ERROR
+            ) from None
+        except (URLError, TimeoutError, OSError) as error:
+            raise _classified_transport_error(error) from None
 
         if len(raw) > max_response_bytes:
-            raise PistonTransportError("piston response exceeded limit")
+            raise PistonTransportError(
+                "piston response exceeded limit", kind=PistonTransportFailureKind.OVERSIZED_RESPONSE
+            )
         try:
             text = raw.decode("utf-8")
             return cast(object, json.loads(text, parse_constant=_reject_json_constant))
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
-            raise PistonTransportError("invalid piston json response") from None
+            raise PistonTransportError(
+                "invalid piston json response", kind=PistonTransportFailureKind.INVALID_RESPONSE
+            ) from None
+
+
+def _classified_transport_error(error: BaseException) -> PistonTransportError:
+    """Classify connection failures without leaking endpoint or payload details."""
+    reason: object = error.reason if isinstance(error, URLError) else error
+    if isinstance(reason, ConnectionRefusedError) or (
+        isinstance(reason, OSError) and reason.errno == errno.ECONNREFUSED
+    ):
+        return PistonTransportError("piston connection refused", kind=PistonTransportFailureKind.CONNECTION_REFUSED)
+    if isinstance(reason, socket.timeout | TimeoutError):
+        return PistonTransportError("piston read timeout", kind=PistonTransportFailureKind.READ_TIMEOUT)
+    if isinstance(reason, ConnectionResetError) or (
+        isinstance(reason, OSError) and reason.errno in {errno.ECONNRESET, errno.EPIPE}
+    ):
+        return PistonTransportError("piston connection reset", kind=PistonTransportFailureKind.CONNECTION_RESET)
+    if isinstance(reason, OSError) and reason.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
+        return PistonTransportError("piston pre-connect failure", kind=PistonTransportFailureKind.PRECONNECT_FAILURE)
+    return PistonTransportError("piston transport failed", kind=PistonTransportFailureKind.OTHER)
 
 
 def piston_executor_config_from_mapping(value: object) -> PistonExecutorConfig:
@@ -296,7 +368,7 @@ class _PistonStageResult:
 def _parse_piston_stage(value: object) -> _PistonStageResult:
     """Parse one exact bounded compile/run stage without coercing malformed fields."""
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     stage = cast(dict[str, object], value)
     allowed_fields = {
         "stdout",
@@ -311,7 +383,7 @@ def _parse_piston_stage(value: object) -> _PistonStageResult:
         "memory",
     }
     if not {"stdout", "stderr"}.issubset(stage) or not set(stage).issubset(allowed_fields):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     stdout = stage["stdout"]
     stderr = stage["stderr"]
     code = stage.get("code")
@@ -322,19 +394,19 @@ def _parse_piston_stage(value: object) -> _PistonStageResult:
     wall_time = stage.get("wall_time", 0.0)
     memory = stage.get("memory")
     if not isinstance(stdout, str) or not isinstance(stderr, str):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     if signal_value is not None and not isinstance(signal_value, str):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     if message is not None and not isinstance(message, str):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     if status is not None and not isinstance(status, str):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     cpu_time_ms = _require_non_negative_finite_number(cpu_time)
     wall_time_ms = _require_non_negative_finite_number(wall_time)
     if memory is not None and (isinstance(memory, bool) or not isinstance(memory, int) or memory < 0):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     return _PistonStageResult(
         stdout=stdout,
         stderr=stderr,
@@ -387,11 +459,32 @@ class PistonExecutor:
         *,
         transport: PistonTransport | None = None,
         marker_factory: Callable[[], str] | None = None,
+        transport_policy: PistonTransportPolicy | None = None,
+        transport_telemetry: PistonTransportTelemetry | None = None,
+        sleep: Callable[[float], None] = sleep_backoff,
     ) -> None:
         """Create a synchronous single-request executor backed by one loopback Piston service."""
+        if transport_policy is not None:
+            expected_url = (
+                f"http://{transport_policy.health_probe.listener_host}:{transport_policy.health_probe.listener_port}"
+            )
+            if config.base_url != expected_url or config.version != transport_policy.health_probe.required_runtime:
+                raise ExecutionContractError(
+                    "Piston transport policy does not match executor endpoint/runtime identity"
+                )
         self._config = config
         self._transport = transport if transport is not None else UrlLibPistonTransport(config.base_url)
         self._marker_factory = marker_factory if marker_factory is not None else lambda: secrets.token_hex(16)
+        self._transport_policy = transport_policy
+        self._transport_telemetry = (
+            transport_telemetry if transport_telemetry is not None else PistonTransportTelemetry()
+        )
+        self._sleep = sleep
+
+    @property
+    def transport_telemetry(self) -> PistonTransportTelemetry:
+        """Return cumulative payload-free telemetry owned by this executor instance."""
+        return self._transport_telemetry
 
     def validate_runtime(self) -> str:
         """Require the configured exact Python runtime to be installed and return its version."""
@@ -401,17 +494,26 @@ class PistonExecutor:
                 max_response_bytes=self._config.max_response_bytes,
             )
             if not isinstance(value, list):
-                raise PistonTransportError("invalid piston runtimes response")
+                raise PistonTransportError(
+                    "invalid piston runtimes response",
+                    kind=PistonTransportFailureKind.INVALID_RESPONSE,
+                )
             matches = 0
             for record_value in value:
                 if not isinstance(record_value, dict) or not all(isinstance(key, str) for key in record_value):
-                    raise PistonTransportError("invalid piston runtimes response")
+                    raise PistonTransportError(
+                        "invalid piston runtimes response",
+                        kind=PistonTransportFailureKind.INVALID_RESPONSE,
+                    )
                 record = cast(dict[str, object], record_value)
                 if set(record) not in (
                     {"language", "version", "aliases"},
                     {"language", "version", "aliases", "runtime"},
                 ):
-                    raise PistonTransportError("invalid piston runtimes response")
+                    raise PistonTransportError(
+                        "invalid piston runtimes response",
+                        kind=PistonTransportFailureKind.INVALID_RESPONSE,
+                    )
                 language = record["language"]
                 version = record["version"]
                 aliases = record["aliases"]
@@ -423,11 +525,16 @@ class PistonExecutor:
                     or not all(isinstance(alias, str) for alias in aliases)
                     or (runtime is not None and not isinstance(runtime, str))
                 ):
-                    raise PistonTransportError("invalid piston runtimes response")
+                    raise PistonTransportError(
+                        "invalid piston runtimes response",
+                        kind=PistonTransportFailureKind.INVALID_RESPONSE,
+                    )
                 if language == self._config.language and version == self._config.version:
                     matches += 1
             if matches != 1:
-                raise PistonTransportError("configured piston runtime unavailable")
+                raise PistonTransportError(
+                    "configured piston runtime unavailable", kind=PistonTransportFailureKind.INVALID_RESPONSE
+                )
         except PistonTransportError:
             raise
         except Exception:
@@ -532,18 +639,29 @@ class PistonExecutor:
         }
         start = time.monotonic()
         try:
-            response = self._transport.execute_request(
+            response = self._execute_request_with_retry(
                 payload,
                 timeout_seconds=timeout_seconds + self._config.request_timeout_margin_seconds,
                 max_response_bytes=self._config.max_response_bytes,
             )
+        except PistonTransportError:
+            return TestCaseResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed=False,
+                runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
+                stdout="",
+                stderr="piston transport failed",
+            )
+        try:
             return self._parse_single_response(
                 response,
                 marker=marker,
                 memory_limit_bytes=memory_limit_bytes,
                 fallback_runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
             )
-        except PistonTransportError:
+        except PistonTransportError as error:
+            if error.remote_execution_ambiguous:
+                self._transport_telemetry.record_ambiguous_failure()
             return TestCaseResult(
                 status=ExecutionStatus.SANDBOX_ERROR,
                 passed=False,
@@ -560,6 +678,67 @@ class PistonExecutor:
                 stderr="invalid piston response",
             )
 
+    def _execute_request_with_retry(
+        self,
+        payload: dict[str, object],
+        *,
+        timeout_seconds: float,
+        max_response_bytes: int,
+    ) -> object:
+        policy = self._transport_policy
+        max_attempts = 1 if policy is None else policy.max_attempts
+        had_retry = False
+        for attempt in range(max_attempts):
+            self._transport_telemetry.record_transport_request()
+            try:
+                response = self._transport.execute_request(
+                    payload,
+                    timeout_seconds=timeout_seconds,
+                    max_response_bytes=max_response_bytes,
+                )
+            except PistonTransportError as error:
+                if error.kind in {
+                    PistonTransportFailureKind.CONNECTION_REFUSED,
+                    PistonTransportFailureKind.PRECONNECT_FAILURE,
+                }:
+                    self._transport_telemetry.record_connect_failure()
+                if policy is None or not error.safe_to_retry:
+                    if error.remote_execution_ambiguous:
+                        self._transport_telemetry.record_ambiguous_failure()
+                    raise
+                if error.kind.value not in policy.safe_retry_kinds:
+                    raise
+                if attempt + 1 >= max_attempts:
+                    self._transport_telemetry.record_retry_exhausted()
+                    raise
+                self._wait_for_retry_health(policy, retry_index=attempt)
+                self._transport_telemetry.record_safe_retry()
+                had_retry = True
+                continue
+            if had_retry:
+                self._transport_telemetry.record_retry_success()
+            return response
+        raise PistonTransportError("piston retry state invalid")
+
+    def _wait_for_retry_health(self, policy: PistonTransportPolicy, *, retry_index: int) -> None:
+        """Wait boundedly for endpoint health, then revalidate exact runtime before resend."""
+        for health_index in range(retry_index, policy.max_attempts - 1):
+            self._sleep(policy.delay_for_retry(health_index))
+            try:
+                if self.validate_runtime() != policy.health_probe.required_runtime:
+                    raise PistonTransportError("piston recovery runtime identity mismatch")
+            except PistonTransportError as error:
+                if error.safe_to_retry and health_index + 1 < policy.max_attempts - 1:
+                    continue
+                self._transport_telemetry.record_retry_exhausted()
+                raise
+            return
+        self._transport_telemetry.record_retry_exhausted()
+        raise PistonTransportError(
+            "piston recovery endpoint did not become healthy",
+            kind=PistonTransportFailureKind.CONNECTION_REFUSED,
+        )
+
     def _parse_single_response(
         self,
         value: object,
@@ -569,10 +748,10 @@ class PistonExecutor:
         fallback_runtime_ms: float,
     ) -> TestCaseResult:
         if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-            raise PistonTransportError("invalid piston response")
+            raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
         response = cast(dict[str, object], value)
         if "run" not in response or not set(response).issubset({"language", "version", "compile", "run"}):
-            raise PistonTransportError("invalid piston response")
+            raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
         if "compile" in response:
             compile_stage = _parse_piston_stage(response["compile"])
             if _map_piston_stage_failure(compile_stage, memory_limit_bytes=memory_limit_bytes) is not None:
@@ -643,13 +822,15 @@ def _test_case_result_from_harness(report: HarnessReport) -> TestCaseResult:
 
 def _require_non_negative_finite_number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     try:
         converted = float(value)
     except OverflowError:
-        raise PistonTransportError("invalid piston response") from None
+        raise PistonTransportError(
+            "invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE
+        ) from None
     if not math.isfinite(converted) or converted < 0:
-        raise PistonTransportError("invalid piston response")
+        raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     return converted
 
 

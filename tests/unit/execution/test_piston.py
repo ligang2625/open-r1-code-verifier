@@ -9,7 +9,7 @@ from dataclasses import replace
 from email.message import Message
 from pathlib import Path
 from typing import Any, cast
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request
 
 import pytest
@@ -268,9 +268,43 @@ def test_transport_sanitizes_http_and_json_errors(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(PistonTransportError) as http_error:
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
     assert sentinel not in str(http_error.value)
+    assert http_error.value.kind is piston_module.PistonTransportFailureKind.HTTP_ERROR
     with pytest.raises(PistonTransportError) as json_error:
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
     assert sentinel not in str(json_error.value)
+    assert json_error.value.kind is piston_module.PistonTransportFailureKind.INVALID_RESPONSE
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_kind", "safe_to_retry"),
+    [
+        (
+            URLError(ConnectionRefusedError(111, "private refused detail")),
+            piston_module.PistonTransportFailureKind.CONNECTION_REFUSED,
+            True,
+        ),
+        (
+            ConnectionResetError(104, "private reset detail"),
+            piston_module.PistonTransportFailureKind.CONNECTION_RESET,
+            False,
+        ),
+        (TimeoutError("private timeout detail"), piston_module.PistonTransportFailureKind.READ_TIMEOUT, False),
+        (
+            OSError(113, "private unreachable detail"),
+            piston_module.PistonTransportFailureKind.PRECONNECT_FAILURE,
+            True,
+        ),
+    ],
+)
+def test_transport_classifies_network_failures_without_leaking_details(
+    error: BaseException,
+    expected_kind: piston_module.PistonTransportFailureKind,
+    safe_to_retry: bool,
+) -> None:
+    classified = piston_module._classified_transport_error(error)
+    assert classified.kind is expected_kind
+    assert classified.safe_to_retry is safe_to_retry
+    assert "private" not in str(classified)
 
 
 class _FakeTransport:
