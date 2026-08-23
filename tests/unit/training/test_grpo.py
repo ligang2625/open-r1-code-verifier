@@ -1693,6 +1693,45 @@ def test_grpo_resume_rejects_checkpoint_without_log_boundary(tmp_path: Path) -> 
         grpo_module._validate_resume_log_checkpoint(run_dir, checkpoint)
 
 
+def test_grpo_resume_rejects_stale_running_attempt_after_hard_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(4)),
+    )
+    checkpoint = _create_fake_resume_checkpoint(summary.run_dir)
+    metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    metadata["status"] = "running"
+    metadata["end_time"] = None
+    metadata["gpu_hours"] = 0.0
+    metadata["attempts"][-1]["status"] = "running"
+    metadata["attempts"][-1]["end_time"] = None
+    metadata["attempts"][-1]["gpu_hours"] = 0.0
+    (summary.run_dir / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(GRPOTrainingError, match="gracefully failed"):
+        run_grpo_training(
+            public_config,
+            hidden_config,
+            reward_mode="public",
+            public_sft_run_dir=sft_run_dir,
+            hidden_sft_run_dir=sft_run_dir,
+            output_root=output_root,
+            seed=42,
+            executor=MockExecutor(_passing_results(4)),
+            resume_from_checkpoint=checkpoint,
+        )
+
+
 def test_grpo_resume_is_bound_and_appends_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1469,7 +1469,7 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
         if not isinstance(value, Mapping) or value.get("attempt") != index:
             raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
         status = value.get("status")
-        if status not in {"running", "completed", "failed"}:
+        if status not in {"completed", "failed"}:
             raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
         gpu_hours = value.get("gpu_hours")
         if (
@@ -1662,8 +1662,8 @@ def _validate_resume_run(
         raise GRPOTrainingError("existing GRPO run identity does not match the requested resume")
     if {path.name for path in run_dir.iterdir()} != _GRPO_RUN_LAYOUT:
         raise GRPOTrainingError("existing GRPO run does not match the strict artifact layout")
-    if value.get("status") not in {"running", "failed"}:
-        raise GRPOTrainingError("only an interrupted or failed GRPO run may be resumed")
+    if value.get("status") != "failed":
+        raise GRPOTrainingError("only a gracefully failed GRPO run may be resumed")
     previous_gpu_hours = value.get("gpu_hours")
     attempts_total = _attempt_gpu_hours_total(value.get("attempts"))
     if (
