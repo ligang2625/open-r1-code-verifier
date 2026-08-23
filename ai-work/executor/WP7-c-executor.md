@@ -594,3 +594,84 @@ execution_checkpoint:
 - C7 failure evidence remains immutable on the 4090; C8 neither deletes nor rewrites it.
 - The fix changes only experiment identity portability. It does not change GRPO batch size, gradient accumulation, optimization hyperparameters, LoRA, reward math, dataset bytes, formal B, Piston definition or timing instrumentation.
 - No C8 target command was started while preparing this checkpoint.
+
+## C9 — Piston infrastructure fail-closed repair + 10-step pilot checkpoints
+
+The executed C8 pilot is preserved as infrastructure-invalid evidence rather than reused. C8 Public reached trainer step 100, but reward telemetry proves the Piston transport began failing at optimizer step 36: 495/800 reward rows are infrastructure failures, the last fully healthy optimizer step is 35, and no pre-failure Trainer checkpoint exists because the C8 cadence was 50. C8 Hidden never created a run directory. The retry therefore must start Public and Hidden independently from the same formal B under new run names.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C9
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 78d4aebd36d916db3c8d160dcfa89f5425affc22
+  fail_closed_result_code_commit: b58667f4ff1e34e1e1e13e2f78fef21cb118fdf9
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C9/run.sh
+  operator_script_sha256: bae1e5ec8f0b4c29b86401e547ced8fc818b1b90af6c7d0d6b4bde708d15dcfa
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C9/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C9/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C9/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C9/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C9
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  pilot_pair_schema_version: 2
+  pilot_pair_sha256: bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f
+  pilot_public_config_hash: da543a9ac2719076fd81696dbcb98f1df9c9254adc9e9f519569b3b0d2e09dac
+  pilot_hidden_config_hash: 5036e0aa8be941f145f52e08269e808948f091c80d5d0972ef50326417934658
+  pilot_public_run_name: C-public-grpo-pilot100-retry1-seed42
+  pilot_hidden_run_name: D-hidden-grpo-pilot100-retry1-seed42
+  pilot_max_steps: 100
+  pilot_save_steps: 10
+  expected_trainer_checkpoints: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  supersedes_checkpoint_id: C8
+  supersedes_checkpoint_commit: 32ab2697b33c9a211c37c78f0871808de069b658
+  superseded_result_code_commit: 9e55b4175e5d86804d1ce182e04489e4b5f99a87
+  superseded_operator_script_sha256: 18bbbaddbe00a5c0f610a49b65307d583172eea5c32381cd97be7444fbb21c06
+  superseded_operator_evidence_sha256: def49dcb2d838e8ff8a740250ad392a3dee34c54774d808c3c4b82630451b594
+  superseded_status_sha256: 53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3
+  superseded_terminal_log_sha256: b9052153a341093732d8dee9d312bb3437cfe8a12ccafeb3537200fccc4e0b90
+  superseded_public_run_json_sha256: 557f880a199ef6ddcfa5127d85d8cb1e98a68c00fe982423dc79c0f0c260d59e
+  superseded_public_rewards_sha256: 4a3dba109be0dfa51949e61383ef35e2f59f4bc084580b80b5e84142f7e22226
+  superseded_public_final_adapter_sha256: 41d01287ef7c21494bfb0e13910f7238a45802068c658631b68ef80dcd89b32b
+  superseded_public_first_infrastructure_failure_step: 36
+  superseded_public_infrastructure_failure_rows: 495
+  smoke_max_complete_trainer_checkpoint_bytes: 42184437
+  smoke_max_complete_trainer_checkpoint_inodes: 15
+  target_required_free_bytes: 32212254720
+  target_required_free_inodes: 100000
+  completed_scope:
+    - "C8 target failure was diagnosed read-only: Public command rc=0 but became infrastructure-invalid from optimizer step 36; 495/800 reward rows report infrastructure_failure/sandbox_error; Hidden failed before run creation when the Piston tunnel endpoint was refused"
+    - "C8 operator evidence/status/log are preserved byte-for-byte and C9 preflight authenticates their exact SHAs plus the preserved invalid Public run signatures; C9 does not delete, rename or resume the C8 Public run"
+    - "b58667f4ff1e34e1e1e13e2f78fef21cb118fdf9 changes only the GRPO training callback path so infrastructure-failure reward batches are fsync-logged and then raise GRPOTrainingError before rewards return to Trainer/optimizer; reward formula/evaluation representation remains unchanged"
+    - "the fail-closed regression proves a sandbox/infrastructure failure writes sanitized reward/rollout/group evidence and aborts instead of returning zero reward to training"
+    - "78d4aebd36d916db3c8d160dcfa89f5425affc22 changes both validation pilot configs from save_steps=50 to save_steps=10 and locks the cadence in unit/integration tests; batch, gradient accumulation, learning rate, reward source, LoRA, seed and max_steps remain unchanged"
+    - "C9 retry run names are new, so invalid C8 checkpoints cannot be selected; normal resume chooses the highest complete checkpoint whose step is a multiple of config.save_steps, now 10"
+    - "C9 reruns the target Piston tunnel helper immediately before each Public/Hidden train-grpo invocation; if transport later fails during reward execution, training now fails closed on the first affected reward batch"
+    - "C9 postcheck requires complete checkpoint-10/20/30/40/50/60/70/80/90/100 for both retry runs, in addition to the existing 100-step timing/reward/rollout/cost telemetry checks"
+    - "formal retry pair v2 certification yields pair SHA bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f, Public pair-config SHA da543a9ac2719076fd81696dbcb98f1df9c9254adc9e9f519569b3b0d2e09dac and Hidden pair-config SHA 5036e0aa8be941f145f52e08269e808948f091c80d5d0972ef50326417934658"
+    - "verification PASS after the combined repair: focused GRPO/WP7a/WP7b 85/85; make lint/ruff/mypy PASS; full make test 935 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9"
+    - "C9 bash syntax PASS; all 15 Python heredocs compile; actual train-grpo command site count=1; old retry pair SHA absent; C8 run-name/pair references are restricted to superseded-history validation"
+  remaining_scope:
+    - "push the exact C9 checkpoint through ordinary Git, checkout/detach it on the RTX 4090, verify clean checkout and C9 script SHA, then run only C9; do not rerun C8"
+    - "C9 must authenticate the preserved C8 infrastructure-invalid evidence, recompute retry pair v2, ensure the Piston tunnel before each branch and start new Public/Hidden retry runs independently from formal B"
+    - "if C9 is interrupted after any complete 10-step Trainer checkpoint, rerunning the exact C9 script may resume from the highest complete valid checkpoint; never manually edit or replace run artifacts"
+    - "after C9 exits successfully, sync C9 operator evidence/status/log/postcheck and required small retry pilot artifacts/final adapters back to the C9 control-plane receive directory, then invoke execution-router resume backend=web stage_id=WP7-c"
+  status: awaiting_operator
+```
+
+### C9 repair notes
+
+- C8 remains immutable history. Its Public run is intentionally preserved as infrastructure-invalid evidence and is not a parent or resume source for C9.
+- The user-requested 10-step checkpoint cadence is an operational recoverability change only; C/D receive the same cadence and all model/reward optimization semantics remain paired.
+- Numeric Trainer checkpoints remain on the RTX 4090 by default; only required small evidence and final LoRA adapters are synced back after a successful run.
+- No C9 target training command was started while preparing this checkpoint.
