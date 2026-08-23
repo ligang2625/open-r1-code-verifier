@@ -675,3 +675,82 @@ execution_checkpoint:
 - The user-requested 10-step checkpoint cadence is an operational recoverability change only; C/D receive the same cadence and all model/reward optimization semantics remain paired.
 - Numeric Trainer checkpoints remain on the RTX 4090 by default; only required small evidence and final LoRA adapters are synced back after a successful run.
 - No C9 target training command was started while preparing this checkpoint.
+
+## C10 — pre-push GRPO recovery audit hardening
+
+C9 was not executed by the operator. A pre-push audit found a remaining resume-evidence flaw: a failed attempt after a valid Trainer checkpoint could append reward/rollout/group rows beyond that checkpoint; resuming the model from the checkpoint without restoring the canonical JSONL boundary would mix failed-attempt rows with the replayed canonical trajectory. C10 supersedes the unexecuted C9 and retains the same retry1 C/D pair and 10-step checkpoint cadence.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C10
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 24685d7e9587fdd9e072fa871d0a66f22bff9caf
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C10/run.sh
+  operator_script_sha256: 06499d2b00b0799f4b277b130d095e498ec1fafe5753eb862c33824735739b49
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C10/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C10/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C10/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C10/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C10
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  pilot_pair_schema_version: 2
+  pilot_pair_sha256: bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f
+  pilot_public_config_hash: da543a9ac2719076fd81696dbcb98f1df9c9254adc9e9f519569b3b0d2e09dac
+  pilot_hidden_config_hash: 5036e0aa8be941f145f52e08269e808948f091c80d5d0972ef50326417934658
+  pilot_public_run_name: C-public-grpo-pilot100-retry1-seed42
+  pilot_hidden_run_name: D-hidden-grpo-pilot100-retry1-seed42
+  pilot_max_steps: 100
+  pilot_save_steps: 10
+  expected_trainer_checkpoints: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  checkpoint_log_state_file: code_verifier_log_state.json
+  recovery_history_dir: checkpoints/recovery-history
+  supersedes_checkpoint_id: C9
+  supersedes_checkpoint_commit: 792f637f34ccabebbc61fde61bd861f20887f217
+  superseded_result_code_commit: 78d4aebd36d916db3c8d160dcfa89f5425affc22
+  superseded_operator_script_sha256: bae1e5ec8f0b4c29b86401e547ced8fc818b1b90af6c7d0d6b4bde708d15dcfa
+  superseded_execution_state: unexecuted_by_operator
+  preserved_invalid_c8_checkpoint_commit: 32ab2697b33c9a211c37c78f0871808de069b658
+  preserved_invalid_c8_operator_evidence_sha256: def49dcb2d838e8ff8a740250ad392a3dee34c54774d808c3c4b82630451b594
+  smoke_max_complete_trainer_checkpoint_bytes: 42184437
+  smoke_max_complete_trainer_checkpoint_inodes: 15
+  target_required_free_bytes: 32212254720
+  target_required_free_inodes: 100000
+  completed_scope:
+    - "pre-push audit found and repaired canonical streaming-log contamination on resume: Trainer model state could roll back to checkpoint-N while rewards.jsonl/rollouts.jsonl/group_metrics.jsonl still contained rows from the failed suffix after N"
+    - "each newly saved Trainer checkpoint now receives code_verifier_log_state.json after upstream _save_checkpoint returns; the sidecar records exact byte size, line count and SHA256 for the three canonical streaming JSONL files at that checkpoint boundary"
+    - "resume validation is read-only before attempt begin and requires the selected checkpoint sidecar plus exact prefix identities; a missing sidecar makes that checkpoint ineligible, while a present-but-mismatched sidecar/prefix fails closed"
+    - "after a resume attempt is recorded, the complete pre-rollback streaming logs are fsync-copied into checkpoints/recovery-history/before-attempt-N-resume-checkpoint-S with a manifest, then canonical logs are atomically restored to the selected checkpoint boundary before Trainer model loading/train resumes"
+    - "recovery-history lives under checkpoints so the strict top-level GRPO run layout remains unchanged; repeated recovery from the same checkpoint is covered and preserves a distinct archive for each attempt"
+    - "the training executor now has an attempt-local circuit breaker: after the first executor exception or sandbox_error, subsequent completions in that reward batch fail locally rather than repeatedly waiting on the unavailable remote Piston transport; the full batch is still sanitized/logged and GRPOTrainingError is raised before rewards return to Trainer"
+    - "real pinned TRL 0.18 tiny-Qwen CPU regression PASS: production timing hook and checkpoint-log hook compose on a real GRPOTrainer.train(), checkpoint-1 receives a matching sidecar, and gradient checkpointing remains restored"
+    - "real pinned TRL failure regression PASS: a reward exception during rollout leaves trainer global_step=0, creates no checkpoint-1 and leaves every model parameter unchanged, directly proving the failure propagates before optimizer update"
+    - "focused GRPO/WP7a/WP7b regression PASS 90/90; make lint/ruff/mypy PASS; full make test 940 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9"
+    - "C10 retains C9 retry1 run names, pair v2 SHA and save_steps=10 because the recovery-hardening result-code commit changes no pilot config/data/B/pair-definition inputs"
+    - "C10 resume selects only complete cadence checkpoints with the required Trainer files and a valid canonical-log sidecar; postcheck requires and validates sidecars for checkpoint-10 through checkpoint-100 for both Public and Hidden"
+    - "C10 target preflight requires the C9 operator root to be absent, consistent with the operator statement that no C9 operation was executed; preserved C8 infrastructure-invalid evidence remains independently authenticated"
+    - "C10 bash syntax PASS; all 15 Python heredocs compile; actual train-grpo command site count=1; C11 is absent"
+  remaining_scope:
+    - "push the exact C10 checkpoint through ordinary Git, checkout/detach it on the RTX 4090, verify clean checkout and C10 script SHA, then run only C10; do not run C9 or rerun C8"
+    - "C10 must authenticate C9 as unexecuted, authenticate preserved C8 infrastructure-invalid evidence, recompute the unchanged retry pair v2, ensure the Piston tunnel before each branch and start/continue only the C10 retry1 runs"
+    - "if C10 is interrupted, rerunning the exact C10 script resumes only from the highest complete 10-step checkpoint with a valid canonical-log sidecar; failed-attempt log suffixes remain in recovery-history and are excluded from canonical analysis"
+    - "after C10 exits successfully, sync C10 operator evidence/status/log/postcheck and required small retry pilot artifacts/final adapters back to the C10 control-plane receive directory, then invoke execution-router resume backend=web stage_id=WP7-c"
+  status: awaiting_operator
+```
+
+### C10 audit notes
+
+- C9 remains immutable and unexecuted; C10 supersedes it before any target training or evidence was produced.
+- C8 remains immutable infrastructure-invalid history and is never a parent or resume source for retry1.
+- The audit hardening changes recovery/evidence semantics and executor failure handling only. It does not change batch size, gradient accumulation, learning rate, reward formula/source, LoRA, seed, max steps, data bytes, formal B or the paired experiment definition.
+- No C10 target command was started while preparing this checkpoint.
