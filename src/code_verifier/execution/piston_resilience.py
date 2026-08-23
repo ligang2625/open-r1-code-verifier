@@ -15,7 +15,7 @@ from code_verifier.config import ConfigError, load_yaml_mapping
 
 PISTON_TRANSPORT_RETRY_IMPLEMENTATION_VERSION = "piston-transport-retry-v2"
 PISTON_TRANSPORT_CLASSIFIER_IMPLEMENTATION_VERSION = "urllib-loopback-classifier-v2"
-PISTON_TUNNEL_SUPERVISOR_IMPLEMENTATION_VERSION = "piston-tunnel-supervisor-v2"
+PISTON_TUNNEL_SUPERVISOR_IMPLEMENTATION_VERSION = "piston-tunnel-supervisor-v3"
 
 _POLICY_FIELDS = {
     "version",
