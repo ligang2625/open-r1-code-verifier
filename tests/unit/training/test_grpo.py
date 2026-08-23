@@ -133,7 +133,7 @@ def test_checked_in_grpo_smoke_and_pilot_pairs_only_change_phase_fields() -> Non
     assert public_smoke.max_steps == hidden_smoke.max_steps == 20
     assert public_smoke.save_steps == hidden_smoke.save_steps == 10
     assert public_pilot.max_steps == hidden_pilot.max_steps == 100
-    assert public_pilot.save_steps == hidden_pilot.save_steps == 50
+    assert public_pilot.save_steps == hidden_pilot.save_steps == 10
     assert public_smoke.run_name != public_pilot.run_name
     assert hidden_smoke.run_name != hidden_pilot.run_name
 
