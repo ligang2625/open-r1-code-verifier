@@ -55,6 +55,30 @@ def test_transport_sidecar_round_trip_preserves_cumulative_telemetry(tmp_path: P
         assert forbidden not in path.read_text(encoding="utf-8")
 
 
+def test_transport_sidecar_fresh_claim_never_overwrites_existing_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "transport-telemetry" / "C-public.json"
+    original = PistonTransportTelemetry(transport_requests=7, transport_safe_retries=2)
+    cli._write_transport_sidecar(
+        path,
+        run_name="C-public",
+        piston_definition_sha256="a" * 64,
+        piston_transport_policy_sha256="b" * 64,
+        telemetry=original,
+        create_only=True,
+    )
+    before = path.read_bytes()
+    with pytest.raises(GRPOTrainingError, match="already exists"):
+        cli._write_transport_sidecar(
+            path,
+            run_name="C-public",
+            piston_definition_sha256="a" * 64,
+            piston_transport_policy_sha256="b" * 64,
+            telemetry=PistonTransportTelemetry(),
+            create_only=True,
+        )
+    assert path.read_bytes() == before
+
+
 def test_transport_sidecar_missing_on_resume_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(GRPOTrainingError, match="required for resume"):
         cli._restore_transport_sidecar(
@@ -98,7 +122,18 @@ def test_transport_sidecar_rejects_malformed_or_negative_telemetry(tmp_path: Pat
         "telemetry": telemetry_mapping,
     }
     path.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(GRPOTrainingError, match="finite and nonnegative"):
+    with pytest.raises(GRPOTrainingError, match="nonnegative integers"):
+        cli._restore_transport_sidecar(
+            path,
+            run_name="C-public",
+            piston_definition_sha256="a" * 64,
+            piston_transport_policy_sha256="b" * 64,
+            telemetry=PistonTransportTelemetry(),
+        )
+
+    telemetry_mapping["transport_requests"] = 1.5
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(GRPOTrainingError, match="nonnegative integers"):
         cli._restore_transport_sidecar(
             path,
             run_name="C-public",

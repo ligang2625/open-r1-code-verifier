@@ -85,6 +85,7 @@ from code_verifier.training import (
     SFTPrevalidationError,
     SFTTrainingError,
     grpo_evaluation_checkpoint_id,
+    grpo_run_directory,
     load_completed_grpo_checkpoint,
     load_completed_sft_checkpoint,
     load_grpo_training_config,
@@ -678,6 +679,17 @@ def _transport_sidecar_path(output_root: Path, run_name: str) -> Path:
     return output_root / "transport-telemetry" / f"{run_name}.json"
 
 
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _restore_transport_sidecar(
     path: Path,
     *,
@@ -690,7 +702,7 @@ def _restore_transport_sidecar(
         raise GRPOTrainingError("Piston transport telemetry sidecar is required for resume")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
         raise GRPOTrainingError("Piston transport telemetry sidecar is unreadable") from None
     if not isinstance(value, dict) or set(value) != {
         "version",
@@ -723,6 +735,7 @@ def _write_transport_sidecar(
     piston_definition_sha256: str,
     piston_transport_policy_sha256: str,
     telemetry: PistonTransportTelemetry,
+    create_only: bool = False,
 ) -> None:
     value = {
         "version": 1,
@@ -734,6 +747,25 @@ def _write_transport_sidecar(
     }
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
+    if create_only:
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                raise GRPOTrainingError(
+                    "Piston transport telemetry sidecar already exists; explicit resume or operator review is required"
+                ) from None
+            _fsync_directory(path.parent)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary)
+        return
+
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -741,6 +773,7 @@ def _write_transport_sidecar(
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        _fsync_directory(path.parent)
     except Exception:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temporary)
@@ -780,9 +813,23 @@ def _train_grpo(args: argparse.Namespace) -> int:
     transport_policy_sha256 = piston_transport_policy_sha256(policy_path)
     transport_telemetry = PistonTransportTelemetry()
     output_root = Path(str(args.output_dir))
+    run_dir = grpo_run_directory(output_root, selected_config.run_name)
     sidecar_path = _transport_sidecar_path(output_root, selected_config.run_name)
     resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
-    if resume is not None:
+    if resume is None:
+        if run_dir.exists():
+            raise GRPOTrainingError("GRPO run directory already exists; explicit resume is required")
+        _write_transport_sidecar(
+            sidecar_path,
+            run_name=selected_config.run_name,
+            piston_definition_sha256=piston_definition_sha256,
+            piston_transport_policy_sha256=transport_policy_sha256,
+            telemetry=transport_telemetry,
+            create_only=True,
+        )
+    else:
+        if not run_dir.is_dir():
+            raise GRPOTrainingError("resume requires an existing GRPO run directory")
         _restore_transport_sidecar(
             sidecar_path,
             run_name=selected_config.run_name,
@@ -799,7 +846,6 @@ def _train_grpo(args: argparse.Namespace) -> int:
             telemetry=transport_telemetry,
         )
     )
-    transport_telemetry.flush()
     executor = PistonExecutor(
         piston_config,
         transport_policy=transport_policy,

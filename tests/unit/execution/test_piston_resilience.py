@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+import code_verifier.execution.piston_resilience as resilience_module
 from code_verifier.execution import ExecutionStatus
 from code_verifier.execution.piston import (
     PistonExecutor,
@@ -211,7 +212,7 @@ def test_safe_health_wait_can_recover_before_exact_resend() -> None:
     assert len(transport.execute_calls) == 2
     assert transport.execute_serialized[0] == transport.execute_serialized[1]
     assert transport.runtime_calls == 2
-    assert sleeps == [0.25, 1.0]
+    assert sleeps == [0.25, 0.5]
     assert telemetry.transport_safe_retries == 1
     assert telemetry.transport_retry_successes == 1
 
@@ -222,12 +223,12 @@ def test_safe_health_wait_exhausts_without_candidate_resend() -> None:
     result, transport, telemetry, sleeps = _execute(
         [refused],
         policy=_policy(),
-        runtimes=[runtime_failure, runtime_failure],
+        runtimes=[runtime_failure] * 7,
     )
     assert result.status is ExecutionStatus.SANDBOX_ERROR
     assert len(transport.execute_calls) == 1
-    assert transport.runtime_calls == 2
-    assert sleeps == [0.25, 1.0]
+    assert transport.runtime_calls == 7
+    assert sleeps == [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
     assert telemetry.transport_retry_exhausted == 1
 
 
@@ -289,7 +290,9 @@ def test_retry_attempts_and_backoff_are_bounded_by_policy() -> None:
     assert sleeps == [0.1, 0.1]
 
 
-def test_policy_identity_is_separate_and_deterministic() -> None:
+def test_policy_identity_is_separate_deterministic_and_binds_implementation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     path = Path("configs/execution/piston-transport-resilience.yaml")
     policy = load_piston_transport_policy(path)
     first = piston_transport_policy_sha256(path)
@@ -297,9 +300,13 @@ def test_policy_identity_is_separate_and_deterministic() -> None:
     assert policy.max_attempts == 3
     assert policy.backoff_cap_seconds == 1.0
     assert policy.health_probe.required_runtime == "3.10.0"
+    assert policy.health_probe.max_wait_attempts == 7
+    assert policy.health_probe.backoff_seconds == (0.5, 1.0, 2.0, 4.0, 8.0, 10.0)
     assert policy.tunnel_supervisor.ssh_target == "1660ti-wsl"
     assert policy.tunnel_supervisor.max_reconnects == 8
     assert first == second
+    monkeypatch.setattr(resilience_module, "PISTON_TRANSPORT_CLASSIFIER_IMPLEMENTATION_VERSION", "changed")
+    assert piston_transport_policy_sha256(path) != first
     assert len(first) == 64
     assert all(character in "0123456789abcdef" for character in first)
     assert Path("configs/execution/piston-local.yaml").read_bytes() == (
@@ -315,8 +322,42 @@ def test_telemetry_rejects_nonfinite_or_negative_values_and_has_no_payload_field
     for sentinel in ["candidate", "visible_tests", "train_hidden_tests", "PRIVATE_KEY", "secret"]:
         assert sentinel not in encoded
     telemetry.transport_requests = -1
-    with pytest.raises(ValueError, match="finite and nonnegative"):
+    with pytest.raises(ValueError, match="nonnegative integers"):
         telemetry.to_mapping()
+    telemetry.transport_requests = 1.5  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="nonnegative integers"):
+        telemetry.to_mapping()
+    telemetry.transport_requests = 10**10000
+    mapping = telemetry.to_mapping()
+    assert mapping["transport_requests"] == 10**10000
+
+
+def test_transport_request_counter_is_recorded_only_after_transport_invocation() -> None:
+    transport = _ScriptedTransport([_response()])
+    telemetry = PistonTransportTelemetry()
+
+    def fail_snapshot(_mapping: object) -> None:
+        assert len(transport.execute_calls) == 1
+        raise RuntimeError("telemetry persistence failed")
+
+    telemetry.set_on_change(fail_snapshot)
+    executor = PistonExecutor(
+        _config(),
+        transport=transport,
+        marker_factory=lambda: "marker",
+        transport_policy=_policy(),
+        transport_telemetry=telemetry,
+        sleep=lambda seconds: None,
+    )
+    with pytest.raises(RuntimeError, match="telemetry persistence failed"):
+        executor.execute(
+            "def target(value):\n    return value\n",
+            "target",
+            [{"input": [1], "expected": 1}],
+            1.0,
+            32,
+        )
+    assert telemetry.transport_requests == 1
 
 
 def test_telemetry_restore_is_cumulative_and_every_mutation_can_be_durably_snapshotted() -> None:

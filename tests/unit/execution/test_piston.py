@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import math
@@ -273,6 +274,25 @@ def test_transport_sanitizes_http_and_json_errors(monkeypatch: pytest.MonkeyPatc
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
     assert sentinel not in str(json_error.value)
     assert json_error.value.kind is piston_module.PistonTransportFailureKind.INVALID_RESPONSE
+
+
+def test_transport_normalizes_incomplete_response_stream_without_retryable_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class IncompleteResponse(_FakeResponse):
+        def read(self, size: int = -1) -> bytes:
+            del size
+            raise http.client.IncompleteRead(b"partial")
+
+    opener = _FakeOpener([IncompleteResponse(b"")])
+    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
+    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+    with pytest.raises(PistonTransportError) as error:
+        transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
+    assert error.value.kind is piston_module.PistonTransportFailureKind.INVALID_RESPONSE
+    assert error.value.safe_to_retry is False
+    assert error.value.remote_execution_ambiguous is True
+    assert "partial" not in str(error.value)
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import errno
 import hashlib
+import http.client
 import json
 import math
 import secrets
@@ -203,6 +204,10 @@ class UrlLibPistonTransport:
             ) from None
         except (URLError, TimeoutError, OSError) as error:
             raise _classified_transport_error(error) from None
+        except http.client.HTTPException:
+            raise PistonTransportError(
+                "piston response stream failed", kind=PistonTransportFailureKind.INVALID_RESPONSE
+            ) from None
 
         if len(raw) > max_response_bytes:
             raise PistonTransportError(
@@ -689,13 +694,15 @@ class PistonExecutor:
         max_attempts = 1 if policy is None else policy.max_attempts
         had_retry = False
         for attempt in range(max_attempts):
-            self._transport_telemetry.record_transport_request()
             try:
-                response = self._transport.execute_request(
-                    payload,
-                    timeout_seconds=timeout_seconds,
-                    max_response_bytes=max_response_bytes,
-                )
+                try:
+                    response = self._transport.execute_request(
+                        payload,
+                        timeout_seconds=timeout_seconds,
+                        max_response_bytes=max_response_bytes,
+                    )
+                finally:
+                    self._transport_telemetry.record_transport_request()
             except PistonTransportError as error:
                 if error.kind in {
                     PistonTransportFailureKind.CONNECTION_REFUSED,
@@ -722,13 +729,14 @@ class PistonExecutor:
 
     def _wait_for_retry_health(self, policy: PistonTransportPolicy, *, retry_index: int) -> None:
         """Wait boundedly for endpoint health, then revalidate exact runtime before resend."""
-        for health_index in range(retry_index, policy.max_attempts - 1):
-            self._sleep(policy.delay_for_retry(health_index))
+        self._sleep(policy.delay_for_retry(retry_index))
+        for health_index in range(policy.health_probe.max_wait_attempts):
             try:
                 if self.validate_runtime() != policy.health_probe.required_runtime:
                     raise PistonTransportError("piston recovery runtime identity mismatch")
             except PistonTransportError as error:
-                if error.safe_to_retry and health_index + 1 < policy.max_attempts - 1:
+                if error.safe_to_retry and health_index + 1 < policy.health_probe.max_wait_attempts:
+                    self._sleep(policy.health_probe.delay_for_retry(health_index))
                     continue
                 self._transport_telemetry.record_retry_exhausted()
                 raise

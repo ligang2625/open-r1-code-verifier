@@ -12,6 +12,15 @@ health_probe:
   listener_port: 2000
   http_path: /api/v2/runtimes
   required_runtime: "3.10.0"
+  max_wait_attempts: 7
+  backoff_seconds:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 4.0
+    - 8.0
+    - 10.0
+  backoff_cap_seconds: 10.0
 tunnel_supervisor:
   ssh_target: 1660ti-wsl
   local_host: 127.0.0.1

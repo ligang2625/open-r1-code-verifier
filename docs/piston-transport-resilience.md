@@ -19,16 +19,17 @@ Piston       -> pinned Python 3.10.0
 Formal evidence must record two independent identities:
 
 - `piston_definition_sha256`: SHA256 of the exact existing `configs/execution/piston-local.yaml` bytes.
-- `piston_transport_policy_sha256`: SHA256 of the normalized transport-resilience policy.
+- `piston_transport_policy_sha256`: SHA256 of the normalized transport-resilience policy **plus explicit retry/classifier/supervisor implementation-version identities**.
 
-Changing retry/backoff/supervisor operations therefore changes the transport policy identity without pretending that the verifier scientific definition changed or remained equivalent for the wrong reason. The transport policy is excluded from the C/D paired scientific definition.
+Changing retry/backoff/supervisor operations or their implementation semantics therefore changes the transport policy identity without pretending that the verifier scientific definition changed or remained equivalent for the wrong reason. Any semantic code change to classification, retry, or supervisor behavior must bump its implementation-version constant. The transport policy is excluded from the C/D paired scientific definition.
 
 The policy binds all of the following operational facts:
 
 - policy schema version;
 - the exact safe-retry failure classes;
 - maximum candidate-request attempts;
-- retry backoff sequence and cap;
+- candidate retry backoff sequence and cap;
+- separate bounded recovery-health probe attempt/backoff policy;
 - loopback listener, `/api/v2/runtimes`, and exact Python `3.10.0` health identity;
 - canonical SSH target/forward;
 - SSH connect/keepalive settings;
@@ -60,14 +61,14 @@ For an allowed failure the sequence is bounded:
 ```text
 candidate request
   -> proven pre-connect failure
-  -> bounded policy backoff
-  -> endpoint/runtime health validation
+  -> bounded candidate-retry backoff
+  -> bounded endpoint/runtime health polling
   -> PistonExecutor.validate_runtime() == "3.10.0"
   -> resend the exact same request object/serialized semantics
   -> success, or bounded infrastructure failure
 ```
 
-The health wait itself is bounded by the policy attempt budget. An unsafe health-probe failure fails closed rather than authorizing a resend. There is no infinite retry path.
+Candidate submission attempts and recovery-health polling have separate tracked budgets. The current health polling schedule can wait across an SSH `ConnectTimeout=10` recovery window instead of giving up after only the short candidate retry delay. An unsafe health-probe failure fails closed rather than authorizing a resend. There is no infinite retry path.
 
 ## GRPO failure ordering
 
@@ -97,7 +98,7 @@ The sidecar records only non-sensitive identities and aggregate counters:
 - `piston_definition_sha256`;
 - `piston_transport_policy_sha256`;
 - `telemetry_semantics: cumulative_durable_snapshot_per_mutation_v1`;
-- `transport_requests`;
+- `transport_requests` (candidate `/execute` transport invocations that actually began; runtime probes are excluded);
 - `transport_connect_failures`;
 - `transport_safe_retries`;
 - `transport_retry_successes`;
@@ -107,9 +108,9 @@ The sidecar records only non-sensitive identities and aggregate counters:
 - `tunnel_total_outage_seconds`;
 - `tunnel_max_outage_seconds`.
 
-Every counter is finite and nonnegative. The sidecar contains no candidate code, completion text, tests, function names, SSH keys, credentials, or response payloads.
+Count fields are exact nonnegative integers; outage durations are finite nonnegative numbers. The sidecar contains no candidate code, completion text, tests, function names, SSH keys, credentials, or response payloads.
 
-Counter mutations trigger an atomic, fsynced snapshot. A GRPO resume requires the sidecar to exist and match the run name plus both Piston identities before counters are restored. Restored values are cumulative: subsequent mutations continue from the persisted totals rather than resetting them. This telemetry is operational evidence, not a reward component and not part of the C/D scientific pair hash.
+A fresh run checks that its GRPO run directory does not already exist, then atomically claims a new sidecar with exclusive creation. It never overwrites an existing same-run sidecar; an orphaned sidecar requires explicit operator review/cleanup. A resume requires both an existing run directory and sidecar, and the sidecar must match the run name plus both Piston identities before counters are restored. Counter mutations use atomic replacement with file and parent-directory fsync. Restored values are cumulative: subsequent mutations continue from the persisted totals rather than resetting them. These are physical transport-attempt totals across the run lineage, including work performed after an older Trainer checkpoint and before a crash; they are deliberately **not rolled back** when Trainer state resumes from that older checkpoint. This telemetry is operational evidence, not a reward component and not part of the C/D scientific pair hash.
 
 ## Tunnel supervisor contract
 
@@ -127,14 +128,37 @@ ServerAliveCountMax=3
 
 Operational invariants:
 
-- the supervisor owns an exclusive nonblocking lock for its entire lifetime;
+- the supervisor owns an exclusive nonblocking lock for its entire lifetime and keeps it until every SSH child it created has exited;
+- SIGTERM/SIGINT are handled by the supervisor; the spawn/handle-binding window temporarily blocks those signals so an SSH child cannot be orphaned before its handle is recorded;
+- on supervisor exception/shutdown, an owned SSH child is terminated, then killed after a bounded graceful-stop timeout if necessary;
 - it checks the port before every SSH process start, including reconnects;
 - if a listener exists and ownership is not proven, it never kills or replaces that process and fails closed;
-- reconnect count and delays are bounded by the tracked policy;
-- healthy means a listener is present and the project runtime HTTP probe validates exact Python `3.10.0`;
+- reconnect budget/backoff is bounded **per outage**; successful exact health closes the outage and resets that outage's reconnect budget, while cumulative reconnect telemetry never resets;
+- health evaluation is structurally performed by `tunnel_is_healthy`: listener presence plus the project runtime HTTP probe validating exact Python `3.10.0`;
 - telemetry schemas accept only fixed numeric/boolean fields and cannot carry candidate/test/secret strings.
 
-Required supervisor events are `supervisor_start`, `ssh_process_start`, `ssh_process_exit`, `reconnect`, `outage_begin`, `outage_end` with duration, successful `health_transition`, and `final_failure`.
+Required supervisor events are `supervisor_start`, `ssh_process_start`, `ssh_process_exit`, `reconnect`, `outage_begin`, `outage_end` with duration, successful `health_transition`, and `final_failure`. `DurableTunnelEventSink` is the deployment template for append-only, fsynced, secret-free JSONL supervisor telemetry. It validates every event against the fixed schema before persistence; supervisor JSONL remains operational evidence separate from GRPO reward logs.
+
+A future deployment wrapper should be thin and mechanically derive both runtime health and supervisor settings from tracked project definitions. The intended wiring is equivalent to the following **template only; do not execute during an active formal GRPO run**:
+
+```python
+from pathlib import Path
+
+from code_verifier.execution import PistonExecutor, load_piston_executor_config, load_piston_transport_policy
+from code_verifier.execution.piston_tunnel import DurableTunnelEventSink, TunnelSupervisor, TunnelSupervisorConfig
+
+policy = load_piston_transport_policy(Path("configs/execution/piston-transport-resilience.yaml"))
+executor = PistonExecutor(load_piston_executor_config(Path("configs/execution/piston-local.yaml")))
+supervisor = TunnelSupervisor(
+    TunnelSupervisorConfig.from_definition(policy.tunnel_supervisor),
+    lock_path=Path("/absolute/operator-owned/piston-tunnel-supervisor.lock"),
+    runtime_validator=executor,
+    emit=DurableTunnelEventSink(Path("/absolute/operator-owned/piston-tunnel-events.jsonl")),
+)
+supervisor.run()
+```
+
+The deployment wrapper must not substitute an arbitrary `health_check` callback, must not infer SSH ownership from a listener alone, and must keep the lock/event paths outside Git and outside C/D reward artifacts.
 
 ## Phase 2 design: idempotency relay (not implemented by default)
 

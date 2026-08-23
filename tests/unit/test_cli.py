@@ -1579,6 +1579,50 @@ def test_train_grpo_rejects_single_sided_run_name_override(
     assert "must be provided together" in capsys.readouterr().err
 
 
+def test_train_grpo_existing_run_dir_fails_before_transport_sidecar_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    piston_path = tmp_path / "piston.yaml"
+    piston_path.write_text("piston: test\n", encoding="utf-8")
+    (tmp_path / "grpo" / "public-grpo").mkdir(parents=True)
+
+    class FakeConfig:
+        piston_config = piston_path
+        seed = 7
+        run_name = "public-grpo"
+
+    configs = {Path("public.yaml"): FakeConfig(), Path("hidden.yaml"): FakeConfig()}
+    writes: list[object] = []
+    monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: configs[path])
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: "PISTON_CONFIG")
+    monkeypatch.setattr(cli_module, "_write_transport_sidecar", lambda *args, **kwargs: writes.append((args, kwargs)))
+
+    assert (
+        main(
+            [
+                "train-grpo",
+                "--public-config",
+                "public.yaml",
+                "--hidden-config",
+                "hidden.yaml",
+                "--public-sft-run-dir",
+                "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
+                "--output-dir",
+                str(tmp_path / "grpo"),
+            ]
+        )
+        == 2
+    )
+    assert writes == []
+    assert "explicit resume is required" in capsys.readouterr().err
+
+
 def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1586,6 +1630,7 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
 ) -> None:
     piston_path = tmp_path / "piston.yaml"
     piston_path.write_text("piston: test\n", encoding="utf-8")
+    (tmp_path / "grpo" / "public-grpo").mkdir(parents=True)
 
     class FakeConfig:
         piston_config = piston_path

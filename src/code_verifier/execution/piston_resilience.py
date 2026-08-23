@@ -13,6 +13,10 @@ from typing import Any, cast
 
 from code_verifier.config import ConfigError, load_yaml_mapping
 
+PISTON_TRANSPORT_RETRY_IMPLEMENTATION_VERSION = "piston-transport-retry-v2"
+PISTON_TRANSPORT_CLASSIFIER_IMPLEMENTATION_VERSION = "urllib-loopback-classifier-v2"
+PISTON_TUNNEL_SUPERVISOR_IMPLEMENTATION_VERSION = "piston-tunnel-supervisor-v2"
+
 _POLICY_FIELDS = {
     "version",
     "safe_retry_kinds",
@@ -23,7 +27,15 @@ _POLICY_FIELDS = {
     "tunnel_supervisor",
 }
 _SAFE_RETRY_KINDS = ("connection_refused", "preconnect_failure")
-_HEALTH_FIELDS = {"listener_host", "listener_port", "http_path", "required_runtime"}
+_HEALTH_FIELDS = {
+    "listener_host",
+    "listener_port",
+    "http_path",
+    "required_runtime",
+    "max_wait_attempts",
+    "backoff_seconds",
+    "backoff_cap_seconds",
+}
 _SUPERVISOR_FIELDS = {
     "ssh_target",
     "local_host",
@@ -43,12 +55,21 @@ _SUPERVISOR_FIELDS = {
 
 @dataclass(frozen=True)
 class PistonHealthProbeDefinition:
-    """Exact endpoint identity required before a safe candidate resend."""
+    """Exact endpoint identity and bounded wait policy required before a safe candidate resend."""
 
     listener_host: str
     listener_port: int
     http_path: str
     required_runtime: str
+    max_wait_attempts: int
+    backoff_seconds: tuple[float, ...]
+    backoff_cap_seconds: float
+
+    def delay_for_retry(self, retry_index: int) -> float:
+        if retry_index < 0:
+            raise ValueError("retry_index must be nonnegative")
+        selected = self.backoff_seconds[min(retry_index, len(self.backoff_seconds) - 1)]
+        return min(selected, self.backoff_cap_seconds)
 
 
 @dataclass(frozen=True)
@@ -104,7 +125,7 @@ class PistonTransportTelemetry:
     _on_change: Callable[[Mapping[str, int | float]], None] | None = field(default=None, repr=False, compare=False)
 
     def to_mapping(self) -> dict[str, int | float]:
-        mapping: dict[str, int | float] = {
+        counters = {
             "transport_requests": self.transport_requests,
             "transport_connect_failures": self.transport_connect_failures,
             "transport_safe_retries": self.transport_safe_retries,
@@ -112,18 +133,25 @@ class PistonTransportTelemetry:
             "transport_retry_exhausted": self.transport_retry_exhausted,
             "transport_ambiguous_failures": self.transport_ambiguous_failures,
             "tunnel_reconnect_count": self.tunnel_reconnect_count,
+        }
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counters.values()):
+            raise ValueError("transport telemetry counters must be nonnegative integers")
+        durations = {
             "tunnel_total_outage_seconds": self.tunnel_total_outage_seconds,
             "tunnel_max_outage_seconds": self.tunnel_max_outage_seconds,
         }
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, int | float)
-            or not math.isfinite(float(value))
-            or value < 0
-            for value in mapping.values()
-        ):
-            raise ValueError("transport telemetry must be finite and nonnegative")
-        return mapping
+        normalized_durations: dict[str, float] = {}
+        for field_name, value in durations.items():
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError("transport telemetry durations must be finite and nonnegative")
+            try:
+                converted = float(value)
+            except OverflowError:
+                raise ValueError("transport telemetry durations must be finite and nonnegative") from None
+            if not math.isfinite(converted) or converted < 0:
+                raise ValueError("transport telemetry durations must be finite and nonnegative")
+            normalized_durations[field_name] = converted
+        return {**counters, **normalized_durations}
 
     def set_on_change(self, callback: Callable[[Mapping[str, int | float]], None] | None) -> None:
         """Install a durable snapshot callback without changing counter values."""
@@ -168,10 +196,17 @@ class PistonTransportTelemetry:
         self._changed()
 
     def record_tunnel_outage(self, duration_seconds: float) -> None:
-        if not math.isfinite(duration_seconds) or duration_seconds < 0:
+        if isinstance(duration_seconds, bool) or not isinstance(duration_seconds, int | float):
             raise ValueError("tunnel outage duration must be finite and nonnegative")
-        self.tunnel_total_outage_seconds += duration_seconds
-        self.tunnel_max_outage_seconds = max(self.tunnel_max_outage_seconds, duration_seconds)
+        try:
+            converted = float(duration_seconds)
+            total = float(self.tunnel_total_outage_seconds) + converted
+        except OverflowError:
+            raise ValueError("tunnel outage duration must be finite and nonnegative") from None
+        if not math.isfinite(converted) or converted < 0 or not math.isfinite(total):
+            raise ValueError("tunnel outage duration must be finite and nonnegative")
+        self.tunnel_total_outage_seconds = total
+        self.tunnel_max_outage_seconds = max(float(self.tunnel_max_outage_seconds), converted)
         self._changed()
 
     def flush(self) -> None:
@@ -196,14 +231,15 @@ def _bounded_positive_int(value: object, *, field_name: str, maximum: int) -> in
 
 
 def _bounded_nonnegative_float(value: object, *, field_name: str, maximum: float) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(float(value))
-        or not 0 <= float(value) <= maximum
-    ):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         raise ConfigError(f"{field_name} must be finite in [0, {maximum:g}]")
-    return float(value)
+    try:
+        converted = float(value)
+    except OverflowError:
+        raise ConfigError(f"{field_name} must be finite in [0, {maximum:g}]") from None
+    if not math.isfinite(converted) or not 0 <= converted <= maximum:
+        raise ConfigError(f"{field_name} must be finite in [0, {maximum:g}]")
+    return converted
 
 
 def _bounded_backoff(value: object, *, field_name: str, cap: float) -> tuple[float, ...]:
@@ -230,18 +266,31 @@ def load_piston_transport_policy(path: Path) -> PistonTransportPolicy:
     backoff = _bounded_backoff(loaded["backoff_seconds"], field_name="backoff_seconds", cap=backoff_cap)
 
     health = _require_exact_mapping(loaded["health_probe"], _HEALTH_FIELDS, context="Piston health probe")
-    if health != {
+    required_health_scalars = {
         "listener_host": "127.0.0.1",
         "listener_port": 2000,
         "http_path": "/api/v2/runtimes",
         "required_runtime": "3.10.0",
-    }:
+    }
+    if any(health.get(key) != expected for key, expected in required_health_scalars.items()):
         raise ConfigError("Piston health probe must use canonical loopback Python 3.10.0 identity")
+    health_attempts = _bounded_positive_int(
+        health["max_wait_attempts"], field_name="health_probe.max_wait_attempts", maximum=20
+    )
+    health_backoff_cap = _bounded_nonnegative_float(
+        health["backoff_cap_seconds"], field_name="health_probe.backoff_cap_seconds", maximum=30.0
+    )
+    health_backoff = _bounded_backoff(
+        health["backoff_seconds"], field_name="health_probe.backoff_seconds", cap=health_backoff_cap
+    )
     health_definition = PistonHealthProbeDefinition(
         listener_host="127.0.0.1",
         listener_port=2000,
         http_path="/api/v2/runtimes",
         required_runtime="3.10.0",
+        max_wait_attempts=health_attempts,
+        backoff_seconds=health_backoff,
+        backoff_cap_seconds=health_backoff_cap,
     )
 
     supervisor = _require_exact_mapping(
@@ -312,6 +361,9 @@ def _policy_mapping(policy: PistonTransportPolicy) -> dict[str, object]:
             "listener_port": policy.health_probe.listener_port,
             "http_path": policy.health_probe.http_path,
             "required_runtime": policy.health_probe.required_runtime,
+            "max_wait_attempts": policy.health_probe.max_wait_attempts,
+            "backoff_seconds": list(policy.health_probe.backoff_seconds),
+            "backoff_cap_seconds": policy.health_probe.backoff_cap_seconds,
         },
         "tunnel_supervisor": {
             "ssh_target": policy.tunnel_supervisor.ssh_target,
@@ -327,6 +379,11 @@ def _policy_mapping(policy: PistonTransportPolicy) -> dict[str, object]:
             "max_reconnects": policy.tunnel_supervisor.max_reconnects,
             "exclusive_lock_required": policy.tunnel_supervisor.exclusive_lock_required,
             "unknown_port_owner_action": policy.tunnel_supervisor.unknown_port_owner_action,
+        },
+        "implementation_versions": {
+            "retry": PISTON_TRANSPORT_RETRY_IMPLEMENTATION_VERSION,
+            "classifier": PISTON_TRANSPORT_CLASSIFIER_IMPLEMENTATION_VERSION,
+            "tunnel_supervisor": PISTON_TUNNEL_SUPERVISOR_IMPLEMENTATION_VERSION,
         },
     }
 
