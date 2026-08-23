@@ -395,9 +395,13 @@ def test_supervisor_signal_shutdown_is_fail_closed_and_stops_owned_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(piston_tunnel, "assert_port_available_before_start", lambda host, port: None)
-    process = _FakeProcess([None], 255)
     events: list[str] = []
     supervisor: TunnelSupervisor
+    process = _FakeProcess(
+        [None],
+        255,
+        on_terminate=lambda: supervisor._handle_shutdown_signal(signal.SIGINT, None),
+    )
 
     def interrupt(_seconds: float) -> None:
         supervisor._handle_shutdown_signal(signal.SIGTERM, None)

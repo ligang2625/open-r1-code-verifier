@@ -345,6 +345,7 @@ class TunnelSupervisor:
         self._total_reconnect_count = 0
         self._outage_started: float | None = None
         self._final_failure_emitted = False
+        self._shutdown_signum: int | None = None
 
     def run(self) -> None:
         """Run until unrecoverable failure; keep the lock until any owned SSH child is stopped."""
@@ -495,6 +496,9 @@ class TunnelSupervisor:
             self._emit(sanitized_event("ssh_process_exit", returncode=returncode))
 
     def _handle_shutdown_signal(self, signum: int, _frame: FrameType | None) -> None:
+        if self._shutdown_signum is not None:
+            return
+        self._shutdown_signum = signum
         raise _SupervisorSignal(signum)
 
     def _install_signal_handlers(self) -> list[tuple[signal.Signals, object]]:
