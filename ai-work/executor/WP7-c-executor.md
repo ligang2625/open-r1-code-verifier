@@ -834,3 +834,106 @@ execution_checkpoint:
 - C8 remains immutable infrastructure-invalid history and is never a parent or resume source for retry1.
 - C11 preserves batch size, gradient accumulation, learning rate, reward formula/source, LoRA, seed, max steps, data bytes, formal B, pair identity and save_steps=10.
 - No C11 target command was started while preparing this checkpoint.
+
+
+## C12 — hard-interruption recoverable GRPO pilot handoff
+
+C10 was executed once on the RTX 4090, but it failed during preflight before either retry1 training run was created. The failure was caused by an operator provenance assertion that conflated two distinct C8 statistics: 498 reward rows are infrastructure-affected, while 495 rows have aggregate `status=sandbox_error`. C11 was generated locally afterward but was never pushed or executed; its conservative stale-`running` guard would also have blocked recovery after a real hard power/process interruption. C12 supersedes C11, preserves the executed-preflight C10 evidence, corrects the C8 historical signature, and restores fail-closed trainer-checkpoint recovery for coherent hard interruptions.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C12
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: dfbeafaf5b449b0884c065495db8059815cfd80f
+  recovery_hardening_commit: 24685d7e9587fdd9e072fa871d0a66f22bff9caf
+  superseded_stale_running_guard_commit: e6622a40c0449477079710e0fe875e216278e13c
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C12/run.sh
+  operator_script_sha256: ba838037596a3e0ba9a0d1102075174de36998156d0b3766df62c3b7550afd44
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C12/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C12/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C12/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C12/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C12
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  pilot_pair_schema_version: 2
+  pilot_pair_sha256: bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f
+  pilot_public_config_hash: da543a9ac2719076fd81696dbcb98f1df9c9254adc9e9f519569b3b0d2e09dac
+  pilot_hidden_config_hash: 5036e0aa8be941f145f52e08269e808948f091c80d5d0972ef50326417934658
+  pilot_public_run_name: C-public-grpo-pilot100-retry1-seed42
+  pilot_hidden_run_name: D-hidden-grpo-pilot100-retry1-seed42
+  pilot_max_steps: 100
+  pilot_save_steps: 10
+  expected_trainer_checkpoints: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  checkpoint_log_state_file: code_verifier_log_state.json
+  recovery_history_dir: checkpoints/recovery-history
+  supersedes_checkpoint_id: C11
+  supersedes_checkpoint_commit: 418cc1138b9c748726876ae6c53822773578151b
+  superseded_result_code_commit: e6622a40c0449477079710e0fe875e216278e13c
+  superseded_operator_script_sha256: d390dcd95c0f48702dbb14014b4efb6c3d848634d2c258fa74d30c1a6503af84
+  superseded_execution_state: unexecuted_by_operator
+  failed_c10_checkpoint_commit: d9af548d49cc8f781984f31ea70817e4afa9f1b1
+  failed_c10_result_code_commit: 24685d7e9587fdd9e072fa871d0a66f22bff9caf
+  failed_c10_operator_script_sha256: 06499d2b00b0799f4b277b130d095e498ec1fafe5753eb862c33824735739b49
+  failed_c10_operator_evidence_sha256: 13a612f0d7fa6c8d471065dd7fe890570acc08483708e7933d5cb30875086396
+  failed_c10_status_sha256: a5e45837a2959db847f7e67a915d0ecaddd47f943af2af5fa6453be497faabca
+  failed_c10_terminal_log_sha256: 4e2e12af753f1da6f220a145df7c43d8464b8295123ede2ff837d3d97abf9c33
+  failed_c10_command_rc: 125
+  failed_c10_postcheck_rc: 125
+  failed_c10_gate_status: preflight_failed
+  failed_c10_retry1_runs_created: false
+  unexecuted_c9_checkpoint_commit: 792f637f34ccabebbc61fde61bd861f20887f217
+  unexecuted_c9_operator_script_sha256: bae1e5ec8f0b4c29b86401e547ced8fc818b1b90af6c7d0d6b4bde708d15dcfa
+  preserved_invalid_c8_checkpoint_commit: 32ab2697b33c9a211c37c78f0871808de069b658
+  preserved_invalid_c8_operator_evidence_sha256: def49dcb2d838e8ff8a740250ad392a3dee34c54774d808c3c4b82630451b594
+  preserved_invalid_c8_reward_rows: 800
+  preserved_invalid_c8_infrastructure_failure_rows: 498
+  preserved_invalid_c8_sandbox_error_status_rows: 495
+  preserved_invalid_c8_first_infrastructure_failure_step: 36
+  preserved_invalid_c8_healthy_prefix_steps: 35
+  preserved_invalid_c8_hidden_run_absent: true
+  smoke_max_complete_trainer_checkpoint_bytes: 42184437
+  smoke_max_complete_trainer_checkpoint_inodes: 15
+  target_required_free_bytes: 32212254720
+  target_required_free_inodes: 100000
+  completed_scope:
+    - "C10 target execution is preserved as a preflight-only failure, not mislabeled as unexecuted: its exact evidence/status/terminal-log hashes are authenticated and neither retry1 run existed after the failure"
+    - "C8 historical validation now distinguishes the actual immutable statistics: 498/800 reward rows are infrastructure_failure=true, 495 have aggregate status=sandbox_error, the first infrastructure-affected row is in optimizer step 36, and steps 1..35 are healthy"
+    - "the three C8 rows that are infrastructure-affected without aggregate sandbox_error retain sandbox_error in failure_counts; C12 validates that semantic evidence instead of equating infrastructure_failure with the aggregate status field"
+    - "C11 remains immutable and unexecuted; C12 supersedes its stale-running guard because refusing status=running would make a complete Trainer+sidecar checkpoint unusable after hard power/process loss"
+    - "result-code dfbeafaf5b449b0884c065495db8059815cfd80f accepts only coherent interrupted status=running state: the latest attempt must also be running, interrupted attempt gpu_hours remains 0 because exact elapsed time was not durably finalized, and interrupted attempt/run end_time remains null"
+    - "resume checkpoint selection is centralized in production _latest_valid_resume_checkpoint: only cadence checkpoints with every required Trainer file, exact trainer_state global_step, and a valid code_verifier_log_state.json prefix boundary are eligible; a newer Trainer-complete checkpoint without its sidecar is skipped in favor of the highest lower valid checkpoint"
+    - "repeated hard-interruption recovery is covered end-to-end: two separate resumes from the same checkpoint preserve distinct recovery-history archives and remove each failed suffix from canonical rollouts/rewards/group_metrics before replay"
+    - "recovery remains viable if a previous recovery itself was hard-interrupted: recognized .incomplete-* archive staging and .resume-*.tmp rollback staging are preserved as bounded production recovery evidence rather than making the next valid resume impossible"
+    - "checkpoint and recovery-history symlink boundaries fail closed; recovery-history stays under checkpoints and canonical analysis continues to read only the run-root streaming JSONL files"
+    - "C12 postcheck validates checkpoint-10 through checkpoint-100 with the production sidecar validator and additionally requires checkpoint-100 sidecar state to equal each complete final canonical streaming-log state"
+    - "C12 postcheck accepts and audits recognized hard-interruption recovery staging while rejecting symlinks, unknown recovery-history entries, malformed manifests, unsafe future-checkpoint entries, and unexpected archive files"
+    - "Public and Hidden remain independently restartable under the same C12 script: an already completed Public run is skipped on a later invocation while Hidden can continue from its own highest valid 10-step Trainer+sidecar checkpoint"
+    - "training definitions are unchanged: max_steps=100 and save_steps=10 for each of Public and Hidden; batch size, gradient accumulation, num_generations, beta, learning rate, temperature, max_completion_length, LoRA, seed, gradient checkpointing, vLLM setting, formal data and formal B are unchanged"
+    - "portable pair v2 identity remains bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f with unchanged Public/Hidden portable config hashes"
+    - "fail-closed reward semantics, same-batch Piston circuit breaker, per-checkpoint canonical log sidecars, failed-attempt archive/rollback, and the real pinned TRL save-hook/fail-before-optimizer regressions remain in place"
+    - "verification PASS: focused GRPO/WP7a/WP7b 95/95; make lint PASS; full make test 945 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9 with 2 deselected"
+    - "C12 bash syntax PASS; all 16 embedded Python heredocs compile; exactly one real train-grpo command site; no numerical stopping threshold is introduced"
+  remaining_scope:
+    - "push only the exact C12 checkpoint through ordinary Git, checkout/detach that exact commit on the RTX 4090, verify clean checkout and C12 script SHA, then run only C12; do not rerun C8, C9, C10 or C11"
+    - "C12 must authenticate C11/C9 as unexecuted, authenticate the exact C10 preflight-only failure, authenticate preserved C8 infrastructure-invalid history, recompute the unchanged pair v2, and ensure the Piston tunnel immediately before each Public/Hidden train-grpo invocation"
+    - "C12 may be rerun after intentional or hard interruption; it selects only the highest complete valid 10-step Trainer+sidecar checkpoint, preserves failed/recovery-interrupted evidence under recovery-history, rolls canonical streams back to the selected boundary, and continues from there"
+    - "after C12 exits successfully, sync C12 operator evidence/status/log/postcheck and required small retry pilot artifacts/final adapters back to the C12 control-plane receive directory, then resume the WP7-c lifecycle on the control plane"
+  status: awaiting_operator
+```
+
+### C12 recovery notes
+
+- The two 100-step runs do not need to finish in one machine session. Public and Hidden have independent run directories and independent 10-step Trainer checkpoints; rerunning the exact C12 checkpoint can skip an already completed branch and resume the unfinished branch from its highest valid Trainer+sidecar checkpoint.
+- A hard interruption may leave the latest attempt recorded as `running`. C12 treats that as recoverable only when the persisted metadata is internally coherent and relies on checkpoint/sidecar/log-prefix evidence rather than pretending the interrupted attempt duration was durably known.
+- C8 remains immutable infrastructure-invalid history. C10 remains immutable preflight-failure history. C11 remains immutable unexecuted history. No target training command was started while preparing C12 on the GTX 1660 Ti control plane.
