@@ -937,3 +937,72 @@ execution_checkpoint:
 - The two 100-step runs do not need to finish in one machine session. Public and Hidden have independent run directories and independent 10-step Trainer checkpoints; rerunning the exact C12 checkpoint can skip an already completed branch and resume the unfinished branch from its highest valid Trainer+sidecar checkpoint.
 - A hard interruption may leave the latest attempt recorded as `running`. C12 treats that as recoverable only when the persisted metadata is internally coherent and relies on checkpoint/sidecar/log-prefix evidence rather than pretending the interrupted attempt duration was durably known.
 - C8 remains immutable infrastructure-invalid history. C10 remains immutable preflight-failure history. C11 remains immutable unexecuted history. No target training command was started while preparing C12 on the GTX 1660 Ti control plane.
+
+## C13 — C12 Hidden checkpoint-90 cross-commit recovery handoff
+
+C12 was executed on the RTX 4090. Public completed all 100 optimizer steps, while Hidden failed closed after checkpoint-90 when the Piston-backed reward path reported infrastructure failure near the end of the run. The failed reward batch was aborted before its optimizer update. C12 cannot be safely rerun verbatim because its historical C10 preflight check incorrectly requires the retry1 namespace to remain absent even after C12 itself created it. C13 therefore preserves C12 and its artifacts immutably, adds an explicit cross-commit resume lineage contract, and permits only the unfinished Hidden branch to recover from checkpoint-90 or a later valid C13-created checkpoint.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C13
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 7342b323fb550fd5ebae2ddcd614c2c63c054cbc
+  interruption_class: operator
+  resume_allowed: true
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C13/run.sh
+  operator_script_sha256: dd49ee0b21af0e309803bd3b3d2e0ebfc0b419bcdb01da56ebcab24cd3adfe58
+  target_machine_pointer_template: .ai-bridge/validation-machine.json
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C13/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C13/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C13/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C13/postcheck-summary.json"
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C13
+  recovery_origin_checkpoint_id: C12
+  recovery_origin_checkpoint_commit: 355486ccccff3a1325614e18e8f8d4a85b8789ba
+  recovery_origin_operator_script_sha256: ba838037596a3e0ba9a0d1102075174de36998156d0b3766df62c3b7550afd44
+  recovery_origin_public_state: completed_100
+  recovery_origin_hidden_state: failed_after_checkpoint_90
+  recovery_origin_hidden_first_resume_checkpoint: 90
+  pilot_pair_schema_version: 2
+  pilot_pair_sha256: bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f
+  pilot_public_config_hash: da543a9ac2719076fd81696dbcb98f1df9c9254adc9e9f519569b3b0d2e09dac
+  pilot_hidden_config_hash: 5036e0aa8be941f145f52e08269e808948f091c80d5d0972ef50326417934658
+  pilot_public_run_name: C-public-grpo-pilot100-retry1-seed42
+  pilot_hidden_run_name: D-hidden-grpo-pilot100-retry1-seed42
+  pilot_max_steps: 100
+  pilot_save_steps: 10
+  checkpoint_log_state_file: code_verifier_log_state.json
+  recovery_history_dir: checkpoints/recovery-history
+  completed_scope:
+    - "production train-grpo now accepts cross-commit recovery only when --resume-run-git-commit explicitly matches the preserved run.json git_commit; omission, mismatch, malformed commit, or use without --resume-from-checkpoint fails closed"
+    - "run.json.git_commit remains the immutable origin commit C12; every new attempt records code_commit so the recovery execution commit is separately auditable without rewriting the historical run origin"
+    - "legacy C12 attempt records without code_commit remain valid; new attempt code_commit values are strict lowercase 40-character Git commit identities"
+    - "C13 preflight requires its result-code commit to be directly parented by C12 and requires the C12-to-result diff to be exactly src/code_verifier/cli.py, src/code_verifier/training/grpo.py, tests/unit/test_cli.py, and tests/unit/training/test_grpo_resume_lineage.py"
+    - "C13 authenticates the executed C12 terminal state as status=2, command_rc=2, postcheck_rc=125, gate_status=command_failed, note=hidden pilot train-grpo exited nonzero, with exact C12 checkpoint/script provenance; the exact C12 evidence SHA is recomputed on target and recorded in C13 operator evidence"
+    - "Public is strict-loader validated as the untouched C12 100-step completed run and C13 has no Public train-grpo command"
+    - "on the first C13 invocation Hidden must be owned by C12, attempt-1 must be the C12 failed attempt, and production _latest_valid_resume_checkpoint must select exactly checkpoint-90; no fresh fallback is present"
+    - "C13 invokes exactly one real train-grpo site with reward-mode hidden, explicit --resume-from-checkpoint, and --resume-run-git-commit bound to C12; production recovery archives the failed suffix and restores canonical rollouts/rewards/group_metrics to the checkpoint sidecar boundary before Trainer resumes"
+    - "if C13 itself is interrupted, the same exact C13 script may select only a highest complete valid cadence checkpoint at step >=90; it never falls back below checkpoint-90 or to fresh training"
+    - "postcheck strict-loads both completed C/D adapters, requires Public attempt_count=1, requires Hidden to have a C13 attempt lineage, validates checkpoint-10..100 sidecars and final checkpoint-100 canonical stream equality, and requires at least one completed C13 checkpoint-90 recovery archive so a prior C13 hard interruption before archive finalization remains recoverable"
+    - "scientific definitions remain unchanged: pair SHA, Public/Hidden portable config hashes, formal datasets, formal B, Piston definition/runtime/topology, batch size, gradient accumulation, num_generations, reward formula/source, LoRA, seed, max_steps and save_steps are unchanged"
+    - "business verification PASS before handoff: focused GRPO/CLI 149/149; make lint PASS; full make test 948 passed / 3 expected real-Piston opt-in skips / 0 failed; make test-gpu 3/3; real make test-piston 9/9 with 2 deselected"
+    - "C13 bash syntax PASS and all 12 embedded Python heredocs compile; C13 parses its own report block and fail-closes if result_code_commit/script SHA/handoff/restart/status metadata differ from the tracked checkpoint; C13 contains no --reward-mode public command and exactly one Hidden recovery train-grpo command site"
+  remaining_scope:
+    - "commit the four-file cross-commit resume repair as the direct child of C12, substitute that exact result-code SHA into this C13 report block, mark C13/run.sh executable, then commit only this append-only report plus the new C13 script as the operator checkpoint"
+    - "make the exact C13 checkpoint reachable on the RTX 4090, checkout/detach it, verify a clean checkout and the exact C13 script SHA, then manually run only C13; do not rerun C12 or invoke train-grpo directly"
+    - "C13 must preflight the existing C12 Public/Hidden artifacts and will start only Hidden from checkpoint-90 on its first invocation"
+    - "after C13 exits, preserve/sync C13 evidence/status/log/postcheck and required small pilot artifacts for review; do not proceed to formal GRPO before the C12/C13 pilot review is complete"
+  status: awaiting_operator
+```
+
+### C13 recovery notes
+
+- C13 is a recovery-only handoff. It has no fresh training path and no Public training path.
+- The cross-commit permission is intentionally narrow: the preserved run origin commit must be exactly C12, all scientific/run identities must still match, and the current recovery execution is recorded per attempt as `code_commit`.
+- The current Piston topology remains the sealed 4090 loopback SSH-forward to `1660ti-wsl`; the planned transport-reliability hardening remains deferred until this pilot and its review are complete.
