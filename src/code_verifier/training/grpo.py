@@ -1520,6 +1520,11 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
         status = value.get("status")
         if status not in {"running", "completed", "failed"}:
             raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        code_commit = value.get("code_commit")
+        if code_commit is not None and (
+            not isinstance(code_commit, str) or re.fullmatch(r"[0-9a-f]{40}", code_commit) is None
+        ):
+            raise GRPOTrainingError("GRPO run metadata has invalid attempt code commit")
         gpu_hours = value.get("gpu_hours")
         if (
             isinstance(gpu_hours, bool)
@@ -1534,10 +1539,12 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
     return total
 
 
-def _begin_attempt(run_metadata: dict[str, object], *, resume_source: str | None) -> None:
+def _begin_attempt(run_metadata: dict[str, object], *, resume_source: str | None, code_commit: str) -> None:
     attempts = run_metadata.get("attempts")
     if not isinstance(attempts, list):
         raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    if re.fullmatch(r"[0-9a-f]{40}", code_commit) is None:
+        raise GRPOTrainingError("GRPO attempt code commit is invalid")
     attempts.append(
         {
             "attempt": len(attempts) + 1,
@@ -1545,6 +1552,7 @@ def _begin_attempt(run_metadata: dict[str, object], *, resume_source: str | None
             "end_time": None,
             "status": "running",
             "resume_from_checkpoint": resume_source,
+            "code_commit": code_commit,
             "gpu_hours": 0.0,
         }
     )
@@ -1681,6 +1689,7 @@ def _validate_resume_run(
     paired_components: Mapping[str, object],
     environment: Mapping[str, Any],
     resume_source: str,
+    resume_run_git_commit: str | None,
 ) -> dict[str, object]:
     try:
         value = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -1688,6 +1697,11 @@ def _validate_resume_run(
         raise GRPOTrainingError("existing GRPO run metadata is unreadable") from None
     if not isinstance(value, dict):
         raise GRPOTrainingError("existing GRPO run metadata is invalid")
+    current_git_commit = environment.get("project_commit")
+    if not isinstance(current_git_commit, str) or re.fullmatch(r"[0-9a-f]{40}", current_git_commit) is None:
+        raise GRPOTrainingError("current GRPO project commit is invalid")
+    if resume_run_git_commit is not None and re.fullmatch(r"[0-9a-f]{40}", resume_run_git_commit) is None:
+        raise GRPOTrainingError("resume_run_git_commit must be an exact 40-character lowercase Git commit")
     packages = cast(Mapping[str, object], environment["packages"])
     expected: dict[str, object] = {
         "run_id": config.run_name,
@@ -1697,7 +1711,6 @@ def _validate_resume_run(
         "paired_definition_sha256": paired_definition_sha256,
         **paired_components,
         "seed": seed,
-        "git_commit": environment["project_commit"],
         "open_r1_commit": environment["open_r1_commit"],
         "dependency_lock_hash": environment["dependency_lock_hash"],
         "python_version": environment["python_version"],
@@ -1711,6 +1724,17 @@ def _validate_resume_run(
     }
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         raise GRPOTrainingError("existing GRPO run identity does not match the requested resume")
+    run_git_commit = value.get("git_commit")
+    if not isinstance(run_git_commit, str) or re.fullmatch(r"[0-9a-f]{40}", run_git_commit) is None:
+        raise GRPOTrainingError("existing GRPO run has invalid git_commit")
+    if run_git_commit != current_git_commit:
+        if resume_run_git_commit != run_git_commit:
+            raise GRPOTrainingError(
+                "existing GRPO run was created by a different project commit; "
+                "explicit resume_run_git_commit must match the preserved run"
+            )
+    elif resume_run_git_commit is not None and resume_run_git_commit != run_git_commit:
+        raise GRPOTrainingError("resume_run_git_commit does not match the preserved GRPO run")
     if {path.name for path in run_dir.iterdir()} != _GRPO_RUN_LAYOUT:
         raise GRPOTrainingError("existing GRPO run does not match the strict artifact layout")
     run_status = value.get("status")
@@ -1794,6 +1818,7 @@ def run_grpo_training(
     seed: int,
     executor: CodeExecutor,
     resume_from_checkpoint: Path | None = None,
+    resume_run_git_commit: str | None = None,
 ) -> GRPOTrainingSummary:
     """Preflight one fair C/D pair, then run the selected reward mode."""
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -1820,6 +1845,9 @@ def run_grpo_training(
     dataset_hash = _file_hash(config.dataset_path, description="GRPO dataset")
     config_hash = _config_hash(config, seed=seed)
     environment = collect_environment()
+    current_git_commit = environment.get("project_commit")
+    if not isinstance(current_git_commit, str) or re.fullmatch(r"[0-9a-f]{40}", current_git_commit) is None:
+        raise GRPOTrainingError("current GRPO project commit is invalid")
     resume_path: str | None = None
     resume_source: str | None = None
     if resume_from_checkpoint is not None:
@@ -1839,8 +1867,11 @@ def run_grpo_training(
             paired_components=paired_components,
             environment=environment,
             resume_source=resume_source,
+            resume_run_git_commit=resume_run_git_commit,
         )
     else:
+        if resume_run_git_commit is not None:
+            raise GRPOTrainingError("resume_run_git_commit requires resume_from_checkpoint")
         if run_dir.exists():
             raise GRPOTrainingError("GRPO run directory already exists; explicit resume is required")
         try:
@@ -1860,7 +1891,7 @@ def run_grpo_training(
             raise
 
     gpu_count_used = cast(int, run_metadata["gpu_count_used"])
-    _begin_attempt(run_metadata, resume_source=resume_source)
+    _begin_attempt(run_metadata, resume_source=resume_source, code_commit=current_git_commit)
     _write_json(run_dir / "run.json", run_metadata)
     started = time.perf_counter()
     peak_reset = False

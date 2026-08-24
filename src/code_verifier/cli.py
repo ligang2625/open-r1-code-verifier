@@ -691,6 +691,7 @@ def _train_grpo(args: argparse.Namespace) -> int:
     executor = PistonExecutor(piston_config)
     executor.validate_runtime()
     resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
+    resume_run_git_commit = None if args.resume_run_git_commit is None else str(args.resume_run_git_commit)
     summary = run_grpo_training(
         public_config,
         hidden_config,
@@ -701,6 +702,7 @@ def _train_grpo(args: argparse.Namespace) -> int:
         seed=effective_seed,
         executor=executor,
         resume_from_checkpoint=resume,
+        resume_run_git_commit=resume_run_git_commit,
     )
     print(
         f"trained {summary.train_samples} samples "
@@ -1035,6 +1037,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="explicit checkpoint directory to resume",
+    )
+    train_grpo_parser.add_argument(
+        "--resume-run-git-commit",
+        default=None,
+        help="explicit preserved run commit required when resuming across a later operator/code commit",
     )
     train_grpo_parser.add_argument(
         "--seed",

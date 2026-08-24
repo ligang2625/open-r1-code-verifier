@@ -1434,6 +1434,7 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
         "--hidden-sft-run-dir",
         "--reward-mode",
         "--resume-from-checkpoint",
+        "--resume-run-git-commit",
         "--seed",
         "--output-dir",
         "--log-level",
@@ -1612,6 +1613,7 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
     monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: "PISTON_CONFIG")
     monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
     monkeypatch.setattr(cli_module, "run_grpo_training", fake_run)
+    resume_run_commit = "a" * 40
 
     assert (
         main(
@@ -1629,6 +1631,8 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
                 "public",
                 "--resume-from-checkpoint",
                 "outputs/grpo/public/checkpoints/checkpoint-1",
+                "--resume-run-git-commit",
+                resume_run_commit,
                 "--seed",
                 "11",
             ]
@@ -1641,6 +1645,7 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
     assert seen["reward_mode"] == "public"
     assert seen["seed"] == 11
     assert seen["resume_from_checkpoint"] == Path("outputs/grpo/public/checkpoints/checkpoint-1")
+    assert seen["resume_run_git_commit"] == resume_run_commit
     output = capsys.readouterr()
     assert "override: seed: 7 -> 11" in output.err
     assert "reward_mode=public" in output.out
