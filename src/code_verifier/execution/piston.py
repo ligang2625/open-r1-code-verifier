@@ -1,6 +1,6 @@
 """Loopback-only HTTP boundary for a Piston executor.
 
-The backend may be local or reached through an SSH local forward. Project
+The backend may be local or reached through loopback-only SSH forwarding. Project
 configuration intentionally accepts only loopback HTTP endpoints in either mode.
 """
 

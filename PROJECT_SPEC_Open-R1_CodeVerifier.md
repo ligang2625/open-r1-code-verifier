@@ -638,7 +638,7 @@ test_no_problem_overlap_across_splits
 
 不建议把第三方付费沙箱作为唯一实现，以免复现依赖外部账户。
 
-对算力平台只提供普通非特权 GPU 容器的场景，`本地 Piston` 的安全边界按 CodeVerifier 进程可见的 loopback endpoint 定义，而不是要求 Piston 与 GPU 进程共享同一宿主机。允许把固定版本的 Piston 部署在独立 CPU Linux 主机/VM 上，并通过 SSH local forward 映射为 GPU 容器内的 `127.0.0.1` endpoint。此模式下：
+对算力平台只提供普通非特权 GPU 容器的场景，`本地 Piston` 的安全边界按 CodeVerifier 进程可见的 loopback endpoint 定义，而不是要求 Piston 与 GPU 进程共享同一宿主机。允许把固定版本的 Piston 部署在独立 CPU Linux 主机/VM 上，并通过 loopback-only SSH forwarding 映射为 GPU 容器内的 `127.0.0.1` endpoint；forward 可以由 GPU 端发起 local forward，也可以由 Piston/control-plane 端主动连接 GPU 公网 SSH endpoint 后建立 reverse forward。无论方向如何，Piston API 与 GPU 侧映射都必须只绑定 loopback。此模式下：
 
 - GPU 容器不要求 Docker、`systemd`、`--privileged` 或 Docker socket；
 - Piston 主机仍必须满足既有 Docker/cgroup/特权容器安全验收，并保持 API 仅绑定其自身 loopback；
@@ -2174,7 +2174,7 @@ python -m code_verifier.cli --help
 
 回退：
 
-- 优先复用 Open-R1 支持的 provider 或严格 loopback Piston；GPU 平台只提供普通容器时允许 SSH local forward 到独立 CPU Piston host；
+- 优先复用 Open-R1 支持的 provider 或严格 loopback Piston；GPU 平台只提供普通容器时允许 loopback-only SSH forwarding（包括由 Piston/control-plane 端主动建立的 reverse forward）连接独立 CPU Piston host；
 - 不自行实现完整沙箱内核；
 - 保留统一 Executor 接口，后续替换；
 - 不以直接宿主机执行作为正式训练方案。

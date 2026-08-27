@@ -49,17 +49,17 @@ A brief read-only target-machine metadata/artifact check is allowed only when th
 
 The only project Piston host is `1660ti-wsl`; `home-piston-01` is retired. The pinned Piston service remains on the 1660 Ti WSL host.
 
-A 4090 gate that requires Piston must first ensure:
+A 4090 gate that requires Piston must first ensure the current reverse-forward contract:
 
 ```text
-4090 127.0.0.1:2000 -> 1660ti-wsl 127.0.0.1:2000
+1660ti-wsl 127.0.0.1:2000
+        |
+        | SSH reverse forward over the current provider public SSH endpoint
+        v
+4090 127.0.0.1:2000
 ```
 
-using:
-
-```bash
-/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh
-```
+The control plane owns the long-lived outbound SSH session and uses `-R 127.0.0.1:2000:127.0.0.1:2000`. The current provider SSH hostname/port/authentication remain machine-local and untracked. The 4090 must not start the retired Tailscale/local-forward helper while this transport is active; target-GPU preflight checks only that `http://127.0.0.1:2000/api/v2/runtimes` is healthy and reports the exact pinned runtime.
 
 The project endpoint remains `http://127.0.0.1:2000`; never configure a LAN/public Piston endpoint or introduce another host.
 
