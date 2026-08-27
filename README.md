@@ -562,6 +562,11 @@ export CODE_VERIFIER_ARTIFACT_ROOT=/absolute/persistent/path/open-r1-code-verifi
   --reward-mode hidden
 ```
 
+Formal validation binds the complete pair explicitly with `--dataset-dir <prepared>` and provides
+`--public-run-name` / `--hidden-run-name` together. The dataset override always resolves both
+`training/public_grpo.jsonl` and `training/hidden_grpo.jsonl`; single-sided dataset or run-name overrides are not
+supported, so C/D fairness is established before the selected reward mode is dispatched.
+
 The default output is `$CODE_VERIFIER_ARTIFACT_ROOT/grpo` or `outputs/grpo`. Resume requires a direct `<run>/checkpoints/checkpoint-N` child and exact parent-SFT, dataset, config, dependency, environment, seed, and reward-mode identity. Each run stores `rollouts.jsonl`, sanitized `rewards.jsonl`, `group_metrics.jsonl`, trainer metrics, and non-sensitive run metadata. Only rollout records contain completion text; reward/group/run/config/environment/stdout/stderr artifacts never contain test payloads.
 
 Policy construction is fixed: load base A, load completed B adapter read-only, validate its base/revision identity, safe-merge B into base weights, then let `GRPOTrainer` create a new trainable GRPO LoRA. Disabling the GRPO adapter therefore returns to B, not A. Quantization, remote code, vLLM, Hub push, and remote reporting remain disabled.

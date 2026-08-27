@@ -7,6 +7,8 @@ Example:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -62,12 +64,15 @@ from code_verifier.execution import (
     ExecutionWorkloadMode,
     PistonExecutor,
     PistonTransportError,
+    PistonTransportTelemetry,
     SQLiteExecutionCache,
     batch_execution_item_to_mapping,
     batch_execution_request_from_mapping,
     load_batch_execution_config,
     load_piston_executor_config,
+    load_piston_transport_policy,
     piston_executor_version,
+    piston_transport_policy_sha256,
     validate_batch_cache_policy,
 )
 from code_verifier.parsing import extract_python_code
@@ -80,6 +85,7 @@ from code_verifier.training import (
     SFTPrevalidationError,
     SFTTrainingError,
     grpo_evaluation_checkpoint_id,
+    grpo_run_directory,
     load_completed_grpo_checkpoint,
     load_completed_sft_checkpoint,
     load_grpo_training_config,
@@ -661,36 +667,220 @@ def _train_sft(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _transport_sidecar_path(output_root: Path, run_name: str) -> Path:
+    return output_root / "transport-telemetry" / f"{run_name}.json"
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _restore_transport_sidecar(
+    path: Path,
+    *,
+    run_name: str,
+    piston_definition_sha256: str,
+    piston_transport_policy_sha256: str,
+    telemetry: PistonTransportTelemetry,
+) -> None:
+    if not path.exists():
+        raise GRPOTrainingError("Piston transport telemetry sidecar is required for resume")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+        raise GRPOTrainingError("Piston transport telemetry sidecar is unreadable") from None
+    if not isinstance(value, dict) or set(value) != {
+        "version",
+        "run_name",
+        "piston_definition_sha256",
+        "piston_transport_policy_sha256",
+        "telemetry_semantics",
+        "telemetry",
+    }:
+        raise GRPOTrainingError("Piston transport telemetry sidecar schema is invalid")
+    expected = {
+        "version": 1,
+        "run_name": run_name,
+        "piston_definition_sha256": piston_definition_sha256,
+        "piston_transport_policy_sha256": piston_transport_policy_sha256,
+        "telemetry_semantics": "cumulative_durable_snapshot_per_mutation_v1",
+    }
+    if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+        raise GRPOTrainingError("Piston transport telemetry sidecar identity does not match resume")
+    try:
+        telemetry.restore(value["telemetry"])
+    except ValueError as error:
+        raise GRPOTrainingError(str(error)) from None
+
+
+def _write_transport_sidecar(
+    path: Path,
+    *,
+    run_name: str,
+    piston_definition_sha256: str,
+    piston_transport_policy_sha256: str,
+    telemetry: PistonTransportTelemetry,
+    create_only: bool = False,
+) -> None:
+    value = {
+        "version": 1,
+        "run_name": run_name,
+        "piston_definition_sha256": piston_definition_sha256,
+        "piston_transport_policy_sha256": piston_transport_policy_sha256,
+        "telemetry_semantics": "cumulative_durable_snapshot_per_mutation_v1",
+        "telemetry": telemetry.to_mapping(),
+    }
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_only:
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                raise GRPOTrainingError(
+                    "Piston transport telemetry sidecar already exists; explicit resume or operator review is required"
+                ) from None
+            _fsync_directory(path.parent)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary)
+        return
+
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
+
+
 def _train_grpo(args: argparse.Namespace) -> int:
     """Validate one complete C/D definition pair, then run the selected mode."""
     public_config = load_grpo_training_config(Path(str(args.public_config)))
     hidden_config = load_grpo_training_config(Path(str(args.hidden_config)))
+    if args.dataset_dir is not None:
+        prepared_dir = Path(str(args.dataset_dir))
+        public_dataset_path = prepared_dir / "training" / "public_grpo.jsonl"
+        hidden_dataset_path = prepared_dir / "training" / "hidden_grpo.jsonl"
+        print(f"override: public dataset_path: {public_config.dataset_path} -> {public_dataset_path}", file=sys.stderr)
+        print(f"override: hidden dataset_path: {hidden_config.dataset_path} -> {hidden_dataset_path}", file=sys.stderr)
+        public_config = replace(public_config, dataset_path=public_dataset_path)
+        hidden_config = replace(hidden_config, dataset_path=hidden_dataset_path)
+    if (args.public_run_name is None) != (args.hidden_run_name is None):
+        raise GRPOTrainingError("--public-run-name and --hidden-run-name must be provided together")
+    if args.public_run_name is not None:
+        public_run_name = str(args.public_run_name)
+        hidden_run_name = str(args.hidden_run_name)
+        print(f"override: public run_name: {public_config.run_name} -> {public_run_name}", file=sys.stderr)
+        print(f"override: hidden run_name: {hidden_config.run_name} -> {hidden_run_name}", file=sys.stderr)
+        public_config = replace(public_config, run_name=public_run_name)
+        hidden_config = replace(hidden_config, run_name=hidden_run_name)
     selected_config = public_config if args.reward_mode == "public" else hidden_config
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = selected_config.seed if cli_seed is None else cli_seed
     if cli_seed is not None and cli_seed != selected_config.seed:
         print(f"override: seed: {selected_config.seed} -> {cli_seed}", file=sys.stderr)
     piston_config = load_piston_executor_config(selected_config.piston_config)
-    executor = PistonExecutor(piston_config)
-    executor.validate_runtime()
+    policy_path = Path(str(args.piston_transport_policy))
+    transport_policy = load_piston_transport_policy(policy_path)
+    piston_definition_sha256 = _sha256_file(selected_config.piston_config)
+    transport_policy_sha256 = piston_transport_policy_sha256(policy_path)
+    transport_telemetry = PistonTransportTelemetry()
+    output_root = Path(str(args.output_dir))
+    run_dir = grpo_run_directory(output_root, selected_config.run_name)
+    sidecar_path = _transport_sidecar_path(output_root, selected_config.run_name)
     resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
-    summary = run_grpo_training(
-        public_config,
-        hidden_config,
-        reward_mode=str(args.reward_mode),
-        public_sft_run_dir=Path(str(args.public_sft_run_dir)),
-        hidden_sft_run_dir=Path(str(args.hidden_sft_run_dir)),
-        output_root=Path(str(args.output_dir)),
-        seed=effective_seed,
-        executor=executor,
-        resume_from_checkpoint=resume,
+    if resume is None:
+        if run_dir.exists():
+            raise GRPOTrainingError("GRPO run directory already exists; explicit resume is required")
+        _write_transport_sidecar(
+            sidecar_path,
+            run_name=selected_config.run_name,
+            piston_definition_sha256=piston_definition_sha256,
+            piston_transport_policy_sha256=transport_policy_sha256,
+            telemetry=transport_telemetry,
+            create_only=True,
+        )
+    else:
+        if not run_dir.is_dir():
+            raise GRPOTrainingError("resume requires an existing GRPO run directory")
+        _restore_transport_sidecar(
+            sidecar_path,
+            run_name=selected_config.run_name,
+            piston_definition_sha256=piston_definition_sha256,
+            piston_transport_policy_sha256=transport_policy_sha256,
+            telemetry=transport_telemetry,
+        )
+    transport_telemetry.set_on_change(
+        lambda _snapshot: _write_transport_sidecar(
+            sidecar_path,
+            run_name=selected_config.run_name,
+            piston_definition_sha256=piston_definition_sha256,
+            piston_transport_policy_sha256=transport_policy_sha256,
+            telemetry=transport_telemetry,
+        )
     )
+    executor = PistonExecutor(
+        piston_config,
+        transport_policy=transport_policy,
+        transport_telemetry=transport_telemetry,
+    )
+    try:
+        executor.validate_runtime()
+        summary = run_grpo_training(
+            public_config,
+            hidden_config,
+            reward_mode=str(args.reward_mode),
+            public_sft_run_dir=Path(str(args.public_sft_run_dir)),
+            hidden_sft_run_dir=Path(str(args.hidden_sft_run_dir)),
+            output_root=output_root,
+            seed=effective_seed,
+            executor=executor,
+            resume_from_checkpoint=resume,
+        )
+    finally:
+        _write_transport_sidecar(
+            sidecar_path,
+            run_name=selected_config.run_name,
+            piston_definition_sha256=piston_definition_sha256,
+            piston_transport_policy_sha256=transport_policy_sha256,
+            telemetry=transport_telemetry,
+        )
     print(
         f"trained {summary.train_samples} samples "
         f"(train_loss={summary.train_loss:g}, reward_mode={summary.reward_mode})"
     )
     print(f"run_dir={summary.run_dir}")
     print(f"checkpoint_dir={summary.checkpoint_dir}")
+    print(f"piston_definition_sha256={piston_definition_sha256}")
+    print(f"piston_transport_policy_sha256={transport_policy_sha256}")
+    print(f"transport_telemetry={sidecar_path}")
     return 0
 
 
@@ -978,6 +1168,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hidden GRPO YAML config path",
     )
     train_grpo_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="optional prepared dataset root override for the complete Public/Hidden pair",
+    )
+    train_grpo_parser.add_argument(
+        "--public-run-name",
+        type=_safe_run_name,
+        default=None,
+        help="optional safe Public GRPO run id override; requires --hidden-run-name",
+    )
+    train_grpo_parser.add_argument(
+        "--hidden-run-name",
+        type=_safe_run_name,
+        default=None,
+        help="optional safe Hidden GRPO run id override; requires --public-run-name",
+    )
+    train_grpo_parser.add_argument(
         "--public-sft-run-dir",
         type=Path,
         required=True,
@@ -1000,6 +1208,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="explicit checkpoint directory to resume",
+    )
+    train_grpo_parser.add_argument(
+        "--piston-transport-policy",
+        type=Path,
+        default=Path("configs/execution/piston-transport-resilience.yaml"),
+        help="operational Piston transport resilience policy; excluded from C/D scientific pair identity",
     )
     train_grpo_parser.add_argument(
         "--seed",

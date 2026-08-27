@@ -12,11 +12,12 @@ import shutil
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from types import ModuleType
+from types import MethodType, ModuleType
 from typing import Any, cast
 
 import yaml
@@ -30,11 +31,16 @@ from code_verifier.data.leakage_checks import (
     load_training_artifact,
 )
 from code_verifier.environment import collect_environment
-from code_verifier.execution.base import CodeExecutor
+from code_verifier.execution.base import CodeExecutor, ExecutionResult, ExecutionStatus
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.open_r1_adapter import import_open_r1_module
-from code_verifier.training.sft import SFTCheckpointIdentity, SFTTrainingError, load_completed_sft_checkpoint
+from code_verifier.training.sft import (
+    SFTCheckpointIdentity,
+    SFTTrainingError,
+    _without_unconfigured_deepspeed_backend,
+    load_completed_sft_checkpoint,
+)
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,7 @@ class GRPOCheckpointIdentity:
     reward_mode: str
     dataset_hash: str
     config_hash: str
+    paired_definition_sha256: str
     dependency_lock_hash: str
     seed: int
     parent_sft: SFTCheckpointIdentity
@@ -166,6 +173,24 @@ _GRPO_RUN_LAYOUT = {
     "stderr.log",
     "checkpoints",
 }
+_GRPO_STREAM_LOG_NAMES = ("rollouts.jsonl", "rewards.jsonl", "group_metrics.jsonl")
+_GRPO_LOG_STATE_FILENAME = "code_verifier_log_state.json"
+_GRPO_RECOVERY_HISTORY_DIR = "recovery-history"
+_GRPO_LOG_STATE_VERSION = 1
+_GRPO_TRAINER_RESUME_FILES = (
+    "adapter_config.json",
+    "adapter_model.safetensors",
+    "optimizer.pt",
+    "scheduler.pt",
+    "rng_state.pth",
+    "trainer_state.json",
+    "training_args.bin",
+)
+_PAIR_SCHEMA_VERSION = 2
+_GPU_HOURS_SEMANTICS = (
+    "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
+    "model load, train, and save"
+)
 
 
 def _exact_mapping(value: object) -> Mapping[str, object]:
@@ -390,6 +415,9 @@ def load_completed_grpo_checkpoint(run_dir: Path) -> GRPOCheckpointIdentity:
         reward_mode=reward_mode,
         dataset_hash=_checkpoint_identity_hash(metadata_value.get("dataset_hash"), field_name="dataset_hash"),
         config_hash=_checkpoint_identity_hash(metadata_value.get("config_hash"), field_name="config_hash"),
+        paired_definition_sha256=_checkpoint_identity_hash(
+            metadata_value.get("paired_definition_sha256"), field_name="paired_definition_sha256"
+        ),
         dependency_lock_hash=_checkpoint_identity_hash(
             metadata_value.get("dependency_lock_hash"), field_name="dependency_lock_hash"
         ),
@@ -406,6 +434,7 @@ def grpo_evaluation_checkpoint_id(identity: GRPOCheckpointIdentity) -> str:
         "config_hash": identity.config_hash,
         "dataset_hash": identity.dataset_hash,
         "dependency_lock_hash": identity.dependency_lock_hash,
+        "paired_definition_sha256": identity.paired_definition_sha256,
         "parent_sft": {
             "checkpoint_dir": str(parent.checkpoint_dir),
             "config_hash": parent.config_hash,
@@ -464,6 +493,37 @@ def _batch_length(value: object, *, field_name: str) -> int:
     return len(value)
 
 
+def _decode_test_payload_batch(value: object, *, field_name: str) -> list[list[dict[str, object]]]:
+    _batch_length(value, field_name=field_name)
+    batch = cast(Sequence[object], value)
+    decoded_batch: list[list[dict[str, object]]] = []
+    for item_index, item in enumerate(batch):
+        if isinstance(item, str | bytes | bytearray | Mapping) or not isinstance(item, Sequence) or not item:
+            raise GRPOTrainingError(f"{field_name}[{item_index}] must be a non-empty sequence")
+        decoded_tests: list[dict[str, object]] = []
+        for test_index, encoded in enumerate(cast(Sequence[object], item)):
+            if isinstance(encoded, Mapping):
+                parsed = dict(encoded)
+            elif isinstance(encoded, str):
+                try:
+                    parsed = json.loads(encoded)
+                except json.JSONDecodeError:
+                    raise GRPOTrainingError(
+                        f"{field_name}[{item_index}][{test_index}] must contain valid JSON"
+                    ) from None
+            else:
+                raise GRPOTrainingError(
+                    f"{field_name}[{item_index}][{test_index}] must be encoded JSON text or a test mapping"
+                )
+            if not isinstance(parsed, dict) or set(parsed) != {"input", "expected"}:
+                raise GRPOTrainingError(
+                    f"{field_name}[{item_index}][{test_index}] must decode to one exact test mapping"
+                )
+            decoded_tests.append(cast(dict[str, object], parsed))
+        decoded_batch.append(decoded_tests)
+    return decoded_batch
+
+
 def _completion_text(item: object) -> str:
     if isinstance(item, str):
         return item
@@ -502,6 +562,39 @@ def _append_lines(path: Path, lines: Sequence[str]) -> None:
         os.fsync(handle.fileno())
 
 
+class _TrainingExecutorCircuitBreaker:
+    """Stop repeated remote executor calls after the first infrastructure failure in one training attempt."""
+
+    def __init__(self, executor: CodeExecutor) -> None:
+        self._executor = executor
+        self._tripped = False
+
+    def execute(
+        self,
+        code: str,
+        function_name: str,
+        tests: list[dict[str, Any]],
+        timeout_seconds: float,
+        memory_limit_mb: int,
+    ) -> ExecutionResult:
+        if self._tripped:
+            raise RuntimeError("GRPO training executor circuit breaker is open")
+        try:
+            result = self._executor.execute(
+                code,
+                function_name,
+                tests,
+                timeout_seconds,
+                memory_limit_mb,
+            )
+        except Exception:
+            self._tripped = True
+            raise
+        if result.status is ExecutionStatus.SANDBOX_ERROR:
+            self._tripped = True
+        return result
+
+
 def build_grpo_reward_callback(
     *,
     reward_mode: str,
@@ -527,6 +620,7 @@ def build_grpo_reward_callback(
     expected_columns = {"problem_id", "function_name", "metadata", "visible_tests"}
     if reward_mode == "hidden":
         expected_columns.add("train_hidden_tests")
+    training_executor = _TrainingExecutorCircuitBreaker(executor)
 
     def reward_callback(
         *,
@@ -556,14 +650,15 @@ def build_grpo_reward_callback(
         if any(len(indices) != num_generations for indices in groups.values()):
             raise GRPOTrainingError("each GRPO problem group must contain exactly num_generations completions")
 
-        selected_tests = columns["visible_tests"] if reward_mode == "public" else columns["train_hidden_tests"]
+        selected_field = "visible_tests" if reward_mode == "public" else "train_hidden_tests"
+        selected_tests = _decode_test_payload_batch(columns[selected_field], field_name=selected_field)
         try:
             rewards, component_records = compute_code_rewards(
                 completions,
                 selected_tests,
                 columns["function_name"],
                 columns["metadata"],
-                executor,
+                training_executor,
                 reward_mode,
             )
         except RewardContractError as error:
@@ -572,6 +667,9 @@ def build_grpo_reward_callback(
             raise GRPOTrainingError("GRPO reward core returned a misaligned batch")
         if any(not math.isfinite(reward) for reward in rewards):
             raise GRPOTrainingError("GRPO rewards must be finite")
+        infrastructure_failure_count = sum(
+            record.get("infrastructure_failure") is True for record in component_records
+        )
 
         completion_values = cast(Sequence[object], completions)
         completion_id_values = cast(Sequence[object], completion_ids)
@@ -634,6 +732,11 @@ def build_grpo_reward_callback(
         _append_lines(rollout_log_path, rollout_lines)
         _append_lines(reward_log_path, reward_lines)
         _append_lines(group_metrics_log_path, group_lines)
+        if infrastructure_failure_count:
+            raise GRPOTrainingError(
+                "GRPO reward execution infrastructure failure in "
+                f"{infrastructure_failure_count}/{batch_size} completions; aborting before optimizer update"
+            )
         return rewards
 
     reward_callback.__name__ = f"{reward_mode}_code_reward"
@@ -695,6 +798,169 @@ def _load_grpo_runtime() -> _GRPORuntime:
         raise GRPOTrainingError(f"pinned GRPO runtime contract is unavailable: {type(error).__name__}") from None
 
 
+def _install_grpo_runtime_telemetry(trainer: Any) -> None:
+    """Install timing hooks and disable checkpointing only for inference-only GRPO work."""
+    required = (
+        "_generate_and_score_completions",
+        "_get_per_token_logps",
+        "training_step",
+        "_maybe_log_save_evaluate",
+        "_metrics",
+        "accelerator",
+        "model",
+        "model_wrapped",
+        "args",
+        "state",
+    )
+    if any(not hasattr(trainer, name) for name in required):
+        return
+
+    original_rollout = trainer._generate_and_score_completions
+    original_logps = trainer._get_per_token_logps
+    original_training_step = trainer.training_step
+    original_maybe_log = trainer._maybe_log_save_evaluate
+    torch_runtime = _load_torch_runtime()
+    step_started_at: float | None = None
+    last_timed_global_step = int(getattr(trainer.state, "global_step", 0) or 0)
+    no_grad_logps_runtime_seconds = 0.0
+    no_grad_logps_calls = 0
+
+    def timed_rollout(self: Any, inputs: object) -> object:
+        mode = "train" if self.model.training else "eval"
+        unwrapped_model = self.accelerator.unwrap_model(self.model_wrapped)
+        original_generate = getattr(unwrapped_model, "generate", None)
+        if not callable(original_generate):
+            raise GRPOTrainingError("pinned GRPO model does not provide callable generation")
+        instance_dict = getattr(unwrapped_model, "__dict__", {})
+        had_instance_generate = isinstance(instance_dict, dict) and "generate" in instance_dict
+        previous_instance_generate = instance_dict.get("generate") if had_instance_generate else None
+
+        def generate_without_checkpointing(*args: object, **kwargs: object) -> object:
+            was_checkpointing = bool(getattr(unwrapped_model, "is_gradient_checkpointing", False))
+            if was_checkpointing:
+                disable = getattr(unwrapped_model, "gradient_checkpointing_disable", None)
+                enable = getattr(unwrapped_model, "gradient_checkpointing_enable", None)
+                if not callable(disable) or not callable(enable):
+                    raise GRPOTrainingError("pinned GRPO model cannot safely toggle gradient checkpointing")
+                disable()
+            generation_started = time.perf_counter()
+            try:
+                return original_generate(*args, **kwargs)
+            finally:
+                generation_elapsed = time.perf_counter() - generation_started
+                if was_checkpointing:
+                    unwrapped_model.gradient_checkpointing_enable()
+                if not math.isfinite(generation_elapsed) or generation_elapsed < 0.0:
+                    raise GRPOTrainingError("GRPO generation runtime must be finite and non-negative")
+                self._metrics[mode]["generation_runtime_seconds"].append(generation_elapsed)
+
+        unwrapped_model.generate = generate_without_checkpointing
+        started = time.perf_counter()
+        try:
+            return original_rollout(inputs)
+        finally:
+            elapsed = time.perf_counter() - started
+            if had_instance_generate:
+                unwrapped_model.generate = previous_instance_generate
+            else:
+                with suppress(AttributeError):
+                    del unwrapped_model.generate
+            if not math.isfinite(elapsed) or elapsed < 0.0:
+                raise GRPOTrainingError("GRPO rollout runtime must be finite and non-negative")
+            self._metrics[mode]["rollout_runtime_seconds"].append(elapsed)
+
+    def timed_logps(self: Any, model: Any, *args: object, **kwargs: object) -> object:
+        nonlocal no_grad_logps_calls, no_grad_logps_runtime_seconds
+        if bool(torch_runtime.is_grad_enabled()):
+            return original_logps(model, *args, **kwargs)
+        was_checkpointing = bool(getattr(model, "is_gradient_checkpointing", False))
+        if was_checkpointing:
+            disable = getattr(model, "gradient_checkpointing_disable", None)
+            enable = getattr(model, "gradient_checkpointing_enable", None)
+            if not callable(disable) or not callable(enable):
+                raise GRPOTrainingError("pinned GRPO model cannot safely toggle inference gradient checkpointing")
+            disable()
+        started = time.perf_counter()
+        try:
+            return original_logps(model, *args, **kwargs)
+        finally:
+            elapsed = time.perf_counter() - started
+            if was_checkpointing:
+                model.gradient_checkpointing_enable()
+            if not math.isfinite(elapsed) or elapsed < 0.0:
+                raise GRPOTrainingError("GRPO no-grad log-prob runtime must be finite and non-negative")
+            if self.model.training:
+                no_grad_logps_runtime_seconds += elapsed
+                no_grad_logps_calls += 1
+            else:
+                self._metrics["eval"]["no_grad_logps_runtime_seconds"].append(elapsed)
+                self._metrics["eval"]["no_grad_logps_calls"].append(1.0)
+
+    def timed_training_step(self: Any, *args: object, **kwargs: object) -> object:
+        nonlocal step_started_at
+        if step_started_at is None:
+            step_started_at = time.perf_counter()
+        try:
+            return original_training_step(*args, **kwargs)
+        except BaseException:
+            step_started_at = None
+            raise
+
+    def timed_maybe_log(self: Any, *args: object, **kwargs: object) -> object:
+        nonlocal last_timed_global_step, no_grad_logps_calls, no_grad_logps_runtime_seconds, step_started_at
+        raw_global_step = getattr(self.state, "global_step", None)
+        if (
+            step_started_at is not None
+            and isinstance(raw_global_step, int)
+            and raw_global_step > last_timed_global_step
+        ):
+            elapsed = time.perf_counter() - step_started_at
+            step_started_at = None
+            if not math.isfinite(elapsed) or elapsed < 0.0:
+                raise GRPOTrainingError("GRPO step runtime must be finite and non-negative")
+            self._metrics["train"]["step_runtime_seconds"].append(elapsed)
+            self._metrics["train"]["no_grad_logps_runtime_seconds"].append(no_grad_logps_runtime_seconds)
+            self._metrics["train"]["no_grad_logps_calls"].append(float(no_grad_logps_calls))
+            no_grad_logps_runtime_seconds = 0.0
+            no_grad_logps_calls = 0
+            last_timed_global_step = raw_global_step
+        return original_maybe_log(*args, **kwargs)
+
+    trainer._generate_and_score_completions = MethodType(timed_rollout, trainer)
+    trainer._get_per_token_logps = MethodType(timed_logps, trainer)
+    trainer.training_step = MethodType(timed_training_step, trainer)
+    trainer._maybe_log_save_evaluate = MethodType(timed_maybe_log, trainer)
+
+
+def _install_grpo_checkpoint_log_snapshots(trainer: Any, *, run_dir: Path) -> None:
+    """Attach one post-save hook that binds canonical streaming logs to each Trainer checkpoint."""
+    original_save = getattr(trainer, "_save_checkpoint", None)
+    if not callable(original_save):
+        raise GRPOTrainingError("pinned GRPO trainer does not expose checkpoint save hook")
+    args = getattr(trainer, "args", None)
+    output_dir = getattr(args, "output_dir", None)
+    if not isinstance(output_dir, str) or not output_dir:
+        raise GRPOTrainingError("pinned GRPO trainer output_dir is unavailable")
+    try:
+        expected_root = (run_dir / "checkpoints").resolve(strict=True)
+        actual_root = Path(output_dir).resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("pinned GRPO trainer checkpoint root is unavailable") from None
+    if actual_root != expected_root:
+        raise GRPOTrainingError("pinned GRPO trainer checkpoint root differs from the GRPO run")
+
+    def save_with_log_snapshot(self: Any, model: object, trial: object) -> object:
+        result = original_save(model, trial)
+        raw_step = getattr(self.state, "global_step", None)
+        if isinstance(raw_step, bool) or not isinstance(raw_step, int) or raw_step <= 0:
+            raise GRPOTrainingError("pinned GRPO trainer saved a checkpoint without a valid global_step")
+        checkpoint_dir = expected_root / f"checkpoint-{raw_step}"
+        _write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint_dir, global_step=raw_step)
+        return result
+
+    trainer._save_checkpoint = MethodType(save_with_log_snapshot, trainer)
+
+
 def _runtime_arguments(
     config: GRPOTrainingConfig,
     *,
@@ -746,6 +1012,10 @@ def _runtime_arguments(
             save_steps=config.save_steps,
             seed=seed,
             data_seed=seed,
+            skip_memory_metrics=False,
+            logging_nan_inf_filter=False,
+            save_total_limit=None,
+            save_only_model=False,
             use_vllm=False,
             report_to=[],
             push_to_hub=False,
@@ -846,6 +1116,313 @@ def _file_hash(path: Path, *, description: str) -> str:
         raise GRPOTrainingError(f"could not read {description}: {type(error).__name__}") from None
 
 
+def _stream_log_file_state(path: Path, *, limit_bytes: int | None = None) -> dict[str, object]:
+    """Return a finite JSONL prefix identity for one canonical streaming evidence file."""
+    if not path.is_file() or path.is_symlink():
+        raise GRPOTrainingError("GRPO streaming evidence file is missing or unsafe")
+    try:
+        size = path.stat().st_size
+        if limit_bytes is None:
+            selected_size = size
+        else:
+            if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int) or limit_bytes < 0:
+                raise GRPOTrainingError("GRPO checkpoint log boundary is invalid")
+            if size < limit_bytes:
+                raise GRPOTrainingError("GRPO streaming evidence is shorter than its checkpoint boundary")
+            selected_size = limit_bytes
+        digest = hashlib.sha256()
+        line_count = 0
+        remaining = selected_size
+        last_byte = b""
+        with path.open("rb") as handle:
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise GRPOTrainingError("GRPO streaming evidence ended before its checkpoint boundary")
+                digest.update(chunk)
+                line_count += chunk.count(b"\n")
+                last_byte = chunk[-1:]
+                remaining -= len(chunk)
+        if selected_size and last_byte != b"\n":
+            raise GRPOTrainingError("GRPO checkpoint log boundary does not end on a complete JSONL row")
+        return {
+            "size_bytes": selected_size,
+            "line_count": line_count,
+            "sha256": digest.hexdigest(),
+        }
+    except GRPOTrainingError:
+        raise
+    except OSError as error:
+        raise GRPOTrainingError(f"could not read GRPO streaming evidence: {type(error).__name__}") from None
+
+
+def _checkpoint_step(checkpoint_dir: Path) -> int:
+    match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", checkpoint_dir.name)
+    if match is None:
+        raise GRPOTrainingError("GRPO checkpoint directory name is invalid")
+    return int(match.group(1))
+
+
+def _write_grpo_log_checkpoint_state(*, run_dir: Path, checkpoint_dir: Path, global_step: int) -> None:
+    """Persist the exact streaming-log boundary that belongs to one Trainer checkpoint."""
+    if isinstance(global_step, bool) or not isinstance(global_step, int) or global_step <= 0:
+        raise GRPOTrainingError("GRPO checkpoint global_step is invalid")
+    try:
+        resolved_run = run_dir.resolve(strict=True)
+        checkpoint_root = (resolved_run / "checkpoints").resolve(strict=True)
+        resolved_checkpoint = checkpoint_dir.resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("GRPO checkpoint log-state path is unavailable") from None
+    if (
+        resolved_checkpoint.parent != checkpoint_root
+        or _checkpoint_step(resolved_checkpoint) != global_step
+        or resolved_checkpoint.is_symlink()
+    ):
+        raise GRPOTrainingError("GRPO checkpoint log-state path does not match trainer global_step")
+    logs = {name: _stream_log_file_state(resolved_run / name) for name in _GRPO_STREAM_LOG_NAMES}
+    _write_json(
+        resolved_checkpoint / _GRPO_LOG_STATE_FILENAME,
+        {
+            "version": _GRPO_LOG_STATE_VERSION,
+            "global_step": global_step,
+            "logs": logs,
+        },
+    )
+
+
+def _validate_resume_log_checkpoint(run_dir: Path, checkpoint_dir: Path) -> dict[str, object]:
+    """Read-only validation that current canonical logs contain the selected checkpoint prefix exactly."""
+    try:
+        resolved_run = run_dir.resolve(strict=True)
+        resolved_checkpoint = checkpoint_dir.resolve(strict=True)
+        state_path = resolved_checkpoint / _GRPO_LOG_STATE_FILENAME
+        if not state_path.is_file() or state_path.is_symlink():
+            raise GRPOTrainingError("resume checkpoint is missing canonical GRPO log-state evidence")
+        value = json.loads(state_path.read_text(encoding="utf-8"))
+    except GRPOTrainingError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state evidence is unreadable") from None
+    if not isinstance(value, dict) or set(value) != {"version", "global_step", "logs"}:
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state schema is invalid")
+    step = _checkpoint_step(resolved_checkpoint)
+    if value.get("version") != _GRPO_LOG_STATE_VERSION or value.get("global_step") != step:
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state identity is invalid")
+    raw_logs = value.get("logs")
+    if not isinstance(raw_logs, Mapping) or set(raw_logs) != set(_GRPO_STREAM_LOG_NAMES):
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state files are invalid")
+    normalized_logs: dict[str, dict[str, object]] = {}
+    for name in _GRPO_STREAM_LOG_NAMES:
+        raw_state = raw_logs[name]
+        if not isinstance(raw_state, Mapping) or set(raw_state) != {"size_bytes", "line_count", "sha256"}:
+            raise GRPOTrainingError("resume checkpoint canonical GRPO log-state record is invalid")
+        size_bytes = raw_state.get("size_bytes")
+        line_count = raw_state.get("line_count")
+        digest = raw_state.get("sha256")
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or isinstance(line_count, bool)
+            or not isinstance(line_count, int)
+            or line_count < 0
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise GRPOTrainingError("resume checkpoint canonical GRPO log-state values are invalid")
+        expected = {"size_bytes": size_bytes, "line_count": line_count, "sha256": digest}
+        actual = _stream_log_file_state(resolved_run / name, limit_bytes=size_bytes)
+        if actual != expected:
+            raise GRPOTrainingError("canonical GRPO streaming evidence prefix differs from resume checkpoint")
+        normalized_logs[name] = expected
+    return {"version": _GRPO_LOG_STATE_VERSION, "global_step": step, "logs": normalized_logs}
+
+
+def _latest_valid_resume_checkpoint(run_dir: Path, config: GRPOTrainingConfig) -> Path | None:
+    """Return the highest cadence checkpoint that is complete and bound to canonical log evidence."""
+    checkpoint_path = run_dir / "checkpoints"
+    if not checkpoint_path.is_dir() or checkpoint_path.is_symlink():
+        raise GRPOTrainingError("GRPO checkpoint root is unsafe during resume selection")
+    try:
+        checkpoint_root = checkpoint_path.resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("GRPO checkpoint root is unavailable during resume selection") from None
+
+    valid: list[tuple[int, Path]] = []
+    for candidate in checkpoint_root.glob("checkpoint-*"):
+        match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", candidate.name)
+        if match is None or not candidate.is_dir() or candidate.is_symlink():
+            continue
+        step = int(match.group(1))
+        if step > config.max_steps or step % config.save_steps != 0:
+            continue
+        required = [candidate / name for name in _GRPO_TRAINER_RESUME_FILES]
+        if any(not path.is_file() or path.is_symlink() or path.stat().st_size <= 0 for path in required):
+            continue
+        try:
+            trainer_state = json.loads((candidate / "trainer_state.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(trainer_state, dict) or trainer_state.get("global_step") != step:
+            continue
+        try:
+            _validate_resume_log_checkpoint(run_dir, candidate)
+        except GRPOTrainingError:
+            continue
+        valid.append((step, candidate))
+    return max(valid)[1] if valid else None
+
+
+def _copy_file_with_fsync(source: Path, destination: Path) -> None:
+    try:
+        with source.open("rb") as src, destination.open("xb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+            dst.flush()
+            os.fsync(dst.fileno())
+    except OSError as error:
+        raise GRPOTrainingError(f"could not archive GRPO recovery evidence: {type(error).__name__}") from None
+
+
+def _restore_stream_log_prefix(path: Path, *, size_bytes: int, staging_dir: Path) -> None:
+    temporary: Path | None = None
+    try:
+        mode = path.stat().st_mode & 0o777
+        with (
+            path.open("rb") as source,
+            tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=staging_dir,
+                prefix=f".{path.name}.resume-",
+                suffix=".tmp",
+                delete=False,
+            ) as destination,
+        ):
+            temporary = Path(destination.name)
+            remaining = size_bytes
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise GRPOTrainingError("GRPO streaming evidence became shorter during resume restoration")
+                destination.write(chunk)
+                remaining -= len(chunk)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except GRPOTrainingError:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+    except OSError as error:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise GRPOTrainingError(f"could not restore GRPO streaming evidence: {type(error).__name__}") from None
+
+
+def _archive_future_grpo_checkpoints(
+    *,
+    run_dir: Path,
+    selected_step: int,
+    archive_dir: Path,
+) -> list[str]:
+    """Move every checkpoint newer than the selected resume point into preserved recovery history."""
+    if isinstance(selected_step, bool) or not isinstance(selected_step, int) or selected_step <= 0:
+        raise GRPOTrainingError("selected GRPO resume checkpoint step is invalid")
+    checkpoint_path = run_dir / "checkpoints"
+    if not checkpoint_path.is_dir() or checkpoint_path.is_symlink():
+        raise GRPOTrainingError("GRPO checkpoint root is unsafe during resume recovery")
+    try:
+        checkpoint_root = checkpoint_path.resolve(strict=True)
+    except OSError:
+        raise GRPOTrainingError("GRPO checkpoint root is unavailable during resume recovery") from None
+    future_root = archive_dir / "superseded-future-checkpoints"
+    archived: list[str] = []
+    candidates: list[tuple[int, Path]] = []
+    for candidate in checkpoint_root.glob("checkpoint-*"):
+        match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", candidate.name)
+        if match is None:
+            continue
+        step = int(match.group(1))
+        if step <= selected_step:
+            continue
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise GRPOTrainingError("superseded future GRPO checkpoint path is unsafe")
+        candidates.append((step, candidate))
+    for _, candidate in sorted(candidates):
+        future_root.mkdir(exist_ok=True)
+        try:
+            os.replace(candidate, future_root / candidate.name)
+        except OSError as error:
+            raise GRPOTrainingError(
+                f"could not archive superseded future GRPO checkpoint: {type(error).__name__}"
+            ) from None
+        archived.append(candidate.name)
+    return archived
+
+
+def _archive_and_restore_grpo_logs(
+    *,
+    run_dir: Path,
+    checkpoint_dir: Path,
+    attempt_number: int,
+) -> Path:
+    """Archive a failed-attempt suffix, then restore canonical streaming logs to a checkpoint boundary."""
+    if isinstance(attempt_number, bool) or not isinstance(attempt_number, int) or attempt_number < 2:
+        raise GRPOTrainingError("GRPO resume attempt number is invalid")
+    state = _validate_resume_log_checkpoint(run_dir, checkpoint_dir)
+    step = cast(int, state["global_step"])
+    target_logs = cast(dict[str, dict[str, object]], state["logs"])
+    history_root = run_dir / "checkpoints" / _GRPO_RECOVERY_HISTORY_DIR
+    if history_root.exists() and (not history_root.is_dir() or history_root.is_symlink()):
+        raise GRPOTrainingError("GRPO recovery-history path is unsafe")
+    history_root.mkdir(parents=False, exist_ok=True)
+    archive = history_root / f"before-attempt-{attempt_number}-resume-checkpoint-{step}"
+    if archive.exists():
+        raise GRPOTrainingError("GRPO recovery archive already exists for this attempt")
+    incomplete = Path(tempfile.mkdtemp(prefix=f".{archive.name}.incomplete-", dir=history_root))
+    before_logs: dict[str, dict[str, object]] = {}
+    manifest: dict[str, object] = {
+        "version": 1,
+        "attempt": attempt_number,
+        "resume_checkpoint": checkpoint_dir.name,
+        "global_step": step,
+        "before_logs": before_logs,
+        "restored_checkpoint_logs": target_logs,
+        "superseded_future_checkpoints": [],
+    }
+    try:
+        for name in _GRPO_STREAM_LOG_NAMES:
+            source = run_dir / name
+            before_logs[name] = _stream_log_file_state(source)
+            _copy_file_with_fsync(source, incomplete / name)
+        _write_json(incomplete / "manifest.json", manifest)
+        os.replace(incomplete, archive)
+    except Exception:
+        shutil.rmtree(incomplete, ignore_errors=True)
+        raise
+    future_checkpoints = _archive_future_grpo_checkpoints(
+        run_dir=run_dir,
+        selected_step=step,
+        archive_dir=archive,
+    )
+    manifest["superseded_future_checkpoints"] = future_checkpoints
+    _write_json(archive / "manifest.json", manifest)
+    for name in _GRPO_STREAM_LOG_NAMES:
+        path = run_dir / name
+        expected = target_logs[name]
+        current = _stream_log_file_state(path)
+        if current == expected:
+            continue
+        _restore_stream_log_prefix(
+            path,
+            size_bytes=cast(int, expected["size_bytes"]),
+            staging_dir=history_root,
+        )
+        if _stream_log_file_state(path) != expected:
+            raise GRPOTrainingError("GRPO streaming evidence restoration did not reach checkpoint boundary")
+    return archive
+
+
 def _config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
     encoded = json.dumps(
         _resolved_config_mapping(config, effective_seed=seed),
@@ -857,7 +1434,24 @@ def _config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _safe_run_dir(output_root: Path, run_name: str) -> Path:
+def _paired_config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
+    """Return a machine-portable config fingerprint for the C/D pair identity."""
+    resolved = _resolved_config_mapping(config, effective_seed=seed)
+    resolved["dataset_path"] = {
+        "sha256": _file_hash(config.dataset_path, description=f"{config.reward_mode} GRPO dataset")
+    }
+    resolved["piston_config"] = {"sha256": _file_hash(config.piston_config, description="Piston config")}
+    encoded = json.dumps(
+        resolved,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def grpo_run_directory(output_root: Path, run_name: str) -> Path:
     root = output_root.resolve(strict=False)
     if root == Path(root.anchor) or root == Path.cwd().resolve():
         raise GRPOTrainingError("output_root must be a dedicated non-root directory")
@@ -881,6 +1475,117 @@ def _parent_identity_mapping(parent_sft: SFTCheckpointIdentity) -> dict[str, obj
     }
 
 
+def _portable_parent_identity_mapping(parent_sft: SFTCheckpointIdentity) -> dict[str, object]:
+    """Return the semantic SFT identity without machine-local artifact paths."""
+    value = _parent_identity_mapping(parent_sft)
+    value.pop("parent_sft_run_path")
+    value.pop("parent_sft_checkpoint_path")
+    return value
+
+
+def _paired_definition(
+    public_config: GRPOTrainingConfig,
+    hidden_config: GRPOTrainingConfig,
+    *,
+    seed: int,
+    parent_sft: SFTCheckpointIdentity,
+) -> tuple[str, dict[str, object]]:
+    """Build one payload-free canonical identity for the complete C/D definition pair."""
+    components: dict[str, object] = {
+        "paired_definition_version": _PAIR_SCHEMA_VERSION,
+        "paired_public_config_hash": _paired_config_hash(public_config, seed=seed),
+        "paired_hidden_config_hash": _paired_config_hash(hidden_config, seed=seed),
+        "paired_public_dataset_hash": _file_hash(public_config.dataset_path, description="Public GRPO dataset"),
+        "paired_hidden_dataset_hash": _file_hash(hidden_config.dataset_path, description="Hidden GRPO dataset"),
+    }
+    canonical = {**components, "seed": seed, "parent_sft": _portable_parent_identity_mapping(parent_sft)}
+    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), components
+
+
+def _gpu_count_used(environment: Mapping[str, Any]) -> int:
+    available = environment.get("gpu_count")
+    if isinstance(available, bool) or not isinstance(available, int) or available < 1:
+        raise GRPOTrainingError("GRPO environment must report at least one GPU")
+    return 1
+
+
+def _attempt_gpu_hours_total(attempts: object) -> float:
+    if not isinstance(attempts, list):
+        raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    total = 0.0
+    for index, value in enumerate(attempts, 1):
+        if not isinstance(value, Mapping) or value.get("attempt") != index:
+            raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        status = value.get("status")
+        if status not in {"running", "completed", "failed"}:
+            raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        gpu_hours = value.get("gpu_hours")
+        if (
+            isinstance(gpu_hours, bool)
+            or not isinstance(gpu_hours, int | float)
+            or not math.isfinite(float(gpu_hours))
+            or float(gpu_hours) < 0.0
+        ):
+            raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+        if status == "running" and (float(gpu_hours) != 0.0 or value.get("end_time") is not None):
+            raise GRPOTrainingError("GRPO interrupted attempt metadata is invalid")
+        total += float(gpu_hours)
+    return total
+
+
+def _begin_attempt(run_metadata: dict[str, object], *, resume_source: str | None) -> None:
+    attempts = run_metadata.get("attempts")
+    if not isinstance(attempts, list):
+        raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    attempts.append(
+        {
+            "attempt": len(attempts) + 1,
+            "start_time": datetime.now(timezone.utc).isoformat(),
+            "end_time": None,
+            "status": "running",
+            "resume_from_checkpoint": resume_source,
+            "gpu_hours": 0.0,
+        }
+    )
+    run_metadata["status"] = "running"
+    run_metadata["end_time"] = None
+    run_metadata["resume_from_checkpoint"] = resume_source
+
+
+def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu_hours: float) -> None:
+    if status not in {"completed", "failed"} or not math.isfinite(attempt_gpu_hours) or attempt_gpu_hours < 0.0:
+        raise GRPOTrainingError("GRPO attempt telemetry is invalid")
+    attempts = run_metadata.get("attempts")
+    if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
+        raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    latest = cast(dict[str, object], attempts[-1])
+    latest["status"] = status
+    latest["end_time"] = datetime.now(timezone.utc).isoformat()
+    latest["gpu_hours"] = attempt_gpu_hours
+    cumulative = _attempt_gpu_hours_total(attempts)
+    run_metadata["gpu_hours"] = cumulative
+    run_metadata["status"] = status
+    run_metadata["end_time"] = latest["end_time"]
+
+
+def _reset_cuda_peak_memory() -> None:
+    torch_runtime = _load_torch_runtime()
+    if bool(torch_runtime.cuda.is_available()):
+        torch_runtime.cuda.reset_peak_memory_stats(0)
+
+
+def _peak_cuda_memory_bytes() -> tuple[int, int]:
+    torch_runtime = _load_torch_runtime()
+    if not bool(torch_runtime.cuda.is_available()):
+        return 0, 0
+    allocated = int(torch_runtime.cuda.max_memory_allocated(0))
+    reserved = int(torch_runtime.cuda.max_memory_reserved(0))
+    if allocated < 0 or reserved < 0:
+        raise GRPOTrainingError("CUDA peak memory metrics must be non-negative")
+    return allocated, reserved
+
+
 def _initialize_run(
     *,
     run_dir: Path,
@@ -889,12 +1594,15 @@ def _initialize_run(
     parent_sft: SFTCheckpointIdentity,
     dataset_hash: str,
     config_hash: str,
+    paired_definition_sha256: str,
+    paired_components: Mapping[str, object],
     environment: Mapping[str, Any],
 ) -> dict[str, object]:
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "checkpoints").mkdir()
     started = datetime.now(timezone.utc).isoformat()
     packages = cast(Mapping[str, object], environment["packages"])
+    gpu_count_used = _gpu_count_used(environment)
     run_metadata: dict[str, object] = {
         "run_id": config.run_name,
         "reward_mode": config.reward_mode,
@@ -906,9 +1614,13 @@ def _initialize_run(
         "cuda_version": environment["cuda_version"],
         "gpu_name": environment["gpu_name"],
         "gpu_count": environment["gpu_count"],
+        "gpu_count_used": gpu_count_used,
+        "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
         "dependency_lock_hash": environment["dependency_lock_hash"],
         "dataset_hash": dataset_hash,
         "config_hash": config_hash,
+        "paired_definition_sha256": paired_definition_sha256,
+        **paired_components,
         "seed": seed,
         "seed_override": None if seed == config.seed else {"config": config.seed, "cli": seed},
         **_parent_identity_mapping(parent_sft),
@@ -917,6 +1629,10 @@ def _initialize_run(
         "start_time": started,
         "end_time": None,
         "gpu_hours": 0.0,
+        "attempts": [],
+        "global_step": None,
+        "peak_cuda_memory_allocated_bytes": 0,
+        "peak_cuda_memory_reserved_bytes": 0,
         "status": "running",
     }
     _atomic_write(
@@ -961,6 +1677,8 @@ def _validate_resume_run(
     parent_sft: SFTCheckpointIdentity,
     dataset_hash: str,
     config_hash: str,
+    paired_definition_sha256: str,
+    paired_components: Mapping[str, object],
     environment: Mapping[str, Any],
     resume_source: str,
 ) -> dict[str, object]:
@@ -976,6 +1694,8 @@ def _validate_resume_run(
         "reward_mode": config.reward_mode,
         "dataset_hash": dataset_hash,
         "config_hash": config_hash,
+        "paired_definition_sha256": paired_definition_sha256,
+        **paired_components,
         "seed": seed,
         "git_commit": environment["project_commit"],
         "open_r1_commit": environment["open_r1_commit"],
@@ -985,32 +1705,41 @@ def _validate_resume_run(
         "cuda_version": environment["cuda_version"],
         "gpu_name": environment["gpu_name"],
         "gpu_count": environment["gpu_count"],
+        "gpu_count_used": _gpu_count_used(environment),
+        "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
         **_parent_identity_mapping(parent_sft),
     }
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         raise GRPOTrainingError("existing GRPO run identity does not match the requested resume")
     if {path.name for path in run_dir.iterdir()} != _GRPO_RUN_LAYOUT:
         raise GRPOTrainingError("existing GRPO run does not match the strict artifact layout")
-    if value.get("status") not in {"running", "failed"}:
+    run_status = value.get("status")
+    if run_status not in {"running", "failed"}:
         raise GRPOTrainingError("only an interrupted or failed GRPO run may be resumed")
+    attempts = value.get("attempts")
+    if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], Mapping):
+        raise GRPOTrainingError("existing GRPO run has invalid attempt history")
+    if attempts[-1].get("status") != run_status:
+        raise GRPOTrainingError("existing GRPO run status does not match its latest attempt")
+    if run_status == "running" and value.get("end_time") is not None:
+        raise GRPOTrainingError("interrupted GRPO run must not have an end_time")
     previous_gpu_hours = value.get("gpu_hours")
+    attempts_total = _attempt_gpu_hours_total(attempts)
     if (
         isinstance(previous_gpu_hours, bool)
         or not isinstance(previous_gpu_hours, int | float)
         or not math.isfinite(float(previous_gpu_hours))
         or float(previous_gpu_hours) < 0.0
+        or not math.isclose(float(previous_gpu_hours), attempts_total, rel_tol=0.0, abs_tol=1e-12)
     ):
         raise GRPOTrainingError("existing GRPO run has invalid cumulative gpu_hours")
-    value["status"] = "running"
-    value["end_time"] = None
-    value["resume_from_checkpoint"] = resume_source
-    _write_json(run_dir / "run.json", value)
     return cast(dict[str, object], value)
 
 
-def _append_trainer_metrics(path: Path, log_history: object) -> None:
+def _trainer_metric_rows(log_history: object) -> list[dict[str, object]]:
     if not isinstance(log_history, list):
         raise GRPOTrainingError("GRPO trainer state must provide log_history")
+    rows: list[dict[str, object]] = []
     for entry in log_history:
         if not isinstance(entry, Mapping):
             raise GRPOTrainingError("GRPO trainer log history entries must be mappings")
@@ -1025,7 +1754,33 @@ def _append_trainer_metrics(path: Path, log_history: object) -> None:
                 raise GRPOTrainingError("GRPO trainer metrics must be finite")
             scalars[key] = number
         if len(scalars) > 1:
-            _append_jsonl(path, scalars)
+            rows.append(scalars)
+    return rows
+
+
+def _write_training_metrics(path: Path, *, log_history: object, summary: Mapping[str, object]) -> None:
+    rows = [*_trainer_metric_rows(log_history), dict(summary)]
+    content = "".join(
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        for row in rows
+    )
+    _atomic_write(path, content)
+
+
+def _finite_numeric_mapping(value: object, *, context: str) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        raise GRPOTrainingError(f"{context} must be a mapping")
+    scalars: dict[str, float] = {}
+    for key, raw_value in value.items():
+        if not isinstance(key, str):
+            raise GRPOTrainingError(f"{context} metric names must be strings")
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int | float):
+            continue
+        number = float(raw_value)
+        if not math.isfinite(number):
+            raise GRPOTrainingError(f"{context} must contain only finite numeric metrics")
+        scalars[key] = number
+    return scalars
 
 
 def run_grpo_training(
@@ -1056,17 +1811,22 @@ def run_grpo_training(
     hidden_records = load_training_artifact(hidden_config.dataset_path, kind=TrainingArtifactKind.HIDDEN_GRPO)
     validate_grpo_artifact_pair(public_records, hidden_records)
     parent_sft = public_parent_sft
+    paired_definition_sha256, paired_components = _paired_definition(
+        public_config, hidden_config, seed=seed, parent_sft=parent_sft
+    )
     records = public_records if reward_mode == "public" else hidden_records
-    run_dir = _safe_run_dir(output_root, config.run_name)
+    run_dir = grpo_run_directory(output_root, config.run_name)
     checkpoint_dir = run_dir / "checkpoints"
     dataset_hash = _file_hash(config.dataset_path, description="GRPO dataset")
     config_hash = _config_hash(config, seed=seed)
     environment = collect_environment()
     resume_path: str | None = None
+    resume_source: str | None = None
     if resume_from_checkpoint is not None:
         if not run_dir.is_dir():
             raise GRPOTrainingError("resume requires an existing GRPO run directory")
         resolved_resume, resume_source = _resolve_resume_checkpoint(run_dir, resume_from_checkpoint)
+        _validate_resume_log_checkpoint(run_dir, resolved_resume)
         resume_path = str(resolved_resume)
         run_metadata = _validate_resume_run(
             run_dir=run_dir,
@@ -1075,6 +1835,8 @@ def run_grpo_training(
             parent_sft=parent_sft,
             dataset_hash=dataset_hash,
             config_hash=config_hash,
+            paired_definition_sha256=paired_definition_sha256,
+            paired_components=paired_components,
             environment=environment,
             resume_source=resume_source,
         )
@@ -1089,15 +1851,33 @@ def run_grpo_training(
                 parent_sft=parent_sft,
                 dataset_hash=dataset_hash,
                 config_hash=config_hash,
+                paired_definition_sha256=paired_definition_sha256,
+                paired_components=paired_components,
                 environment=environment,
             )
         except Exception:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
-    previous_gpu_hours = float(cast(int | float, run_metadata["gpu_hours"]))
+    gpu_count_used = cast(int, run_metadata["gpu_count_used"])
+    _begin_attempt(run_metadata, resume_source=resume_source)
+    _write_json(run_dir / "run.json", run_metadata)
     started = time.perf_counter()
+    peak_reset = False
     try:
+        if resume_path is not None:
+            attempts = run_metadata.get("attempts")
+            if not isinstance(attempts, list) or len(attempts) < 2:
+                raise GRPOTrainingError("GRPO resume attempt history is invalid")
+            recovery_archive = _archive_and_restore_grpo_logs(
+                run_dir=run_dir,
+                checkpoint_dir=Path(resume_path),
+                attempt_number=len(attempts),
+            )
+            with (run_dir / "stdout.log").open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"restored canonical streaming logs from {resume_source}; archive={recovery_archive.name}\n"
+                )
         train_dataset = build_grpo_dataset(records, reward_mode=config.reward_mode)
         runtime = _load_grpo_runtime()
         model_args, training_args = _runtime_arguments(
@@ -1108,56 +1888,84 @@ def run_grpo_training(
             runtime=runtime,
         )
         tokenizer = runtime.get_tokenizer(model_args, training_args)
-        model = _load_merged_sft_policy(
-            parent_sft=parent_sft,
-            model_args=model_args,
-            training_args=training_args,
-            runtime=runtime,
-        )
-        reward_callback = build_grpo_reward_callback(
-            reward_mode=config.reward_mode,
-            executor=executor,
-            rollout_log_path=run_dir / "rollouts.jsonl",
-            reward_log_path=run_dir / "rewards.jsonl",
-            group_metrics_log_path=run_dir / "group_metrics.jsonl",
-            num_generations=config.num_generations,
-            max_completion_length=config.max_completion_length,
-        )
-        trainer = runtime.trainer_type(
-            model=model,
-            reward_funcs=reward_callback,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=None,
-            processing_class=tokenizer,
-            peft_config=runtime.get_peft_config(model_args),
-        )
-        train_result = trainer.train(resume_from_checkpoint=resume_path)
-        raw_loss = getattr(train_result, "metrics", {}).get("train_loss")
-        if isinstance(raw_loss, bool) or not isinstance(raw_loss, int | float) or not math.isfinite(float(raw_loss)):
-            raise GRPOTrainingError("GRPO training must produce a finite train_loss")
-        train_loss = float(raw_loss)
-        trainer.save_state()
-        trainer.save_model(str(checkpoint_dir))
+        _reset_cuda_peak_memory()
+        peak_reset = True
+        with _without_unconfigured_deepspeed_backend():
+            model = _load_merged_sft_policy(
+                parent_sft=parent_sft,
+                model_args=model_args,
+                training_args=training_args,
+                runtime=runtime,
+            )
+            reward_callback = build_grpo_reward_callback(
+                reward_mode=config.reward_mode,
+                executor=executor,
+                rollout_log_path=run_dir / "rollouts.jsonl",
+                reward_log_path=run_dir / "rewards.jsonl",
+                group_metrics_log_path=run_dir / "group_metrics.jsonl",
+                num_generations=config.num_generations,
+                max_completion_length=config.max_completion_length,
+            )
+            trainer = runtime.trainer_type(
+                model=model,
+                reward_funcs=reward_callback,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=None,
+                processing_class=tokenizer,
+                peft_config=runtime.get_peft_config(model_args),
+            )
+            _install_grpo_runtime_telemetry(trainer)
+            _install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir)
+            train_result = trainer.train(resume_from_checkpoint=resume_path)
+            raw_train_metrics = getattr(train_result, "metrics", {})
+            if isinstance(raw_train_metrics, Mapping):
+                raw_train_loss = raw_train_metrics.get("train_loss")
+                if (
+                    isinstance(raw_train_loss, int | float)
+                    and not isinstance(raw_train_loss, bool)
+                    and not math.isfinite(float(raw_train_loss))
+                ):
+                    raise GRPOTrainingError("GRPO training must produce a finite train_loss")
+            train_metrics = _finite_numeric_mapping(
+                raw_train_metrics,
+                context="GRPO train result metrics",
+            )
+            raw_loss = train_metrics.get("train_loss")
+            if raw_loss is None:
+                raise GRPOTrainingError("GRPO training must produce a finite train_loss")
+            train_loss = raw_loss
+            trainer.save_state()
+            trainer.save_model(str(checkpoint_dir))
         trainer_state = getattr(trainer, "state", None)
-        _append_trainer_metrics(run_dir / "metrics.jsonl", getattr(trainer_state, "log_history", None))
-        attempt_gpu_hours = (time.perf_counter() - started) / 3600.0
-        gpu_hours = previous_gpu_hours + attempt_gpu_hours
-        _append_jsonl(
+        raw_global_step = getattr(trainer_state, "global_step", None)
+        if isinstance(raw_global_step, bool) or not isinstance(raw_global_step, int) or raw_global_step < 0:
+            raise GRPOTrainingError("GRPO trainer state must provide a non-negative integer global_step")
+        peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
+        attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
+        _finish_attempt(run_metadata, status="completed", attempt_gpu_hours=attempt_gpu_hours)
+        gpu_hours = cast(float, run_metadata["gpu_hours"])
+        run_metadata["global_step"] = raw_global_step
+        run_metadata["peak_cuda_memory_allocated_bytes"] = peak_allocated
+        run_metadata["peak_cuda_memory_reserved_bytes"] = peak_reserved
+        summary_metrics: dict[str, object] = {
+            "record_type": "summary",
+            **train_metrics,
+            "global_step": raw_global_step,
+            "train_samples": len(train_dataset),
+            "peak_cuda_memory_allocated_bytes": peak_allocated,
+            "peak_cuda_memory_reserved_bytes": peak_reserved,
+            "gpu_count_used": gpu_count_used,
+            "attempt_gpu_hours": attempt_gpu_hours,
+            "gpu_hours": gpu_hours,
+        }
+        _write_training_metrics(
             run_dir / "metrics.jsonl",
-            {
-                "record_type": "summary",
-                "train_loss": train_loss,
-                "train_samples": len(train_dataset),
-                "attempt_gpu_hours": attempt_gpu_hours,
-                "gpu_hours": gpu_hours,
-            },
+            log_history=getattr(trainer_state, "log_history", None),
+            summary=summary_metrics,
         )
         with (run_dir / "stdout.log").open("a", encoding="utf-8") as handle:
             handle.write(f"completed train_samples={len(train_dataset)} reward_mode={config.reward_mode}\n")
-        run_metadata["status"] = "completed"
-        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
-        run_metadata["gpu_hours"] = gpu_hours
         _write_json(run_dir / "run.json", run_metadata)
         return GRPOTrainingSummary(
             run_dir=run_dir,
@@ -1167,11 +1975,18 @@ def run_grpo_training(
             train_samples=len(train_dataset),
             gpu_hours=gpu_hours,
         )
-    except Exception as error:
-        gpu_hours = previous_gpu_hours + (time.perf_counter() - started) / 3600.0
-        run_metadata["status"] = "failed"
-        run_metadata["end_time"] = datetime.now(timezone.utc).isoformat()
-        run_metadata["gpu_hours"] = gpu_hours
+    except BaseException as error:
+        attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
+        if peak_reset:
+            try:
+                peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
+            except Exception:
+                peak_allocated = peak_reserved = 0
+        else:
+            peak_allocated = peak_reserved = 0
+        run_metadata["peak_cuda_memory_allocated_bytes"] = peak_allocated
+        run_metadata["peak_cuda_memory_reserved_bytes"] = peak_reserved
+        _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
         _write_json(run_dir / "run.json", run_metadata)
         with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")

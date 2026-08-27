@@ -205,6 +205,7 @@ def _write_completed_grpo_run(run_dir: Path, parent_run: Path, *, reward_mode: s
         "reward_mode": reward_mode,
         "dataset_hash": "1" * 64,
         "config_hash": "2" * 64,
+        "paired_definition_sha256": "4" * 64,
         "dependency_lock_hash": "3" * 64,
         "seed": 42,
         "parent_sft_run_id": json.loads((parent_run / "run.json").read_text(encoding="utf-8"))["run_id"],

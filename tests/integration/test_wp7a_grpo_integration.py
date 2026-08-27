@@ -109,6 +109,25 @@ def _result() -> ExecutionResult:
     )
 
 
+def _sandbox_result() -> ExecutionResult:
+    return ExecutionResult(
+        status=ExecutionStatus.SANDBOX_ERROR,
+        passed_tests=0,
+        total_tests=1,
+        pass_rate=0.0,
+        runtime_ms=1.0,
+        test_results=[
+            ExecutionTestCaseResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed=False,
+                runtime_ms=1.0,
+                stdout="",
+                stderr="",
+            )
+        ],
+    )
+
+
 def _callback(tmp_path: Path, *, reward_mode: str, executor: MockExecutor) -> Callable[..., list[float]]:
     return build_grpo_reward_callback(
         reward_mode=reward_mode,
@@ -147,6 +166,14 @@ def test_wp7a_public_and_hidden_configs_match_except_reward_source() -> None:
     validate_grpo_config_pair(public, hidden)
 
 
+def test_wp7c_pilot_configs_checkpoint_every_ten_optimizer_steps() -> None:
+    public = load_grpo_training_config(Path("configs/grpo/validation-pilot-public.yaml"))
+    hidden = load_grpo_training_config(Path("configs/grpo/validation-pilot-hidden.yaml"))
+    validate_grpo_config_pair(public, hidden)
+    assert public.max_steps == hidden.max_steps == 100
+    assert public.save_steps == hidden.save_steps == 10
+
+
 def test_wp7a_grpo_dataset_uses_shared_prompt_and_payload_boundaries() -> None:
     public_record = _record(reward_mode="public")
     hidden_record = _record(reward_mode="hidden")
@@ -161,7 +188,10 @@ def test_wp7a_grpo_dataset_uses_shared_prompt_and_payload_boundaries() -> None:
     )
     assert public[0]["prompt"] == [{"role": "user", "content": expected_prompt}]
     assert "train_hidden_tests" not in public.column_names
-    assert hidden[0]["train_hidden_tests"] == [{"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}]
+    assert json.loads(hidden[0]["train_hidden_tests"][0]) == {
+        "input": "HIDDEN_SENTINEL",
+        "expected": "HIDDEN_SENTINEL",
+    }
     for forbidden in ("eval_hidden_tests", "reference_solution", "starter_code", "sft_response"):
         assert forbidden not in repr(public[0])
         assert forbidden not in repr(hidden[0])
@@ -175,6 +205,43 @@ def test_wp7a_public_reward_scores_only_visible_tests(tmp_path: Path) -> None:
 def test_wp7a_hidden_reward_scores_only_train_hidden_tests(tmp_path: Path) -> None:
     executor = _invoke_callback(tmp_path, reward_mode="hidden")
     assert executor.calls[0].tests == [{"input": "HIDDEN_SENTINEL", "expected": "HIDDEN_SENTINEL"}]
+
+
+def test_wp7a_reward_callback_fails_closed_after_logging_infrastructure_failure(tmp_path: Path) -> None:
+    executor = MockExecutor([_sandbox_result()])
+    callback = build_grpo_reward_callback(
+        reward_mode="public",
+        executor=executor,
+        rollout_log_path=tmp_path / "public" / "rollouts.jsonl",
+        reward_log_path=tmp_path / "public" / "rewards.jsonl",
+        group_metrics_log_path=tmp_path / "public" / "group_metrics.jsonl",
+        num_generations=4,
+        max_completion_length=16,
+    )
+    completion = "```python\ndef solve(value):\n    return value\n```"
+
+    with pytest.raises(GRPOTrainingError, match="infrastructure failure in 4/4 completions"):
+        callback(
+            prompts=[[{"role": "user", "content": "PROMPT_SENTINEL"}]] * 4,
+            completions=[completion] * 4,
+            completion_ids=[[1, 2]] * 4,
+            problem_id=["wp7a-1"] * 4,
+            function_name=["solve"] * 4,
+            metadata=[_metadata()] * 4,
+            visible_tests=[[{"input": "VISIBLE_SENTINEL", "expected": "VISIBLE_SENTINEL"}]] * 4,
+        )
+
+    assert len(executor.calls) == 1
+    rewards = [json.loads(line) for line in (tmp_path / "public" / "rewards.jsonl").read_text().splitlines()]
+    rollouts = [json.loads(line) for line in (tmp_path / "public" / "rollouts.jsonl").read_text().splitlines()]
+    groups = [json.loads(line) for line in (tmp_path / "public" / "group_metrics.jsonl").read_text().splitlines()]
+    assert len(rewards) == len(rollouts) == 4
+    assert len(groups) == 1
+    assert all(row["status"] == ExecutionStatus.SANDBOX_ERROR.value for row in rewards)
+    assert all(row["infrastructure_failure"] is True for row in rewards)
+    assert all(row["total_reward"] == 0.0 for row in rewards)
+    assert all(row["total_reward"] == 0.0 for row in rollouts)
+    assert groups[0]["mean"] == 0.0
 
 
 class _Constructor:
@@ -224,8 +291,9 @@ class _Trainer:
         assert _MergedPolicy.events == ["base_a", "attach_b", "merge_b"]
         _MergedPolicy.events.append("new_grpo_lora")
         self.kwargs = dict(kwargs)
+        self.args = cast(Any, kwargs["args"])
         self.resume: str | None = None
-        self.state = SimpleNamespace(log_history=[{"loss": 0.2, "step": 1}])
+        self.state = SimpleNamespace(log_history=[{"loss": 0.2, "step": 1}], global_step=1)
         self.__class__.instances.append(self)
 
     def train(self, *, resume_from_checkpoint: str | None) -> SimpleNamespace:
@@ -240,7 +308,12 @@ class _Trainer:
             completion_ids=[[1, 2]] * 4,
             **columns,
         )
+        self._save_checkpoint(None, None)
         return SimpleNamespace(metrics={"train_loss": 0.125})
+
+    def _save_checkpoint(self, model: object, trial: object) -> None:
+        del model, trial
+        (Path(self.args.output_dir) / f"checkpoint-{self.state.global_step}").mkdir()
 
     @staticmethod
     def save_state() -> None:
@@ -426,7 +499,7 @@ def test_wp7a_resume_requires_same_parent_sft_config_data_and_checkpoint(
     _write_sft_run(sft_run)
     config, summary, _ = _run_fixture(tmp_path, monkeypatch, reward_mode="public", sft_run=sft_run)
     checkpoint = summary.checkpoint_dir / "checkpoint-1"
-    checkpoint.mkdir()
+    assert (checkpoint / grpo_module._GRPO_LOG_STATE_FILENAME).is_file()
     run_metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
     run_metadata["status"] = "failed"
     (summary.run_dir / "run.json").write_text(json.dumps(run_metadata), encoding="utf-8")

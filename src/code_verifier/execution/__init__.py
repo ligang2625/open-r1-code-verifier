@@ -43,8 +43,15 @@ from code_verifier.execution.piston import (
     PistonExecutor,
     PistonExecutorConfig,
     PistonTransportError,
+    PistonTransportFailureKind,
     load_piston_executor_config,
     piston_executor_version,
+)
+from code_verifier.execution.piston_resilience import (
+    PistonTransportPolicy,
+    PistonTransportTelemetry,
+    load_piston_transport_policy,
+    piston_transport_policy_sha256,
 )
 
 __all__ = [
@@ -70,6 +77,9 @@ __all__ = [
     "PistonExecutor",
     "PistonExecutorConfig",
     "PistonTransportError",
+    "PistonTransportFailureKind",
+    "PistonTransportPolicy",
+    "PistonTransportTelemetry",
     "SQLiteExecutionCache",
     "TestCaseResult",
     "batch_execution_config_from_mapping",
@@ -82,7 +92,9 @@ __all__ = [
     "execution_result_to_mapping",
     "load_batch_execution_config",
     "load_piston_executor_config",
+    "load_piston_transport_policy",
     "piston_executor_version",
+    "piston_transport_policy_sha256",
     "validate_batch_cache_policy",
     "validate_execution_request",
     "validate_execution_result",

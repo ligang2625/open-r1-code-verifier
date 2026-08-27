@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -35,6 +36,20 @@ def _mapping(value: object, *, field_name: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise GRPODataError(f"{field_name} must be a mapping with string keys")
     return cast(Mapping[str, object], value)
+
+
+def _encoded_test_case(value: Mapping[str, object], *, field_name: str) -> str:
+    """Encode one heterogeneous JSON test case into an Arrow-stable scalar string."""
+    try:
+        return json.dumps(
+            dict(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, OverflowError):
+        raise GRPODataError(f"{field_name} must be finite and JSON serializable") from None
 
 
 def _contains_forbidden_key(value: object) -> bool:
@@ -95,12 +110,18 @@ def build_grpo_dataset(
             "problem_id": problem_id,
             "function_name": function_name,
             "metadata": dict(metadata),
-            "visible_tests": [dict(test) for test in visible_mappings],
+            "visible_tests": [
+                _encoded_test_case(test, field_name=f"visible_tests[{test_index}]")
+                for test_index, test in enumerate(visible_mappings)
+            ],
         }
         if reward_mode == "hidden":
             hidden_tests = _sequence(record["train_hidden_tests"], field_name="train_hidden_tests")
             row["train_hidden_tests"] = [
-                dict(_mapping(test, field_name=f"train_hidden_tests[{test_index}]"))
+                _encoded_test_case(
+                    _mapping(test, field_name=f"train_hidden_tests[{test_index}]"),
+                    field_name=f"train_hidden_tests[{test_index}]",
+                )
                 for test_index, test in enumerate(hidden_tests)
             ]
         rows.append(row)
