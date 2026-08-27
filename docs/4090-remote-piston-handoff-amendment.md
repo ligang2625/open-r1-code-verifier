@@ -4,7 +4,7 @@
 >
 > This document changes only the 1660 Ti → 4090 deployment topology. It does not reopen WP3–WP8 product development and does not change formal dataset/model/training/evaluation identities.
 >
-> **2026-08-19 workflow-location update:** `docs/control-plane-gpu-worker-workflow.md` now supersedes any statement here that implies planner/reviewer/lifecycle/routing must move to or remain on the 4090. The only Piston host is now `1660ti-wsl` (`home-piston-01` is retired); a Piston-dependent 4090 gate uses `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh`. This document remains authoritative for the non-privileged target-GPU/Piston separation where not superseded.
+> **2026-08-27 transport update:** `docs/control-plane-gpu-worker-workflow.md` and `docs/piston-local.md` supersede this document's older 4090-initiated SSH local-forward commands. The only Piston host remains `1660ti-wsl` (`home-piston-01` is retired), but the canonical low-latency transport is now a loopback-only reverse forward initiated from the 1660 Ti control plane to the current 4090 provider public SSH endpoint: `-R 127.0.0.1:2000:127.0.0.1:2000`. Provider SSH host/port/authentication remain machine-local and untracked. The project endpoint remains `http://127.0.0.1:2000`; the older Tailscale/local-forward helper is non-canonical. This document remains authoritative for the non-privileged target-GPU/Piston separation where not superseded.
 
 ## 1. Why the original migration package is stale
 
@@ -26,14 +26,15 @@ Dedicated CPU Linux host / VM
   Python runtime 3.10.0
   API bound only to 127.0.0.1:2000
               |
-              | SSH local forward
+              | outbound SSH to provider public endpoint
+              | -R 127.0.0.1:2000:127.0.0.1:2000
               v
 Ordinary RTX 4090 GPU container
   no systemd requirement
   no Docker daemon requirement
   no Docker socket requirement
   no privileged-container requirement
-  127.0.0.1:2000 -> SSH tunnel -> Piston host loopback
+  provider sshd owns 127.0.0.1:2000 reverse-forward listener
   open-r1-code-verifier + PyTorch/CUDA + SFT/GRPO/evaluation
 ```
 
@@ -64,8 +65,8 @@ The GPU container owns:
 - formal data/model restore;
 - persistent `DATA_ROOT`, `CODE_VERIFIER_ARTIFACT_ROOT`, and `HF_HOME`;
 - a bootstrap-generated, gitignored primary-checkout machine pointer `.ai-bridge/validation-machine.json` so Web/Local workflow does not depend on shell exports surviving across sessions;
-- SSH client connectivity to the Piston host;
-- SSH local forward to `127.0.0.1:2000`;
+- the provider SSH service that accepts the control-plane-initiated reverse-forward session;
+- a loopback-only reverse-forward listener at `127.0.0.1:2000` owned by that SSH session;
 - project runtime probe against tunneled Piston;
 - `make lint`, `make test`, `make test-gpu`, and real `make test-piston` through the tunnel;
 - SFT/GRPO/evaluation and final validation artifacts.
@@ -74,18 +75,19 @@ The GPU container must not attempt to install/start `dockerd`, use `systemctl` f
 
 ## 5. SSH tunnel gate
 
-From the 4090 container:
+From the GTX 1660 Ti control plane, after confirming local Piston is healthy, establish the reverse forward to the current provider public SSH endpoint:
 
 ```bash
 ssh -N -T \
   -o ExitOnForwardFailure=yes \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
-  -L 127.0.0.1:2000:127.0.0.1:2000 \
-  <PISTON_SSH_TARGET>
+  -R 127.0.0.1:2000:127.0.0.1:2000 \
+  -p <CURRENT_PROVIDER_SSH_PORT> \
+  root@<CURRENT_PROVIDER_SSH_HOST>
 ```
 
-Use `-p <PORT>` when the Piston host SSH service is not on port 22.
+The provider hostname, port, identity/key material, and authentication are machine-local operator state and must not be committed. The older 4090-initiated Tailscale/local-forward helper must not be started while this reverse-forward transport is in use.
 
 Before validation bootstrap can pass, a separate shell on the 4090 container must verify:
 
@@ -117,8 +119,8 @@ The next authoritative bootstrap must remove these GPU-node gates/actions:
 
 Replace them with fail-closed gates:
 
-1. `ssh` client exists on the 4090 node;
-2. `http://127.0.0.1:2000` is reachable after the operator-established tunnel;
+1. the 4090 provider SSH service is available for the control-plane-initiated reverse-forward session;
+2. `127.0.0.1:2000` is bound only on loopback by the reverse-forward SSH session and `http://127.0.0.1:2000` is reachable;
 3. project `PistonExecutor.validate_runtime()` returns exact Python `3.10.0`;
 4. full real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` runs from the 4090 container through the tunnel with 0 failed / 0 skipped;
 5. a machine-level Piston deployment identity record is written only after those gates pass;
@@ -200,8 +202,8 @@ persistent disk >= required capacity
 Git remote/exact commit recoverable
 uv
 Python 3.10.x >= 3.10.9
-SSH client
-Piston loopback tunnel reachable
+provider sshd reverse-forward session present when Piston is required
+Piston loopback listener reachable only at 127.0.0.1:2000
 Piston runtime = 3.10.0
 formal data/model archive SHA256 PASS
 ```

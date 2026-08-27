@@ -77,13 +77,29 @@ def test_canonical_piston_host_and_sft_prevalidation_policy_are_preserved() -> N
     agents = _text("AGENTS.md")
     readme = _text("README.md")
     piston_doc = _text("docs/piston-local.md")
+    workflow = _text("docs/control-plane-gpu-worker-workflow.md")
+    planner = _text("skills/planner-ex/SKILL.md")
+    lifecycle = _text("skills/stage-lifecycle/SKILL.md")
+    router = _text("skills/execution-router/SKILL.md")
+    executor_local = _text("skills/executor-ex/SKILL.md")
+    executor_web = _text("skills/executor-web/SKILL.md")
+    piston_config = _text("configs/execution/piston-local.yaml")
 
     for document in (agents, readme, piston_doc):
         assert "1660ti-wsl" in document
         assert "home-piston-01" in document
 
-    assert "ensure-piston-1660ti-tunnel.sh" in agents
-    assert "ensure-piston-1660ti-tunnel.sh" in piston_doc
+    assert "reverse forward" in agents
+    assert "-R 127.0.0.1:2000:127.0.0.1:2000" in agents
+    assert "-R 127.0.0.1:2000:127.0.0.1:2000" in piston_doc
+    assert "reverse-forward" in workflow
+    assert "canonical topology" in planner
+    assert "canonical reverse-forward" in lifecycle
+    assert "canonical reverse-forward" in router
+    assert "canonical loopback reverse forward" in executor_local
+    assert "canonical reverse-forward" in executor_web
+    assert "base_url: http://127.0.0.1:2000" in piston_config
+    assert "ensure-piston-1660ti-tunnel.sh" not in piston_doc
     assert "prevalidate-sft" in agents
     assert "train-sft" in agents
     assert "must not contact Piston" in agents

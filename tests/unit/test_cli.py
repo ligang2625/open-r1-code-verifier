@@ -33,6 +33,7 @@ from code_verifier.execution import (
     ExecutionTestLayer,
     ExecutionWorkloadMode,
     PistonExecutor,
+    PistonTransportTelemetry,
 )
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training import (
@@ -1435,6 +1436,7 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
         "--reward-mode",
         "--resume-from-checkpoint",
         "--resume-run-git-commit",
+        "--piston-transport-policy",
         "--seed",
         "--output-dir",
         "--log-level",
@@ -1481,8 +1483,9 @@ def test_train_grpo_overrides_complete_dataset_and_run_name_pair_before_executio
     seen: dict[str, object] = {}
 
     class FakePistonExecutor:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, **kwargs: object) -> None:
             assert config == "PISTON_CONFIG"
+            assert set(kwargs) == {"transport_policy", "transport_telemetry"}
 
         @staticmethod
         def validate_runtime() -> str:
@@ -1526,6 +1529,8 @@ def test_train_grpo_overrides_complete_dataset_and_run_name_pair_before_executio
                 "completed-sft",
                 "--reward-mode",
                 "public",
+                "--output-dir",
+                str(tmp_path / "grpo"),
             ]
         )
         == 0
@@ -1575,19 +1580,70 @@ def test_train_grpo_rejects_single_sided_run_name_override(
     assert "must be provided together" in capsys.readouterr().err
 
 
-def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
+def test_train_grpo_existing_run_dir_fails_before_transport_sidecar_mutation(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     capsys: Any,
 ) -> None:
+    piston_path = tmp_path / "piston.yaml"
+    piston_path.write_text("piston: test\n", encoding="utf-8")
+    (tmp_path / "grpo" / "public-grpo").mkdir(parents=True)
+
     class FakeConfig:
-        piston_config = Path("piston.yaml")
+        piston_config = piston_path
         seed = 7
+        run_name = "public-grpo"
+
+    configs = {Path("public.yaml"): FakeConfig(), Path("hidden.yaml"): FakeConfig()}
+    writes: list[object] = []
+    monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: configs[path])
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: "PISTON_CONFIG")
+    monkeypatch.setattr(cli_module, "_write_transport_sidecar", lambda *args, **kwargs: writes.append((args, kwargs)))
+
+    assert (
+        main(
+            [
+                "train-grpo",
+                "--public-config",
+                "public.yaml",
+                "--hidden-config",
+                "hidden.yaml",
+                "--public-sft-run-dir",
+                "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
+                "--output-dir",
+                str(tmp_path / "grpo"),
+            ]
+        )
+        == 2
+    )
+    assert writes == []
+    assert "explicit resume is required" in capsys.readouterr().err
+
+
+def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    piston_path = tmp_path / "piston.yaml"
+    piston_path.write_text("piston: test\n", encoding="utf-8")
+    (tmp_path / "grpo" / "public-grpo").mkdir(parents=True)
+
+    class FakeConfig:
+        piston_config = piston_path
+        seed = 7
+        run_name = "public-grpo"
 
     class FakePistonExecutor:
         validated = False
 
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, **kwargs: object) -> None:
             assert config == "PISTON_CONFIG"
+            assert set(kwargs) == {"transport_policy", "transport_telemetry"}
 
         @classmethod
         def validate_runtime(cls) -> str:
@@ -1614,6 +1670,7 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
     monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
     monkeypatch.setattr(cli_module, "run_grpo_training", fake_run)
     resume_run_commit = "a" * 40
+    monkeypatch.setattr(cli_module, "_restore_transport_sidecar", lambda *args, **kwargs: None)
 
     assert (
         main(
@@ -1635,6 +1692,8 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
                 resume_run_commit,
                 "--seed",
                 "11",
+                "--output-dir",
+                str(tmp_path / "grpo"),
             ]
         )
         == 0
@@ -1649,6 +1708,54 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
     output = capsys.readouterr()
     assert "override: seed: 7 -> 11" in output.err
     assert "reward_mode=public" in output.out
+    assert "piston_definition_sha256=" in output.out
+    assert "piston_transport_policy_sha256=" in output.out
+    assert "transport_telemetry=" in output.out
+
+
+def test_grpo_transport_sidecar_roundtrip_is_strict_cumulative_and_payload_free(tmp_path: Path) -> None:
+    path = tmp_path / "transport.json"
+    telemetry = PistonTransportTelemetry(transport_requests=3, transport_safe_retries=1)
+    cli_module._write_transport_sidecar(
+        path,
+        run_name="public-grpo",
+        piston_definition_sha256="a" * 64,
+        piston_transport_policy_sha256="b" * 64,
+        telemetry=telemetry,
+    )
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert value["telemetry_semantics"] == "cumulative_durable_snapshot_per_mutation_v1"
+    assert value["piston_definition_sha256"] == "a" * 64
+    assert value["piston_transport_policy_sha256"] == "b" * 64
+    encoded = json.dumps(value, sort_keys=True)
+    for sentinel in ["candidate", "visible_tests", "train_hidden_tests", "PRIVATE_KEY", "secret"]:
+        assert sentinel not in encoded
+
+    restored = PistonTransportTelemetry()
+    cli_module._restore_transport_sidecar(
+        path,
+        run_name="public-grpo",
+        piston_definition_sha256="a" * 64,
+        piston_transport_policy_sha256="b" * 64,
+        telemetry=restored,
+    )
+    assert restored.to_mapping() == telemetry.to_mapping()
+    with pytest.raises(GRPOTrainingError, match="identity"):
+        cli_module._restore_transport_sidecar(
+            path,
+            run_name="public-grpo",
+            piston_definition_sha256="a" * 64,
+            piston_transport_policy_sha256="c" * 64,
+            telemetry=PistonTransportTelemetry(),
+        )
+    with pytest.raises(GRPOTrainingError, match="required for resume"):
+        cli_module._restore_transport_sidecar(
+            tmp_path / "missing.json",
+            run_name="public-grpo",
+            piston_definition_sha256="a" * 64,
+            piston_transport_policy_sha256="b" * 64,
+            telemetry=PistonTransportTelemetry(),
+        )
 
 
 def test_train_grpo_error_returns_two_without_traceback(

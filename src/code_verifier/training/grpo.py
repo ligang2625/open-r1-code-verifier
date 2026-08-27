@@ -1451,7 +1451,7 @@ def _paired_config_hash(config: GRPOTrainingConfig, *, seed: int) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _safe_run_dir(output_root: Path, run_name: str) -> Path:
+def grpo_run_directory(output_root: Path, run_name: str) -> Path:
     root = output_root.resolve(strict=False)
     if root == Path(root.anchor) or root == Path.cwd().resolve():
         raise GRPOTrainingError("output_root must be a dedicated non-root directory")
@@ -1840,7 +1840,7 @@ def run_grpo_training(
         public_config, hidden_config, seed=seed, parent_sft=parent_sft
     )
     records = public_records if reward_mode == "public" else hidden_records
-    run_dir = _safe_run_dir(output_root, config.run_name)
+    run_dir = grpo_run_directory(output_root, config.run_name)
     checkpoint_dir = run_dir / "checkpoints"
     dataset_hash = _file_hash(config.dataset_path, description="GRPO dataset")
     config_hash = _config_hash(config, seed=seed)
