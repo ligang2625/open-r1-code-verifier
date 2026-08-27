@@ -1006,3 +1006,120 @@ execution_checkpoint:
 - C13 is a recovery-only handoff. It has no fresh training path and no Public training path.
 - The cross-commit permission is intentionally narrow: the preserved run origin commit must be exactly C12, all scientific/run identities must still match, and the current recovery execution is recorded per attempt as `code_commit`.
 - The current Piston topology remains the sealed 4090 loopback SSH-forward to `1660ti-wsl`; the planned transport-reliability hardening remains deferred until this pilot and its review are complete.
+
+## C14 — C13 pilot evidence review (control plane)
+
+Review performed read-only from the 1660 Ti synchronized evidence root `/home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot`; synchronized evidence remains outside Git. No C12/C13 target artifact or checkpoint was modified.
+
+### Authenticity, provenance, and synchronized inventory
+
+- Git lineage independently revalidated as `355486ccccff3a1325614e18e8f8d4a85b8789ba` (C12) -> `7342b323fb550fd5ebae2ddcd614c2c63c054cbc` (C13 business repair result-code commit) -> `945764a99e3a1bed53afbff830fddc84181e215f` (C13 operator checkpoint).
+- C12 synchronized operator bytes: `status` SHA256 `53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3`, `terminal.log` `541e5e0312027b50c2753ffc7943f7a7080f35b3544caf0adaaafded742185e5`, `operator-evidence.json` `9426f68b5ccd755f31fccc419b7f779227609009a8e5c5a0e9b76ffc65d44418`; status is `2`, command failed closed while Hidden was at 97 completed optimizer steps and the failed 8/8 infrastructure batch aborted before its optimizer update.
+- C13 synchronized operator bytes: `status` SHA256 `9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa`, `terminal.log` `98e5f0740b80d55bed544ae050394d1bbe23ef6154944c2169224742d14359f8`, `operator-evidence.json` `91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b`, `postcheck-summary.json` `91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f`; status/command/postcheck are all `0` and gate status is `passed`.
+- C13 operator inventory was remapped to the synchronized pilot/operator tree and independently hash/size checked: 23/23 expected files are present with no mismatch.
+- Final Public adapter SHA256 is `55e1860b2cdd5a3e6b497724f2519b5cf0ee5825273545f8042f039d916c19e9`; final Hidden adapter SHA256 is `29afca9c80537d712c2c388dfdcd8eef822a91d772381367389c5d18d57805d3`.
+- Hidden recovery manifest SHA256 is `efc8c4d570550376e294f20f388ae1e354ba9a01ff88f37faae333391c92ecd8`. The archived failed streams independently match the manifest/C12 terminal bytes: rewards `dc1b3c6509bacc68d5afee212f5e6d6cd2156142d9b0cf44bf946796471b9698`, rollouts `8dfb8b865c18ef26a741f74c4ee5e603bd35298b98cb0d60f85707aec388f0bb`, groups `7ecf47d9d251561632235c664f5d6a9ec474f1f19bcd9cbc6ada70bf62039924`.
+
+### Strict pilot identity and recovery correctness
+
+- Public is `C-public-grpo-pilot100-retry1-seed42`, completed at global step 100 in exactly one attempt, fresh from B with `resume_from_checkpoint=null`; C13 did not retrain Public.
+- Hidden is `D-hidden-grpo-pilot100-retry1-seed42`, completed at global step 100 with two attempts: C12 attempt 1 failed; C13 attempt 2 records code commit `945764a99e3a1bed53afbff830fddc84181e215f`, resumed only `checkpoints/checkpoint-90`, and completed.
+- Both runs bind the same parent `B-sft-formal-seed42`, seed 42, paired-definition SHA256 `bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f`, Public portable config SHA256 `da543a9ac2719076fd81696dbcb98f1df9c9254adc9e9f519569b3b0d2e09dac`, Hidden portable config SHA256 `5036e0aa8be941f145f52e08269e808948f091c80d5d0972ef50326417934658`, Public dataset SHA256 `94ef48888d2b2edaa0080b9b412c274ada692c9546fe135572d48ab20fd49223`, Hidden dataset SHA256 `79af3c2a3742e0cda8d02901a07241afce12a54c0b6d334e3012bcd0b69f77f7`, exact formal B/data/config/dependency/Open-R1/Qwen identities, and differ scientifically only in the paired dataset/reward source plus run name: Public `visible_tests`, Hidden `train_hidden_tests`.
+- Hidden checkpoint-90 sidecar records 720 rewards, 720 rollouts, 180 groups. The C12 failed state archived before recovery records 784/784/196. Every archived stream begins with the exact checkpoint-90 byte prefix, and every restored canonical stream also begins with that exact checkpoint-90 prefix.
+- Hidden checkpoint-100 sidecar records 800 rewards, 800 rollouts, 200 groups and its size/SHA/line-count state exactly equals each final canonical stream. Final Public and Hidden canonical rewards/rollouts/groups contain zero exact duplicate rows. Trainer telemetry covers steps 1..100 exactly once for each run, with no missing or duplicate step.
+- Canonical reward rows contain zero `infrastructure_failure=true` and zero `status=sandbox_error`. The failed suffix remains only under `checkpoints/recovery-history/before-attempt-2-resume-checkpoint-90/` and is not part of final canonical reward/rollout/group streams.
+
+### §12.4 raw pilot telemetry review
+
+No numerical stop threshold is invented; the following are raw evidence statistics used only for the spec-defined qualitative review.
+
+| Metric | Public | Hidden |
+| --- | ---: | ---: |
+| trainer reward mean | 0.4537500189 | 0.4501250179 |
+| trainer reward-std mean | 0.2260171307 | 0.2179937651 |
+| group std mean | 0.1957365761 | 0.1887881369 |
+| group all-equal rate | 0.415 | 0.415 |
+| KL mean / max | 0.0001310794 / 0.0002448273 | 0.0001256360 / 0.0002903884 |
+| loss mean | 0.0 | 0.0 |
+| completion mean tokens | 216.2975 | 214.3775 |
+| truncation rate | 0.0125 | 0.00875 |
+| parse rate | 0.97125 | 0.9825 |
+| executed rate | 0.97125 | 0.9825 |
+| timeout rate | 0.015 | 0.01125 |
+| pass rate | 0.3075 | 0.30125 |
+| generation sec mean / p95 / max | 36.6508 / 62.8305 / 63.5203 | 35.9684 / 63.4112 / 64.5314 |
+| rollout sec mean / p95 / max | 74.0522 / 97.7825 / 106.5992 | 86.0732 / 115.5506 / 157.6113 |
+| no-grad sec mean / p95 / max | 0.77149 / 0.81213 / 0.84066 | 0.76593 / 0.80407 / 0.80928 |
+| total step sec mean / p95 / max | 78.3432 / 102.0233 / 110.9500 | 90.3358 / 119.8840 / 161.9703 |
+| executor runtime mean / total ms | 90.0992 / 72079.38 | 97.4686 / 77974.86 |
+| GPU hours | 2.1831925225 | 2.8170487867 cumulative (2.6525675642 failed attempt + 0.1644812225 recovery) |
+| peak CUDA allocated bytes | 4521147392 | 4154825728 |
+| peak CUDA reserved bytes | 10114564096 | 5932843008 |
+
+Public status counts: `passed=246`, `wrong_answer=384`, `runtime_error=134`, `parse_error=23`, `timeout=12`, `memory_limit=1`. Public failure counts: `wrong_answer=690`, `runtime_error=258`, `parse_error=46`, `timeout=24`, `memory_limit=2`.
+
+Hidden status counts: `passed=241`, `wrong_answer=381`, `runtime_error=152`, `parse_error=14`, `timeout=9`, `memory_limit=3`. Hidden failure counts: `wrong_answer=677`, `runtime_error=296`, `parse_error=28`, `timeout=22`, `memory_limit=6`.
+
+All parsed numerical values in final metrics/rewards/rollouts/group telemetry are finite. Both runs have no missing/duplicate trainer step, no canonical infrastructure failure, no canonical sandbox error, and the expected eight no-grad reference-logprob calls at every optimizer step. Hidden canonical per-step timing intentionally combines the preserved checkpoint-90 lineage with replayed steps 91..100; the final metrics summary `train_runtime` is recovery-attempt runtime and therefore is not used as a cumulative two-attempt wall-clock substitute. Cumulative Hidden GPU hours remain the authoritative full-attempt cost record.
+
+### Pilot review conclusion
+
+**B. no spec-defined hard stop signal.** The pilot has authenticated complete C/D 100-step canonical trajectories, valid checkpoint-90 recovery, finite telemetry, exact step coverage, distinct sealed reward sources, and no canonical infrastructure/sandbox failure. §12.4 does not seal numerical thresholds for qualitative terms such as “obvious decline”, “too high”, or “abnormal growth”, so this review does not manufacture one. The lifecycle may proceed to the formal-precondition Piston transport-reliability hardening gate; formal 300-step C/D remains blocked until that engineering gate and the subsequent formal-readiness review pass.
+
+## C15 — formal readiness review and 300-step C/D operator handoff
+
+Phase-2 transport reliability is accepted as a completed predecessor gate per the user-provided cross-conversation handoff. This review does not invent missing soak counters: destructive restart/long-soak raw numbers are not restated from the synchronized C13 evidence tree. The current tracked Phase-2 transport documentation explicitly amends the deployed topology to the 1660 Ti initiated reverse-SSH loopback forward and defers destructive tunnel restart experiments unless an operator explicitly chooses them while no formal target-GPU run is active. The formal operator therefore validates the existing reverse-forward live but never starts, kills, or rewrites tunnel state.
+
+### Formal-readiness revalidation on the 1660 Ti control plane
+
+- Current accepted result-code commit: `ed3eaea93ba897c38e3b3ff7b95903d31f7e76d2`; C13 checkpoint `945764a99e3a1bed53afbff830fddc84181e215f` remains an immutable ancestor. Reverse-SSH workflow transport commit `b4ac6acb95530f5359566e6f140f77ad6a4da78f` is also in the accepted result-code lineage.
+- Git blob comparison from C13 to the accepted result-code commit is identical for `configs/execution/piston-local.yaml`, `configs/grpo/public.yaml`, `configs/grpo/hidden.yaml`, and the entire `src/code_verifier/rewards` tree. Therefore scientific Piston semantics, formal hyperparameters, and reward math are unchanged by Phase 2.
+- `.ai-bridge/**` tracked-path check: zero tracked paths. No synchronized C12/C13 evidence is added to Git. The only intended handoff change set is this append-only executor report plus the new C15 operator script; the eventual target checkout must be clean and C15 preflight enforces that condition.
+- Formal pair was independently recomputed with production `_paired_definition()` against exact formal B and exact formal data: pair SHA256 `7924be4e115b20bc3e40207256d67d2e8591c973dbd9de7bfcb0b4bf39b08df3`; Public portable config component `1ec25400fd1f6d6ec46d636ac84db9098de6559fa327fd63d3e8f7364f650271`; Hidden `330ce6ce4a8ba3743927bd3f38bd4692a3616483bd8cd2fe1727c455c55a9f71`; Public/Hidden data remain `94ef48888d2b2edaa0080b9b412c274ada692c9546fe135572d48ab20fd49223` / `79af3c2a3742e0cda8d02901a07241afce12a54c0b6d334e3012bcd0b69f77f7`.
+- Scientific Piston definition remains SHA256 `f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`. Transport resilience is separate: normalized policy identity SHA256 `d7e7b3a3a2f6492cf6040c08a64086fba3aa7a9c4f5209752a0ba2917ef81c85`; implementation identities are `piston-transport-retry-v2`, `httpclient-loopback-classifier-v3`, `httpclient-single-keepalive-v1`, and legacy-supervisor implementation identity `piston-tunnel-supervisor-v3` (the legacy local-forward supervisor is not deployed by C15).
+- Phase-2 real reverse-forward acceptance recorded on 2026-08-27: 4090 runtime probe exact Python `3.10.0`; fresh `/api/v2/runtimes` 30-call mean `97.56 ms`, p50 `98.759 ms`, p95 `104.156 ms`; trusted `print(1)` fresh 10-call mean `134.31 ms`; real reverse-tunnel `make test-piston` `9 passed, 0 skipped, 0 failed`.
+- Current focused transport/recovery fault suite re-run: `95 passed`. Coverage includes safe pre-connect retry/recovery and exhaustion, no retry for read timeout/reset/HTTP/invalid JSON/oversized response/application verdicts, exact request reuse, bounded attempts/backoff, ownership/locking, durable sidecar telemetry, same-run GRPO recovery, and unrecovered infrastructure abort before optimizer update.
+- Current full regression re-run: `make lint` PASS; `make test` `997 passed, 3 skipped`; `make test-gpu` `3 passed`; real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` `9 passed, 2 deselected`, with zero skipped/failed Piston tests.
+- Current real-Piston semantic-equivalence probe compared the baseline scientific executor against the resilience-policy executor on fixed `passed`, `wrong_answer`, `runtime_error`, and `parse_error` cases. Both resolved runtime `3.10.0`; `status`, `passed_tests`, `total_tests`, `pass_rate`, and `failure_counts` had `0` mismatches.
+- Destructive tunnel-fault/long-soak acceptance is inherited from the user-confirmed completed Phase-2 gate rather than re-executed here. No new 4090 destructive fault, generation, SFT, GRPO, or operator command was launched by this formal-readiness review.
+
+### C15 operator contract
+
+- Gate is `grpo-cd-formal`: Public C and Hidden D are each exactly 300 steps with save cadence 50, seed 42, and the formal pair identity above.
+- Each member independently initializes fresh from the same completed `B-sft-formal-seed42` on its first attempt. Pilot adapters are authenticated only as prior-gate evidence and are never accepted as formal parents. C cannot initialize D and D cannot initialize C.
+- Rerun action is resolved separately for each member: absent -> fresh; completed exact identity -> skip; incomplete exact same-operator run -> only the highest production-validated same-run 50-step Trainer checkpoint plus canonical log sidecar; no valid checkpoint -> fail closed. Cross-member and cross-operator resume are rejected.
+- C15 authenticates immutable C13 status/log/evidence/postcheck bytes and final pilot adapters, verifies the accepted checkpoint-90 recovery lineage, but never modifies or deletes C12/C13 artifacts/checkpoints.
+- Target preflight requires the exact model/B/data/dependencies, RTX 4090 + native BF16, offline model availability, exact scientific Piston SHA, exact transport-policy SHA/implementation identity, and a live loopback runtime probe equal to Python 3.10.0. It never invokes the retired target-side tunnel helper.
+- Storage is recomputed on target from the actual complete pilot Trainer checkpoints using the sealed formula `max(40 GiB, 14*P + 10 GiB)` and `max(100000, 14*Fp + 20000)` before either formal member starts.
+- The production transport sidecar is required for every existing formal run and is bound to both scientific Piston SHA and transport-policy SHA. Historical safe retries, retry exhaustion, or ambiguous failures remain visible rather than erased; ambiguous/current-request failures are never transparently replayed.
+- Final postcheck requires both exact completed 300-step identities, attempts rooted fresh from B, same-operator same-run recovery only, checkpoints 50..300 with canonical log sidecars, trainer steps 1..300 exactly once, canonical 2400 rewards / 2400 rollouts / 600 groups, finite telemetry, zero canonical `infrastructure_failure` / `sandbox_error`, correct reward-source isolation, safe payload schema, cost/curve availability, transport telemetry consistency, and complete recovery-history validation.
+- C15 stops after formal C/D postcheck. It does not start generation or formal evaluation.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C15
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: ed3eaea93ba897c38e3b3ff7b95903d31f7e76d2
+  workflow_transport_commit: b4ac6acb95530f5359566e6f140f77ad6a4da78f
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C15/run.sh
+  operator_script_sha256: f53972ff6bed4f59ef0e925ffc96c18c063bfe195bdac0be99f9692f41266375
+  formal_pair_sha256: 7924be4e115b20bc3e40207256d67d2e8591c973dbd9de7bfcb0b4bf39b08df3
+  transport_policy_sha256: d7e7b3a3a2f6492cf6040c08a64086fba3aa7a9c4f5209752a0ba2917ef81c85
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C15/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C15/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C15/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C15/postcheck-summary.json"
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C15 is the lifecycle stop point for this control-plane task. The formal target operator has not been executed. Do not push automatically and do not start 4090 formal GRPO from the control plane.
