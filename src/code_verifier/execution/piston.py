@@ -14,15 +14,15 @@ import json
 import math
 import secrets
 import socket
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, cast
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, OpenerDirector, ProxyHandler, Request, build_opener
 
 from code_verifier.config import ConfigError, load_yaml_mapping
 from code_verifier.execution import harness as harness_module
@@ -126,26 +126,19 @@ class PistonTransport(Protocol):
     ) -> object: ...
 
 
-class _RejectRedirects(HTTPRedirectHandler):
-    def redirect_request(
-        self,
-        req: Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: object,
-        newurl: str,
-    ) -> None:
-        return None
-
-
-class UrlLibPistonTransport:
-    """No-proxy, no-redirect urllib transport for one validated loopback endpoint."""
+class HttpClientPistonTransport:
+    """Single-connection loopback HTTP/1.1 transport with fail-closed keep-alive reuse."""
 
     def __init__(self, base_url: str) -> None:
-        """Create a no-proxy, no-redirect transport for one validated loopback Piston base URL."""
+        """Create one lazy sequential persistent connection for a validated loopback Piston endpoint."""
         self._base_url = _validate_base_url(base_url)
-        self._opener: OpenerDirector = build_opener(ProxyHandler({}), _RejectRedirects())
+        parsed = urlsplit(self._base_url)
+        host = parsed.hostname
+        assert host is not None
+        self._host = host
+        self._port = 80 if parsed.port is None else parsed.port
+        self._connection: http.client.HTTPConnection | None = None
+        self._lock = threading.Lock()
 
     def list_runtimes(
         self,
@@ -154,8 +147,14 @@ class UrlLibPistonTransport:
         max_response_bytes: int,
     ) -> object:
         """GET the bounded loopback /api/v2/runtimes JSON value."""
-        request = Request(f"{self._base_url}/api/v2/runtimes", method="GET")
-        return self._request_json(request, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
+        return self._request_json(
+            method="GET",
+            path="/api/v2/runtimes",
+            body=None,
+            headers={"Accept": "application/json"},
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+        )
 
     def execute_request(
         self,
@@ -164,55 +163,91 @@ class UrlLibPistonTransport:
         timeout_seconds: float,
         max_response_bytes: int,
     ) -> object:
-        """POST one bounded loopback /api/v2/execute JSON request."""
+        """POST one bounded loopback /api/v2/execute JSON request without ambiguous replay."""
         try:
             body = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         except (TypeError, ValueError, RecursionError, UnicodeEncodeError):
             raise PistonTransportError(
                 "invalid piston request", kind=PistonTransportFailureKind.INVALID_REQUEST
             ) from None
-        request = Request(
-            f"{self._base_url}/api/v2/execute",
-            data=body,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        return self._request_json(
             method="POST",
+            path="/api/v2/execute",
+            body=body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
         )
-        return self._request_json(request, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
 
-    def _request_json(self, request: Request, *, timeout_seconds: float, max_response_bytes: int) -> object:
+    def close(self) -> None:
+        """Discard the current persistent connection without affecting later lazy reconnects."""
+        with self._lock:
+            self._discard_connection()
+
+    def _request_json(
+        self,
+        *,
+        method: str,
+        path: str,
+        body: bytes | None,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_response_bytes: int,
+    ) -> object:
         if not _is_finite_positive_number(timeout_seconds):
             raise PistonTransportError("invalid piston timeout", kind=PistonTransportFailureKind.INVALID_REQUEST)
         if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) or max_response_bytes <= 0:
             raise PistonTransportError(
                 "invalid piston response limit", kind=PistonTransportFailureKind.INVALID_REQUEST
             )
-        try:
-            with self._opener.open(request, timeout=float(timeout_seconds)) as response:
+
+        with self._lock:
+            connection = self._connection
+            if connection is None or connection.sock is None:
+                self._discard_connection()
+                connection = self._connect(float(timeout_seconds))
+            else:
+                self._set_connection_timeout(connection, float(timeout_seconds))
+
+            try:
+                connection.request(method, path, body=body, headers=headers)
+                response = connection.getresponse()
+            except (TimeoutError, OSError, http.client.HTTPException) as error:
+                self._discard_connection()
+                raise _classified_ambiguous_http_error(error) from None
+
+            try:
+                if not 200 <= response.status < 300:
+                    self._discard_connection()
+                    raise PistonTransportError(
+                        "piston http request failed", kind=PistonTransportFailureKind.HTTP_ERROR
+                    )
                 content_type = response.headers.get_content_type().lower()
                 if content_type != "application/json" and not (
                     content_type.startswith("application/") and content_type.endswith("+json")
                 ):
+                    self._discard_connection()
                     raise PistonTransportError(
                         "piston returned non-json content", kind=PistonTransportFailureKind.INVALID_RESPONSE
                     )
-                raw = response.read(max_response_bytes + 1)
-        except PistonTransportError:
-            raise
-        except HTTPError:
-            raise PistonTransportError(
-                "piston http request failed", kind=PistonTransportFailureKind.HTTP_ERROR
-            ) from None
-        except (URLError, TimeoutError, OSError) as error:
-            raise _classified_transport_error(error) from None
-        except http.client.HTTPException:
-            raise PistonTransportError(
-                "piston response stream failed", kind=PistonTransportFailureKind.INVALID_RESPONSE
-            ) from None
+                try:
+                    raw = response.read(max_response_bytes + 1)
+                except (TimeoutError, OSError, http.client.HTTPException) as error:
+                    self._discard_connection()
+                    raise _classified_ambiguous_http_error(error) from None
+                should_close = response.will_close or response.headers.get("Connection", "").lower() == "close"
+                if len(raw) > max_response_bytes:
+                    self._discard_connection()
+                    raise PistonTransportError(
+                        "piston response exceeded limit", kind=PistonTransportFailureKind.OVERSIZED_RESPONSE
+                    )
+                response.close()
+                if should_close or connection.sock is None:
+                    self._discard_connection()
+            except PistonTransportError:
+                response.close()
+                raise
 
-        if len(raw) > max_response_bytes:
-            raise PistonTransportError(
-                "piston response exceeded limit", kind=PistonTransportFailureKind.OVERSIZED_RESPONSE
-            )
         try:
             text = raw.decode("utf-8")
             return cast(object, json.loads(text, parse_constant=_reject_json_constant))
@@ -220,6 +255,28 @@ class UrlLibPistonTransport:
             raise PistonTransportError(
                 "invalid piston json response", kind=PistonTransportFailureKind.INVALID_RESPONSE
             ) from None
+
+    def _connect(self, timeout_seconds: float) -> http.client.HTTPConnection:
+        connection = http.client.HTTPConnection(self._host, self._port, timeout=timeout_seconds)
+        try:
+            connection.connect()
+        except (TimeoutError, OSError, http.client.HTTPException) as error:
+            connection.close()
+            raise _classified_transport_error(error) from None
+        self._connection = connection
+        return connection
+
+    @staticmethod
+    def _set_connection_timeout(connection: http.client.HTTPConnection, timeout_seconds: float) -> None:
+        connection.timeout = timeout_seconds
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout_seconds)
+
+    def _discard_connection(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
 
 
 def _classified_transport_error(error: BaseException) -> PistonTransportError:
@@ -237,6 +294,19 @@ def _classified_transport_error(error: BaseException) -> PistonTransportError:
         return PistonTransportError("piston connection reset", kind=PistonTransportFailureKind.CONNECTION_RESET)
     if isinstance(reason, OSError) and reason.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
         return PistonTransportError("piston pre-connect failure", kind=PistonTransportFailureKind.PRECONNECT_FAILURE)
+    return PistonTransportError("piston transport failed", kind=PistonTransportFailureKind.OTHER)
+
+
+def _classified_ambiguous_http_error(error: BaseException) -> PistonTransportError:
+    """Classify failures after a connection exists without ever marking the current request safe to replay."""
+    if isinstance(error, socket.timeout | TimeoutError):
+        return PistonTransportError("piston read timeout", kind=PistonTransportFailureKind.READ_TIMEOUT)
+    if isinstance(error, ConnectionResetError | BrokenPipeError | http.client.RemoteDisconnected) or (
+        isinstance(error, OSError) and error.errno in {errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED}
+    ):
+        return PistonTransportError("piston connection reset", kind=PistonTransportFailureKind.CONNECTION_RESET)
+    if isinstance(error, http.client.HTTPException):
+        return PistonTransportError("piston response stream failed", kind=PistonTransportFailureKind.INVALID_RESPONSE)
     return PistonTransportError("piston transport failed", kind=PistonTransportFailureKind.OTHER)
 
 
@@ -478,7 +548,7 @@ class PistonExecutor:
                     "Piston transport policy does not match executor endpoint/runtime identity"
                 )
         self._config = config
-        self._transport = transport if transport is not None else UrlLibPistonTransport(config.base_url)
+        self._transport = transport if transport is not None else HttpClientPistonTransport(config.base_url)
         self._marker_factory = marker_factory if marker_factory is not None else lambda: secrets.token_hex(16)
         self._transport_policy = transport_policy
         self._transport_telemetry = (

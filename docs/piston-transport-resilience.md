@@ -2,14 +2,16 @@
 
 ## Scope and safety boundary
 
-This document defines the WP7-c transport-reliability layer that is intentionally separate from the scientific Piston verifier definition. The implementation is developed and tested on the GTX 1660 Ti control plane only. It does not deploy or restart the live RTX 4090 tunnel, does not rebind `127.0.0.1:2000`, and does not modify the active C12 operator/report/history.
+This document defines the WP7-c transport-reliability layer that is intentionally separate from the scientific Piston verifier definition. The implementation is developed and tested on the GTX 1660 Ti control plane and accepted against the 4090 only through the already-established loopback transport. It never restarts or perturbs an SSH transport while a formal target-GPU run is active and does not rewrite historical operator scripts/evidence.
 
-The canonical scientific endpoint remains:
+The canonical scientific endpoint remains loopback-only while the transport direction is now:
 
 ```text
-CodeVerifier -> http://127.0.0.1:2000
-4090         -> SSH local forward -> 1660ti-wsl 127.0.0.1:2000
-Piston       -> pinned Python 3.10.0
+1660ti-wsl Piston 127.0.0.1:2000
+        -> outbound provider SSH connection
+        -> -R 127.0.0.1:2000:127.0.0.1:2000
+        -> 4090 CodeVerifier http://127.0.0.1:2000
+Piston runtime -> pinned Python 3.10.0
 ```
 
 `configs/execution/piston-local.yaml` remains the scientific Piston definition. Transport recovery is defined independently by `configs/execution/piston-transport-resilience.yaml`.
@@ -19,11 +21,11 @@ Piston       -> pinned Python 3.10.0
 Formal evidence must record two independent identities:
 
 - `piston_definition_sha256`: SHA256 of the exact existing `configs/execution/piston-local.yaml` bytes.
-- `piston_transport_policy_sha256`: SHA256 of the normalized transport-resilience policy **plus explicit retry/classifier/supervisor implementation-version identities**.
+- `piston_transport_policy_sha256`: SHA256 of the normalized transport-resilience policy **plus explicit retry/classifier/connection/supervisor implementation-version identities**.
 
-Changing retry/backoff/supervisor operations or their implementation semantics therefore changes the transport policy identity without pretending that the verifier scientific definition changed or remained equivalent for the wrong reason. Any semantic code change to classification, retry, or supervisor behavior must bump its implementation-version constant. The transport policy is excluded from the C/D paired scientific definition.
+Changing retry/backoff, failure classification, persistent-connection behavior, or supervisor operations therefore changes the transport policy identity without pretending that the verifier scientific definition changed. Any semantic code change to classification, retry, keep-alive connection handling, or supervisor behavior must bump its implementation-version constant. The transport policy is excluded from the C/D paired scientific definition.
 
-The policy binds all of the following operational facts:
+The policy binds all current retry/health semantics plus the legacy supervisor fields required to keep historical evidence interpretable:
 
 - policy schema version;
 - the exact safe-retry failure classes;
@@ -31,11 +33,10 @@ The policy binds all of the following operational facts:
 - candidate retry backoff sequence and cap;
 - separate bounded recovery-health probe attempt/backoff policy;
 - loopback listener, `/api/v2/runtimes`, and exact Python `3.10.0` health identity;
-- canonical SSH target/forward;
-- SSH connect/keepalive settings;
-- reconnect sequence/cap/budget;
-- mandatory exclusive locking;
-- fail-closed behavior for an unknown port owner.
+- persistent HTTP connection/classifier implementation identities;
+- the legacy local-forward supervisor target/forward, SSH keepalive, reconnect, locking, and unknown-owner fields retained only for provenance compatibility.
+
+The legacy supervisor fields do not authorize new operators to start the retired 4090-side local forward; the current reverse SSH endpoint ownership remains machine-local operator state.
 
 ## Transport failure classification and retry decision
 
@@ -68,7 +69,24 @@ candidate request
   -> success, or bounded infrastructure failure
 ```
 
-Candidate submission attempts and recovery-health polling have separate tracked budgets. The current health polling schedule can wait across an SSH `ConnectTimeout=10` recovery window instead of giving up after only the short candidate retry delay. An unsafe health-probe failure fails closed rather than authorizing a resend. There is no infinite retry path.
+Candidate submission attempts and recovery-health polling have separate tracked budgets. The current health polling schedule can wait across a bounded transport-recovery window instead of giving up after only the short candidate retry delay. An unsafe health-probe failure fails closed rather than authorizing a resend. There is no infinite retry path.
+
+## Phase 2 persistent HTTP keep-alive contract
+
+The default Piston transport now uses one lazy `http.client.HTTPConnection` per `PistonExecutor` transport instance. HTTP/1.1 requests are sequential and protected by one lock; there is no connection pool and no bounded-concurrency change. A healthy connection is reused across `/api/v2/runtimes` and `/api/v2/execute`, eliminating repeated TCP/SSH setup while preserving one isolated Piston job per test.
+
+The connection lifecycle is deliberately fail closed:
+
+- a new connection is explicitly established before request bytes are sent, so only the existing proven pre-connect failure kinds retain safe-retry eligibility;
+- once a connection exists, reset, broken pipe, read timeout, EOF/incomplete response, or another HTTP stream failure discards that connection and fails the current request without replay;
+- an ambiguous candidate `POST /api/v2/execute` is never automatically resent by the persistent transport;
+- the next independent request may lazily create a new connection after the failed connection was discarded;
+- non-2xx responses remain sanitized `HTTP_ERROR` failures and are not replayed;
+- bounded response, content-type, UTF-8, and JSON validation remain unchanged;
+- `response.will_close` and `Connection: close` are honored: the successful response is returned, the connection is discarded, and only the next independent request reconnects;
+- per-request socket timeouts are refreshed when a persistent connection is reused.
+
+The transport implementation identity includes `httpclient-single-keepalive-v1`; changing these reuse/discard semantics requires an identity bump. Successful verifier/reward mathematics, test selection, one-job-per-test isolation, timeout/memory/output limits, and Python `3.10.0` runtime identity are unchanged.
 
 ## GRPO failure ordering
 
@@ -112,55 +130,13 @@ Count fields are exact nonnegative integers; outage durations are finite nonnega
 
 A fresh run checks that its GRPO run directory does not already exist, then atomically claims a new sidecar with exclusive creation. It never overwrites an existing same-run sidecar; an orphaned sidecar requires explicit operator review/cleanup. A resume requires both an existing run directory and sidecar, and the sidecar must match the run name plus both Piston identities before counters are restored. Counter mutations use atomic replacement with file and parent-directory fsync. Restored values are cumulative: subsequent mutations continue from the persisted totals rather than resetting them. These are physical transport-attempt totals across the run lineage, including work performed after an older Trainer checkpoint and before a crash; they are deliberately **not rolled back** when Trainer state resumes from that older checkpoint. This telemetry is operational evidence, not a reward component and not part of the C/D scientific pair hash.
 
-## Tunnel supervisor contract
+## Legacy local-forward supervisor provenance
 
-The supervisor code is a non-deployed template during active C12 execution. Its canonical SSH command semantics include:
+`piston_tunnel.py` and the `tunnel_supervisor` block remain in the transport-policy schema only to preserve the already-reviewed Phase 1 resilience provenance and historical operator evidence. They describe the former 4090-initiated `-L ... 1660ti-wsl` transport and are **not** the canonical transport after the 2026-08-27 reverse-SSH amendment.
 
-```text
-BatchMode=yes
-ExitOnForwardFailure=yes
-ConnectTimeout=10
-ServerAliveInterval=30
-ServerAliveCountMax=3
--L 127.0.0.1:2000:127.0.0.1:2000
-1660ti-wsl
-```
+New WP7-c operator/runtime code must not start that legacy supervisor or `ensure-piston-1660ti-tunnel.sh` while the control-plane-initiated reverse forward is in use. Current target-side recovery is intentionally limited to fail-closed loopback health/runtime validation plus the safe pre-connect retry policy; ownership/restart of the reverse SSH session remains operator/control-plane infrastructure state. Historical supervisor tests and implementation identities remain readable and hash-bound so old evidence is not silently reinterpreted.
 
-Operational invariants:
-
-- the supervisor owns an exclusive nonblocking lock for its entire lifetime and keeps it until every SSH child it created has exited;
-- SIGTERM/SIGINT are handled by the supervisor; the spawn/handle-binding window temporarily blocks those signals so an SSH child cannot be orphaned before its handle is recorded;
-- on supervisor exception/shutdown, an owned SSH child is terminated, then killed after a bounded graceful-stop timeout if necessary;
-- it checks the port before every SSH process start, including reconnects;
-- if a listener exists and ownership is not proven, it never kills or replaces that process and fails closed;
-- reconnect budget/backoff is bounded **per outage**; successful exact health closes the outage and resets that outage's reconnect budget, while cumulative reconnect telemetry never resets;
-- health evaluation is structurally performed by `tunnel_is_healthy`: listener presence plus the project runtime HTTP probe validating exact Python `3.10.0`;
-- telemetry schemas accept only fixed numeric/boolean fields and cannot carry candidate/test/secret strings.
-
-Required supervisor events are `supervisor_start`, `ssh_process_start`, `ssh_process_exit`, `reconnect`, `outage_begin`, `outage_end` with duration, successful `health_transition`, and `final_failure`. `DurableTunnelEventSink` is the deployment template for append-only, fsynced, secret-free JSONL supervisor telemetry. It validates every event against the fixed schema before persistence; supervisor JSONL remains operational evidence separate from GRPO reward logs.
-
-A future deployment wrapper should be thin and mechanically derive both runtime health and supervisor settings from tracked project definitions. The intended wiring is equivalent to the following **template only; do not execute during an active formal GRPO run**:
-
-```python
-from pathlib import Path
-
-from code_verifier.execution import PistonExecutor, load_piston_executor_config, load_piston_transport_policy
-from code_verifier.execution.piston_tunnel import DurableTunnelEventSink, TunnelSupervisor, TunnelSupervisorConfig
-
-policy = load_piston_transport_policy(Path("configs/execution/piston-transport-resilience.yaml"))
-executor = PistonExecutor(load_piston_executor_config(Path("configs/execution/piston-local.yaml")))
-supervisor = TunnelSupervisor(
-    TunnelSupervisorConfig.from_definition(policy.tunnel_supervisor),
-    lock_path=Path("/absolute/operator-owned/piston-tunnel-supervisor.lock"),
-    runtime_validator=executor,
-    emit=DurableTunnelEventSink(Path("/absolute/operator-owned/piston-tunnel-events.jsonl")),
-)
-supervisor.run()
-```
-
-The deployment wrapper must not substitute an arbitrary `health_check` callback, must not infer SSH ownership from a listener alone, and must keep the lock/event paths outside Git and outside C/D reward artifacts.
-
-## Phase 2 design: idempotency relay (not implemented by default)
+## Deferred exactly-once relay design
 
 A future relay may make an otherwise ambiguous response-path interruption retryable, but it must provide a stronger exactly-once boundary than the current direct Piston transport.
 
@@ -170,21 +146,16 @@ The cache must be bounded by entry count, byte size, and retention time, stored 
 
 The relay must not log candidate/test payloads, must validate all cache records before use, must reject malformed/conflicting records, and must prevent untrusted request identifiers from escaping the bounded cache namespace. Cache poisoning or identity mismatch is an infrastructure failure. Candidate execution is permitted at most once for a successfully committed request identity.
 
-This relay is deliberately deferred: the current phase uses only self-healing tunnel supervision plus provably safe pre-connect retry.
+This relay is deliberately deferred: the current phase uses only the single persistent HTTP connection, provably safe pre-connect retry, and fail-closed reconnect on the next independent request.
 
-## Deferred real-machine gates
+## Real-machine acceptance
 
-These gates are intentionally deferred until C12 and its review are complete:
+The transport change is accepted only when all applicable gates are green without fault-injecting an active formal target-GPU run:
 
-- deploy the tracked tunnel supervisor on the 4090;
-- kill the SSH process and verify automatic recovery;
-- make the listener unavailable and verify recovery;
-- run real `make test-piston` with all expected probes passing;
-- compare direct 1660 Ti and 4090-tunneled semantic-equivalence corpora;
-- soak at least twice the expected formal Piston request count;
-- perform multiple tunnel restarts;
-- run a short real GRPO smoke with controlled tunnel interruption;
-- prove no duplicate canonical reward rows and no erroneous optimizer update;
-- prove Trainer+sidecar checkpoint/resume after interruption;
-- run the complete lint/test/test-gpu/test-piston acceptance set;
-- complete review before generating any new formal GRPO operator checkpoint.
+- real `make test-piston` with 0 failed / 0 skipped;
+- exact `PistonExecutor.validate_runtime() == "3.10.0"`;
+- representative fresh versus persistent latency benchmark through the canonical reverse SSH tunnel;
+- complete lint and CPU test suite;
+- no change to reward math, GRPO batch/test selection, one-job-per-test isolation, runtime pin, or resource/output limits.
+
+Destructive tunnel restart/fault-injection experiments remain deferred unless no formal target-GPU run is active and an operator explicitly chooses to perform them. The legacy local-forward supervisor is not a required acceptance gate for the reverse-SSH transport.

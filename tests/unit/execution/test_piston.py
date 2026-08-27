@@ -10,8 +10,7 @@ from dataclasses import replace
 from email.message import Message
 from pathlib import Path
 from typing import Any, cast
-from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request
+from urllib.error import URLError
 
 import pytest
 
@@ -27,8 +26,8 @@ from code_verifier.execution import (
 from code_verifier.execution import harness as harness_module
 from code_verifier.execution import piston as piston_module
 from code_verifier.execution.piston import (
+    HttpClientPistonTransport,
     PistonTransportError,
-    UrlLibPistonTransport,
     load_piston_executor_config,
     piston_executor_config_from_mapping,
 )
@@ -85,35 +84,100 @@ def test_piston_executor_version_changes_with_harness_and_implementation_protoco
     assert piston_executor_version(config) != baseline
 
 
-class _FakeResponse:
-    def __init__(self, body: bytes, content_type: str = "application/json") -> None:
-        self._body = io.BytesIO(body)
-        self.headers = Message()
-        self.headers["Content-Type"] = content_type
-
-    def read(self, size: int = -1) -> bytes:
-        return self._body.read(size)
-
-    def __enter__(self) -> _FakeResponse:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-
-class _FakeOpener:
-    def __init__(self, responses: list[object]) -> None:
-        self._responses = responses
-        self.requests: list[Request] = []
+class _FakeSocket:
+    def __init__(self) -> None:
         self.timeouts: list[float] = []
 
-    def open(self, request: Request, *, timeout: float) -> Any:
-        self.requests.append(request)
+    def settimeout(self, timeout: float) -> None:
         self.timeouts.append(timeout)
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        body: bytes,
+        content_type: str = "application/json",
+        *,
+        status: int = 200,
+        will_close: bool = False,
+        connection_header: str | None = None,
+        read_error: BaseException | None = None,
+    ) -> None:
+        self._body = io.BytesIO(body)
+        self._read_error = read_error
+        self.headers = Message()
+        self.headers["Content-Type"] = content_type
+        if connection_header is not None:
+            self.headers["Connection"] = connection_header
+        self.status = status
+        self.will_close = will_close
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        if self._read_error is not None:
+            raise self._read_error
+        return self._body.read(size)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeHTTPConnection:
+    def __init__(
+        self,
+        responses: list[object],
+        *,
+        connect_error: BaseException | None = None,
+        request_errors: list[BaseException | None] | None = None,
+    ) -> None:
+        self._responses = list(responses)
+        self._connect_error = connect_error
+        self._request_errors = [] if request_errors is None else list(request_errors)
+        self.sock: _FakeSocket | None = None
+        self.timeout: float | None = None
+        self.connect_calls = 0
+        self.close_calls = 0
+        self.requests: list[tuple[str, str, bytes | None, dict[str, str]]] = []
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        if self._connect_error is not None:
+            raise self._connect_error
+        self.sock = _FakeSocket()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.requests.append((method, path, body, {} if headers is None else dict(headers)))
+        error = self._request_errors.pop(0) if self._request_errors else None
+        if error is not None:
+            raise error
+
+    def getresponse(self) -> Any:
         response = self._responses.pop(0)
         if isinstance(response, BaseException):
             raise response
         return response
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.sock = None
+
+
+class _FakeHTTPConnectionFactory:
+    def __init__(self, connections: list[_FakeHTTPConnection]) -> None:
+        self._connections = list(connections)
+        self.created: list[tuple[str, int, float, _FakeHTTPConnection]] = []
+
+    def __call__(self, host: str, port: int, timeout: float) -> _FakeHTTPConnection:
+        connection = self._connections.pop(0)
+        connection.timeout = timeout
+        self.created.append((host, port, timeout, connection))
+        return connection
 
 
 def test_piston_config_accepts_exact_local_mapping(tmp_path: Path) -> None:
@@ -200,71 +264,124 @@ def test_piston_config_rejects_invalid_limits_and_bool_numbers() -> None:
         piston_executor_config_from_mapping(too_small)
 
 
-def test_transport_builds_exact_runtime_and_execute_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    opener = _FakeOpener([_FakeResponse(b"[]"), _FakeResponse(b'{"run":{}}')])
-    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000/")
+def test_transport_reuses_one_connection_for_runtime_and_execute_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = _FakeHTTPConnection([_FakeResponse(b"[]"), _FakeResponse(b'{"run":{}}')])
+    factory = _FakeHTTPConnectionFactory([connection])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000/")
 
     assert transport.list_runtimes(timeout_seconds=1.5, max_response_bytes=64) == []
     payload: dict[str, object] = {"language": "python", "files": []}
     assert transport.execute_request(payload, timeout_seconds=2.5, max_response_bytes=64) == {"run": {}}
 
-    assert [request.full_url for request in opener.requests] == [
-        "http://127.0.0.1:2000/api/v2/runtimes",
-        "http://127.0.0.1:2000/api/v2/execute",
+    assert len(factory.created) == 1
+    assert factory.created[0][:3] == ("127.0.0.1", 2000, 1.5)
+    assert connection.connect_calls == 1
+    assert [(method, path) for method, path, _, _ in connection.requests] == [
+        ("GET", "/api/v2/runtimes"),
+        ("POST", "/api/v2/execute"),
     ]
-    assert opener.requests[0].get_method() == "GET"
-    assert opener.requests[1].get_method() == "POST"
-    assert json.loads(cast(bytes, opener.requests[1].data)) == payload
-    assert opener.requests[1].get_header("Content-type") == "application/json"
-    assert opener.timeouts == [1.5, 2.5]
+    assert json.loads(cast(bytes, connection.requests[1][2])) == payload
+    assert connection.requests[1][3]["Content-Type"] == "application/json"
+    assert connection.timeout == 2.5
+    assert connection.sock is not None
+    assert connection.sock.timeouts == [2.5]
 
 
-def test_transport_rejects_non_utf8_request_payload_without_network() -> None:
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+def test_transport_rejects_non_utf8_request_payload_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    factory = _FakeHTTPConnectionFactory([])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
     with pytest.raises(PistonTransportError, match="invalid piston request"):
         transport.execute_request(
             {"language": "python", "source": "\ud800"},
             timeout_seconds=1.0,
             max_response_bytes=64,
         )
+    assert factory.created == []
 
 
-def test_transport_disables_proxy_and_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured_handlers: tuple[object, ...] = ()
-    opener = _FakeOpener([_FakeResponse(b"[]")])
+@pytest.mark.parametrize(("will_close", "connection_header"), [(True, None), (False, "close")])
+def test_transport_server_close_discards_connection_and_next_request_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+    will_close: bool,
+    connection_header: str | None,
+) -> None:
+    first = _FakeHTTPConnection([_FakeResponse(b"[]", will_close=will_close, connection_header=connection_header)])
+    second = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
 
-    def fake_build_opener(*handlers: object) -> _FakeOpener:
-        nonlocal captured_handlers
-        captured_handlers = handlers
-        return opener
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=16) == []
+    assert first.close_calls == 1
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=16) == []
+    assert len(factory.created) == 2
+    assert len(first.requests) == 1
+    assert len(second.requests) == 1
 
-    monkeypatch.setattr(piston_module, "build_opener", fake_build_opener)
-    transport = UrlLibPistonTransport("http://localhost:2000")
-    transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=16)
 
-    proxy_handler = next(handler for handler in captured_handlers if isinstance(handler, ProxyHandler))
-    redirect_handler = next(handler for handler in captured_handlers if isinstance(handler, HTTPRedirectHandler))
-    assert cast(Any, proxy_handler).proxies == {}
-    assert type(redirect_handler).__name__ == "_RejectRedirects"
+def test_transport_stale_post_reset_is_not_replayed_and_next_independent_request_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _FakeHTTPConnection([http.client.RemoteDisconnected("private stale detail")])
+    second = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+    payload: dict[str, object] = {"language": "python", "files": []}
+
+    with pytest.raises(PistonTransportError) as error:
+        transport.execute_request(payload, timeout_seconds=1.0, max_response_bytes=64)
+    assert error.value.kind is piston_module.PistonTransportFailureKind.CONNECTION_RESET
+    assert error.value.safe_to_retry is False
+    assert error.value.remote_execution_ambiguous is True
+    assert len(first.requests) == 1
+    assert len(factory.created) == 1
+
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=64) == []
+    assert len(factory.created) == 2
+    assert len(first.requests) == 1
+    assert len(second.requests) == 1
+
+
+def test_transport_read_timeout_fails_closed_discards_and_reconnects_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _FakeHTTPConnection([_FakeResponse(b"", read_error=TimeoutError("private timeout detail"))])
+    second = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+
+    with pytest.raises(PistonTransportError) as error:
+        transport.execute_request({"language": "python"}, timeout_seconds=1.0, max_response_bytes=64)
+    assert error.value.kind is piston_module.PistonTransportFailureKind.READ_TIMEOUT
+    assert error.value.safe_to_retry is False
+    assert first.close_calls >= 1
+    assert len(first.requests) == 1
+
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=64) == []
+    assert len(factory.created) == 2
 
 
 def test_transport_rejects_non_json_and_oversized_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    opener = _FakeOpener([_FakeResponse(b"{}", "text/plain"), _FakeResponse(b"0123456789")])
-    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+    non_json = _FakeHTTPConnection([_FakeResponse(b"{}", "text/plain")])
+    oversized = _FakeHTTPConnection([_FakeResponse(b"0123456789")])
+    factory = _FakeHTTPConnectionFactory([non_json, oversized])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
     with pytest.raises(PistonTransportError, match="non-json"):
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=8)
     with pytest.raises(PistonTransportError, match="exceeded"):
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=8)
 
 
-def test_transport_sanitizes_http_and_json_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transport_sanitizes_non_2xx_and_json_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = "HIDDEN_RESPONSE_SENTINEL"
-    error = HTTPError("http://127.0.0.1:2000", 500, sentinel, Message(), io.BytesIO(sentinel.encode()))
-    opener = _FakeOpener([error, _FakeResponse(sentinel.encode())])
-    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+    http_failure = _FakeHTTPConnection([_FakeResponse(sentinel.encode(), status=500)])
+    invalid_json = _FakeHTTPConnection([_FakeResponse(sentinel.encode())])
+    factory = _FakeHTTPConnectionFactory([http_failure, invalid_json])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
 
     with pytest.raises(PistonTransportError) as http_error:
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
@@ -279,20 +396,18 @@ def test_transport_sanitizes_http_and_json_errors(monkeypatch: pytest.MonkeyPatc
 def test_transport_normalizes_incomplete_response_stream_without_retryable_classification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class IncompleteResponse(_FakeResponse):
-        def read(self, size: int = -1) -> bytes:
-            del size
-            raise http.client.IncompleteRead(b"partial")
-
-    opener = _FakeOpener([IncompleteResponse(b"")])
-    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+    response = _FakeResponse(b"", read_error=http.client.IncompleteRead(b"partial"))
+    connection = _FakeHTTPConnection([response])
+    factory = _FakeHTTPConnectionFactory([connection])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
     with pytest.raises(PistonTransportError) as error:
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
     assert error.value.kind is piston_module.PistonTransportFailureKind.INVALID_RESPONSE
     assert error.value.safe_to_retry is False
     assert error.value.remote_execution_ambiguous is True
     assert "partial" not in str(error.value)
+    assert connection.close_calls >= 1
 
 
 @pytest.mark.parametrize(

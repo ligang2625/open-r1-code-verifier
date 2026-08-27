@@ -305,6 +305,9 @@ def test_policy_identity_is_separate_deterministic_and_binds_implementation(
     assert policy.tunnel_supervisor.ssh_target == "1660ti-wsl"
     assert policy.tunnel_supervisor.max_reconnects == 8
     assert first == second
+    with monkeypatch.context() as patch:
+        patch.setattr(resilience_module, "PISTON_TRANSPORT_CONNECTION_IMPLEMENTATION_VERSION", "changed")
+        assert piston_transport_policy_sha256(path) != first
     monkeypatch.setattr(resilience_module, "PISTON_TRANSPORT_CLASSIFIER_IMPLEMENTATION_VERSION", "changed")
     assert piston_transport_policy_sha256(path) != first
     assert len(first) == 64
