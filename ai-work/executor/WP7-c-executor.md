@@ -1123,3 +1123,55 @@ execution_checkpoint:
 ```
 
 C15 is the lifecycle stop point for this control-plane task. The formal target operator has not been executed. Do not push automatically and do not start 4090 formal GRPO from the control plane.
+
+## C16 — C15 initialization repair and superseding formal operator handoff
+
+The user manually invoked the exact C15 checkpoint on the RTX 4090 and the shell terminated immediately with `line 99: STAGE_ID: unbound variable`. Independent control-plane inspection confirms that immutable C15 omitted the three shell constants `STAGE_ID`, `GATE_ID`, and `CHECKPOINT_ID` before their first use in the `OP_ROOT` assignment. With `set -u`, this is a tracked operator-wrapper bug rather than a target environment or scientific failure.
+
+By C15 control flow, the reported failure occurs before `OP_ROOT` is assigned, before `mkdir -p "$OP_ROOT"`, before the operator lock/attempt log is created, before GPU/Piston/formal-pair/storage preflight, and hundreds of lines before either `train-grpo` call. Therefore that invocation cannot have started Public or Hidden formal training and cannot have created a formal GRPO run or transport sidecar through C15. Because the failure precedes the evidence root itself, no valid C15 `operator-evidence.json` is expected from this attempt; the terminal shell error is the applicable failure observation.
+
+C15 checkpoint commit `178f77b406b90bebb2eb6b5b572b79ebd849f935` and C15 script SHA256 `f53972ff6bed4f59ef0e925ffc96c18c063bfe195bdac0be99f9692f41266375` remain immutable. C16 is copied from C15 and changes only operator identity/provenance plus the missing shell constants; scientific configs, reward code, formal pair, Piston definition, transport policy, B/data/model identities, run names, 300-step/50-save cadence, checkpoint/recovery semantics, postcheck, and Public/Hidden isolation are unchanged.
+
+C16 additionally verifies on target that its direct parent is the immutable C15 checkpoint, that the historical C15 script bytes still match the certified SHA, and that its own checkpoint diff is exactly append-only executor report plus the new executable C16 script. C16 supersedes C15; do not inject the missing variables into C15 through the environment and do not rerun C15.
+
+C16 control-plane static validation before handoff:
+
+- `bash -n ai-work/executor/operator/WP7-c/grpo-cd-formal/C16/run.sh`: PASS.
+- All 14 embedded Python heredocs compile: PASS.
+- `set -u` uppercase-variable source audit: PASS, with `CODE_VERIFIER_VALIDATION_MACHINE` the only intentionally optional external variable; `STAGE_ID`, `GATE_ID`, and `CHECKPOINT_ID` are now explicit immutable constants at the top of C16.
+- Immutable C15 SHA recheck: PASS (`f53972ff6bed4f59ef0e925ffc96c18c063bfe195bdac0be99f9692f41266375`).
+- Non-training `/tmp` dry preflight: C16 passed the former unbound-variable point, created atomic C16 status/evidence, then intentionally failed closed at the injected wrong machine-pointer SHA with `rc=125`, `status=125`, `checkpoint_id=C16`, `gate_status=preflight_failed`, and note `validation machine pointer SHA changed`. No GPU/Piston/GRPO path was reached.
+- C16 script SHA256: `9e752f8b60204874dcce8c779acaca478a4749da3f94de36316406b964e4ac3e`.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C16
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 178f77b406b90bebb2eb6b5b572b79ebd849f935
+  workflow_transport_commit: b4ac6acb95530f5359566e6f140f77ad6a4da78f
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C16/run.sh
+  operator_script_sha256: 9e752f8b60204874dcce8c779acaca478a4749da3f94de36316406b964e4ac3e
+  formal_pair_sha256: 7924be4e115b20bc3e40207256d67d2e8591c973dbd9de7bfcb0b4bf39b08df3
+  transport_policy_sha256: d7e7b3a3a2f6492cf6040c08a64086fba3aa7a9c4f5209752a0ba2917ef81c85
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C15
+  supersedes_checkpoint_commit: 178f77b406b90bebb2eb6b5b572b79ebd849f935
+  superseded_operator_script_sha256: f53972ff6bed4f59ef0e925ffc96c18c063bfe195bdac0be99f9692f41266375
+  supersession_reason: C15 omitted STAGE_ID/GATE_ID/CHECKPOINT_ID and failed under set -u before operator-root creation
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C16/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C16/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C16/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C16/postcheck-summary.json"
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C16 replaces C15 as the only formal operator handoff. No 4090 command is run by the control plane; after committing C16, make that exact checkpoint commit reachable on the 4090, checkout it cleanly, verify the new script SHA, and run only C16.
