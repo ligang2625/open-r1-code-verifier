@@ -84,9 +84,10 @@ The connection lifecycle is deliberately fail closed:
 - non-2xx responses remain sanitized `HTTP_ERROR` failures and are not replayed;
 - bounded response, content-type, UTF-8, and JSON validation remain unchanged;
 - `response.will_close` and `Connection: close` are honored: the successful response is returned, the connection is discarded, and only the next independent request reconnects;
+- before reusing an idle real socket, the client performs a zero-time readiness/error check; readable EOF, exceptional state, or unexpected pending peer bytes cause the old connection to be discarded **before** new request bytes are sent, so a server-side keep-alive timeout reconnects safely without replaying a candidate POST;
 - per-request socket timeouts are refreshed when a persistent connection is reused.
 
-The transport implementation identity includes `httpclient-single-keepalive-v1`; changing these reuse/discard semantics requires an identity bump. Successful verifier/reward mathematics, test selection, one-job-per-test isolation, timeout/memory/output limits, and Python `3.10.0` runtime identity are unchanged.
+The transport implementation identity includes `httpclient-single-keepalive-v2`; changing these reuse/discard semantics requires an identity bump. Successful verifier/reward mathematics, test selection, one-job-per-test isolation, timeout/memory/output limits, and Python `3.10.0` runtime identity are unchanged.
 
 ## GRPO failure ordering
 

@@ -13,6 +13,7 @@ import http.client
 import json
 import math
 import secrets
+import select
 import socket
 import threading
 import time
@@ -203,7 +204,7 @@ class HttpClientPistonTransport:
 
         with self._lock:
             connection = self._connection
-            if connection is None or connection.sock is None:
+            if connection is None or connection.sock is None or self._connection_has_pending_peer_state(connection):
                 self._discard_connection()
                 connection = self._connect(float(timeout_seconds))
             else:
@@ -271,6 +272,20 @@ class HttpClientPistonTransport:
         connection.timeout = timeout_seconds
         if connection.sock is not None:
             connection.sock.settimeout(timeout_seconds)
+
+    @staticmethod
+    def _connection_has_pending_peer_state(connection: http.client.HTTPConnection) -> bool:
+        """Detect a peer-closed or otherwise non-idle real socket before sending a new request."""
+        sock = connection.sock
+        if sock is None:
+            return True
+        if not isinstance(sock, socket.socket):
+            return False
+        try:
+            readable, _, exceptional = select.select([sock], [], [sock], 0.0)
+        except (OSError, ValueError):
+            return True
+        return bool(readable or exceptional)
 
     def _discard_connection(self) -> None:
         connection = self._connection

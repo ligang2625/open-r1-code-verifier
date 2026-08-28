@@ -6,6 +6,7 @@ import http.client
 import io
 import json
 import math
+import socket
 from dataclasses import replace
 from email.message import Message
 from pathlib import Path
@@ -286,6 +287,39 @@ def test_transport_reuses_one_connection_for_runtime_and_execute_paths(monkeypat
     assert connection.timeout == 2.5
     assert connection.sock is not None
     assert connection.sock.timeouts == [2.5]
+
+
+def test_transport_detects_peer_closed_real_socket_before_reuse() -> None:
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+    connection = http.client.HTTPConnection("127.0.0.1", 2000)
+    client, peer = socket.socketpair()
+    connection.sock = client
+    try:
+        assert transport._connection_has_pending_peer_state(connection) is False
+        peer.close()
+        assert transport._connection_has_pending_peer_state(connection) is True
+    finally:
+        connection.close()
+        peer.close()
+
+
+def test_transport_discards_detected_stale_connection_before_sending_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    second = _FakeHTTPConnection([_FakeResponse(b'{"run":{}}')])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=64) == []
+    monkeypatch.setattr(transport, "_connection_has_pending_peer_state", lambda connection: connection is first)
+    payload: dict[str, object] = {"language": "python", "files": []}
+    assert transport.execute_request(payload, timeout_seconds=1.0, max_response_bytes=64) == {"run": {}}
+
+    assert first.close_calls >= 1
+    assert [(method, path) for method, path, _, _ in first.requests] == [("GET", "/api/v2/runtimes")]
+    assert [(method, path) for method, path, _, _ in second.requests] == [("POST", "/api/v2/execute")]
 
 
 def test_transport_rejects_non_utf8_request_payload_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
