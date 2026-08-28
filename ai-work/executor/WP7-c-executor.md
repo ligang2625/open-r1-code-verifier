@@ -1224,3 +1224,81 @@ execution_checkpoint:
 ```
 
 C17 replaces C16 as the only formal operator handoff. Do not edit or rerun C16. After committing C17, make that exact checkpoint commit reachable on the 4090, checkout it cleanly, verify the C17 script SHA, and run only C17.
+
+## C18 — stale Piston keep-alive repair and fresh formal restart handoff
+
+The user manually invoked the exact C17 checkpoint `0bc5c2a8251f41b6265ba1a43a064ca04ea48ba9` on the RTX 4090. C17 passed operator preflight and entered Public GRPO, but the first reward batch stopped with `GRPO reward execution infrastructure failure in 8/8 completions; aborting before optimizer update` at 0/300. This is materially different from C15/C16 wrapper/preflight failures: C17 reached the production reward executor, but the explicit GRPO infrastructure circuit breaker prevented the first optimizer update.
+
+Control-plane diagnosis reproduced the failure deterministically with the production `PistonExecutor`. The Piston Express endpoint advertises `Keep-Alive: timeout=5`; connection implementation v1 reused the same HTTP/1.1 socket from the pre-training `/api/v2/runtimes` validation across model loading/first generation. After a 6-second idle, a known-correct `target(1) == 1` request reproduced `sandbox_error` with transport telemetry `transport_requests=1`, `transport_ambiguous_failures=1`, and no connect failure/retry. Because `_TrainingExecutorCircuitBreaker` trips after that first infrastructure result, the remaining seven reward items become fail-closed infrastructure failures without seven additional real Piston requests. This explains the observed 8/8 error without weakening the no-ambiguous-replay contract.
+
+The stale-connection repair is commit `da2a8a353efb6bd8dff7071e6e21cf13c703497c`, whose direct parent is C17. Its scope is exactly `docs/piston-transport-resilience.md`, `src/code_verifier/execution/piston.py`, `src/code_verifier/execution/piston_resilience.py`, and `tests/unit/execution/test_piston.py`. Before reusing an idle real socket, the client now performs a zero-time readiness/error check and discards peer-closed/exceptional sockets before any new request bytes are sent. Ambiguous candidate POSTs remain non-replayable. The connection implementation identity is bumped from `httpclient-single-keepalive-v1` to `httpclient-single-keepalive-v2`; the normalized transport policy identity is therefore `0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3`. The scientific Piston definition remains unchanged at `f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`; datasets, reward mathematics, B/model identity, max_steps=300, and all non-checkpoint-cadence hyperparameters remain unchanged. Before sealing C18, the paired formal configs are intentionally changed together from `save_steps=50` to `save_steps=25` in result-code commit `3b63a13e38d31f2182183d2c0d42f9f0478fae5c` to support shorter multi-session recovery windows; this changes only the paired config/pair provenance, not reward or optimizer mathematics.
+
+Control-plane validation of the repair and C18 handoff:
+
+- Focused transport/recovery suite after the repair: 79 passed.
+- `make lint`: PASS.
+- `make test`: 999 passed, 3 skipped.
+- real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`: 9 passed, 2 deselected, no Piston failure/skip.
+- `make test-gpu`: 3 passed.
+- Exact production idle reproduction after the repair: `validate_runtime()` -> 6-second idle -> trusted passing execute returned `passed 1/1`, with `transport_requests=1` and `transport_ambiguous_failures=0`.
+- C18 `bash -n`: PASS; all 16 embedded Python heredocs compile; `set -u` uppercase-variable source audit reports no unresolved variable.
+- Synthetic C17 failure-quarantine fixture: first invocation returned `quarantined`, second invocation returned idempotent `already_quarantined`, with the canonical Public path absent and archive/manifest present.
+- C18 script SHA256: `183173fa4ae0fed2f33f8566e868f0248129f5d448fa225cdedcaa1f7cf07269`.
+
+C18 does not resume the C17 run across a code commit. Before a fresh C18 Public run is allowed, target preflight must authenticate the C17 operator status/log/evidence and the exact failed Public signature: C17 commit/script/old transport identity; command rc=2 / `command_failed`; the exact 8/8 pre-optimizer error in terminal log; `run.json.status=failed`; `global_step=null`; exactly one fresh failed attempt at C17; empty Trainer checkpoint directory; empty `metrics.jsonl`; canonical row counts 8 rollouts / 8 rewards / 2 groups; all eight rewards `sandbox_error` infrastructure failures with exactly one `executed=true`; and old transport telemetry exactly one request / one ambiguous failure / zero safe retry/connect failure. Hidden formal run/sidecar must still be absent on the first quarantine. C18 then moves the C17 Public run and sidecar byte-for-byte into `$CODE_VERIFIER_ARTIFACT_ROOT/grpo-failed-history/C17-stale-keepalive/`, verifies pre/post SHA inventories, writes an atomic manifest binding C17 operator/status/log/evidence hashes, and only then releases the canonical Public namespace for a fresh run from formal B. A rerun of C18 validates the existing archive manifest rather than overwriting it.
+
+C18 additionally performs the 6-second production idle-reuse Piston probe on target before any formal command. Current C18 runs may resume only from same-C18 valid 25-step Trainer+canonical-log checkpoints; C17 is never used as a Trainer resume source. Public remains first and flows directly into Hidden when Public succeeds or is already completed under the same C18 checkpoint; there is no operator pause inserted between the pair members, and no generation/evaluation is started by this gate.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C18
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 3b63a13e38d31f2182183d2c0d42f9f0478fae5c
+  transport_repair_commit: da2a8a353efb6bd8dff7071e6e21cf13c703497c
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C18/run.sh
+  operator_script_sha256: 183173fa4ae0fed2f33f8566e868f0248129f5d448fa225cdedcaa1f7cf07269
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  transport_connection_implementation: httpclient-single-keepalive-v2
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C17
+  supersedes_checkpoint_commit: 0bc5c2a8251f41b6265ba1a43a064ca04ea48ba9
+  superseded_operator_script_sha256: 155f5b138e5a8db052f235b9966b5044312d5556d480c513649f8430d8b44d2a
+  superseded_transport_policy_sha256: d7e7b3a3a2f6492cf6040c08a64086fba3aa7a9c4f5209752a0ba2917ef81c85
+  supersession_reason: C17 hit the reproducible stale persistent-HTTP socket after Piston's 5-second keep-alive timeout before the first optimizer update
+  c17_failed_history_template: "$CODE_VERIFIER_ARTIFACT_ROOT/grpo-failed-history/C17-stale-keepalive"
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C18/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C18/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C18/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C18/postcheck-summary.json"
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C18 supersedes C17 as the only formal operator handoff. C17 failed artifacts must remain preserved and are consumed only by C18's authenticated quarantine step; do not manually delete, rename, or edit them. The control plane does not execute C18 on the 4090 and does not push automatically.
+
+### C18 pre-formal checkpoint/resume and analysis-readiness audit
+
+Before authorizing formal target execution, the C18 wrapper and production GRPO recovery path were re-audited specifically for multi-session training. Formal cadence is `max_steps=300`, `save_steps=25` for both Public and Hidden; the paired save cadence is the only intentional formal config change in C18, so the portable config components and paired-definition SHA are re-certified above. Resume remains same-run and same-C18-checkpoint only. `_latest_valid_resume_checkpoint()` selects the highest cadence checkpoint only when all pinned Trainer resume files are non-empty, `trainer_state.json.global_step` matches the directory step, and the project-owned canonical GRPO log-state sidecar validates against the current streaming-log prefix. A newer partial checkpoint is skipped rather than trusted. Before a resumed attempt starts, any canonical log suffix after the selected boundary and any later checkpoint directories are preserved under `checkpoints/recovery-history/`, then the canonical rollout/reward/group streams are atomically restored to the selected boundary.
+
+Recovery-focused control-plane verification was rerun after the transport repair: 13 targeted tests passed, covering failed-suffix archive/restore, incomplete-newer-checkpoint fallback, repeated hard interruption recovery, same-run resume binding, read-only validation before attempt begin, cross-commit rejection, and durable cumulative transport-sidecar restore. Two additional training/analysis-loader checks passed, confirming the completed GRPO artifacts remain directly consumable by `load_training_curve_rows()` and `build_cost_row()`.
+
+C18 now logs the session policy and traps `HUP` in addition to `INT`/`TERM`. For planned multi-session operation, the preferred boundary is any fully written 25-step checkpoint (`25, 50, 75, ..., 275`), followed by foreground `Ctrl-C` and waiting for the operator to exit before the target is released. That path lets Python's `BaseException` cleanup close the attempt with end time and measured attempt GPU-hours. An abrupt target loss / `kill -9` is still recoverable from the last complete checkpoint, including when `run.json` is left `running`, but the hard-killed attempt cannot have exact end/GPU-hours reconstructed without fabrication. Final C18 postcheck therefore reports `hard_interrupted_attempt_count` and `gpu_hours_complete_for_all_attempts`; later cost analysis must treat a false completeness flag as an operational telemetry limitation rather than silently assuming zero cost. Final postcheck also requires one recovery-history archive for every resumed attempt, with the archive checkpoint encoded by that attempt's `resume_from_checkpoint`. There is deliberately no pause or scheduling branch between Public and Hidden: after Public completes, the same C18 invocation proceeds directly to Hidden.
+
+Analysis coverage was checked against PROJECT_SPEC §12.3. A completed Public or Hidden formal run retains: exact 300-step Trainer numeric telemetry including loss, reward/reward_std, KL, generation/rollout/no-grad/step timing, completion mean length and clipped ratio; 2400 completion rollouts with text/token-count/truncation/reward; 2400 reward-component rows with parse/execution/infrastructure status, component rewards, pass/total tests, failure counts and executor runtime; 600 group mean/std/all-equal records; peak CUDA allocation/reservation; cumulative attempt/GPU-hours lineage; transport request/retry/ambiguity telemetry; twelve full Trainer checkpoints at steps 25..300; and preserved failed-attempt suffix archives. Streaming reward evidence is fsynced as it is appended, transport telemetry is durably snapshotted per mutation, and every Trainer checkpoint receives a canonical log-state snapshot after the Trainer save.
+
+To make later step-wise analysis unambiguous even across multiple resumes, C18 final postcheck now validates the canonical raw-log ordering as exactly 300 blocks of 8 rollout rows + 8 aligned reward rows + 2 group rows, with item/group/problem/reward alignment inside every block. `postcheck-summary.json` records this `analysis_layout`, so optimizer step `n` maps deterministically to rollout/reward rows `[(n-1)*8:n*8]` and group rows `[(n-1)*2:n*2]`. Canonical streams contain only successful final-prefix training data; discarded/interrupted suffixes remain separately preserved in recovery-history for operational analysis and are never mixed into the scientific final curves.
+
+Audit conclusion: C18 is suitable for deliberate multi-session execution provided planned stops are made after a verified complete 25-step checkpoint. Arbitrary interruption may replay work since the previous 25-step checkpoint but does not corrupt canonical evidence; hard process/machine loss preserves recoverability but may make the interrupted attempt's GPU-hours incomplete. No formal 4090 training was executed during this audit.
