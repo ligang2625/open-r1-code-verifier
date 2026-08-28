@@ -1175,3 +1175,52 @@ execution_checkpoint:
 ```
 
 C16 replaces C15 as the only formal operator handoff. No 4090 command is run by the control plane; after committing C16, make that exact checkpoint commit reachable on the 4090, checkout it cleanly, verify the new script SHA, and run only C16.
+
+## C17 — C16 transport-provenance repair and superseding formal operator handoff
+
+The user manually invoked the exact C16 checkpoint on the RTX 4090 and preflight terminated at the reverse-SSH workflow ancestry check with `fatal: Not a valid commit name b4ac6acb95530f5359566e6f140f77ad6a4da78f`. Git inspection confirms that this 40-hex value is not an object in the repository. The intended transport amendment is the existing commit `b4ac6acab60703c288a2e2e82e84398a11320177` (`chore: switch Piston tunnel to reverse SSH`), which is an ancestor of both C15 and C16. C15 introduced the malformed full SHA and C16 inherited it unchanged.
+
+The failure occurs in C16 preflight before persistent-root, GPU, formal-pair, storage, or training checks and before either `train-grpo` call. It therefore cannot have started Public or Hidden formal training. C16 status/log/evidence produced before the fail-closed exit remain immutable failed-attempt evidence under the C16 operator root.
+
+C16 checkpoint commit `03be8f6d084b75ebf39d04cafb499d9127390955` and C16 script SHA256 `9e752f8b60204874dcce8c779acaca478a4749da3f94de36316406b964e4ac3e` remain immutable. C17 is copied from C16 and changes only operator identity/provenance: it binds the real transport commit, uses C16 as its direct parent and superseded checkpoint, authenticates the immutable C16 script, and writes into a distinct C17 operator root. Scientific configs, reward code, formal pair, Piston definition, transport policy, B/data/model identities, run names, 300-step/50-save cadence, checkpoint/recovery semantics, postcheck, and Public/Hidden isolation are unchanged.
+
+C17 control-plane validation before handoff:
+
+- `git cat-file -t b4ac6acab60703c288a2e2e82e84398a11320177`: PASS (`commit`).
+- Correct transport commit ancestry to C16: PASS.
+- `bash -n ai-work/executor/operator/WP7-c/grpo-cd-formal/C17/run.sh`: PASS.
+- Immutable C16 SHA recheck: PASS (`9e752f8b60204874dcce8c779acaca478a4749da3f94de36316406b964e4ac3e`).
+- C17 script SHA256: `155f5b138e5a8db052f235b9966b5044312d5556d480c513649f8430d8b44d2a`.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C17
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 03be8f6d084b75ebf39d04cafb499d9127390955
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C17/run.sh
+  operator_script_sha256: 155f5b138e5a8db052f235b9966b5044312d5556d480c513649f8430d8b44d2a
+  formal_pair_sha256: 7924be4e115b20bc3e40207256d67d2e8591c973dbd9de7bfcb0b4bf39b08df3
+  transport_policy_sha256: d7e7b3a3a2f6492cf6040c08a64086fba3aa7a9c4f5209752a0ba2917ef81c85
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C16
+  supersedes_checkpoint_commit: 03be8f6d084b75ebf39d04cafb499d9127390955
+  superseded_operator_script_sha256: 9e752f8b60204874dcce8c779acaca478a4749da3f94de36316406b964e4ac3e
+  supersession_reason: C16 inherited a nonexistent workflow transport commit SHA and failed closed during ancestry preflight
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C17/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C17/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C17/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C17/postcheck-summary.json"
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C17 replaces C16 as the only formal operator handoff. Do not edit or rerun C16. After committing C17, make that exact checkpoint commit reachable on the 4090, checkout it cleanly, verify the C17 script SHA, and run only C17.
