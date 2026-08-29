@@ -58,6 +58,25 @@ def _passed_result() -> ExecutionResult:
     )
 
 
+def _output_limit_result() -> ExecutionResult:
+    return ExecutionResult(
+        status=ExecutionStatus.OUTPUT_LIMIT,
+        passed_tests=0,
+        total_tests=1,
+        pass_rate=0.0,
+        runtime_ms=1.0,
+        test_results=[
+            ExecutionTestCaseResult(
+                status=ExecutionStatus.OUTPUT_LIMIT,
+                passed=False,
+                runtime_ms=1.0,
+                stdout="",
+                stderr="",
+            )
+        ],
+    )
+
+
 class _RetryingMockExecutor(MockExecutor):
     def __init__(self, results: list[ExecutionResult]) -> None:
         super().__init__(results)
@@ -283,6 +302,20 @@ def test_unclassified_sandbox_failure_is_not_retried(tmp_path: Path) -> None:
     assert len(executor.calls) == 1
     assert executor.prepare_calls == 0
     assert not (tmp_path / "stdout.log").exists()
+
+
+def test_candidate_output_limit_is_not_retried_or_treated_as_infrastructure(tmp_path: Path) -> None:
+    executor = _RetryingMockExecutor([_output_limit_result()])
+    callback = _callback(tmp_path, executor)
+
+    assert _invoke(callback) == [0.1]
+    assert len(executor.calls) == 1
+    assert executor.prepare_calls == 0
+    assert not (tmp_path / "stdout.log").exists()
+    reward_rows = [json.loads(line) for line in (tmp_path / "rewards.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert reward_rows[0]["status"] == "output_limit"
+    assert reward_rows[0]["infrastructure_failure"] is False
+    assert reward_rows[0]["infrastructure_failure_kind"] is None
 
 
 def test_runtime_health_prepare_failure_is_bounded_and_fails_closed(tmp_path: Path) -> None:

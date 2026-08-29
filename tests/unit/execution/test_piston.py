@@ -80,9 +80,9 @@ def test_piston_executor_version_changes_with_harness_and_implementation_protoco
 ) -> None:
     config = piston_executor_config_from_mapping(_valid_mapping())
     baseline = piston_executor_version(config)
-    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v2")
+    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v3")
     assert piston_executor_version(config) != baseline
-    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v1")
+    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v2")
     monkeypatch.setattr(piston_module, "PISTON_EXECUTOR_IMPLEMENTATION_VERSION", "piston-executor-v3")
     assert piston_executor_version(config) != baseline
 
@@ -815,6 +815,7 @@ def test_compile_stage_candidate_failure_remains_non_retryable_sandbox_error() -
         _run_response(status="SG", signal="SIGKILL", message="memory limit"),
         _run_response(status="RE", code=1),
         _run_response(outcome="wrong_answer"),
+        _run_response(outcome="output_limit"),
     ],
 )
 def test_candidate_failures_do_not_gain_infrastructure_kind(response: dict[str, object]) -> None:
