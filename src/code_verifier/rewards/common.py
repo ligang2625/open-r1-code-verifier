@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from code_verifier.execution.base import CodeExecutor, ExecutionStatus
+from code_verifier.execution.base import CodeExecutor, ExecutionInfrastructureFailureKind, ExecutionStatus
 from code_verifier.verification import (
     VerificationContractError,
     VerificationResult,
@@ -89,6 +89,7 @@ _COMPONENT_FIELDS = {
     "parsed",
     "executed",
     "infrastructure_failure",
+    "infrastructure_failure_kind",
     "passed_tests",
     "total_tests",
     "parse_error_type",
@@ -102,6 +103,19 @@ _NUMERIC_COMPONENT_FIELDS = {
     "total_reward",
     "executor_runtime_ms",
 }
+
+
+def _infrastructure_failure_kind_from_verification(result: VerificationResult) -> str | None:
+    if not result.infrastructure_failure or result.execution_result is None:
+        return None
+    kinds = sorted(
+        {
+            item.infrastructure_failure_kind.value
+            for item in result.execution_result.test_results
+            if item.infrastructure_failure_kind is not None
+        }
+    )
+    return None if not kinds else kinds[0]
 
 
 def _reward_components_from_verification(
@@ -136,6 +150,7 @@ def _reward_components_from_verification(
         "parsed": result.parsed,
         "executed": result.executed,
         "infrastructure_failure": infrastructure_failure,
+        "infrastructure_failure_kind": _infrastructure_failure_kind_from_verification(result),
         "passed_tests": result.passed_tests,
         "total_tests": result.total_tests,
         "parse_error_type": result.parse_error_type,
@@ -187,6 +202,14 @@ def _validate_component_record(record: Mapping[str, object]) -> None:
         value = record[field_name]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise RewardContractError("reward component counts must be non-negative integers")
+    infrastructure_failure_kind = record["infrastructure_failure_kind"]
+    if infrastructure_failure_kind is not None and (
+        not isinstance(infrastructure_failure_kind, str)
+        or infrastructure_failure_kind not in {item.value for item in ExecutionInfrastructureFailureKind}
+    ):
+        raise RewardContractError("reward component infrastructure_failure_kind is invalid")
+    if infrastructure_failure_kind is not None and record["infrastructure_failure"] is not True:
+        raise RewardContractError("reward component infrastructure failure kind requires infrastructure failure")
     parse_error_type = record["parse_error_type"]
     if parse_error_type is not None and not isinstance(parse_error_type, str):
         raise RewardContractError("reward component parse_error_type is invalid")

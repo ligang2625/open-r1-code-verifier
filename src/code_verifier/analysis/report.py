@@ -110,7 +110,7 @@ _ROLLOUT_FIELDS = {
     "truncated",
     "total_reward",
 }
-_REWARD_FIELDS = {
+_REWARD_FIELDS_LEGACY = {
     "item_index",
     "group_index",
     "group_item_index",
@@ -131,6 +131,7 @@ _REWARD_FIELDS = {
     "parse_error_type",
     "failure_counts",
 }
+_REWARD_FIELDS = {*_REWARD_FIELDS_LEGACY, "infrastructure_failure_kind"}
 
 
 def _json_object(path: Path, *, artifact_name: str) -> Mapping[str, object]:
@@ -248,7 +249,8 @@ def build_cost_row(
             token_total += token_count
         runtime_total = 0.0
         for row in reward_rows:
-            if set(row) != _REWARD_FIELDS:
+            row_fields = set(row)
+            if row_fields != _REWARD_FIELDS_LEGACY and row_fields != _REWARD_FIELDS:
                 raise AnalysisError(f"{method} reward schema is invalid")
             runtime_total += _finite(
                 row["executor_runtime_ms"], field_name=f"{method} executor_runtime_ms", nonnegative=True

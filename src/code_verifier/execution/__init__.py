@@ -3,6 +3,7 @@
 from code_verifier.execution.base import (
     CodeExecutor,
     ExecutionContractError,
+    ExecutionInfrastructureFailureKind,
     ExecutionResult,
     ExecutionStatus,
     TestCaseResult,
@@ -68,6 +69,7 @@ __all__ = [
     "ExecutionCacheKey",
     "ExecutionCacheMode",
     "ExecutionContractError",
+    "ExecutionInfrastructureFailureKind",
     "ExecutionResult",
     "ExecutionStatus",
     "ExecutionTestLayer",

@@ -29,6 +29,7 @@ from code_verifier.config import ConfigError, load_yaml_mapping
 from code_verifier.execution import harness as harness_module
 from code_verifier.execution.base import (
     ExecutionContractError,
+    ExecutionInfrastructureFailureKind,
     ExecutionResult,
     ExecutionStatus,
     TestCaseResult,
@@ -51,6 +52,8 @@ _CONFIG_FIELDS = frozenset(
     }
 )
 PISTON_EXECUTOR_IMPLEMENTATION_VERSION = "piston-executor-v1"
+_PISTON_TRANSPORT_FAILURE_STDERR = "piston transport failed"
+_PISTON_INTERNAL_EXECUTION_FAILURE_STDERR = "piston internal execution failed"
 
 
 class PistonTransportFailureKind(str, Enum):
@@ -65,6 +68,55 @@ class PistonTransportFailureKind(str, Enum):
     OVERSIZED_RESPONSE = "oversized_response"
     INVALID_REQUEST = "invalid_request"
     OTHER = "other"
+
+
+PistonInfrastructureFailureKind = ExecutionInfrastructureFailureKind
+
+
+_RETRYABLE_INFRASTRUCTURE_FAILURE_KINDS = frozenset(
+    {
+        ExecutionInfrastructureFailureKind.PISTON_TRANSPORT,
+        ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL,
+        ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL,
+        ExecutionInfrastructureFailureKind.PISTON_INTERNAL,
+    }
+)
+
+
+def _infrastructure_failure_kind_from_transport_error(
+    error: PistonTransportError,
+) -> ExecutionInfrastructureFailureKind:
+    if error.kind in {
+        PistonTransportFailureKind.INVALID_RESPONSE,
+        PistonTransportFailureKind.OVERSIZED_RESPONSE,
+        PistonTransportFailureKind.HTTP_ERROR,
+    }:
+        return ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL
+    return ExecutionInfrastructureFailureKind.PISTON_TRANSPORT
+
+
+def classify_piston_retryable_infrastructure_failure(
+    result: ExecutionResult,
+) -> ExecutionInfrastructureFailureKind | None:
+    """Return one structured retryable infrastructure kind without inspecting payload text."""
+    if not isinstance(result, ExecutionResult) or result.status is not ExecutionStatus.SANDBOX_ERROR:
+        return None
+    kinds = {
+        item.infrastructure_failure_kind
+        for item in result.test_results
+        if item.status is ExecutionStatus.SANDBOX_ERROR and item.infrastructure_failure_kind is not None
+    }
+    if len(kinds) != 1:
+        return None
+    failure_kind = next(iter(kinds))
+    if failure_kind not in _RETRYABLE_INFRASTRUCTURE_FAILURE_KINDS:
+        return None
+    if any(
+        item.status is ExecutionStatus.SANDBOX_ERROR and item.infrastructure_failure_kind is None
+        for item in result.test_results
+    ):
+        return None
+    return failure_kind
 
 
 class PistonTransportError(RuntimeError):
@@ -746,13 +798,19 @@ class PistonExecutor:
                 timeout_seconds=timeout_seconds + self._config.request_timeout_margin_seconds,
                 max_response_bytes=self._config.max_response_bytes,
             )
-        except PistonTransportError:
+        except PistonTransportError as error:
+            failure_kind = _infrastructure_failure_kind_from_transport_error(error)
             return TestCaseResult(
                 status=ExecutionStatus.SANDBOX_ERROR,
                 passed=False,
                 runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
                 stdout="",
-                stderr="piston transport failed",
+                stderr=(
+                    "invalid piston response"
+                    if failure_kind is ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL
+                    else _PISTON_TRANSPORT_FAILURE_STDERR
+                ),
+                infrastructure_failure_kind=failure_kind,
             )
         try:
             return self._parse_single_response(
@@ -769,7 +827,8 @@ class PistonExecutor:
                 passed=False,
                 runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
                 stdout="",
-                stderr="piston transport failed",
+                stderr="invalid piston response",
+                infrastructure_failure_kind=ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL,
             )
         except Exception:
             return TestCaseResult(
@@ -778,6 +837,7 @@ class PistonExecutor:
                 runtime_ms=max(0.0, (time.monotonic() - start) * 1000.0),
                 stdout="",
                 stderr="invalid piston response",
+                infrastructure_failure_kind=ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL,
             )
 
     def _execute_request_with_retry(
@@ -859,23 +919,42 @@ class PistonExecutor:
             raise PistonTransportError("invalid piston response", kind=PistonTransportFailureKind.INVALID_RESPONSE)
         if "compile" in response:
             compile_stage = _parse_piston_stage(response["compile"])
-            if _map_piston_stage_failure(compile_stage, memory_limit_bytes=memory_limit_bytes) is not None:
+            compile_failure_status = _map_piston_stage_failure(compile_stage, memory_limit_bytes=memory_limit_bytes)
+            if compile_failure_status is not None:
+                compile_status = None if compile_stage.status is None else compile_stage.status.upper()
                 return TestCaseResult(
                     status=ExecutionStatus.SANDBOX_ERROR,
                     passed=False,
                     runtime_ms=compile_stage.wall_time_ms,
                     stdout="",
-                    stderr="piston compile stage failed",
+                    stderr=(
+                        _PISTON_INTERNAL_EXECUTION_FAILURE_STDERR
+                        if compile_status == "XX"
+                        else "piston compile stage failed"
+                    ),
+                    infrastructure_failure_kind=(
+                        ExecutionInfrastructureFailureKind.PISTON_INTERNAL if compile_status == "XX" else None
+                    ),
                 )
         run_stage = _parse_piston_stage(response["run"])
         failure_status = _map_piston_stage_failure(run_stage, memory_limit_bytes=memory_limit_bytes)
         if failure_status is not None:
+            run_status = None if run_stage.status is None else run_stage.status.upper()
             return TestCaseResult(
                 status=failure_status,
                 passed=False,
                 runtime_ms=run_stage.wall_time_ms or fallback_runtime_ms,
                 stdout=_bounded_text(run_stage.stdout, self._config.max_output_bytes),
-                stderr=_bounded_text(run_stage.stderr, self._config.max_output_bytes),
+                stderr=(
+                    _PISTON_INTERNAL_EXECUTION_FAILURE_STDERR
+                    if failure_status is ExecutionStatus.SANDBOX_ERROR and run_status == "XX"
+                    else _bounded_text(run_stage.stderr, self._config.max_output_bytes)
+                ),
+                infrastructure_failure_kind=(
+                    ExecutionInfrastructureFailureKind.PISTON_INTERNAL
+                    if failure_status is ExecutionStatus.SANDBOX_ERROR and run_status == "XX"
+                    else None
+                ),
             )
         report = parse_harness_report(
             run_stage.stdout,
@@ -889,6 +968,7 @@ class PistonExecutor:
                 runtime_ms=run_stage.wall_time_ms or fallback_runtime_ms,
                 stdout="",
                 stderr="invalid harness report",
+                infrastructure_failure_kind=ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL,
             )
         return _test_case_result_from_harness(report)
 
@@ -922,6 +1002,9 @@ def _test_case_result_from_harness(report: HarnessReport) -> TestCaseResult:
         runtime_ms=report.runtime_ms,
         stdout=report.stdout,
         stderr=report.stderr,
+        infrastructure_failure_kind=(
+            ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL if report.outcome == "harness_error" else None
+        ),
     )
 
 

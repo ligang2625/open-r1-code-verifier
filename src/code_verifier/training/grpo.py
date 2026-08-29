@@ -32,7 +32,13 @@ from code_verifier.data.leakage_checks import (
     load_training_artifact,
 )
 from code_verifier.environment import collect_environment
-from code_verifier.execution.base import CodeExecutor, ExecutionResult, ExecutionStatus
+from code_verifier.execution.base import (
+    CodeExecutor,
+    ExecutionInfrastructureFailureKind,
+    ExecutionResult,
+    ExecutionStatus,
+)
+from code_verifier.execution.piston import classify_piston_retryable_infrastructure_failure
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.open_r1_adapter import import_open_r1_module
@@ -190,9 +196,12 @@ _GRPO_TRAINER_RESUME_FILES = (
 )
 _PAIR_SCHEMA_VERSION = 2
 GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE = "operational_reward_resilience_v1"
-_GRPO_REWARD_INFRA_RETRY_POLICY_VERSION = "grpo-reward-infra-retry-v1"
+_GRPO_REWARD_INFRA_RETRY_POLICY_VERSION = "grpo-reward-infra-retry-v2"
+_GRPO_REWARD_INFRA_RETRY_LEGACY_POLICY_VERSIONS = frozenset({"grpo-reward-infra-retry-v1"})
+_GRPO_REWARD_INFRA_RETRY_ACCEPTED_POLICY_VERSIONS = frozenset(
+    (*_GRPO_REWARD_INFRA_RETRY_LEGACY_POLICY_VERSIONS, _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION)
+)
 _GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
-_PISTON_TRANSPORT_FAILURE_STDERR = "piston transport failed"
 _GPU_HOURS_SEMANTICS = (
     "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
     "model load, train, and save"
@@ -595,16 +604,15 @@ def _has_sandbox_failure(result: ExecutionResult) -> bool:
     )
 
 
-def _has_retryable_piston_transport_failure(result: ExecutionResult) -> bool:
-    """Recognize only the sanitized transport-failure signature emitted by PistonExecutor."""
-    return any(
-        item.status is ExecutionStatus.SANDBOX_ERROR and item.stderr == _PISTON_TRANSPORT_FAILURE_STDERR
-        for item in result.test_results
-    )
+def _retryable_piston_infrastructure_failure_kind(
+    result: ExecutionResult,
+) -> ExecutionInfrastructureFailureKind | None:
+    """Return one explicitly retryable, payload-free Piston infrastructure failure class."""
+    return classify_piston_retryable_infrastructure_failure(result)
 
 
 class _TrainingExecutorCircuitBreaker:
-    """Retry exact Piston transport failures in-process, then fail closed with a circuit breaker."""
+    """Retry classified Piston infrastructure failures in-process, then fail closed."""
 
     def __init__(
         self,
@@ -631,22 +639,27 @@ class _TrainingExecutorCircuitBreaker:
             )
 
         retry_index = fields.get("retry_index")
+        failure_kind = fields.get("failure_kind")
         if event == "grpo_reward_infrastructure_retry_scheduled":
             print(
-                f"GRPO reward infrastructure retry {retry_index}/3 after transient Piston transport failure",
+                f"GRPO reward infrastructure retry {retry_index}/3 kind={failure_kind}",
                 file=sys.stderr,
                 flush=True,
             )
         elif event == "grpo_reward_infrastructure_retry_succeeded":
             print(
-                f"GRPO reward infrastructure retry succeeded on attempt {retry_index}/3",
+                f"GRPO reward infrastructure retry succeeded on attempt {retry_index}/3 kind={failure_kind}",
                 file=sys.stderr,
                 flush=True,
             )
         elif event == "grpo_reward_infrastructure_retry_exhausted":
-            print("GRPO reward infrastructure retry exhausted after 3 retries", file=sys.stderr, flush=True)
+            print(
+                f"GRPO reward infrastructure retry exhausted after 3 retries kind={failure_kind}",
+                file=sys.stderr,
+                flush=True,
+            )
 
-    def _prepare_retry(self, retry_index: int) -> bool:
+    def _prepare_retry(self, retry_index: int, *, failure_kind: ExecutionInfrastructureFailureKind) -> bool:
         prepare = getattr(self._executor, "prepare_infrastructure_retry", None)
         if not callable(prepare):
             self._telemetry.recovery_prepare_failures += 1
@@ -654,6 +667,7 @@ class _TrainingExecutorCircuitBreaker:
                 "grpo_reward_infrastructure_retry_prepare_failed",
                 retry_index=retry_index + 1,
                 backoff_seconds=_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS[retry_index],
+                failure_kind=failure_kind.value,
                 error_type="MissingPrepareHook",
             )
             return False
@@ -665,6 +679,7 @@ class _TrainingExecutorCircuitBreaker:
                 "grpo_reward_infrastructure_retry_prepare_failed",
                 retry_index=retry_index + 1,
                 backoff_seconds=_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS[retry_index],
+                failure_kind=failure_kind.value,
                 error_type=type(error).__name__,
             )
             return False
@@ -692,7 +707,8 @@ class _TrainingExecutorCircuitBreaker:
         except Exception:
             self._tripped = True
             raise
-        if not _has_retryable_piston_transport_failure(result):
+        failure_kind = _retryable_piston_infrastructure_failure_kind(result)
+        if failure_kind is None:
             if _has_sandbox_failure(result):
                 self._tripped = True
             return result
@@ -704,8 +720,9 @@ class _TrainingExecutorCircuitBreaker:
                 "grpo_reward_infrastructure_retry_scheduled",
                 retry_index=retry_index + 1,
                 backoff_seconds=delay,
+                failure_kind=failure_kind.value,
             )
-            if not self._prepare_retry(retry_index):
+            if not self._prepare_retry(retry_index, failure_kind=failure_kind):
                 continue
             try:
                 candidate = self._executor.execute(
@@ -719,7 +736,8 @@ class _TrainingExecutorCircuitBreaker:
                 self._tripped = True
                 raise
             last_result = candidate
-            if not _has_retryable_piston_transport_failure(candidate):
+            candidate_failure_kind = _retryable_piston_infrastructure_failure_kind(candidate)
+            if candidate_failure_kind is None:
                 if _has_sandbox_failure(candidate):
                     self._tripped = True
                     return candidate
@@ -727,14 +745,17 @@ class _TrainingExecutorCircuitBreaker:
                 self._emit(
                     "grpo_reward_infrastructure_retry_succeeded",
                     retry_index=retry_index + 1,
+                    failure_kind=failure_kind.value,
                 )
                 return candidate
+            failure_kind = candidate_failure_kind
 
         self._telemetry.retry_exhausted += 1
         self._tripped = True
         self._emit(
             "grpo_reward_infrastructure_retry_exhausted",
             retries=len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+            failure_kind=failure_kind.value,
         )
         return last_result
 
@@ -1773,7 +1794,8 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
                 raise GRPOTrainingError("GRPO code migration checkpoint must match attempt resume source")
             if migration.get("scientific_change") is not False:
                 raise GRPOTrainingError("GRPO operational code migration must declare scientific_change=false")
-            if migration.get("reward_infrastructure_retry_policy_version") != _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION:
+            migration_retry_policy = migration.get("reward_infrastructure_retry_policy_version")
+            if migration_retry_policy not in _GRPO_REWARD_INFRA_RETRY_ACCEPTED_POLICY_VERSIONS:
                 raise GRPOTrainingError("GRPO code migration retry policy version is invalid")
             if not isinstance(migration.get("reason"), str) or not migration["reason"]:
                 raise GRPOTrainingError("GRPO code migration reason is invalid")
@@ -1790,7 +1812,7 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
             }
             if not isinstance(retry_telemetry, Mapping) or set(retry_telemetry) != expected_retry_fields:
                 raise GRPOTrainingError("GRPO run metadata has invalid reward infrastructure retry telemetry")
-            if retry_telemetry.get("policy_version") != _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION:
+            if retry_telemetry.get("policy_version") not in _GRPO_REWARD_INFRA_RETRY_ACCEPTED_POLICY_VERSIONS:
                 raise GRPOTrainingError("GRPO reward infrastructure retry policy version is invalid")
             if retry_telemetry.get("max_retries_per_reward_item") != len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS):
                 raise GRPOTrainingError("GRPO reward infrastructure retry limit is invalid")

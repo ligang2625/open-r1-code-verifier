@@ -151,7 +151,7 @@ def test_cross_commit_grpo_resume_preserves_origin_and_records_new_attempt_commi
     assert migration["to_commit"] == current_commit
     assert migration["resume_from_checkpoint"] == "checkpoints/checkpoint-1"
     assert migration["scientific_change"] is False
-    assert migration["reward_infrastructure_retry_policy_version"] == "grpo-reward-infra-retry-v1"
+    assert migration["reward_infrastructure_retry_policy_version"] == "grpo-reward-infra-retry-v2"
     retry = metadata["attempts"][1]["reward_infrastructure_retry"]
     assert retry["max_retries_per_reward_item"] == 3
     assert retry["retry_attempts"] == 0

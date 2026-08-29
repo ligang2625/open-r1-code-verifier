@@ -19,6 +19,7 @@ from code_verifier.config import ConfigError
 from code_verifier.execution import (
     CodeExecutor,
     ExecutionContractError,
+    ExecutionInfrastructureFailureKind,
     ExecutionStatus,
     PistonExecutor,
     execution_result_to_mapping,
@@ -29,6 +30,7 @@ from code_verifier.execution import piston as piston_module
 from code_verifier.execution.piston import (
     HttpClientPistonTransport,
     PistonTransportError,
+    classify_piston_retryable_infrastructure_failure,
     load_piston_executor_config,
     piston_executor_config_from_mapping,
 )
@@ -739,6 +741,88 @@ def test_execute_transport_error_is_sanitized_sandbox_error() -> None:
     assert result.status is ExecutionStatus.SANDBOX_ERROR
     assert sentinel not in result.test_results[0].stderr
     assert result.test_results[0].stderr == "piston transport failed"
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.PISTON_TRANSPORT
+    )
+
+
+def test_execute_piston_internal_xx_is_sanitized_and_retryable() -> None:
+    sentinel = "PRIVATE_PISTON_INTERNAL_SENTINEL"
+    executor, _ = _executor([_run_response(status="XX", code=None, stderr=sentinel)])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert sentinel not in result.test_results[0].stderr
+    assert result.test_results[0].stderr == "piston internal execution failed"
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.PISTON_INTERNAL
+    )
+
+
+def test_invalid_harness_report_is_structured_retryable_infrastructure() -> None:
+    executor, _ = _executor([_run_response(stdout="ordinary output")])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert result.test_results[0].stderr == "invalid harness report"
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL
+    )
+
+
+def test_invalid_piston_response_is_structured_retryable_infrastructure() -> None:
+    executor, _ = _executor([{"run": {"stdout": 123, "stderr": ""}}])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert result.test_results[0].stderr == "invalid piston response"
+    assert (
+        result.test_results[0].infrastructure_failure_kind
+        is ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL
+    )
+    assert (
+        classify_piston_retryable_infrastructure_failure(result)
+        is ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL
+    )
+
+
+def test_compile_stage_candidate_failure_remains_non_retryable_sandbox_error() -> None:
+    response = _run_response()
+    response["compile"] = {
+        "stdout": "",
+        "stderr": "candidate compile failure",
+        "code": 1,
+        "signal": None,
+        "message": None,
+        "status": "RE",
+        "cpu_time": 1.0,
+        "wall_time": 2.0,
+        "memory": 1024,
+    }
+    executor, _ = _executor([response])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert result.test_results[0].stderr == "piston compile stage failed"
+    assert result.test_results[0].infrastructure_failure_kind is None
+    assert classify_piston_retryable_infrastructure_failure(result) is None
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _run_response(status="TO", code=None),
+        _run_response(status="SG", signal="SIGKILL", message="memory limit"),
+        _run_response(status="RE", code=1),
+        _run_response(outcome="wrong_answer"),
+    ],
+)
+def test_candidate_failures_do_not_gain_infrastructure_kind(response: dict[str, object]) -> None:
+    executor, _ = _executor([response])
+    result = _execute(executor)
+
+    assert all(item.infrastructure_failure_kind is None for item in result.test_results)
+    assert classify_piston_retryable_infrastructure_failure(result) is None
 
 
 def test_execute_empty_tests_does_not_call_transport() -> None:
