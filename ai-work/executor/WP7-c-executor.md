@@ -1788,3 +1788,77 @@ execution_checkpoint:
 ```
 
 C25 supersedes C24 only for the next formal operator execution. Preserve C17–C24 scripts, target evidence, Public completed artifacts, Hidden checkpoints, C24 failed attempt/recovery evidence, transport telemetry, and recovery history unchanged. The control plane does not push or execute C25.
+
+## C26 — reconciled C25 acceptance and deterministic C/D generation handoff
+
+The user completed C25 manually on the RTX 4090 and pulled the resulting evidence back to the GTX 1660 Ti. The explicit control-plane receive root is `/home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-formal/C25`. The four authoritative operator files were recomputed byte-for-byte on the control plane and match the target evidence exactly: status SHA256 `9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa`, terminal log SHA256 `b08930b7c7a984816cb9ccb69fbfb031aa88d07768852f5fd9914297e5aa4234`, operator-evidence SHA256 `0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e`, and postcheck SHA256 `c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63`. The synced Public/Hidden top-level formal metadata/telemetry files were also rehashed against the C25 evidence inventory; all 14 checked files matched their target hashes.
+
+C25 records `command_rc=0`, `postcheck_rc=0`, `gate_status=passed`, RTX 4090 with 22683 MiB VRAM, Public strict verify-only with an unchanged before/after snapshot and no Public `train-grpo` invocation, Hidden production resume from checkpoint-125 to completed global step 300, and `generation_started=false`. The completed Public/Hidden runs retain formal pair SHA256 `31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9`; the final Hidden canonical reward stream contains no infrastructure/sandbox rows, while the previously fatal `leetcode-all-paths-from-source-to-target` oversized candidate is represented as ordinary non-infrastructure `output_limit`. No C/D optimizer rerun is justified or permitted by this handoff.
+
+The raw C25 checkpoint predates the current strict operator-checkpoint source-provenance schema: it records `task_kind=repair` although WP7-c has no committed review, omits `source_review_round/source_review_commit/repair_issue_ids`, and omits `control_plane_evidence_receive_dir`. The historical checkpoint is not rewritten. Instead, workflow-maintenance commit `657030c47a29411e343049926de10730858104a8` adds `operator_checkpoint_reconciliation.version=1`, restricted to an already-executed current-HEAD portable-target checkpoint whose only defects are those schema-migration fields and whose successful target evidence can be independently authenticated. Under that contract C25 raw task kind `repair` is effective implementation provenance with `source_review_round=null`, `source_review_commit=null`, and `repair_issue_ids=[]`; the explicit receive root above and the exact C25 evidence SHA remain reviewable audit fields. The maintenance runtime is separate from the WP7-c branch and is not merged into this stage.
+
+Control-plane acceptance before C26 creation also revalidated the stage-local environment and zero-tracked `.ai-bridge`, ran the staged generation/evaluation-focused suite (`14 passed`), and recomputed the formal test split as exactly 400 rows with dataset SHA256 `770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae` and ordered problem-IDs SHA256 `2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9`. The new C26 script is generation-only: it authenticates C25 and the completed C/D sources, binds the exact Base evaluation/Piston definition/model/Open-R1/dependency identities, allows exact-prefix resume, quarantines only incompatible incomplete generation bundles, fails closed on any mismatched completed bundle, generates C then D, strictly postchecks two 400-row bundles, and finally performs a `resumed=400, generated=0` readback for each. Static validation passed `bash -n`, all 13 embedded Python heredocs compile, `make lint` passed Ruff check/format plus strict mypy, and the script contains no `train-grpo`, `PistonExecutor`, SSH/tunnel, or curl invocation. The control plane did not start C26 or any RTX 4090 workload.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C26
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: e0ec354790d42753c8170625adea4d5e28fe4325
+  workflow_runtime_commit: 657030c47a29411e343049926de10730858104a8
+  operator_checkpoint_reconciliation_version: 1
+  reconciled_checkpoint_id: C25
+  reconciled_checkpoint_commit: e0ec354790d42753c8170625adea4d5e28fe4325
+  reconciled_checkpoint_task_kind_raw: repair
+  reconciled_checkpoint_task_kind_effective: implementation
+  reconciled_control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-formal/C25
+  accepted_c25_status_sha256: 9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa
+  accepted_c25_terminal_log_sha256: b08930b7c7a984816cb9ccb69fbfb031aa88d07768852f5fd9914297e5aa4234
+  accepted_c25_operator_evidence_sha256: 0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e
+  accepted_c25_postcheck_sha256: c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63
+  operator_gate_id: grpo-cd-generate-eval
+  operator_handoff_mode: portable_target
+  operator_restart_policy: exact_rerun
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-generate-eval/C26/run.sh
+  operator_script_sha256: f1fb281c0aef9ca237584b99374033a58a68fa75adc26ffbf1cdc111ae3f1565
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-generate-eval/C26
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C26/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C26/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C26/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C26/postcheck-summary.json"
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  evaluation_dataset_sha256: 770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae
+  ordered_problem_ids_sha256: 2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  base_eval_config_sha256: 3fa1b8f0dbc6853c894ac9f02b6820afd838ff68ca9f090ecbbef4ae495dbac3
+  public_generation_run: C-public-grpo-formal-seed42
+  hidden_generation_run: D-hidden-grpo-formal-seed42
+  expected_artifacts:
+    - completed C-public-grpo-formal-seed42 generation bundle with exactly 400 unique ordered rows
+    - completed D-hidden-grpo-formal-seed42 generation bundle with exactly 400 unique ordered rows
+    - exact dataset/order/seed/deterministic-decode/Piston-definition/model/GRPO-checkpoint/pair/project/Open-R1/dependency identities
+    - strict C and D quick readback with resumed=400 and generated=0 without bundle mutation
+    - generation-only execution with no Piston verification and no GRPO training
+    - versioned operator-evidence.json and postcheck-summary.json with full generation artifact inventory
+  completed_scope:
+    - C25 formal gate accepted through reconciliation v1 using exact synced target evidence; no C/D retraining
+    - control-plane staged-evaluation regression and formal 400-row dataset/order identity revalidation
+    - immutable portable C26 generation operator handoff
+  remaining_scope:
+    - user manually runs C26 on the RTX 4090; C and D generation only
+    - sync complete C/D generation bundles plus C26 evidence byte-for-byte to the recorded 1660 Ti receive directory
+    - run real local Piston verify-eval and aggregate-eval for C/D, 400 rows each, on the GTX 1660 Ti
+    - write the completed WP7-c implementation execution record E0 and stop for a fresh independent reviewer conversation
+  resume_allowed: true
+  interruption_class: operator
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: fp16
+  status: awaiting_operator
+```
+
+C26 is the only next target-GPU gate. It consumes the already-completed C/D formal adapters and must not rerun Public or Hidden GRPO. Make the exact C26 checkpoint commit reachable on the RTX 4090, checkout it cleanly, verify the tracked script SHA256, and run C26 only by explicit human decision. The control plane does not push, start, or monitor C26.
