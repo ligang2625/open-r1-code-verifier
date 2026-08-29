@@ -310,10 +310,11 @@ def test_wp4b_piston_nested_sandbox_failure_clears_positive_reward() -> None:
 
     assert rewards == [0.0]
     assert transport.execute_calls == 3
-    assert records[0]["status"] == "wrong_answer"
+    assert records[0]["status"] == "sandbox_error"
     assert records[0]["passed_tests"] == 1
     assert records[0]["failure_counts"] == {"sandbox_error": 1, "wrong_answer": 1}
     assert records[0]["infrastructure_failure"] is True
+    assert records[0]["infrastructure_failure_kind"] == "piston_internal"
     assert records[0]["test_reward"] == 0.0
     assert records[0]["executable_reward"] == 0.0
 

@@ -83,7 +83,7 @@ def test_piston_executor_version_changes_with_harness_and_implementation_protoco
     monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v2")
     assert piston_executor_version(config) != baseline
     monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v1")
-    monkeypatch.setattr(piston_module, "PISTON_EXECUTOR_IMPLEMENTATION_VERSION", "piston-executor-v2")
+    monkeypatch.setattr(piston_module, "PISTON_EXECUTOR_IMPLEMENTATION_VERSION", "piston-executor-v3")
     assert piston_executor_version(config) != baseline
 
 
@@ -823,6 +823,21 @@ def test_candidate_failures_do_not_gain_infrastructure_kind(response: dict[str, 
 
     assert all(item.infrastructure_failure_kind is None for item in result.test_results)
     assert classify_piston_retryable_infrastructure_failure(result) is None
+
+
+def test_later_structured_infrastructure_failure_controls_aggregate_status() -> None:
+    executor, transport = _executor(
+        [_run_response(outcome="wrong_answer"), _run_response(stdout="ordinary output")],
+        stop_on_first_failure=False,
+    )
+
+    result = _execute(executor, [{"input": [1], "expected": 1}, {"input": [2], "expected": 2}])
+
+    assert len(transport.execute_calls) == 2
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL
+    )
 
 
 def test_execute_empty_tests_does_not_call_transport() -> None:

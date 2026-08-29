@@ -51,7 +51,7 @@ _CONFIG_FIELDS = frozenset(
         "stop_on_first_failure",
     }
 )
-PISTON_EXECUTOR_IMPLEMENTATION_VERSION = "piston-executor-v1"
+PISTON_EXECUTOR_IMPLEMENTATION_VERSION = "piston-executor-v2"
 _PISTON_TRANSPORT_FAILURE_STDERR = "piston transport failed"
 _PISTON_INTERNAL_EXECUTION_FAILURE_STDERR = "piston internal execution failed"
 
@@ -738,9 +738,17 @@ class PistonExecutor:
                 break
 
         passed_tests = sum(test_result.passed for test_result in test_results)
-        status = next(
-            (test_result.status for test_result in test_results if test_result.status is not ExecutionStatus.PASSED),
-            ExecutionStatus.PASSED,
+        status = (
+            ExecutionStatus.SANDBOX_ERROR
+            if any(test_result.status is ExecutionStatus.SANDBOX_ERROR for test_result in test_results)
+            else next(
+                (
+                    test_result.status
+                    for test_result in test_results
+                    if test_result.status is not ExecutionStatus.PASSED
+                ),
+                ExecutionStatus.PASSED,
+            )
         )
         result = ExecutionResult(
             status=status,
