@@ -1545,3 +1545,59 @@ execution_checkpoint:
 ```
 
 C22 supersedes C21 as the only formal operator handoff. Preserve C18/C19/C20/C21 scripts, evidence, and formal run/checkpoint/recovery history unchanged. Make the exact C22 checkpoint commit reachable on the RTX 4090, checkout it cleanly, verify the tracked script SHA256, then run only C22 manually. The control plane does not push or execute C22.
+
+## C23 — operator-wrapper provenance constant repair
+
+C22 was executed twice on the real RTX 4090 target and both invocations exited immediately during preflight with `immutable C21 operator script SHA changed`. Neither invocation reached GRPO training. Read-only verification proved that C21 was not modified: its committed script still has SHA256 `51873cbc7a7c35a021b48296d934043a4f8218ae31278ef1931637d77f0f13f4`, and the C21-to-C22 history contains no C21 script diff. The failure was a C22 wrapper provenance typo: adjacent string fragments assembled a 63-character expected C21 SHA (`...78ef193637...`) instead of the correct `...78ef1931637...` value.
+
+C23 is wrapper-only. It preserves training code commit `47c7fb2a55b91e471aeca5ededf6e0233f4f93f9`, the in-process `grpo-reward-infra-retry-v1` policy, `operational_reward_resilience_v1` checkpoint migration, production latest-valid-checkpoint selection, detached repair-code worktree, canonical training cwd, and one Trainer process invocation per Public/Hidden member. It adds shared preflight guards requiring every hard-coded Git commit/revision to be exact 40-character lowercase hex and every hard-coded SHA256 to be exact 64-character lowercase hex before filesystem hash comparisons. It also validates the immutable C17–C22 scripts against their independently computed SHA256 values. C23 supersedes only the faulty C22 operator wrapper; no scientific config, reward, model, optimizer, dataset, seed, pair, Piston definition, or transport-policy identity changes.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C23
+  stage_id: WP7-c
+  task_kind: repair
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9
+  training_code_commit: 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C23/run.sh
+  operator_script_sha256: b9761d58fadb68f515a3b4972b5c90bd633ed123c037255d02a8dd2cf14456ca
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  code_migration_class: operational_reward_resilience_v1
+  reward_retry_policy_version: grpo-reward-infra-retry-v1
+  reward_retry_max_retries: 3
+  reward_retry_backoff_seconds: [1.0, 2.0, 4.0]
+  provenance_constant_format_guards: git_commit_40_lowercase_hex_and_sha256_64_lowercase_hex
+  c21_actual_operator_script_sha256: 51873cbc7a7c35a021b48296d934043a4f8218ae31278ef1931637d77f0f13f4
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C22
+  supersedes_checkpoint_commit: 32d18869f929dacf464ef132f8d6d17177a4f834
+  superseded_operator_script_sha256: 6baf5e898b735796e7b396e53ba3254ef00208d19035a4b9e69008f2c8e3cd7f
+  supersession_reason: C22 carried a 63-character typo in the expected immutable C21 script SHA and failed before GRPO startup
+  c22_target_invocations: 2
+  c22_grpo_started: false
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C23/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C23/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C23/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C23/postcheck-summary.json"
+  resume_allowed: true
+  interruption_class: operator
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C23 supersedes C22 only at the operator-wrapper layer. Preserve all C17–C22 scripts, target evidence, formal runs, checkpoints, transport telemetry, and recovery history unchanged. The control plane does not push, execute C23, or start any RTX 4090 workload.
