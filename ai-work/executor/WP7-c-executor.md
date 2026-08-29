@@ -1404,3 +1404,59 @@ execution_checkpoint:
 ```
 
 C20 supersedes C19 at the operator-wrapper layer only. Preserve all existing C18/C19 operator evidence and all formal run/checkpoint/transport artifacts in place; C20 consumes the existing C18 Trainer checkpoint without rewriting its training Git or scientific identity.
+
+## C21 — bounded automatic recovery for transient Piston reward infrastructure failures
+
+A second real C20 target invocation resumed Public from checkpoint-175 and again failed during reward execution, this time after step 198. The terminal log recorded `GRPO reward execution infrastructure failure in 6/8 completions; aborting before optimizer update`. Target-side forensic readback showed the same transport signature as the earlier step-196 failure: cumulative `transport_ambiguous_failures` increased from 1 to 2 while connect-failure/safe-retry counters remained zero; the final failed reward batch contained one genuinely executed infrastructure failure followed by circuit-breaker fanout rows with `executed=false`. Production `_latest_valid_resume_checkpoint()` still selected checkpoint-175. This establishes a repeated transient/ambiguous Piston transport failure rather than a model, CUDA, identity, or checkpoint failure.
+
+C21 remains an operator-wrapper-only repair because the existing formal run is permanently bound to training Git commit `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b`. Changing reward/Piston production source would require an impermissible cross-Git-commit Trainer resume. C21 therefore continues loading the exact C18 training source and keeps the canonical checkout cwd, but wraps each Public/Hidden `train-grpo` process in bounded infrastructure recovery. A nonzero command is automatically retried only when all of the following are true: rc is exactly 2; run metadata and latest attempt are failed; production latest-valid-checkpoint selection succeeds; reward rows after that checkpoint form complete 8-row batches; the final batch contains at least one `infrastructure_failure=true` row; every such row has zero total reward; and at least one infrastructure-failure row was actually executed against Piston. Other errors remain fail-closed.
+
+For an authenticated infrastructure failure, C21 permits at most three recoveries per Public/Hidden member. Each recovery records a visible `C21 RECOVERY` line, applies a bounded 5/10/15-second backoff, rechecks exact Piston runtime health, re-runs the normal strict `resolve_run_action()` validation, verifies the selected checkpoint is unchanged between failure authentication and resume resolution, and starts a fresh C18 `train-grpo` process from that checkpoint. Existing GRPO recovery logic archives the discarded suffix and restores canonical streams before the next attempt; the failed reward batch is therefore never used for an optimizer update or final scientific stream. Exhaustion or any non-authenticated failure prints an explicit terminal failure and writes normal operator evidence. Operator evidence additionally records Public/Hidden bounded-recovery counts.
+
+Control-plane/target-readback verification before handoff:
+
+- C20 second failure signature: 6/8 reward infrastructure failures at the post-step-198 batch; transport ambiguous-failure counter incremented to 2, with zero connect failures/safe retries.
+- Target read-only classifier reproduction: retryable, checkpoint `checkpoint-175`, infrastructure rows `6`, suffix rows `192`.
+- C21 shell syntax: PASS.
+- All embedded Python blocks compile after adding the infrastructure classifier.
+- Targeted GRPO resume/lineage/transport-sidecar tests: 85 passed.
+- No target training was started by the control plane while preparing C21.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C21
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 720a48cc9edb281ccb91b8f59080c65c118bde65
+  training_code_commit: a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C21/run.sh
+  operator_script_sha256: 51873cbc7a7c35a021b48296d934043a4f8218ae31278ef1931637d77f0f13f4
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  bounded_infrastructure_recoveries_per_mode: 3
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  transport_connection_implementation: httpclient-single-keepalive-v2
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C20
+  supersedes_checkpoint_commit: 720a48cc9edb281ccb91b8f59080c65c118bde65
+  superseded_operator_script_sha256: 049c28c1f9b5fbd5a823a50ec6b10105ecc5ea09ff19c308110ebb601292e25c
+  supersession_reason: repeated transient ambiguous Piston reward failures aborted long GRPO despite valid recoverable checkpoints
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C21/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C21/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C21/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C21/postcheck-summary.json"
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C21 supersedes C20 only at the operator-wrapper layer. Preserve all existing C18/C19/C20 operator evidence and all formal run/checkpoint/transport/recovery-history artifacts in place. C21 is designed to consume the existing C18 run and checkpoint lineage without changing its training Git identity or scientific configuration.
