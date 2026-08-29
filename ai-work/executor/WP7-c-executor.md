@@ -1302,3 +1302,59 @@ Analysis coverage was checked against PROJECT_SPEC §12.3. A completed Public or
 To make later step-wise analysis unambiguous even across multiple resumes, C18 final postcheck now validates the canonical raw-log ordering as exactly 300 blocks of 8 rollout rows + 8 aligned reward rows + 2 group rows, with item/group/problem/reward alignment inside every block. `postcheck-summary.json` records this `analysis_layout`, so optimizer step `n` maps deterministically to rollout/reward rows `[(n-1)*8:n*8]` and group rows `[(n-1)*2:n*2]`. Canonical streams contain only successful final-prefix training data; discarded/interrupted suffixes remain separately preserved in recovery-history for operational analysis and are never mixed into the scientific final curves.
 
 Audit conclusion: C18 is suitable for deliberate multi-session execution provided planned stops are made after a verified complete 25-step checkpoint. Arbitrary interruption may replay work since the previous 25-step checkpoint but does not corrupt canonical evidence; hard process/machine loss preserves recoverability but may make the interrupted attempt's GPU-hours incomplete. No formal 4090 training was executed during this audit.
+
+## C19 — C18 resume-preflight signature repair with preserved C18 training provenance
+
+After a real C18 target session had already created resumable formal artifacts, the user re-ran the exact C18 operator and observed `accepted_c13_pilot=PASS` followed by `TypeError: _validate_resume_run() missing 1 required keyword-only argument: 'resume_run_git_commit'`. The failing call is inside C18 `resolve_run_action()` after a valid existing run/checkpoint has been selected and before the next `train-grpo` command is launched. Production `_validate_resume_run()` requires the keyword-only argument, while the C18 wrapper omitted it. This is an operator-wrapper defect, not a reward, optimizer, checkpoint-content, Piston, or GPU failure; the failed resume-preflight invocation is read-only with respect to the formal run.
+
+C18 is now immutable because it has been executed on target and its operator evidence/formal run metadata bind checkpoint commit `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b` and script SHA256 `183173fa4ae0fed2f33f8566e868f0248129f5d448fa225cdedcaa1f7cf07269`. Therefore the repair is a new operator checkpoint C19 rather than an in-place rewrite of C18. C19 makes no production `src/`, formal config, reward, optimizer, transport-policy, dataset, B/model, or checkpoint-cadence change. The formal pair remains `31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9`, with `save_steps=25` and no Public→Hidden scheduling pause.
+
+To preserve the existing C18 Trainer checkpoint without permitting a cross-Git-commit Trainer resume, C19 materializes a temporary detached Git worktree at the exact preserved C18 commit `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b`. Resume-state validation and every actual `train-grpo` invocation load `code_verifier` from that temporary C18 worktree via `PYTHONPATH`; control-plane verification confirmed `collect_environment()['project_commit']` then resolves exactly to the C18 commit. C19 calls `_validate_resume_run(..., resume_run_git_commit=None)` under that same C18 source identity and deliberately does not pass `--resume-run-git-commit` to training. Thus existing and future attempts for the current formal pair continue to record the original C18 training Git provenance, while C19 separately records the repaired operator-wrapper checkpoint. The main target checkout remains at C19; the temporary C18 training worktree is removed on operator exit and stale registrations are pruned before recreation.
+
+Control-plane C19 verification before handoff:
+
+- C19 shell syntax: PASS.
+- All 17 embedded Python heredocs compile.
+- `set -u` uppercase-variable audit: no unresolved variables.
+- Detached C18 source execution probe: `code_verifier` loads from the C18 worktree and reports project commit `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b`.
+- `python -m code_verifier.cli train-grpo --help` succeeds from the detached C18 source using the stage virtualenv.
+- C19 does not pass `--resume-run-git-commit`; its explicit `_validate_resume_run` call uses `resume_run_git_commit=None` under the same preserved C18 source commit.
+- C19 operator script SHA256: `9a762a5ec6484b5ae374e2e79230f212e76551588df170fbe75c754c8afc0dbb`.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C19
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b
+  training_code_commit: a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C19/run.sh
+  operator_script_sha256: 9a762a5ec6484b5ae374e2e79230f212e76551588df170fbe75c754c8afc0dbb
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  transport_connection_implementation: httpclient-single-keepalive-v2
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C18
+  supersedes_checkpoint_commit: a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b
+  superseded_operator_script_sha256: 183173fa4ae0fed2f33f8566e868f0248129f5d448fa225cdedcaa1f7cf07269
+  supersession_reason: C18 resume preflight omitted required _validate_resume_run resume_run_git_commit keyword before train-grpo launch
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C19/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C19/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C19/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C19/postcheck-summary.json"
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C19 supersedes C18 only at the operator-wrapper layer. Existing C18 formal run/checkpoint/transport artifacts must not be deleted, renamed, rewritten, or manually migrated; C19 is designed to consume them in place while preserving their C18 training Git identity. The control plane does not execute C19 on the 4090 and does not push automatically.
