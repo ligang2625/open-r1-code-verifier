@@ -1692,3 +1692,99 @@ execution_checkpoint:
 ```
 
 C24 supersedes C23 for formal operator execution. Preserve C17–C23 scripts, target evidence, Public completed artifacts, Hidden checkpoints, transport telemetry, and recovery history unchanged. Make the exact C24 checkpoint commit reachable on the RTX 4090, checkout it cleanly, verify the tracked script SHA256, then run C24 only by explicit human decision. The control plane does not push or execute C24.
+
+## C25 — candidate result output-limit classification recovery
+
+C24 was executed on the RTX 4090 from checkpoint commit `5230da43318a632b1c6b05140782db7a8b82472a` and failed while resuming Hidden from production-selected checkpoint-125. The target evidence is preserved exactly: status SHA256 `53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3`, terminal log SHA256 `879ddd37660038bbaf9bffedb7e1e06f676c9fe8656e5f2e916b3042b9204be6`, and operator-evidence SHA256 `c5864659cf3751ddbf7b1de8162059232cca458dfc0afd7cb7fd518a41b812fa`. C24 recorded `command_rc=2`, `postcheck_rc=125`, `gate_status=command_failed`, no postcheck file, Public `verify-only`, and Hidden resume from checkpoint-125. Retry-v2 ran three bounded 1/2/4-second semantic retries for `kind=harness_protocol` and exhausted; transport telemetry still recorded zero connect failure, ambiguous failure, safe retry, transport retry exhaustion, or tunnel outage.
+
+Target forensics showed that the real executed failure was completion item 4 for `leetcode-all-paths-from-source-to-target`; items 5–7 were circuit-breaker fanout with `executed=false`. The generated DFS duplicated every returned path by its path length. On the first Hidden test graph that deterministic bug expands to 714,066 paths containing about 6,652,872 integer slots, producing a compact JSON result of roughly 14.7 MB. The trusted child-result channel is bounded at 8 MiB. Before C25, exceeding that result-channel bound was mapped to `harness_error`, then to structured retryable `harness_protocol`, so the same deterministic candidate failure was retried three times and aborted the reward batch. This is not a Piston transport failure and not a malformed trusted harness protocol.
+
+Source repair commit `31b997279ff4e908165b93187fc898922a059de4` directly follows immutable C24 checkpoint `5230da43318a632b1c6b05140782db7a8b82472a`. It changes only `src/code_verifier/execution/harness.py` plus three focused test files. Oversized candidate result packets now map to existing candidate-side `output_limit`; malformed/invalid child protocol remains `harness_error`, and genuine Piston/harness infrastructure failures retain structured retry-v2 handling. `PYTHON_HARNESS_PROTOCOL_VERSION` advances from `trusted-parent-v1` to `trusted-parent-v2`, so result-affecting executor/cache identity changes deterministically. Reward mathematics, scientific YAML, model, optimizer, scheduler, dataset, seed, formal pair, Piston definition, transport policy, and completed Public artifacts are unchanged.
+
+Control-plane validation for the C25 source repair:
+
+- Focused harness/Piston/GRPO retry suite: 109 passed.
+- Real Piston acceptance: 9 passed, 2 deselected, with all selected tests passing.
+- `make lint`: PASS; Ruff check/format and strict mypy passed.
+- Full pytest: 1030 passed, 3 skipped; the skipped tests are the normal env-gated Piston cases already exercised explicitly above.
+- `make test-gpu`: 3 passed on the control-plane GTX 1660 Ti smoke suite.
+- C25 `bash -n`: PASS; all 19 embedded Python heredocs compile.
+- C25 script SHA256: `cb68ff0c5dfc852810c6e6aff620093f0dd1ea7f4d759e9c5902607126551fae`.
+- No C25 operator command, Hidden Trainer process, or RTX 4090 workload was started by the control plane.
+
+C25 authenticates the failed C24 target artifacts by exact SHA before any new training action, requires the C24 postcheck to remain absent, and validates its failed run actions and retry-v2 identity. Public remains strict verify-only. Hidden must already exist and is resumed only through production `_latest_valid_resume_checkpoint()` selection; the current target state is expected to select checkpoint-125 without hard-coding that selection. Production resume archives the failed C24 suffix as the next recovery-history entry and restores the checkpoint canonical boundaries before attempt 3. The new attempt keeps top-level Hidden origin `47c7fb2a55b91e471aeca5ededf6e0233f4f93f9`, uses migration class `operational_reward_resilience_v1`, imports exact training code from a detached `31b997279ff4e908165b93187fc898922a059de4` worktree through `PYTHONPATH`, and starts one Trainer process. Postcheck accepts the historical v1 origin attempt, exactly one failed C24 retry-v2 attempt at `3675bf55c339dbfe0d1c0c248418c6efdd0da170` with counters 3 retry attempts / 0 successes / 1 exhaustion / 0 prepare failures, and the final C25 retry-v2 attempt; it requires canonical completed reward streams to contain no infrastructure or sandbox failures while allowing ordinary candidate `output_limit` results.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C25
+  stage_id: WP7-c
+  task_kind: repair
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 31b997279ff4e908165b93187fc898922a059de4
+  training_code_commit: 31b997279ff4e908165b93187fc898922a059de4
+  checkpoint_code_commit: 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9
+  historical_repair_code_commit: 3675bf55c339dbfe0d1c0c248418c6efdd0da170
+  consolidated_baseline_commit: 1781a738ee8f9c6215a68b551350bf1df11e8172
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C25/run.sh
+  operator_script_sha256: cb68ff0c5dfc852810c6e6aff620093f0dd1ea7f4d759e9c5902607126551fae
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  harness_protocol_version: trusted-parent-v2
+  code_migration_class: operational_reward_resilience_v1
+  reward_retry_policy_version: grpo-reward-infra-retry-v2
+  reward_retry_max_retries: 3
+  reward_retry_backoff_seconds: [1.0, 2.0, 4.0]
+  public_action: strict_completed_verify_only
+  hidden_action: production_latest_valid_checkpoint_resume
+  hidden_expected_initial_checkpoint: production_latest_valid_expected_checkpoint-125
+  hidden_checkpoint_125_expected_rewards: 1000
+  hidden_checkpoint_125_expected_rollouts: 1000
+  hidden_checkpoint_125_expected_group_metrics: 250
+  accepted_historical_retry_policy_versions: [grpo-reward-infra-retry-v1, grpo-reward-infra-retry-v2]
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  accepted_c24_status_sha256: 53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3
+  accepted_c24_terminal_log_sha256: 879ddd37660038bbaf9bffedb7e1e06f676c9fe8656e5f2e916b3042b9204be6
+  accepted_c24_operator_evidence_sha256: c5864659cf3751ddbf7b1de8162059232cca458dfc0afd7cb7fd518a41b812fa
+  accepted_c24_postcheck: absent
+  supersedes_checkpoint_id: C24
+  supersedes_checkpoint_commit: 5230da43318a632b1c6b05140782db7a8b82472a
+  superseded_operator_script_sha256: 8a6d0b37d037081390833f7fac4981501cff8d4ab9cbca2ae81d49a2abc33afb
+  supersession_reason: deterministic oversized candidate return was misclassified as retryable harness_protocol instead of candidate output_limit
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C25/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C25/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C25/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C25/postcheck-summary.json"
+  expected_artifacts:
+    - unchanged completed Public run verified at global_step 300 without Public training
+    - completed Hidden run resumed from production-selected latest valid checkpoint to global_step 300
+    - preserved failed C24 attempt/evidence plus append-only C25 attempt and recovery-history archive
+    - mixed historical retry-v1 and retry-v2 attempt metadata accepted without history rewrite
+    - canonical reward streams without infrastructure_failure or sandbox_error rows
+    - oversized candidate results represented as non-infrastructure output_limit when encountered
+    - structured new reward rows with null infrastructure_failure_kind on ordinary candidate outcomes
+    - payload-free operational retry telemetry and versioned operator-evidence.json
+  completed_scope:
+    - control-plane candidate result output-limit source repair and verification
+    - immutable portable C25 operator handoff
+  remaining_scope:
+    - manual target execution and post-run evidence sync
+  resume_allowed: true
+  interruption_class: operator
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C25 supersedes C24 only for the next formal operator execution. Preserve C17–C24 scripts, target evidence, Public completed artifacts, Hidden checkpoints, C24 failed attempt/recovery evidence, transport telemetry, and recovery history unchanged. The control plane does not push or execute C25.
