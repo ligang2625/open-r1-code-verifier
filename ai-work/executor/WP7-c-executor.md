@@ -1601,3 +1601,94 @@ execution_checkpoint:
 ```
 
 C23 supersedes C22 only at the operator-wrapper layer. Preserve all C17–C22 scripts, target evidence, formal runs, checkpoints, transport telemetry, and recovery history unchanged. The control plane does not push, execute C23, or start any RTX 4090 workload.
+
+## C24 — structured non-transport reward infrastructure recovery
+
+C23 completed Public formal GRPO at global step 300, but Hidden failed after checkpoint-125 with four infrastructure-failure completions in one eight-completion reward batch. The first failure was a real executed Piston request; later rows were circuit-breaker fanout. Transport telemetry recorded no ambiguous, connect, safe-retry, or retry-exhaustion event. Root cause was therefore not HTTP transport replay: reward/verification correctly recognized `sandbox_error` as infrastructure failure, while retry-v1 classified retryability only through the transport-specific signature and did not recover structured non-transport Piston or harness failures.
+
+Structured recovery source commit `3675bf55c339dbfe0d1c0c248418c6efdd0da170` preserves the consolidated subtype model: `piston_transport`, `piston_response_protocol`, `harness_protocol`, and `piston_internal` are payload-free retryable infrastructure classes. Invalid/malformed Piston responses, invalid harness reports/protocol failures, and supported Piston `XX` internal failures use those classes. Candidate `wrong_answer`, `syntax_error`, `runtime_error`, `timeout`, `memory_limit`, `output_limit`, `parse_error`, ordinary failed tests, non-`XX` compile-stage failures, and unclassified `sandbox_error` remain non-retryable. GRPO retry-v2 never classifies stderr text. It performs at most three semantic-layer retries of the identical code/function/tests/timeout/memory request after connection discard, exact Python 3.10.0 health validation, and 1/2/4-second backoff. It does not replay ambiguous POSTs in the HTTP transport, regenerate completion text, change RNG, enter optimizer update early, or use a wrapper restart loop.
+
+The consolidated baseline already implemented retry-v2, v1/v2 attempt-history compatibility, structured canonical reward fields, operational `failure_kind`, and analysis compatibility. Final audit found two remaining source gaps. First, with `stop_on_first_failure=false`, a prior candidate failure could mask a later structured infrastructure failure in aggregate execution status, preventing GRPO retry. The final repair gives any per-test `sandbox_error` aggregate precedence while preserving ordinary candidate-failure ordering. Second, result-affecting Piston classification changed without a cache implementation-version bump; the final repair advances `PISTON_EXECUTOR_IMPLEMENTATION_VERSION` to `piston-executor-v2`. Scientific YAML, reward mathematics, model, optimizer, scheduler, dataset, seed, completed B parent, paired definition, Piston definition, and transport-policy identity remain unchanged.
+
+C24 treats Public as immutable completed evidence. It performs strict identity/postcheck verification, records before/after artifact snapshots, and contains no Public `train-grpo` invocation. Hidden must already exist and is resumed only through production `_latest_valid_resume_checkpoint()` selection. At the current target state this is expected to select checkpoint-125 and validate canonical sidecar boundaries of 1000 `rollouts.jsonl`, 1000 `rewards.jsonl`, and 250 `group_metrics.jsonl` rows; selection is not hard-coded to step 125. Existing production resume logic archives the failed suffix and restores the selected sidecar boundary. Hidden resume explicitly preserves origin commit `47c7fb2a55b91e471aeca5ededf6e0233f4f93f9`, records an `operational_reward_resilience_v1` migration to the final repair source with `scientific_change=false`, and writes retry policy `grpo-reward-infra-retry-v2`. Historical v1 attempts remain unchanged and readable; the new attempt writes v2 metadata.
+
+C24 creates a detached temporary worktree at the exact repair source commit, imports Python from that worktree, and keeps the formal command working directory at `/root/sj-tmp/open-r1-code-verifier`. It verifies immutable C17–C23 scripts, including C23 commit `d9829755dd1e7b2554fb9fcbc9f8268936f50d87` and script SHA256 `b9761d58fadb68f515a3b4972b5c90bd633ed123c037255d02a8dd2cf14456ca`. Target preflight remains fail-closed for Git lineage, script/report provenance, machine record, RTX 4090 VRAM, persistent roots, exact Piston runtime, storage, datasets, model/B identity, formal pair, and transport policy. Operator evidence remains secret-free and records real command/postcheck return codes; only both zero may produce `gate_status=passed`.
+
+Control-plane validation before handoff:
+
+- Focused structured recovery suite: 349 passed.
+- Real Piston acceptance: 9 passed, 2 deselected, with zero failures/skips among selected tests.
+- `make lint`: PASS; Ruff check/format and strict mypy passed.
+- Full pytest: 1027 passed, 3 skipped.
+- C24 `bash -n`: PASS; all 18 embedded Python heredocs compile; static provenance/source checks pass.
+- C23 immutable commit and script SHA checks: PASS.
+- C24 script SHA256: `8a6d0b37d037081390833f7fac4981501cff8d4ab9cbca2ae81d49a2abc33afb`.
+- No C24 operator command or RTX 4090 workload was started by the control plane.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C24
+  stage_id: WP7-c
+  task_kind: repair
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 3675bf55c339dbfe0d1c0c248418c6efdd0da170
+  training_code_commit: 3675bf55c339dbfe0d1c0c248418c6efdd0da170
+  checkpoint_code_commit: 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9
+  consolidated_baseline_commit: 1781a738ee8f9c6215a68b551350bf1df11e8172
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C24/run.sh
+  operator_script_sha256: 8a6d0b37d037081390833f7fac4981501cff8d4ab9cbca2ae81d49a2abc33afb
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  code_migration_class: operational_reward_resilience_v1
+  reward_retry_policy_version: grpo-reward-infra-retry-v2
+  reward_retry_max_retries: 3
+  reward_retry_backoff_seconds: [1.0, 2.0, 4.0]
+  public_action: strict_completed_verify_only
+  hidden_action: production_latest_valid_checkpoint_resume
+  hidden_expected_initial_checkpoint: production_latest_valid_expected_checkpoint-125
+  hidden_checkpoint_125_expected_rewards: 1000
+  hidden_checkpoint_125_expected_rollouts: 1000
+  hidden_checkpoint_125_expected_group_metrics: 250
+  accepted_historical_retry_policy_versions: [grpo-reward-infra-retry-v1, grpo-reward-infra-retry-v2]
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C23
+  supersedes_checkpoint_commit: d9829755dd1e7b2554fb9fcbc9f8268936f50d87
+  superseded_operator_script_sha256: b9761d58fadb68f515a3b4972b5c90bd633ed123c037255d02a8dd2cf14456ca
+  supersession_reason: retry-v1 did not recover structured non-transport Piston and harness infrastructure failures
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C24/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C24/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C24/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C24/postcheck-summary.json"
+  expected_artifacts:
+    - unchanged completed Public run verified at global_step 300 without Public training
+    - completed Hidden run resumed from production-selected latest valid checkpoint to global_step 300
+    - Hidden new attempt and migration bound to repair-v2 source and preserved repair-v1 origin
+    - mixed historical v1/new v2 attempt metadata accepted without history rewrite
+    - canonical reward streams without infrastructure_failure or sandbox_error rows
+    - structured new reward rows with null infrastructure_failure_kind on normal outcomes
+    - payload-free operational retry telemetry and versioned operator-evidence.json
+  completed_scope:
+    - control-plane structured recovery source repair and verification
+    - immutable portable C24 operator handoff
+  remaining_scope:
+    - manual target execution and post-run evidence sync
+  resume_allowed: true
+  interruption_class: operator
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C24 supersedes C23 for formal operator execution. Preserve C17–C23 scripts, target evidence, Public completed artifacts, Hidden checkpoints, transport telemetry, and recovery history unchanged. Make the exact C24 checkpoint commit reachable on the RTX 4090, checkout it cleanly, verify the tracked script SHA256, then run C24 only by explicit human decision. The control plane does not push or execute C24.
