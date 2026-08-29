@@ -1358,3 +1358,49 @@ execution_checkpoint:
 ```
 
 C19 supersedes C18 only at the operator-wrapper layer. Existing C18 formal run/checkpoint/transport artifacts must not be deleted, renamed, rewritten, or manually migrated; C19 is designed to consume them in place while preserving their C18 training Git identity. The control plane does not execute C19 on the 4090 and does not push automatically.
+
+## C20 — preserve C18 source identity without changing path-sensitive GRPO config identity
+
+The real C19 target invocation progressed beyond the repaired wrapper-side `_validate_resume_run()` signature and then failed with `existing GRPO run identity does not match the requested resume`. Control-plane source audit identified the mismatch deterministically. GRPO config loading resolves relative paths against `Path.cwd()`: `_path()` converts `piston_config: configs/execution/piston-local.yaml` into an absolute path, and `_config_hash()` persists that absolute path. The existing C18 run was launched from the canonical target checkout. C19 correctly loaded C18 Python code from a temporary detached C18 worktree, but its actual `train-grpo` subshell also changed cwd into that `/tmp/...` worktree. Consequently the resumed config's absolute `piston_config` path, and therefore `config_hash`, differed from the existing C18 run even though the file bytes and scientific settings were unchanged.
+
+C20 is an operator-wrapper-only correction. It still loads all training Python code from the exact C18 commit `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b`, so `collect_environment()['project_commit']` remains C18 and there is no cross-commit Trainer resume. However, C20 canonicalizes cwd to the main target checkout and does not `cd` into the temporary C18 worktree for `train-grpo`. Therefore relative config paths resolve exactly as they did when the existing C18 run was created. No production source, formal config, pair identity, reward, optimizer, dataset, B/model, Piston policy, or checkpoint bytes are changed.
+
+Control-plane reproduction confirmed the bug and repair: with the same C18 source and the same synthetic formal dataset path, loading the config from canonical cwd resolved `piston_config` to the canonical checkout and produced one config hash; changing only cwd to the temporary C18 worktree resolved `piston_config` under `/tmp/...` and produced a different config hash. C20 keeps C18 module/project provenance while restoring the canonical cwd/path identity. Shell syntax and all 17 embedded Python heredocs pass, and 85 targeted GRPO resume/lineage/transport-sidecar tests pass.
+
+```yaml
+execution_checkpoint:
+  checkpoint_id: C20
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 71f1ce0194089a47fb2e23c7cce1ea589a8d562d
+  training_code_commit: a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C20/run.sh
+  operator_script_sha256: 049c28c1f9b5fbd5a823a50ec6b10105ecc5ea09ff19c308110ebb601292e25c
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  transport_connection_implementation: httpclient-single-keepalive-v2
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C19
+  supersedes_checkpoint_commit: 71f1ce0194089a47fb2e23c7cce1ea589a8d562d
+  superseded_operator_script_sha256: 9a762a5ec6484b5ae374e2e79230f212e76551588df170fbe75c754c8afc0dbb
+  supersession_reason: C19 changed train-grpo cwd to the temporary C18 worktree, changing the absolute piston_config path embedded in config_hash
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C20/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C20/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C20/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C20/postcheck-summary.json"
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C20 supersedes C19 at the operator-wrapper layer only. Preserve all existing C18/C19 operator evidence and all formal run/checkpoint/transport artifacts in place; C20 consumes the existing C18 Trainer checkpoint without rewriting its training Git or scientific identity.
