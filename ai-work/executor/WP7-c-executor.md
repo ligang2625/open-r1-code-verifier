@@ -1862,3 +1862,72 @@ execution_checkpoint:
 ```
 
 C26 is the only next target-GPU gate. It consumes the already-completed C/D formal adapters and must not rerun Public or Hidden GRPO. Make the exact C26 checkpoint commit reachable on the RTX 4090, checkout it cleanly, verify the tracked script SHA256, and run C26 only by explicit human decision. The control plane does not push, start, or monitor C26.
+
+## C27 — supersede pre-generation C26 shell-local failure
+
+The operator started C26 manually on the RTX 4090. Read-only target inspection shows the attempt reached the completed source/preparation preflight and recorded `generation actions public=fresh hidden=fresh`, then exited at C26 `run.sh` line 688 before the first `code-verifier generate-eval` invocation because `set -u` expanded `$label` inside the same `local` declaration that was assigning `label`. C26 terminal log SHA256 is `28b31446fee864dab14ed9dd73d83831b1679d86c8117b93e01a3570bdab0c80`. The C26 operator directory contains only `run.lock` and `terminal.log`; there is no `status`, `operator-evidence.json`, or `postcheck-summary.json`. At diagnosis time the target generation root contained only the prior B bundle and no C/D generation directories, so no C/D generation row had been created or overwritten by C26.
+
+C27 preserves C26 unchanged and fixes both instances of the same shell bug: `run_generate()` and `readback_one()` now assign `run_name/grpo_run/label` first and derive `out_file` in a separate `local` statement. C27 additionally authenticates the immutable C26 failure log/script before generation. `bash -n` passes, all 14 embedded Python heredocs compile, and a `bash -u` focused declaration check resolves `/tmp/public.generate.stdout` without an unbound variable. C27 remains generation-only and does not add GRPO training or live Piston execution.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C27
+  stage_id: WP7-c
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: d53a18cd951a3cab7e5571f95b3b508b61878b2d
+  workflow_runtime_commit: 657030c47a29411e343049926de10730858104a8
+  operator_checkpoint_reconciliation_version: 1
+  reconciled_checkpoint_id: C25
+  reconciled_checkpoint_commit: e0ec354790d42753c8170625adea4d5e28fe4325
+  reconciled_checkpoint_task_kind_raw: repair
+  reconciled_checkpoint_task_kind_effective: implementation
+  reconciled_control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-formal/C25
+  accepted_c25_operator_evidence_sha256: 0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e
+  accepted_c25_postcheck_sha256: c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63
+  operator_gate_id: grpo-cd-generate-eval
+  operator_handoff_mode: portable_target
+  operator_restart_policy: exact_rerun
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-generate-eval/C27/run.sh
+  operator_script_sha256: e03bae85798260d2e5dfe4fb515bf7f703dc47f09deae57c67a3c8ac6f164926
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-generate-eval/C27
+  supersedes_checkpoint_commit: d53a18cd951a3cab7e5571f95b3b508b61878b2d
+  superseded_operator_script_sha256: f1fb281c0aef9ca237584b99374033a58a68fa75adc26ffbf1cdc111ae3f1565
+  superseded_terminal_log_sha256: 28b31446fee864dab14ed9dd73d83831b1679d86c8117b93e01a3570bdab0c80
+  supersession_reason: C26 same-local-declaration expansion of label failed under set -u before generation dispatch
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C27/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C27/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C27/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-generate-eval/C27/postcheck-summary.json"
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  evaluation_dataset_sha256: 770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae
+  ordered_problem_ids_sha256: 2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  expected_artifacts:
+    - completed C-public-grpo-formal-seed42 generation bundle with exactly 400 unique ordered rows
+    - completed D-hidden-grpo-formal-seed42 generation bundle with exactly 400 unique ordered rows
+    - strict C and D quick readback with resumed=400 and generated=0 without bundle mutation
+    - generation-only execution with no Piston verification and no GRPO training
+    - versioned C27 operator-evidence.json and postcheck-summary.json
+  completed_scope:
+    - C25 formal gate remains accepted through reconciliation v1; no C/D retraining
+    - C26 pre-generation shell failure authenticated and preserved without generation output
+    - both same-declaration label expansion defects fixed in immutable C27 operator script
+    - immutable portable C27 generation operator handoff
+  remaining_scope:
+    - user manually runs C27 on the RTX 4090; C and D generation only
+    - sync complete C/D generation bundles plus C27 evidence byte-for-byte to the recorded 1660 Ti receive directory
+    - run real local Piston verify-eval and aggregate-eval for C/D, 400 rows each, on the GTX 1660 Ti
+    - write the completed WP7-c implementation execution record E0 and stop for a fresh independent reviewer conversation
+  resume_allowed: true
+  interruption_class: operator
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: fp16
+  status: awaiting_operator
+```
+
+C27 supersedes C26 only for the generation gate. C26 remains immutable failed historical evidence. The control plane does not push, start, or monitor C27.
