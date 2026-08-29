@@ -1460,3 +1460,88 @@ execution_checkpoint:
 ```
 
 C21 supersedes C20 only at the operator-wrapper layer. Preserve all existing C18/C19/C20 operator evidence and all formal run/checkpoint/transport/recovery-history artifacts in place. C21 is designed to consume the existing C18 run and checkpoint lineage without changing its training Git identity or scientific configuration.
+
+## C22 — in-process reward transport recovery and explicit checkpoint code migration
+
+C20 reached Public GRPO progress beyond checkpoint-175 twice, then failed at approximately steps 196 and 198 with transient ambiguous Piston transport failures. The second failure produced six infrastructure-failure reward rows in the final eight-completion batch, while target transport telemetry reached two ambiguous failures with zero connect failures and zero safe transport retries. The production reward circuit breaker correctly aborted before optimizer update, but process exit forced later work back to checkpoint-175.
+
+C21 added bounded shell-level Trainer process recovery without changing the C18 training source. It is preserved as immutable history but was not adopted as the final recovery design. C22 supersedes that wrapper-level approach with production training commit `47c7fb2a55b91e471aeca5ededf6e0233f4f93f9`: the reward callback retries only the exact sanitized Piston transport-failure signature, rebuilds and health-checks the exact Python 3.10.0 connection before each retry, then re-executes the identical code/function/tests/timeout/memory request after 1/2/4-second bounded backoff. It does not regenerate completions, change RNG, roll back model state, or enter optimizer update before reward success. Successful transient failures produce only the final successful scientific reward row; payload-free retry events and counters remain operational telemetry. Exhaustion after three retries remains fail-closed before optimizer update.
+
+This repair intentionally changes training code while preserving scientific identity. Public `run.json.git_commit` remains the C18 origin `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b`; each new attempt records the actual repair code commit. The first resume from legacy C18 checkpoint-175 requires `operational_reward_resilience_v1` and records C18-to-repair migration with `scientific_change=false`. Trainer checkpoint sidecars now use v2 and persist the actual 40-hex training code commit. Existing C18 v1 sidecars remain readable only by strict derivation from the preserved run origin. Later resumes from a v2 repair checkpoint are same-code resumes and must not record a false migration.
+
+Formal Public/Hidden YAML, max_steps=300, save_steps=25, seed=42, reward formula, model, LoRA, optimizer, scheduler, datasets, completed B parent, Piston scientific definition, and transport policy are unchanged. The formal pair remains `31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9`; Piston definition remains `f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`; transport policy remains `0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3`.
+
+C22 keeps the proven C20 path-identity boundary: it creates a temporary detached worktree at the exact repair commit, loads `code_verifier` through that worktree's `src`, and runs `train-grpo` from the canonical target checkout so relative `piston_config` resolution and config hash remain unchanged. Public uses production latest-valid checkpoint selection and explicit preserved-origin/migration arguments. Hidden starts fresh from formal B when absent. Each pair member launches at most one Trainer process per C22 invocation; C22 contains no shell process-retry loop. Final postcheck accepts Public's C18 origin plus C18/repair attempt lineage, requires migration exactly when selected checkpoint code differs, rejects false same-code migrations, requires Hidden origin/attempt code at the repair commit, rejects canonical infrastructure/sandbox reward failures, and aggregates retry counters into postcheck/evidence.
+
+Control-plane validation before handoff:
+
+- Focused required suite: 238 passed.
+- `make lint`: PASS; Ruff check/format and strict mypy all passed.
+- `make test`: 1009 passed, 3 skipped; GPU smoke tests ran on the GTX 1660 Ti.
+- real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`: 9 passed, 2 deselected, zero failures/skips among selected Piston tests.
+- explicit `make test-gpu`: 3 passed.
+- C22 `bash -n`: PASS; all 17 embedded Python blocks compile; uppercase `set -u` source audit has no unresolved variable except the intentionally optional external machine-pointer override.
+- C22 script SHA256: `6baf5e898b735796e7b396e53ba3254ef00208d19035a4b9e69008f2c8e3cd7f`.
+- No C22 operator command or RTX 4090 workload was started by the control plane.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C22
+  stage_id: WP7-c
+  task_kind: repair
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  result_code_commit: 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9
+  training_code_commit: 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9
+  workflow_transport_commit: b4ac6acab60703c288a2e2e82e84398a11320177
+  operator_gate_id: grpo-cd-formal
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-formal/C22/run.sh
+  operator_script_sha256: 6baf5e898b735796e7b396e53ba3254ef00208d19035a4b9e69008f2c8e3cd7f
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  formal_public_config_sha256: e7353aecf28cf496def0a03f64a7ee8c739dc914e8df22a23e008bb72ef0e1e2
+  formal_hidden_config_sha256: 951bef7fcd17694bac9d52e180290bcbb46b69f3756810c9402075b1d422a129
+  formal_save_steps: 25
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  transport_policy_sha256: 0e0b85e0331840c9825cc6d4cb357e4d129e4906d945b85f80d532adecf655f3
+  code_migration_class: operational_reward_resilience_v1
+  reward_retry_policy_version: grpo-reward-infra-retry-v1
+  reward_retry_max_retries: 3
+  reward_retry_backoff_seconds: [1.0, 2.0, 4.0]
+  public_run_origin_commit: a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b
+  public_initial_expected_checkpoint: production_latest_valid_expected_checkpoint-175
+  checkpoint_log_state_write_version: 2
+  checkpoint_log_state_legacy_read_version: 1
+  accepted_c13_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_c13_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  supersedes_checkpoint_id: C21
+  supersedes_checkpoint_commit: 107d08dc115bdeea0a417702f453d4b2c048b0c0
+  superseded_operator_script_sha256: 51873cbc7a7c35a021b48296d934043a4f8218ae31278ef1931637d77f0f13f4
+  superseded_c20_checkpoint_commit: 720a48cc9edb281ccb91b8f59080c65c118bde65
+  superseded_c20_operator_script_sha256: 049c28c1f9b5fbd5a823a50ec6b10105ecc5ea09ff19c308110ebb601292e25c
+  supersession_reason: C21 wrapper-level Trainer process recovery is superseded by bounded in-process retry of the identical reward execution request
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C22/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C22/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C22/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-formal/C22/postcheck-summary.json"
+  expected_artifacts:
+    - completed Public run with origin C18, accurate per-attempt code provenance, and global_step 300
+    - completed Hidden run with repair-code origin and global_step 300
+    - canonical reward streams without infrastructure_failure or sandbox_error rows
+    - payload-free retry telemetry and versioned operator-evidence.json
+  completed_scope:
+    - control-plane production repair and engineering verification
+    - immutable portable C22 operator handoff
+  remaining_scope:
+    - manual target execution and post-run evidence sync
+  resume_allowed: true
+  interruption_class: operator
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  formal_public_run: C-public-grpo-formal-seed42
+  formal_hidden_run: D-hidden-grpo-formal-seed42
+  status: awaiting_operator
+```
+
+C22 supersedes C21 as the only formal operator handoff. Preserve C18/C19/C20/C21 scripts, evidence, and formal run/checkpoint/recovery history unchanged. Make the exact C22 checkpoint commit reachable on the RTX 4090, checkout it cleanly, verify the tracked script SHA256, then run only C22 manually. The control plane does not push or execute C22.
