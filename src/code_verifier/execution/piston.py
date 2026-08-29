@@ -576,6 +576,18 @@ class PistonExecutor:
         """Return cumulative payload-free telemetry owned by this executor instance."""
         return self._transport_telemetry
 
+    def prepare_infrastructure_retry(self) -> str:
+        """Drop persistent HTTP state, verify the exact runtime, then force a fresh POST connection."""
+        close = getattr(self._transport, "close", None)
+        if callable(close):
+            close()
+        try:
+            return self.validate_runtime()
+        finally:
+            close = getattr(self._transport, "close", None)
+            if callable(close):
+                close()
+
     def validate_runtime(self) -> str:
         """Require the configured exact Python runtime to be installed and return its version."""
         try:

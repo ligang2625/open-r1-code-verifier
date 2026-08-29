@@ -356,7 +356,7 @@ def test_grpo_unrecovered_infrastructure_failure_trips_circuit_breaker_and_abort
             )
         ],
     )
-    executor = MockExecutor([sandbox_result, _execution_result(passed=True)])
+    executor = MockExecutor([sandbox_result])
     callback = _callback(tmp_path, reward_mode="public", executor=executor)
     columns = _reward_columns(hidden=False)
 
@@ -1122,7 +1122,13 @@ def _passing_results(count: int) -> list[ExecutionResult]:
 def _create_fake_resume_checkpoint(run_dir: Path, *, step: int = 1) -> Path:
     checkpoint = run_dir / "checkpoints" / f"checkpoint-{step}"
     checkpoint.mkdir()
-    grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=step)
+    run_metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    grpo_module._write_grpo_log_checkpoint_state(
+        run_dir=run_dir,
+        checkpoint_dir=checkpoint,
+        global_step=step,
+        code_commit=run_metadata["git_commit"],
+    )
     return checkpoint
 
 
@@ -1418,7 +1424,7 @@ def test_pinned_grpo_runtime_and_checkpoint_hooks_compose_on_real_train(tmp_path
             peft_config=None,
         )
         grpo_module._install_grpo_runtime_telemetry(trainer)
-        grpo_module._install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir)
+        grpo_module._install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir, code_commit="a" * 40)
         trainer.train()
 
     checkpoint = checkpoint_root / "checkpoint-1"
@@ -1644,13 +1650,14 @@ def test_grpo_checkpoint_snapshot_binds_stream_logs_after_trainer_save(tmp_path:
             (checkpoint_root / "checkpoint-10").mkdir()
 
     trainer = FakeTrainer()
-    grpo_module._install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir)
+    grpo_module._install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir, code_commit="a" * 40)
     trainer._save_checkpoint(None, None)
 
     state_path = checkpoint_root / "checkpoint-10" / grpo_module._GRPO_LOG_STATE_FILENAME
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["version"] == 1
+    assert state["version"] == 2
     assert state["global_step"] == 10
+    assert state["code_commit"] == "a" * 40
     assert set(state["logs"]) == set(grpo_module._GRPO_STREAM_LOG_NAMES)
     assert all(item["line_count"] == 1 for item in state["logs"].values())
 
@@ -1665,7 +1672,9 @@ def test_grpo_resume_archives_failed_suffix_and_restores_checkpoint_prefix(tmp_p
         path = run_dir / name
         path.write_text(f'{{"step":30,"kind":{index}}}\n', encoding="utf-8")
         prefix_bytes[name] = path.read_bytes()
-    grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=30)
+    grpo_module._write_grpo_log_checkpoint_state(
+        run_dir=run_dir, checkpoint_dir=checkpoint, global_step=30, code_commit="a" * 40
+    )
     for index, name in enumerate(grpo_module._GRPO_STREAM_LOG_NAMES, 1):
         path = run_dir / name
         with path.open("a", encoding="utf-8") as handle:
@@ -1727,7 +1736,9 @@ def test_grpo_resume_recovery_survives_stale_transaction_staging(tmp_path: Path)
         path = run_dir / name
         path.write_text(f'{{"step":30,"kind":{index}}}\n', encoding="utf-8")
         prefix_bytes[name] = path.read_bytes()
-    grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=30)
+    grpo_module._write_grpo_log_checkpoint_state(
+        run_dir=run_dir, checkpoint_dir=checkpoint, global_step=30, code_commit="a" * 40
+    )
 
     history = run_dir / "checkpoints" / grpo_module._GRPO_RECOVERY_HISTORY_DIR
     history.mkdir()
@@ -1792,7 +1803,12 @@ def test_latest_valid_resume_checkpoint_skips_newer_checkpoint_without_log_sidec
             else:
                 path.write_bytes(b"complete")
         if with_sidecar:
-            grpo_module._write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint, global_step=step)
+            grpo_module._write_grpo_log_checkpoint_state(
+                run_dir=run_dir,
+                checkpoint_dir=checkpoint,
+                global_step=step,
+                code_commit="a" * 40,
+            )
         return checkpoint
 
     checkpoint_20 = write_candidate(20, with_sidecar=True)

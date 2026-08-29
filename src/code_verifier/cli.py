@@ -817,6 +817,7 @@ def _train_grpo(args: argparse.Namespace) -> int:
     sidecar_path = _transport_sidecar_path(output_root, selected_config.run_name)
     resume = None if args.resume_from_checkpoint is None else Path(str(args.resume_from_checkpoint))
     resume_run_git_commit = None if args.resume_run_git_commit is None else str(args.resume_run_git_commit)
+    resume_code_migration = None if args.resume_code_migration is None else str(args.resume_code_migration)
     if resume is None:
         if run_dir.exists():
             raise GRPOTrainingError("GRPO run directory already exists; explicit resume is required")
@@ -865,6 +866,7 @@ def _train_grpo(args: argparse.Namespace) -> int:
             executor=executor,
             resume_from_checkpoint=resume,
             resume_run_git_commit=resume_run_git_commit,
+            resume_code_migration=resume_code_migration,
         )
     finally:
         _write_transport_sidecar(
@@ -1215,6 +1217,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume-run-git-commit",
         default=None,
         help="explicit preserved run commit required when resuming across a later operator/code commit",
+    )
+    train_grpo_parser.add_argument(
+        "--resume-code-migration",
+        choices=("operational_reward_resilience_v1",),
+        default=None,
+        help=(
+            "explicit cross-commit compatibility class; current supported value is operational_reward_resilience_v1"
+        ),
     )
     train_grpo_parser.add_argument(
         "--piston-transport-policy",

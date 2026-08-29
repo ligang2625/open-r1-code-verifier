@@ -9,6 +9,7 @@ import math
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -176,7 +177,8 @@ _GRPO_RUN_LAYOUT = {
 _GRPO_STREAM_LOG_NAMES = ("rollouts.jsonl", "rewards.jsonl", "group_metrics.jsonl")
 _GRPO_LOG_STATE_FILENAME = "code_verifier_log_state.json"
 _GRPO_RECOVERY_HISTORY_DIR = "recovery-history"
-_GRPO_LOG_STATE_VERSION = 1
+_GRPO_LOG_STATE_LEGACY_VERSION = 1
+_GRPO_LOG_STATE_VERSION = 2
 _GRPO_TRAINER_RESUME_FILES = (
     "adapter_config.json",
     "adapter_model.safetensors",
@@ -187,6 +189,10 @@ _GRPO_TRAINER_RESUME_FILES = (
     "training_args.bin",
 )
 _PAIR_SCHEMA_VERSION = 2
+GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE = "operational_reward_resilience_v1"
+_GRPO_REWARD_INFRA_RETRY_POLICY_VERSION = "grpo-reward-infra-retry-v1"
+_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+_PISTON_TRANSPORT_FAILURE_STDERR = "piston transport failed"
 _GPU_HOURS_SEMANTICS = (
     "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
     "model load, train, and save"
@@ -562,12 +568,108 @@ def _append_lines(path: Path, lines: Sequence[str]) -> None:
         os.fsync(handle.fileno())
 
 
-class _TrainingExecutorCircuitBreaker:
-    """Stop repeated remote executor calls after the first infrastructure failure in one training attempt."""
+@dataclass
+class _RewardInfrastructureRetryTelemetry:
+    """Payload-free counters for bounded in-process reward infrastructure recovery."""
 
-    def __init__(self, executor: CodeExecutor) -> None:
+    retry_attempts: int = 0
+    retry_successes: int = 0
+    retry_exhausted: int = 0
+    recovery_prepare_failures: int = 0
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "policy_version": _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION,
+            "max_retries_per_reward_item": len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+            "backoff_seconds": list(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+            "retry_attempts": self.retry_attempts,
+            "retry_successes": self.retry_successes,
+            "retry_exhausted": self.retry_exhausted,
+            "recovery_prepare_failures": self.recovery_prepare_failures,
+        }
+
+
+def _has_sandbox_failure(result: ExecutionResult) -> bool:
+    return result.status is ExecutionStatus.SANDBOX_ERROR or any(
+        item.status is ExecutionStatus.SANDBOX_ERROR for item in result.test_results
+    )
+
+
+def _has_retryable_piston_transport_failure(result: ExecutionResult) -> bool:
+    """Recognize only the sanitized transport-failure signature emitted by PistonExecutor."""
+    return any(
+        item.status is ExecutionStatus.SANDBOX_ERROR and item.stderr == _PISTON_TRANSPORT_FAILURE_STDERR
+        for item in result.test_results
+    )
+
+
+class _TrainingExecutorCircuitBreaker:
+    """Retry exact Piston transport failures in-process, then fail closed with a circuit breaker."""
+
+    def __init__(
+        self,
+        executor: CodeExecutor,
+        *,
+        telemetry: _RewardInfrastructureRetryTelemetry | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        event_sink: Callable[[Mapping[str, object]], None] | None = None,
+    ) -> None:
         self._executor = executor
         self._tripped = False
+        self._telemetry = telemetry if telemetry is not None else _RewardInfrastructureRetryTelemetry()
+        self._sleep = sleep
+        self._event_sink = event_sink
+
+    def _emit(self, event: str, **fields: object) -> None:
+        if self._event_sink is not None:
+            self._event_sink(
+                {
+                    "event": event,
+                    "policy_version": _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION,
+                    **fields,
+                }
+            )
+
+        retry_index = fields.get("retry_index")
+        if event == "grpo_reward_infrastructure_retry_scheduled":
+            print(
+                f"GRPO reward infrastructure retry {retry_index}/3 after transient Piston transport failure",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "grpo_reward_infrastructure_retry_succeeded":
+            print(
+                f"GRPO reward infrastructure retry succeeded on attempt {retry_index}/3",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "grpo_reward_infrastructure_retry_exhausted":
+            print("GRPO reward infrastructure retry exhausted after 3 retries", file=sys.stderr, flush=True)
+
+    def _prepare_retry(self, retry_index: int) -> bool:
+        prepare = getattr(self._executor, "prepare_infrastructure_retry", None)
+        if not callable(prepare):
+            self._telemetry.recovery_prepare_failures += 1
+            self._emit(
+                "grpo_reward_infrastructure_retry_prepare_failed",
+                retry_index=retry_index + 1,
+                backoff_seconds=_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS[retry_index],
+                error_type="MissingPrepareHook",
+            )
+            return False
+        try:
+            prepare()
+        except Exception as error:
+            self._telemetry.recovery_prepare_failures += 1
+            self._emit(
+                "grpo_reward_infrastructure_retry_prepare_failed",
+                retry_index=retry_index + 1,
+                backoff_seconds=_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS[retry_index],
+                error_type=type(error).__name__,
+            )
+            return False
+        self._sleep(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS[retry_index])
+        return True
 
     def execute(
         self,
@@ -590,9 +692,51 @@ class _TrainingExecutorCircuitBreaker:
         except Exception:
             self._tripped = True
             raise
-        if result.status is ExecutionStatus.SANDBOX_ERROR:
-            self._tripped = True
-        return result
+        if not _has_retryable_piston_transport_failure(result):
+            if _has_sandbox_failure(result):
+                self._tripped = True
+            return result
+
+        last_result = result
+        for retry_index, delay in enumerate(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS):
+            self._telemetry.retry_attempts += 1
+            self._emit(
+                "grpo_reward_infrastructure_retry_scheduled",
+                retry_index=retry_index + 1,
+                backoff_seconds=delay,
+            )
+            if not self._prepare_retry(retry_index):
+                continue
+            try:
+                candidate = self._executor.execute(
+                    code,
+                    function_name,
+                    tests,
+                    timeout_seconds,
+                    memory_limit_mb,
+                )
+            except Exception:
+                self._tripped = True
+                raise
+            last_result = candidate
+            if not _has_retryable_piston_transport_failure(candidate):
+                if _has_sandbox_failure(candidate):
+                    self._tripped = True
+                    return candidate
+                self._telemetry.retry_successes += 1
+                self._emit(
+                    "grpo_reward_infrastructure_retry_succeeded",
+                    retry_index=retry_index + 1,
+                )
+                return candidate
+
+        self._telemetry.retry_exhausted += 1
+        self._tripped = True
+        self._emit(
+            "grpo_reward_infrastructure_retry_exhausted",
+            retries=len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+        )
+        return last_result
 
 
 def build_grpo_reward_callback(
@@ -604,6 +748,9 @@ def build_grpo_reward_callback(
     group_metrics_log_path: Path,
     num_generations: int,
     max_completion_length: int,
+    retry_telemetry: _RewardInfrastructureRetryTelemetry | None = None,
+    operational_log_path: Path | None = None,
+    retry_sleep: Callable[[float], None] = time.sleep,
 ) -> Callable[..., list[float]]:
     """Build one pinned-TRL reward function with strict alignment and sanitized logs."""
     if reward_mode not in {"public", "hidden"}:
@@ -620,7 +767,30 @@ def build_grpo_reward_callback(
     expected_columns = {"problem_id", "function_name", "metadata", "visible_tests"}
     if reward_mode == "hidden":
         expected_columns.add("train_hidden_tests")
-    training_executor = _TrainingExecutorCircuitBreaker(executor)
+    telemetry = retry_telemetry if retry_telemetry is not None else _RewardInfrastructureRetryTelemetry()
+
+    def write_retry_event(value: Mapping[str, object]) -> None:
+        if operational_log_path is None:
+            return
+        _append_lines(
+            operational_log_path,
+            [
+                _jsonl_line(
+                    {
+                        "record_type": "reward_infrastructure_retry",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        **value,
+                    }
+                )
+            ],
+        )
+
+    training_executor = _TrainingExecutorCircuitBreaker(
+        executor,
+        telemetry=telemetry,
+        sleep=retry_sleep,
+        event_sink=write_retry_event,
+    )
 
     def reward_callback(
         *,
@@ -932,8 +1102,10 @@ def _install_grpo_runtime_telemetry(trainer: Any) -> None:
     trainer._maybe_log_save_evaluate = MethodType(timed_maybe_log, trainer)
 
 
-def _install_grpo_checkpoint_log_snapshots(trainer: Any, *, run_dir: Path) -> None:
+def _install_grpo_checkpoint_log_snapshots(trainer: Any, *, run_dir: Path, code_commit: str) -> None:
     """Attach one post-save hook that binds canonical streaming logs to each Trainer checkpoint."""
+    if re.fullmatch(r"[0-9a-f]{40}", code_commit) is None:
+        raise GRPOTrainingError("GRPO checkpoint code commit is invalid")
     original_save = getattr(trainer, "_save_checkpoint", None)
     if not callable(original_save):
         raise GRPOTrainingError("pinned GRPO trainer does not expose checkpoint save hook")
@@ -955,7 +1127,12 @@ def _install_grpo_checkpoint_log_snapshots(trainer: Any, *, run_dir: Path) -> No
         if isinstance(raw_step, bool) or not isinstance(raw_step, int) or raw_step <= 0:
             raise GRPOTrainingError("pinned GRPO trainer saved a checkpoint without a valid global_step")
         checkpoint_dir = expected_root / f"checkpoint-{raw_step}"
-        _write_grpo_log_checkpoint_state(run_dir=run_dir, checkpoint_dir=checkpoint_dir, global_step=raw_step)
+        _write_grpo_log_checkpoint_state(
+            run_dir=run_dir,
+            checkpoint_dir=checkpoint_dir,
+            global_step=raw_step,
+            code_commit=code_commit,
+        )
         return result
 
     trainer._save_checkpoint = MethodType(save_with_log_snapshot, trainer)
@@ -1163,10 +1340,18 @@ def _checkpoint_step(checkpoint_dir: Path) -> int:
     return int(match.group(1))
 
 
-def _write_grpo_log_checkpoint_state(*, run_dir: Path, checkpoint_dir: Path, global_step: int) -> None:
+def _write_grpo_log_checkpoint_state(
+    *,
+    run_dir: Path,
+    checkpoint_dir: Path,
+    global_step: int,
+    code_commit: str,
+) -> None:
     """Persist the exact streaming-log boundary that belongs to one Trainer checkpoint."""
     if isinstance(global_step, bool) or not isinstance(global_step, int) or global_step <= 0:
         raise GRPOTrainingError("GRPO checkpoint global_step is invalid")
+    if re.fullmatch(r"[0-9a-f]{40}", code_commit) is None:
+        raise GRPOTrainingError("GRPO checkpoint code commit is invalid")
     try:
         resolved_run = run_dir.resolve(strict=True)
         checkpoint_root = (resolved_run / "checkpoints").resolve(strict=True)
@@ -1185,12 +1370,29 @@ def _write_grpo_log_checkpoint_state(*, run_dir: Path, checkpoint_dir: Path, glo
         {
             "version": _GRPO_LOG_STATE_VERSION,
             "global_step": global_step,
+            "code_commit": code_commit,
             "logs": logs,
         },
     )
 
 
-def _validate_resume_log_checkpoint(run_dir: Path, checkpoint_dir: Path) -> dict[str, object]:
+def _run_origin_code_commit(run_dir: Path) -> str:
+    try:
+        value = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise GRPOTrainingError("GRPO run origin code provenance is unreadable") from None
+    code_commit = value.get("git_commit") if isinstance(value, Mapping) else None
+    if not isinstance(code_commit, str) or re.fullmatch(r"[0-9a-f]{40}", code_commit) is None:
+        raise GRPOTrainingError("GRPO run origin code provenance is invalid")
+    return code_commit
+
+
+def _validate_resume_log_checkpoint(
+    run_dir: Path,
+    checkpoint_dir: Path,
+    *,
+    legacy_code_commit: str | None = None,
+) -> dict[str, object]:
     """Read-only validation that current canonical logs contain the selected checkpoint prefix exactly."""
     try:
         resolved_run = run_dir.resolve(strict=True)
@@ -1203,10 +1405,27 @@ def _validate_resume_log_checkpoint(run_dir: Path, checkpoint_dir: Path) -> dict
         raise
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise GRPOTrainingError("resume checkpoint canonical GRPO log-state evidence is unreadable") from None
-    if not isinstance(value, dict) or set(value) != {"version", "global_step", "logs"}:
+    if not isinstance(value, dict):
         raise GRPOTrainingError("resume checkpoint canonical GRPO log-state schema is invalid")
     step = _checkpoint_step(resolved_checkpoint)
-    if value.get("version") != _GRPO_LOG_STATE_VERSION or value.get("global_step") != step:
+    version = value.get("version")
+    if version == _GRPO_LOG_STATE_LEGACY_VERSION:
+        if set(value) != {"version", "global_step", "logs"}:
+            raise GRPOTrainingError("resume checkpoint canonical GRPO log-state schema is invalid")
+        checkpoint_code_commit = legacy_code_commit
+        if checkpoint_code_commit is None:
+            checkpoint_code_commit = _run_origin_code_commit(resolved_run)
+    elif version == _GRPO_LOG_STATE_VERSION:
+        if set(value) != {"version", "global_step", "code_commit", "logs"}:
+            raise GRPOTrainingError("resume checkpoint canonical GRPO log-state schema is invalid")
+        checkpoint_code_commit = value.get("code_commit")
+    else:
+        raise GRPOTrainingError("resume checkpoint canonical GRPO log-state identity is invalid")
+    if (
+        value.get("global_step") != step
+        or not isinstance(checkpoint_code_commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", checkpoint_code_commit) is None
+    ):
         raise GRPOTrainingError("resume checkpoint canonical GRPO log-state identity is invalid")
     raw_logs = value.get("logs")
     if not isinstance(raw_logs, Mapping) or set(raw_logs) != set(_GRPO_STREAM_LOG_NAMES):
@@ -1235,7 +1454,12 @@ def _validate_resume_log_checkpoint(run_dir: Path, checkpoint_dir: Path) -> dict
         if actual != expected:
             raise GRPOTrainingError("canonical GRPO streaming evidence prefix differs from resume checkpoint")
         normalized_logs[name] = expected
-    return {"version": _GRPO_LOG_STATE_VERSION, "global_step": step, "logs": normalized_logs}
+    return {
+        "version": version,
+        "global_step": step,
+        "checkpoint_code_commit": checkpoint_code_commit,
+        "logs": normalized_logs,
+    }
 
 
 def _latest_valid_resume_checkpoint(run_dir: Path, config: GRPOTrainingConfig) -> Path | None:
@@ -1247,7 +1471,6 @@ def _latest_valid_resume_checkpoint(run_dir: Path, config: GRPOTrainingConfig) -
         checkpoint_root = checkpoint_path.resolve(strict=True)
     except OSError:
         raise GRPOTrainingError("GRPO checkpoint root is unavailable during resume selection") from None
-
     valid: list[tuple[int, Path]] = []
     for candidate in checkpoint_root.glob("checkpoint-*"):
         match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", candidate.name)
@@ -1525,6 +1748,60 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
             not isinstance(code_commit, str) or re.fullmatch(r"[0-9a-f]{40}", code_commit) is None
         ):
             raise GRPOTrainingError("GRPO run metadata has invalid attempt code commit")
+        migration = value.get("code_migration")
+        if migration is not None:
+            expected_migration_fields = {
+                "compatibility_class",
+                "from_commit",
+                "to_commit",
+                "resume_from_checkpoint",
+                "scientific_change",
+                "reason",
+                "reward_infrastructure_retry_policy_version",
+            }
+            if not isinstance(migration, Mapping) or set(migration) != expected_migration_fields:
+                raise GRPOTrainingError("GRPO run metadata has invalid code migration record")
+            if migration.get("compatibility_class") != GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE:
+                raise GRPOTrainingError("GRPO run metadata has invalid code migration class")
+            for field_name in ("from_commit", "to_commit"):
+                field_value = migration.get(field_name)
+                if not isinstance(field_value, str) or re.fullmatch(r"[0-9a-f]{40}", field_value) is None:
+                    raise GRPOTrainingError("GRPO run metadata has invalid code migration commit")
+            if migration.get("to_commit") != code_commit:
+                raise GRPOTrainingError("GRPO code migration target must match attempt code commit")
+            if migration.get("resume_from_checkpoint") != value.get("resume_from_checkpoint"):
+                raise GRPOTrainingError("GRPO code migration checkpoint must match attempt resume source")
+            if migration.get("scientific_change") is not False:
+                raise GRPOTrainingError("GRPO operational code migration must declare scientific_change=false")
+            if migration.get("reward_infrastructure_retry_policy_version") != _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION:
+                raise GRPOTrainingError("GRPO code migration retry policy version is invalid")
+            if not isinstance(migration.get("reason"), str) or not migration["reason"]:
+                raise GRPOTrainingError("GRPO code migration reason is invalid")
+        retry_telemetry = value.get("reward_infrastructure_retry")
+        if retry_telemetry is not None:
+            expected_retry_fields = {
+                "policy_version",
+                "max_retries_per_reward_item",
+                "backoff_seconds",
+                "retry_attempts",
+                "retry_successes",
+                "retry_exhausted",
+                "recovery_prepare_failures",
+            }
+            if not isinstance(retry_telemetry, Mapping) or set(retry_telemetry) != expected_retry_fields:
+                raise GRPOTrainingError("GRPO run metadata has invalid reward infrastructure retry telemetry")
+            if retry_telemetry.get("policy_version") != _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION:
+                raise GRPOTrainingError("GRPO reward infrastructure retry policy version is invalid")
+            if retry_telemetry.get("max_retries_per_reward_item") != len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS):
+                raise GRPOTrainingError("GRPO reward infrastructure retry limit is invalid")
+            if retry_telemetry.get("backoff_seconds") != list(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS):
+                raise GRPOTrainingError("GRPO reward infrastructure retry backoff is invalid")
+            for field_name in ("retry_attempts", "retry_successes", "retry_exhausted", "recovery_prepare_failures"):
+                field_value = retry_telemetry.get(field_name)
+                if isinstance(field_value, bool) or not isinstance(field_value, int) or field_value < 0:
+                    raise GRPOTrainingError("GRPO reward infrastructure retry counters are invalid")
+            if retry_telemetry["retry_successes"] > retry_telemetry["retry_attempts"]:
+                raise GRPOTrainingError("GRPO reward infrastructure retry success count is invalid")
         gpu_hours = value.get("gpu_hours")
         if (
             isinstance(gpu_hours, bool)
@@ -1539,26 +1816,43 @@ def _attempt_gpu_hours_total(attempts: object) -> float:
     return total
 
 
-def _begin_attempt(run_metadata: dict[str, object], *, resume_source: str | None, code_commit: str) -> None:
+def _begin_attempt(
+    run_metadata: dict[str, object],
+    *,
+    resume_source: str | None,
+    code_commit: str,
+    code_migration: Mapping[str, object] | None = None,
+) -> None:
     attempts = run_metadata.get("attempts")
     if not isinstance(attempts, list):
         raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
     if re.fullmatch(r"[0-9a-f]{40}", code_commit) is None:
         raise GRPOTrainingError("GRPO attempt code commit is invalid")
-    attempts.append(
-        {
-            "attempt": len(attempts) + 1,
-            "start_time": datetime.now(timezone.utc).isoformat(),
-            "end_time": None,
-            "status": "running",
-            "resume_from_checkpoint": resume_source,
-            "code_commit": code_commit,
-            "gpu_hours": 0.0,
-        }
-    )
+    attempt: dict[str, object] = {
+        "attempt": len(attempts) + 1,
+        "start_time": datetime.now(timezone.utc).isoformat(),
+        "end_time": None,
+        "status": "running",
+        "resume_from_checkpoint": resume_source,
+        "code_commit": code_commit,
+        "gpu_hours": 0.0,
+        "reward_infrastructure_retry": _RewardInfrastructureRetryTelemetry().to_mapping(),
+    }
+    if code_migration is not None:
+        attempt["code_migration"] = dict(code_migration)
+    attempts.append(attempt)
     run_metadata["status"] = "running"
     run_metadata["end_time"] = None
     run_metadata["resume_from_checkpoint"] = resume_source
+
+
+def _set_latest_attempt_retry_telemetry(
+    run_metadata: dict[str, object], telemetry: _RewardInfrastructureRetryTelemetry
+) -> None:
+    attempts = run_metadata.get("attempts")
+    if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
+        raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+    cast(dict[str, object], attempts[-1])["reward_infrastructure_retry"] = telemetry.to_mapping()
 
 
 def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu_hours: float) -> None:
@@ -1690,6 +1984,7 @@ def _validate_resume_run(
     environment: Mapping[str, Any],
     resume_source: str,
     resume_run_git_commit: str | None,
+    resume_code_migration: str | None,
 ) -> dict[str, object]:
     try:
         value = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -1702,6 +1997,11 @@ def _validate_resume_run(
         raise GRPOTrainingError("current GRPO project commit is invalid")
     if resume_run_git_commit is not None and re.fullmatch(r"[0-9a-f]{40}", resume_run_git_commit) is None:
         raise GRPOTrainingError("resume_run_git_commit must be an exact 40-character lowercase Git commit")
+    if (
+        resume_code_migration is not None
+        and resume_code_migration != GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE
+    ):
+        raise GRPOTrainingError("resume_code_migration is not a supported GRPO operational migration class")
     packages = cast(Mapping[str, object], environment["packages"])
     expected: dict[str, object] = {
         "run_id": config.run_name,
@@ -1819,6 +2119,7 @@ def run_grpo_training(
     executor: CodeExecutor,
     resume_from_checkpoint: Path | None = None,
     resume_run_git_commit: str | None = None,
+    resume_code_migration: str | None = None,
 ) -> GRPOTrainingSummary:
     """Preflight one fair C/D pair, then run the selected reward mode."""
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -1850,11 +2151,11 @@ def run_grpo_training(
         raise GRPOTrainingError("current GRPO project commit is invalid")
     resume_path: str | None = None
     resume_source: str | None = None
+    code_migration: dict[str, object] | None = None
     if resume_from_checkpoint is not None:
         if not run_dir.is_dir():
             raise GRPOTrainingError("resume requires an existing GRPO run directory")
         resolved_resume, resume_source = _resolve_resume_checkpoint(run_dir, resume_from_checkpoint)
-        _validate_resume_log_checkpoint(run_dir, resolved_resume)
         resume_path = str(resolved_resume)
         run_metadata = _validate_resume_run(
             run_dir=run_dir,
@@ -1868,10 +2169,38 @@ def run_grpo_training(
             environment=environment,
             resume_source=resume_source,
             resume_run_git_commit=resume_run_git_commit,
+            resume_code_migration=resume_code_migration,
         )
+        run_git_commit = cast(str, run_metadata["git_commit"])
+        checkpoint_state = _validate_resume_log_checkpoint(
+            run_dir,
+            resolved_resume,
+            legacy_code_commit=run_git_commit,
+        )
+        checkpoint_code_commit = cast(str, checkpoint_state["checkpoint_code_commit"])
+        if checkpoint_code_commit != current_git_commit:
+            if resume_code_migration != GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE:
+                raise GRPOTrainingError(
+                    "cross-commit GRPO checkpoint resume requires explicit "
+                    "operational_reward_resilience_v1 code migration"
+                )
+            code_migration = {
+                "compatibility_class": GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE,
+                "from_commit": checkpoint_code_commit,
+                "to_commit": current_git_commit,
+                "resume_from_checkpoint": resume_source,
+                "scientific_change": False,
+                "reason": (
+                    "bounded in-process Piston reward infrastructure retry; scientific config, reward formula, "
+                    "model, optimizer, scheduler, dataset, and seed are unchanged"
+                ),
+                "reward_infrastructure_retry_policy_version": _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION,
+            }
     else:
         if resume_run_git_commit is not None:
             raise GRPOTrainingError("resume_run_git_commit requires resume_from_checkpoint")
+        if resume_code_migration is not None:
+            raise GRPOTrainingError("resume_code_migration requires resume_from_checkpoint")
         if run_dir.exists():
             raise GRPOTrainingError("GRPO run directory already exists; explicit resume is required")
         try:
@@ -1891,7 +2220,13 @@ def run_grpo_training(
             raise
 
     gpu_count_used = cast(int, run_metadata["gpu_count_used"])
-    _begin_attempt(run_metadata, resume_source=resume_source, code_commit=current_git_commit)
+    retry_telemetry = _RewardInfrastructureRetryTelemetry()
+    _begin_attempt(
+        run_metadata,
+        resume_source=resume_source,
+        code_commit=current_git_commit,
+        code_migration=code_migration,
+    )
     _write_json(run_dir / "run.json", run_metadata)
     started = time.perf_counter()
     peak_reset = False
@@ -1936,6 +2271,8 @@ def run_grpo_training(
                 group_metrics_log_path=run_dir / "group_metrics.jsonl",
                 num_generations=config.num_generations,
                 max_completion_length=config.max_completion_length,
+                retry_telemetry=retry_telemetry,
+                operational_log_path=run_dir / "stdout.log",
             )
             trainer = runtime.trainer_type(
                 model=model,
@@ -1947,7 +2284,11 @@ def run_grpo_training(
                 peft_config=runtime.get_peft_config(model_args),
             )
             _install_grpo_runtime_telemetry(trainer)
-            _install_grpo_checkpoint_log_snapshots(trainer, run_dir=run_dir)
+            _install_grpo_checkpoint_log_snapshots(
+                trainer,
+                run_dir=run_dir,
+                code_commit=current_git_commit,
+            )
             train_result = trainer.train(resume_from_checkpoint=resume_path)
             raw_train_metrics = getattr(train_result, "metrics", {})
             if isinstance(raw_train_metrics, Mapping):
@@ -1974,6 +2315,7 @@ def run_grpo_training(
             raise GRPOTrainingError("GRPO trainer state must provide a non-negative integer global_step")
         peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
         attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
+        _set_latest_attempt_retry_telemetry(run_metadata, retry_telemetry)
         _finish_attempt(run_metadata, status="completed", attempt_gpu_hours=attempt_gpu_hours)
         gpu_hours = cast(float, run_metadata["gpu_hours"])
         run_metadata["global_step"] = raw_global_step
@@ -2017,6 +2359,7 @@ def run_grpo_training(
             peak_allocated = peak_reserved = 0
         run_metadata["peak_cuda_memory_allocated_bytes"] = peak_allocated
         run_metadata["peak_cuda_memory_reserved_bytes"] = peak_reserved
+        _set_latest_attempt_retry_telemetry(run_metadata, retry_telemetry)
         _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
         _write_json(run_dir / "run.json", run_metadata)
         with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:

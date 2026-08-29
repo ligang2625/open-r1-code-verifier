@@ -1436,6 +1436,7 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
         "--reward-mode",
         "--resume-from-checkpoint",
         "--resume-run-git-commit",
+        "--resume-code-migration",
         "--piston-transport-policy",
         "--seed",
         "--output-dir",
@@ -1446,6 +1447,16 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
     with pytest.raises(SystemExit) as missing:
         main(["train-grpo", "--public-config", "public.yaml"])
     assert missing.value.code == 2
+
+    with pytest.raises(SystemExit) as invalid_migration:
+        main(
+            [
+                "train-grpo",
+                "--resume-code-migration",
+                "allow_any_commit",
+            ]
+        )
+    assert invalid_migration.value.code == 2
 
 
 def test_train_grpo_defaults_to_persistent_artifact_root(
@@ -1690,6 +1701,8 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
                 "outputs/grpo/public/checkpoints/checkpoint-1",
                 "--resume-run-git-commit",
                 resume_run_commit,
+                "--resume-code-migration",
+                "operational_reward_resilience_v1",
                 "--seed",
                 "11",
                 "--output-dir",
@@ -1705,6 +1718,7 @@ def test_train_grpo_wires_completed_sft_piston_resume_and_seed(
     assert seen["seed"] == 11
     assert seen["resume_from_checkpoint"] == Path("outputs/grpo/public/checkpoints/checkpoint-1")
     assert seen["resume_run_git_commit"] == resume_run_commit
+    assert seen["resume_code_migration"] == "operational_reward_resilience_v1"
     output = capsys.readouterr()
     assert "override: seed: 7 -> 11" in output.err
     assert "reward_mode=public" in output.out

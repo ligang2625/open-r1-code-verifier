@@ -1,18 +1,21 @@
-"""GRPO fail-closed regression for unrecovered Piston infrastructure failures."""
+"""GRPO bounded retry and fail-closed regressions for Piston infrastructure failures."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
-from code_verifier.training.grpo import GRPOTrainingError, build_grpo_reward_callback
+from code_verifier.training import grpo as grpo_module
+from code_verifier.training.grpo import GRPOTrainingError, build_grpo_reward_callback, run_grpo_training
+from tests.unit.training.test_grpo import _passing_results, _prepare_fake_grpo_run
 
 
-def _sandbox_result() -> ExecutionResult:
+def _sandbox_result(*, stderr: str = "piston transport failed") -> ExecutionResult:
     return ExecutionResult(
         status=ExecutionStatus.SANDBOX_ERROR,
         passed_tests=0,
@@ -25,15 +28,54 @@ def _sandbox_result() -> ExecutionResult:
                 passed=False,
                 runtime_ms=1.0,
                 stdout="",
-                stderr="piston transport failed",
+                stderr=stderr,
             )
         ],
     )
 
 
-def test_unrecovered_transport_infrastructure_failure_aborts_reward_callback_before_update(tmp_path: Path) -> None:
-    executor = MockExecutor([_sandbox_result()])
-    callback = build_grpo_reward_callback(
+def _passed_result() -> ExecutionResult:
+    return ExecutionResult(
+        status=ExecutionStatus.PASSED,
+        passed_tests=1,
+        total_tests=1,
+        pass_rate=1.0,
+        runtime_ms=1.0,
+        test_results=[
+            ExecutionTestCaseResult(
+                status=ExecutionStatus.PASSED,
+                passed=True,
+                runtime_ms=1.0,
+                stdout="",
+                stderr="",
+            )
+        ],
+    )
+
+
+class _RetryingMockExecutor(MockExecutor):
+    def __init__(self, results: list[ExecutionResult]) -> None:
+        super().__init__(results)
+        self.prepare_calls = 0
+
+    def prepare_infrastructure_retry(self) -> str:
+        self.prepare_calls += 1
+        return "3.10.0"
+
+
+class _FailingPrepareExecutor(_RetryingMockExecutor):
+    def prepare_infrastructure_retry(self) -> str:
+        self.prepare_calls += 1
+        raise RuntimeError("runtime health unavailable")
+
+
+def _callback(
+    tmp_path: Path,
+    executor: MockExecutor,
+    *,
+    telemetry: grpo_module._RewardInfrastructureRetryTelemetry | None = None,
+) -> Callable[..., list[float]]:
+    return build_grpo_reward_callback(
         reward_mode="public",
         executor=executor,
         rollout_log_path=tmp_path / "rollouts.jsonl",
@@ -41,7 +83,13 @@ def test_unrecovered_transport_infrastructure_failure_aborts_reward_callback_bef
         group_metrics_log_path=tmp_path / "groups.jsonl",
         num_generations=1,
         max_completion_length=16,
+        operational_log_path=tmp_path / "stdout.log",
+        retry_sleep=lambda _seconds: None,
+        retry_telemetry=telemetry,
     )
+
+
+def _invoke(callback: Callable[..., list[float]]) -> list[float]:
     metadata = {
         "difficulty": "easy",
         "category": ["unit"],
@@ -50,17 +98,121 @@ def test_unrecovered_transport_infrastructure_failure_aborts_reward_callback_bef
         "license": "test",
         "source_url_hash": None,
     }
+    completion = chr(96) * 3 + "python\ndef solve(value): return value\n" + chr(96) * 3
+    return callback(
+        prompts=[[{"role": "user", "content": "prompt"}]],
+        completions=[completion],
+        completion_ids=[[1]],
+        problem_id=["problem-1"],
+        function_name=["solve"],
+        metadata=[metadata],
+        visible_tests=[[json.dumps({"input": 1, "expected": 1})]],
+    )
+
+
+def test_transport_infrastructure_failure_is_retried_in_process_with_same_request(tmp_path: Path) -> None:
+    executor = _RetryingMockExecutor([_sandbox_result(), _passed_result()])
+    telemetry = grpo_module._RewardInfrastructureRetryTelemetry()
+    callback = _callback(tmp_path, executor, telemetry=telemetry)
+
+    assert _invoke(callback) == [1.1]
+    assert len(executor.calls) == 2
+    assert executor.calls[0] == executor.calls[1]
+    assert executor.prepare_calls == 1
+    reward_rows = [json.loads(line) for line in (tmp_path / "rewards.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(reward_rows) == 1
+    assert reward_rows[0]["infrastructure_failure"] is False
+    assert reward_rows[0]["total_reward"] == 1.1
+    retry_rows = [json.loads(line) for line in (tmp_path / "stdout.log").read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in retry_rows] == [
+        "grpo_reward_infrastructure_retry_scheduled",
+        "grpo_reward_infrastructure_retry_succeeded",
+    ]
+    assert all("completion" not in row and "tests" not in row for row in retry_rows)
+    assert telemetry.to_mapping() == {
+        "policy_version": "grpo-reward-infra-retry-v1",
+        "max_retries_per_reward_item": 3,
+        "backoff_seconds": [1.0, 2.0, 4.0],
+        "retry_attempts": 1,
+        "retry_successes": 1,
+        "retry_exhausted": 0,
+        "recovery_prepare_failures": 0,
+    }
+
+
+def test_unrecovered_transport_infrastructure_failure_aborts_before_update_after_bounded_retries(
+    tmp_path: Path,
+) -> None:
+    executor = _RetryingMockExecutor([_sandbox_result() for _ in range(4)])
+    telemetry = grpo_module._RewardInfrastructureRetryTelemetry()
+    callback = _callback(tmp_path, executor, telemetry=telemetry)
+
     with pytest.raises(GRPOTrainingError, match="aborting before optimizer update"):
-        callback(
-            prompts=[[{"role": "user", "content": "prompt"}]],
-            completions=["```python\ndef solve(value): return value\n```"],
-            completion_ids=[[1]],
-            problem_id=["problem-1"],
-            function_name=["solve"],
-            metadata=[metadata],
-            visible_tests=[[json.dumps({"input": 1, "expected": 1})]],
-        )
-    assert len(executor.calls) == 1
+        _invoke(callback)
+    assert len(executor.calls) == 4
+    assert executor.prepare_calls == 3
     reward_rows = [json.loads(line) for line in (tmp_path / "rewards.jsonl").read_text(encoding="utf-8").splitlines()]
     assert reward_rows[0]["infrastructure_failure"] is True
     assert reward_rows[0]["total_reward"] == 0.0
+    retry_rows = [json.loads(line) for line in (tmp_path / "stdout.log").read_text(encoding="utf-8").splitlines()]
+    assert retry_rows[-1]["event"] == "grpo_reward_infrastructure_retry_exhausted"
+    assert retry_rows[-1]["retries"] == 3
+    assert telemetry.retry_attempts == 3
+    assert telemetry.retry_successes == 0
+    assert telemetry.retry_exhausted == 1
+
+
+def test_non_transport_sandbox_failure_is_not_retried(tmp_path: Path) -> None:
+    executor = _RetryingMockExecutor([_sandbox_result(stderr="invalid harness report")])
+    callback = _callback(tmp_path, executor)
+
+    with pytest.raises(GRPOTrainingError, match="aborting before optimizer update"):
+        _invoke(callback)
+    assert len(executor.calls) == 1
+    assert executor.prepare_calls == 0
+    assert not (tmp_path / "stdout.log").exists()
+
+
+def test_runtime_health_prepare_failure_is_bounded_and_fails_closed(tmp_path: Path) -> None:
+    executor = _FailingPrepareExecutor([_sandbox_result()])
+    telemetry = grpo_module._RewardInfrastructureRetryTelemetry()
+    callback = _callback(tmp_path, executor, telemetry=telemetry)
+
+    with pytest.raises(GRPOTrainingError, match="aborting before optimizer update"):
+        _invoke(callback)
+
+    assert len(executor.calls) == 1
+    assert executor.prepare_calls == 3
+    assert telemetry.retry_attempts == 3
+    assert telemetry.retry_successes == 0
+    assert telemetry.retry_exhausted == 1
+    assert telemetry.recovery_prepare_failures == 3
+    retry_rows = [json.loads(line) for line in (tmp_path / "stdout.log").read_text(encoding="utf-8").splitlines()]
+    assert sum(row["event"] == "grpo_reward_infrastructure_retry_prepare_failed" for row in retry_rows) == 3
+    assert retry_rows[-1]["event"] == "grpo_reward_infrastructure_retry_exhausted"
+
+
+def test_completed_training_attempt_durably_records_retry_counters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    executor = _RetryingMockExecutor([_sandbox_result(), *_passing_results(4)])
+
+    summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=executor,
+    )
+
+    metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    retry = metadata["attempts"][-1]["reward_infrastructure_retry"]
+    assert retry["retry_attempts"] == 1
+    assert retry["retry_successes"] == 1
+    assert retry["retry_exhausted"] == 0
+    assert retry["recovery_prepare_failures"] == 0

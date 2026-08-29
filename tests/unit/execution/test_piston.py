@@ -481,10 +481,17 @@ class _FakeTransport:
         self.runtimes = [] if runtimes is None else runtimes
         self.responses = [] if responses is None else list(responses)
         self.runtime_calls = 0
+        self.close_calls = 0
+        self.events: list[str] = []
         self.execute_calls: list[tuple[dict[str, object], float, int]] = []
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.events.append("close")
 
     def list_runtimes(self, *, timeout_seconds: float, max_response_bytes: int) -> object:
         self.runtime_calls += 1
+        self.events.append("runtime")
         if isinstance(self.runtimes, BaseException):
             raise self.runtimes
         return self.runtimes
@@ -496,6 +503,7 @@ class _FakeTransport:
         timeout_seconds: float,
         max_response_bytes: int,
     ) -> object:
+        self.events.append("execute")
         self.execute_calls.append((payload, timeout_seconds, max_response_bytes))
         response = self.responses.pop(0)
         if isinstance(response, BaseException):
@@ -581,6 +589,20 @@ def test_validate_runtime_requires_exact_installed_python_version() -> None:
     unavailable, _ = _executor([], runtimes=[_runtime_record("3.11.0")])
     with pytest.raises(PistonTransportError, match="unavailable"):
         unavailable.validate_runtime()
+
+
+def test_prepare_infrastructure_retry_drops_connection_before_and_after_runtime_probe() -> None:
+    executor, transport = _executor([_run_response()], runtimes=[_runtime_record()])
+    assert executor.prepare_infrastructure_retry() == "3.10.0"
+    assert _execute(executor).status is ExecutionStatus.PASSED
+    assert transport.runtime_calls == 1
+    assert transport.close_calls == 2
+    assert transport.events == ["close", "runtime", "close", "execute"]
+
+    unavailable, unavailable_transport = _executor([], runtimes=[_runtime_record("3.11.0")])
+    with pytest.raises(PistonTransportError, match="unavailable"):
+        unavailable.prepare_infrastructure_retry()
+    assert unavailable_transport.events == ["close", "runtime", "close"]
 
 
 def test_validate_runtime_rejects_duplicate_and_malformed_runtime_records() -> None:
