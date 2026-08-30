@@ -80,3 +80,16 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP8-a`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP8-a
+  review_round: 1
+  review_commit: ae9763241edb38d757fae25868796ac27f5a1c6a
+  merge_commit: 44f8023ecbca8b84af2af9d6a57547da00acd51a
+  finalized_at: "2026-08-30T15:25:45+02:00"
+  status: finalized
+```

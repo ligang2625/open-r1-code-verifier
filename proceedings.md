@@ -770,3 +770,29 @@ WP6-a/WP6-c 已完成 SFT 数据、训练控制面、completed checkpoint identi
 ### WP7 聚合状态
 
 WP7-a/WP7-b 已完成 GRPO control-plane、reward isolation、paired fairness、completed C/D identity、stacked inference reload 与统一 evaluation/aggregation 的 development 工程合同；WP7-c 现完成正式 Public/Hidden GRPO C/D 的 real-training/numerical validation、400 题 generation、真实 Piston verification 与 aggregation。至此 WP7 的 development + formal C/D validation 范围完成；下一 dependency-ready validation 工作转入 WP8 的正式 A–D comparison、bootstrap/statistical analysis、人工 case analysis 与最终报告。
+
+---
+
+## WP8-a：Formal A–D 自动统计、paired bootstrap、成本与失败候选
+
+- **完成日期**：2026-08-30
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP8-a-review.md` R1）
+- **执行计划**：`ai-work/planner/WP8-a-plan.md`
+- **实施范围**：在 GTX 1660 Ti control plane 上严格消费已 finalized 的 Base A / SFT B / Public GRPO C / Hidden GRPO D formal artifacts，完成 A–D 聚合、problem-level paired bootstrap、training curve / cost 汇总、failure-candidate 生成、机器可读 report 与 deterministic readback；本 stage 不产生新的 24GB GPU execution，也不声称完成后续不少于 20 个 case 的人工分析或最终研究叙事。
+
+### 本阶段正式分析证据
+
+- 冻结输入位于 `/home/dzy/wp8-analysis/wp8-a-input-ab87fea-e0/`：`formal-analysis.yaml` SHA256 为 `118093d5befbd43bdd0e08527847d23f40626284f8e73b49dbe2df033d1e0da8`，`source-inventory.json` SHA256 为 `b79718d096be441b2d3d0e45b88b4b95ce1d458696617dafd80f1b11cfca18f1`；bootstrap 合同固定为 seed 42、10,000 次 resample、95% CI、problem 为采样单位。库存继续明确保留 WP7-c A1 post-hoc operational-equivalence disclosure，不把历史 C/D 描述为满足原始 whole-run exact-code / save-cadence 合同。
+- 四个方法均严格绑定 400 个唯一 formal problem。A–D 的 Visible / Train-Hidden / Eval-Hidden Pass@1 分别为：Base `0.1225 / 0.1175 / 0.1150`，SFT `0.3525 / 0.3350 / 0.3775`，Public `0.3625 / 0.3400 / 0.3750`，Hidden `0.3625 / 0.3400 / 0.3750`。
+- 三组 problem-paired comparison 均使用 400 个 problem-ID pair。Public-vs-SFT 与 Hidden-vs-SFT 的 Eval-Hidden delta 都为 `-0.0025`、95% CI `[-0.0125, 0.0075]`；public-eval-gap delta 都为 `0.0125`、CI `[0.0, 0.03]`；automated candidate-rate delta 都为 `0.0075`、CI `[0.0, 0.0175]`。Hidden-vs-Public 在这三个预注册 whole-pass / candidate proxy 指标上均为 `0.0`，CI `[0.0, 0.0]`。
+- Training/cost 派生与源日志一致：SFT 2,549 curve rows、GPU-hours `0.5215871774233367`；Public 8,115 rows、GPU-hours `4.012272991803669`、2,400 rollouts、514,360 generated tokens、executor-hours `0.0582530611647443`；Hidden 8,115 rows、GPU-hours `3.5036727118225017`、2,400 rollouts、512,918 generated tokens、executor-hours `0.06447173045885166`。没有冻结可审计 GPU-hour USD rate，因此没有伪造美元成本。
+- Canonical formal output 位于 `/home/dzy/wp8-analysis/wp8-a-formal-ab87fea-e0/`，完整产生计划规定的 10 个文件；fresh readback `/home/dzy/wp8-analysis/wp8-a-formal-ab87fea-e0-readback/` 的 10 个对应文件全部 byte-for-byte 相同。关键输出中 `main_results.csv` SHA256 为 `02030685f05f0ed04d8e007cc0eb1a4455aacfbcbe6f505c13afd8849e63804e`，`paired_comparisons.csv` 为 `0ae767e7e9e918d9fe2109a7f65b4aca39b4446c615beb694eb175adb80a3eed`，`report_data.json` 为 `fd03754215297643aec8d32f1df65b9fd8df669c29983cd7573c5f3ff3fc74c2`。
+- Failure-analysis preparation 产生 653 个 deterministic candidates 与 653 个 manual-label template rows；所有人工字段仍为空，`manual_analysis_status=pending`、`manual_label_count=0`，automated proxy 明确不是 human conclusion。该数量足以供后续 stage 抽取不少于 20 个 case，但 WP8-a 自身不把人工分析标记为完成。
+
+### 验收与生命周期结论
+
+- Reviewer R1 独立重算 source hashes、A–D point estimates、bootstrap/paired statistics、curve/cost derivation，并通过 `make lint`、`make test`（`1030 passed, 3 skipped`）、`make test-gpu`（`3 passed`）与真实 `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`（`9 passed, 2 deselected`）；未发现 blocker、major、minor 或 actionable acceptance finding。
+- 本 stage 为 zero-code formal validation：相对 planning base 只新增 plan/executor/reviewer provenance 文档，`pyproject.toml`、`uv.lock` 与 `third_party/open-r1` gitlink 均未修改，因此没有 dependency upgrade 或上游 submodule 变更。
+- WP8-a merge commit：`44f8023ecbca8b84af2af9d6a57547da00acd51a`。
+- WP8 尚未整体收口：下一子阶段应以这里冻结的 formal outputs/hashes 为输入，完成不少于 20 个 case 的人工错误分析、正/负结果解释与最终报告叙事；在该后续工作完成前，不把 WP8-a 的 automated proxy 当作最终 human reward-hacking conclusion。
