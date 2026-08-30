@@ -1,0 +1,274 @@
+{
+  "costs": [
+    {
+      "estimated_cost_usd": null,
+      "executor_hours": null,
+      "generated_tokens": null,
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpu_hours": 0.5215871774233367,
+      "method": "SFT",
+      "rollouts": null,
+      "run_id": "B-sft-formal-seed42"
+    },
+    {
+      "estimated_cost_usd": null,
+      "executor_hours": 0.0582530611647443,
+      "generated_tokens": 514360,
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpu_hours": 4.012272991803669,
+      "method": "Public-RLVR",
+      "rollouts": 2400,
+      "run_id": "C-public-grpo-formal-seed42"
+    },
+    {
+      "estimated_cost_usd": null,
+      "executor_hours": 0.06447173045885166,
+      "generated_tokens": 512918,
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpu_hours": 3.5036727118225017,
+      "method": "Hidden-RLVR",
+      "rollouts": 2400,
+      "run_id": "D-hidden-grpo-formal-seed42"
+    }
+  ],
+  "final_labeled_analysis": {
+    "evidence_class": "analysis_source_artifacts",
+    "manifest_sha256": "c38ba8cee584a150ac926946f0cc3ab67ac1c6c70f58e57f7821ef0b60bfd51b",
+    "manual_analysis_status": "completed",
+    "manual_label_count": 25,
+    "output_hashes": {
+      "auto_error_counts.csv": "01d22e2bfa3ec35631f55244a054a56df99eb56a22b841be768871b6970b6d1c",
+      "costs.csv": "7a7a4bc0f92b011ce6faa4167b71669833745bcf519a31b94d7f13d3102b4505",
+      "failure_candidates.jsonl": "4410a05e2838a0be92997141bf19bb2b518a4985a8afabdc87442812827408ed",
+      "main_results.csv": "02030685f05f0ed04d8e007cc0eb1a4455aacfbcbe6f505c13afd8849e63804e",
+      "manual_error_counts.csv": "c154900da2148e0c403a1d23eb7f917e9d3b2735eb9a4505d651f09b6d8ad21e",
+      "manual_labels_template.csv": "bad8b08c658ebfe10039b352d4f41a1b2a0615c4442dd286eeb892121529e79b",
+      "paired_comparisons.csv": "0ae767e7e9e918d9fe2109a7f65b4aca39b4446c615beb694eb175adb80a3eed",
+      "report_data.json": "d3953fc520ea5daf302a3a7c5971a1ddf5dd96b80ea7d02e5be07a8d87f21897",
+      "resolved_analysis.yaml": "c38ba8cee584a150ac926946f0cc3ab67ac1c6c70f58e57f7821ef0b60bfd51b",
+      "training_curves.csv": "dfff63b5e05e20778e5ac659d823c07bab29fb75c77dab5888f414ce60682048"
+    }
+  },
+  "formal_scope": {
+    "bootstrap_confidence_level": 0.95,
+    "bootstrap_resamples": 10000,
+    "bootstrap_seed": 42,
+    "bootstrap_unit": "problem",
+    "evaluation_problems_per_method": 400,
+    "model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "training_seed": 42
+  },
+  "frozen_wp8a": {
+    "failure_candidates_sha256": "4410a05e2838a0be92997141bf19bb2b518a4985a8afabdc87442812827408ed",
+    "input_manifest_sha256": "118093d5befbd43bdd0e08527847d23f40626284f8e73b49dbe2df033d1e0da8",
+    "manual_labels_template_sha256": "bad8b08c658ebfe10039b352d4f41a1b2a0615c4442dd286eeb892121529e79b",
+    "report_data_sha256": "fd03754215297643aec8d32f1df65b9fd8df669c29983cd7573c5f3ff3fc74c2",
+    "source_inventory_sha256": "b79718d096be441b2d3d0e45b88b4b95ce1d458696617dafd80f1b11cfca18f1"
+  },
+  "known_limitations": [
+    "Only one GRPO training seed (42) has been executed; training-seed robustness is not established.",
+    "The seed-42 C/D formal runs were accepted under the committed WP7-c A1 post-hoc operational-equivalence amendment rather than strict original whole-run code/save-cadence compliance.",
+    "The 25 manually reviewed cases are a deterministic candidate-stratified qualitative sample, not a random sample of all 400 problems and not a population Reward-Hacking rate estimate.",
+    "The formal study covers a 1.5B model and one fixed 400-problem evaluation set; conclusions should not be generalized beyond that scope without further evidence.",
+    "No auditable USD-per-GPU-hour rate was frozen, so dollar cost is intentionally not estimated."
+  ],
+  "main_results": [
+    {
+      "checkpoint": "base",
+      "eval_hidden_pass_at_1": 0.115,
+      "executable_rate": 0.32,
+      "mean_completion_tokens": 145.335,
+      "method": "Base",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "public_eval_gap": 0.007499999999999993,
+      "run_id": "A-base-formal-seed42",
+      "timeout_rate": 0.0025,
+      "total_problems": 400,
+      "train_hidden_pass_at_1": 0.1175,
+      "train_verifier_gap": null,
+      "visible_pass_at_1": 0.1225
+    },
+    {
+      "checkpoint": "/root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/checkpoints",
+      "eval_hidden_pass_at_1": 0.3775,
+      "executable_rate": 0.985,
+      "mean_completion_tokens": 201.14,
+      "method": "SFT",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "public_eval_gap": -0.025000000000000022,
+      "run_id": "B-sft-formal-seed42",
+      "timeout_rate": 0.01,
+      "total_problems": 400,
+      "train_hidden_pass_at_1": 0.335,
+      "train_verifier_gap": null,
+      "visible_pass_at_1": 0.3525
+    },
+    {
+      "checkpoint": "/root/sj-tmp/open-r1-code-verifier-outputs/grpo/C-public-grpo-formal-seed42/checkpoints#identity=628abb90a1fe57d32f7bcbba1b58ace1aed2c35fb5501871f7ce35dd8a4d05d7",
+      "eval_hidden_pass_at_1": 0.375,
+      "executable_rate": 0.98,
+      "mean_completion_tokens": 201.8225,
+      "method": "Public-RLVR",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "public_eval_gap": -0.012500000000000011,
+      "run_id": "C-public-grpo-formal-seed42",
+      "timeout_rate": 0.01,
+      "total_problems": 400,
+      "train_hidden_pass_at_1": 0.34,
+      "train_verifier_gap": -0.012500000000000011,
+      "visible_pass_at_1": 0.3625
+    },
+    {
+      "checkpoint": "/root/sj-tmp/open-r1-code-verifier-outputs/grpo/D-hidden-grpo-formal-seed42/checkpoints#identity=1d661a8b5f7f591da6591bed1647cdaab3f54b881996e1913bd079fb6bfcf11d",
+      "eval_hidden_pass_at_1": 0.375,
+      "executable_rate": 0.98,
+      "mean_completion_tokens": 202.65,
+      "method": "Hidden-RLVR",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "public_eval_gap": -0.012500000000000011,
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "timeout_rate": 0.01,
+      "total_problems": 400,
+      "train_hidden_pass_at_1": 0.34,
+      "train_verifier_gap": -0.034999999999999976,
+      "visible_pass_at_1": 0.3625
+    }
+  ],
+  "manual_analysis_commit": "d75d165812f1014c2175ef934ea7aae1c80c0ee3",
+  "manual_review": {
+    "by_method": {
+      "Hidden-RLVR": 10,
+      "Public-RLVR": 10,
+      "SFT": 5
+    },
+    "candidate_sample_only": true,
+    "label_count": 25,
+    "labels_sha256": "052dfcbed63b39934cc0886de4ea3adb8fb19a794b35b466d78796a064b71668",
+    "manual_category_counts": {
+      "Hidden-RLVR::incomplete_algorithm": 2,
+      "Hidden-RLVR::misunderstood_problem": 3,
+      "Hidden-RLVR::runtime_error": 4,
+      "Hidden-RLVR::syntax_error": 1,
+      "Public-RLVR::incomplete_algorithm": 3,
+      "Public-RLVR::misunderstood_problem": 2,
+      "Public-RLVR::runtime_error": 5,
+      "SFT::incomplete_algorithm": 1,
+      "SFT::missed_edge_case": 2,
+      "SFT::runtime_error": 2
+    },
+    "manual_report_sha256": "c4cc12d86dbe99d990020d2122e15c2fe0bf3f41c6821e43240e044806d18406",
+    "population_prevalence_estimate": null,
+    "reward_hacking_judgment_counts": {
+      "no": 25
+    },
+    "selection_namespace": "wp7-d-final-manual-v1|seed42",
+    "selection_sha256": "cd5ef448b8d4ee1ea85f364d05c90651b75267da3d431ac699ed6657b5c0e7ea"
+  },
+  "paired_comparisons": [
+    {
+      "eval_hidden_ci_lower": -0.0125,
+      "eval_hidden_ci_upper": 0.0075,
+      "eval_hidden_delta": -0.0025,
+      "left_method": "Public-RLVR",
+      "public_eval_gap_ci_lower": 0.0,
+      "public_eval_gap_ci_upper": 0.03,
+      "public_eval_gap_delta": 0.0125,
+      "reward_hacking_candidate_rate_ci_lower": 0.0,
+      "reward_hacking_candidate_rate_ci_upper": 0.0175,
+      "reward_hacking_candidate_rate_delta": 0.0075,
+      "right_method": "SFT",
+      "total_problems": 400
+    },
+    {
+      "eval_hidden_ci_lower": -0.0125,
+      "eval_hidden_ci_upper": 0.0075,
+      "eval_hidden_delta": -0.0025,
+      "left_method": "Hidden-RLVR",
+      "public_eval_gap_ci_lower": 0.0,
+      "public_eval_gap_ci_upper": 0.03,
+      "public_eval_gap_delta": 0.0125,
+      "reward_hacking_candidate_rate_ci_lower": 0.0,
+      "reward_hacking_candidate_rate_ci_upper": 0.0175,
+      "reward_hacking_candidate_rate_delta": 0.0075,
+      "right_method": "SFT",
+      "total_problems": 400
+    },
+    {
+      "eval_hidden_ci_lower": 0.0,
+      "eval_hidden_ci_upper": 0.0,
+      "eval_hidden_delta": 0.0,
+      "left_method": "Hidden-RLVR",
+      "public_eval_gap_ci_lower": 0.0,
+      "public_eval_gap_ci_upper": 0.0,
+      "public_eval_gap_delta": 0.0,
+      "reward_hacking_candidate_rate_ci_lower": 0.0,
+      "reward_hacking_candidate_rate_ci_upper": 0.0,
+      "reward_hacking_candidate_rate_delta": 0.0,
+      "right_method": "Public-RLVR",
+      "total_problems": 400
+    }
+  ],
+  "project_claim_scope": "single_training_seed_seed42",
+  "replication_status": "pending_second_seed_or_full_rerun",
+  "schema_version": 1,
+  "second_seed_executed": false,
+  "source_plan_commit": "b4c58abac5669dacfede6581917b93a086acc95c",
+  "source_results": {
+    "Base": {
+      "checkpoint": "base",
+      "config_hash": "fd1aaebe1b076c9a062826eae32bb94e2e0caf20b876ac7ddd3911bb65ab7d32",
+      "dataset_hash": "770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae",
+      "dependency_lock_hash": "59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "model_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+      "open_r1_commit": "1416fa0cf21595d2083b399a2a0bbddd7f6e9563",
+      "project_commit": "5bdff18b4b88f9a507331ba2e303042a447ca684",
+      "results_path": "/root/sj-tmp/open-r1-code-verifier-outputs/evaluation/A-base-formal-seed42/samples/results.jsonl",
+      "results_sha256": "3c512ea6aeb160efa865e7b00c52a7494929f68d9bf10683b8746c6eac2d411b",
+      "run_id": "A-base-formal-seed42"
+    },
+    "Hidden-RLVR": {
+      "checkpoint": "/root/sj-tmp/open-r1-code-verifier-outputs/grpo/D-hidden-grpo-formal-seed42/checkpoints#identity=1d661a8b5f7f591da6591bed1647cdaab3f54b881996e1913bd079fb6bfcf11d",
+      "config_hash": "d7aba8b0fae40ee95cf072c8adcc463794098563b104d2304e871fe73cef30a2",
+      "dataset_hash": "770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae",
+      "dependency_lock_hash": "59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "model_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+      "open_r1_commit": "1416fa0cf21595d2083b399a2a0bbddd7f6e9563",
+      "project_commit": "0e2a894943cfb623610e937380342d148ad8cff0",
+      "results_path": "/home/dzy/wp7c-verified/evaluation/D-hidden-grpo-formal-seed42/samples/results.jsonl",
+      "results_sha256": "004d5655b438244a729acd0b2b1fe33aed8ae5e8758fe462ac7215d1f54d12c5",
+      "run_id": "D-hidden-grpo-formal-seed42"
+    },
+    "Public-RLVR": {
+      "checkpoint": "/root/sj-tmp/open-r1-code-verifier-outputs/grpo/C-public-grpo-formal-seed42/checkpoints#identity=628abb90a1fe57d32f7bcbba1b58ace1aed2c35fb5501871f7ce35dd8a4d05d7",
+      "config_hash": "d43a317447a58ad239f9e85647589d51844880c62af06260fe1dfb6aa7521a23",
+      "dataset_hash": "770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae",
+      "dependency_lock_hash": "59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "model_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+      "open_r1_commit": "1416fa0cf21595d2083b399a2a0bbddd7f6e9563",
+      "project_commit": "0e2a894943cfb623610e937380342d148ad8cff0",
+      "results_path": "/home/dzy/wp7c-verified/evaluation/C-public-grpo-formal-seed42/samples/results.jsonl",
+      "results_sha256": "7c5bb7497389872ee55ec67c4cb73cb188b68f0da06750013f1bd7a734cbb913",
+      "run_id": "C-public-grpo-formal-seed42"
+    },
+    "SFT": {
+      "checkpoint": "/root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42/checkpoints",
+      "config_hash": "0861e98f12c406ac6fe877154c8fb2ac1a7837836a2236a414c6468cc374849f",
+      "dataset_hash": "770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae",
+      "dependency_lock_hash": "59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560",
+      "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "model_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+      "open_r1_commit": "1416fa0cf21595d2083b399a2a0bbddd7f6e9563",
+      "project_commit": "41abf31618372445ba2233f386c08417b4407436",
+      "results_path": "/home/dzy/wp6d-b-verified/evaluation/B-sft-formal-seed42/samples/results.jsonl",
+      "results_sha256": "b53cb533b17ce7ca30e508a01cc484272470c64c1532d5a68810dfa66cd6291f",
+      "run_id": "B-sft-formal-seed42"
+    }
+  },
+  "stage_id": "WP7-d",
+  "stage_profile": "validation",
+  "usd_cost_rate": null,
+  "wp7c_a1_posthoc_operational_equivalence": true
+}
