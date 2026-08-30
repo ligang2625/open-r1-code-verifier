@@ -2011,3 +2011,73 @@ execution_record:
 ```
 
 E0 closes only routed execution. Independent review remains a separate lifecycle boundary and is not performed in this execution conversation.
+
+## C28 — review-r1 sealed-cadence pilot repair handoff
+
+Review round 1 dispatches `R1-B1` and `R1-M1` as one difficult-serial repair. Repair code commit `f84556e801415374bf85f57bb65c1e09ddf9a5dc` restores only the sealed pilot/formal `save_steps=50` cadence plus matching test assertions. Model, optimizer, scheduler, reward mathematics, datasets, formal B, seed, Piston definition, Open-R1 and dependency identities are unchanged. Control-plane acceptance passed: focused baseline 176 tests, repaired-cadence 91 tests, `make lint`, full pytest 1030 passed / 3 expected skips, GPU 3/3, and real Piston 9 selected passed.
+
+C28 preserves historical target artifacts. The repaired pilot keeps the sealed run names but writes under fresh namespace `$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot`; existing historical pilot/formal runs are neither overwritten nor accepted as this repair. The certified repaired pilot pair SHA256 is `b889cf144b787854c73a6b97c9a26d1a0378dee9ba1e822b965c1ef85c637be2`, with Public/Hidden paired-config SHA256 `e288b89419ea0aa2a780cf03b6ed72921d4f6395e4feaf5169e2db2dcb57100c` / `97ee2444a5a3e6709f9347d606f391d0b6ec3b380d3ce74e230b972631958b07`. The target script validates the existing reverse-forward Piston endpoint but does not start the legacy 4090-side tunnel helper.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  checkpoint_id: C28
+  stage_id: WP7-c
+  task_kind: repair
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: 1
+  source_review_commit: deebfa0f02097a0593674aaa88d1f673427ab19e
+  repair_issue_ids: [R1-B1, R1-M1]
+  result_code_commit: f84556e801415374bf85f57bb65c1e09ddf9a5dc
+  workflow_runtime_commit: 657030c47a29411e343049926de10730858104a8
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  operator_gate_id: grpo-cd-pilot
+  operator_handoff_mode: portable_target
+  operator_restart_policy: trainer_checkpoint
+  operator_script: ai-work/executor/operator/WP7-c/grpo-cd-pilot/C28/run.sh
+  operator_script_sha256: ce55751b0c67800a18db4cc15fcebf6ace1d3a73455709641d50367ce811f749
+  control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C28
+  target_status_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C28/status"
+  target_log_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C28/terminal.log"
+  target_evidence_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C28/operator-evidence.json"
+  target_postcheck_file_template: "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C28/postcheck-summary.json"
+  repair_artifact_namespace_template: "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1"
+  prior_operator_checkpoint_id: C5
+  prior_operator_checkpoint_commit: ae429f2dc0ed7353d5a3de0adb0d71b58a879a3d
+  accepted_prior_operator_evidence_sha256: f1e3b350d11a4af13118a2517bbbbfb95df752b6cded126c80492ba40b163a5e
+  accepted_prior_postcheck_sha256: 94b052e9c14f4842b45c35c2ce0d9f108cd6e382ff99e50293544b83039c2b8a
+  accepted_prior_pair_sha256: b0aa34f56a3453687301edfc327fd26e5f1318839d77c8f4a5a8e508b435f49d
+  repaired_pilot_pair_sha256: b889cf144b787854c73a6b97c9a26d1a0378dee9ba1e822b965c1ef85c637be2
+  repaired_pilot_public_config_sha256: e288b89419ea0aa2a780cf03b6ed72921d4f6395e4feaf5169e2db2dcb57100c
+  repaired_pilot_hidden_config_sha256: 97ee2444a5a3e6709f9347d606f391d0b6ec3b380d3ce74e230b972631958b07
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  expected_artifacts:
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/C-public-grpo-pilot100-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/C-public-grpo-pilot100-seed42/checkpoints/checkpoint-50/trainer_state.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/C-public-grpo-pilot100-seed42/checkpoints/checkpoint-100/trainer_state.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/C-public-grpo-pilot100-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/run.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/checkpoints/checkpoint-50/trainer_state.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/checkpoints/checkpoint-100/trainer_state.json"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/repair/WP7-c/R1/grpo-validation/pilot/D-hidden-grpo-pilot100-seed42/checkpoints/adapter_model.safetensors"
+    - "$CODE_VERIFIER_ARTIFACT_ROOT/operator/WP7-c/8464e69691c527c726a2e28e5a7ca81fa2001bbf/grpo-cd-pilot/C28/postcheck-summary.json"
+  completed_scope:
+    - R1-M1 control-plane repair restored sealed pilot/formal save_steps=50 and passed focused/global acceptance
+    - R1-B1 repair protocol requires a fresh final C/D pair under one exact tracked code identity; historical formal evidence remains immutable
+    - fresh non-overwriting repair target namespace selected
+    - immutable portable C28 paired-pilot handoff prepared
+  remaining_scope:
+    - user manually runs C28 on RTX 4090; paired 100-step C/D pilot only in the repair namespace
+    - sync C28 evidence/postcheck and required pilot metadata byte-for-byte to the recorded 1660 Ti receive directory
+    - resume through execution-router backend=web and validate pilot identities/telemetry and hard stop conditions
+    - create and manually execute fresh 300-step formal C/D under one exact tracked checkpoint commit with save_steps=50
+    - regenerate both 400-row bundles, rerun real 1660 Ti Piston verification/aggregation, then write completed repair E1
+  resume_allowed: true
+  interruption_class: operator
+  target_gpu: NVIDIA GeForce RTX 4090
+  target_precision: bf16
+  status: awaiting_operator
+```
+
+C28 is the only next target-GPU action for review round 1. The Web executor does not push, execute, or monitor C28.
