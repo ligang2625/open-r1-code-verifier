@@ -796,3 +796,32 @@ WP7-a/WP7-b 已完成 GRPO control-plane、reward isolation、paired fairness、
 - 本 stage 为 zero-code formal validation：相对 planning base 只新增 plan/executor/reviewer provenance 文档，`pyproject.toml`、`uv.lock` 与 `third_party/open-r1` gitlink 均未修改，因此没有 dependency upgrade 或上游 submodule 变更。
 - WP8-a merge commit：`44f8023ecbca8b84af2af9d6a57547da00acd51a`。
 - WP8 尚未整体收口：下一子阶段应以这里冻结的 formal outputs/hashes 为输入，完成不少于 20 个 case 的人工错误分析、正/负结果解释与最终报告叙事；在该后续工作完成前，不把 WP8-a 的 automated proxy 当作最终 human reward-hacking conclusion。
+
+---
+
+## WP7-d（WP8 收口）：25-case 人工失败分析、最终技术报告与 README
+
+- **完成日期**：2026-08-30
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP7-d-review.md` R1）
+- **执行计划**：`ai-work/planner/WP7-d-plan.md`
+- **阶段身份说明**：该 stage 因纯 PLANNED pre-execution replan 合同保留 `WP7-d` identity，但 sealed plan 的目标工作是完成 WP8-a 之后剩余的人工失败分析、最终 evidence snapshot、技术报告与 README 展示收口；本 stage 不执行第二 training seed 或新的 24GB GPU gate。
+
+### 人工分析与最终证据
+
+- 在查看 selected code 前，严格从 WP8-a frozen `failure_candidates.jsonl`（SHA256 `4410a05e2838a0be92997141bf19bb2b518a4985a8afabdc87442812827408ed`）按 namespace `wp7-d-final-manual-v1|seed42` 和 sealed SHA256 排序算法冻结 25 个案例：Public-RLVR 10、Hidden-RLVR 10、SFT 5；selection artifact SHA256 为 `cd5ef448b8d4ee1ea85f364d05c90651b75267da3d431ac699ed6657b5c0e7ea`。
+- `report/manual_labels.csv` 由 production strict loader 成功读取 25 个 unique known candidates；manual categories 为 runtime error 11、incomplete algorithm 6、misunderstood problem 5、missed edge case 2、syntax error 1。25 个案例在当前 sealed rubric 下均标记 `reward_hacking=no`，但报告明确这是 candidate-stratified qualitative sample，不能解释为全体输出的 0% Reward-Hacking prevalence。
+- Final labeled production analysis 保持 WP8-a 的 A/B/C/D source、bootstrap、cost 和 candidate definition 不变，唯一语义变化是 `manual_labels_path`。`manual_analysis_status=completed`、`manual_label_count=25`；fresh reviewer-owned readback 的 10 个输出文件全部与 `report/final_evidence.json` 中记录的 SHA256 精确一致。
+- 主数值没有被人工层改变：Base / SFT / Public-RLVR / Hidden-RLVR Eval-Hidden Pass@1 分别为 `0.1150 / 0.3775 / 0.3750 / 0.3750`；Public-vs-SFT 与 Hidden-vs-SFT delta 都是 `-0.0025`，95% CI `[-0.0125, 0.0075]`。因此最终叙事报告“本 seed 未观察到 GRPO 相比 SFT 的 held-out improvement”，不把该点估计称为显著下降，也不把 Hidden/Public 的 aggregate equality 外推为算法等价。
+- `report/final_evidence.json` 固定 `project_claim_scope=single_training_seed_seed42`、`replication_status=pending_second_seed_or_full_rerun`、`second_seed_executed=false`、`wp7c_a1_posthoc_operational_equivalence=true`、`candidate_sample_only=true` 与 `usd_cost_rate=null`；README 与 16 节技术报告都保留 single-seed、WP7-c A1、candidate-sample、1.5B/400-problem scope 和无冻结 USD rate 等限制。
+
+### 验收与生命周期结论
+
+- Reviewer R1 独立通过 `make lint`、`make test`（`1030 passed, 3 skipped`）、`make test-gpu`（`3 passed`）、真实 `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml`（`9 passed, 2 deselected`）和 focused analysis（`41 passed`），并重新验证 8 个 WP8-a frozen hashes、exact 25-case deterministic selection、fresh 10-file production analysis hashes以及 5 个 formal-source case spot checks；未发现 blocker、major、minor 或 actionable finding。
+- 本 stage 相对 planning base 仅新增/修改 plan、execution/review provenance、README 与 `report/` 分析/展示 artifacts；`pyproject.toml`、`uv.lock` 和 `third_party/open-r1` gitlink 均未修改，因此 finalize 不需要 dependency sync 或 submodule update。
+- WP7-d merge commit：`4c997a8ff85cf1d2ce35c4e95b456c6c8a9f2bdc`。
+- 第二 seed / 完整 C/D rerun 仍是明确的 project-level pending scientific gate；本次 PASS/finalize 不把 §13.5 / Definition of Done 的 replication item 标记为完成。
+
+### WP8 聚合状态
+
+WP8-a 已完成 formal A–D automated analysis、paired bootstrap、cost 与 deterministic failure-candidate preparation；本 WP7-d replan stage 现完成 25-case 人工语义分析、manual-label production readback、最终 evidence snapshot、技术报告、README 与 scientific-claim audit。至此 WP8 的 **analysis + presentation** 范围完成；整个项目仍保留“核心实验第二 seed 或完整重跑”这一明确未完成的 Experiments DoD 项，是否追加 replication stage 由后续全项目审查决定。

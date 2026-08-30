@@ -82,3 +82,16 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for WP7-d. After that committed checkpoint passes its stale/provenance guards, WP7-d is eligible for `stage-lifecycle finalize`.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP7-d
+  review_round: 1
+  review_commit: 25bf095e1cab0faab5ccc26883f2a54c43d68e8a
+  merge_commit: 4c997a8ff85cf1d2ce35c4e95b456c6c8a9f2bdc
+  finalized_at: "2026-08-30T17:28:13+02:00"
+  status: finalized
+```
