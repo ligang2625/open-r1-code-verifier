@@ -24,6 +24,15 @@ class ExecutionStatus(str, Enum):
     PARSE_ERROR = "parse_error"
 
 
+class ExecutionInfrastructureFailureKind(str, Enum):
+    """Payload-free executor/harness infrastructure failure subtypes."""
+
+    PISTON_TRANSPORT = "piston_transport"
+    PISTON_RESPONSE_PROTOCOL = "piston_response_protocol"
+    HARNESS_PROTOCOL = "harness_protocol"
+    PISTON_INTERNAL = "piston_internal"
+
+
 @dataclass(frozen=True)
 class TestCaseResult:
     """Structured outcome for one executed test case."""
@@ -33,6 +42,7 @@ class TestCaseResult:
     runtime_ms: float
     stdout: str
     stderr: str
+    infrastructure_failure_kind: ExecutionInfrastructureFailureKind | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +168,14 @@ def validate_test_case_result(result: TestCaseResult) -> None:
     if not isinstance(result.stderr, str):
         raise ExecutionContractError("test result stderr must be a string")
     _validate_utf8_text(result.stderr, field_path="test result stderr")
+    if result.infrastructure_failure_kind is not None and not isinstance(
+        result.infrastructure_failure_kind, ExecutionInfrastructureFailureKind
+    ):
+        raise ExecutionContractError(
+            "test result infrastructure_failure_kind must be an ExecutionInfrastructureFailureKind or None"
+        )
+    if result.infrastructure_failure_kind is not None and result.status is not ExecutionStatus.SANDBOX_ERROR:
+        raise ExecutionContractError("test result infrastructure failure kind requires sandbox_error status")
     if result.passed is not (result.status is ExecutionStatus.PASSED):
         raise ExecutionContractError("test result passed must match whether status is passed")
 
@@ -221,6 +239,11 @@ def execution_result_to_mapping(result: ExecutionResult) -> dict[str, object]:
                 "runtime_ms": float(test_result.runtime_ms),
                 "stdout": test_result.stdout,
                 "stderr": test_result.stderr,
+                "infrastructure_failure_kind": (
+                    None
+                    if test_result.infrastructure_failure_kind is None
+                    else test_result.infrastructure_failure_kind.value
+                ),
             }
             for test_result in result.test_results
         ],
@@ -230,7 +253,8 @@ def execution_result_to_mapping(result: ExecutionResult) -> dict[str, object]:
 def execution_result_from_mapping(value: object) -> ExecutionResult:
     """Parse one exact JSON-safe mapping and return a validated ExecutionResult."""
     top_fields = {"status", "passed_tests", "total_tests", "pass_rate", "runtime_ms", "test_results"}
-    test_fields = {"status", "passed", "runtime_ms", "stdout", "stderr"}
+    legacy_test_fields = frozenset({"status", "passed", "runtime_ms", "stdout", "stderr"})
+    test_fields = frozenset({*legacy_test_fields, "infrastructure_failure_kind"})
     try:
         if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
             raise ExecutionContractError("execution result mapping must be an object")
@@ -245,7 +269,7 @@ def execution_result_from_mapping(value: object) -> ExecutionResult:
         for raw_item in raw_test_results:
             if not isinstance(raw_item, dict) or not all(isinstance(key, str) for key in raw_item):
                 raise ExecutionContractError("execution test result mapping must be an object")
-            if set(raw_item) != test_fields:
+            if frozenset(raw_item) not in {legacy_test_fields, test_fields}:
                 raise ExecutionContractError("execution test result mapping fields are invalid")
             raw_item_status = raw_item["status"]
             if not isinstance(raw_item_status, str):
@@ -254,12 +278,25 @@ def execution_result_from_mapping(value: object) -> ExecutionResult:
                 item_status = ExecutionStatus(raw_item_status)
             except ValueError:
                 raise ExecutionContractError("execution test result status is invalid") from None
+            raw_infrastructure_failure_kind = raw_item.get("infrastructure_failure_kind")
+            if raw_infrastructure_failure_kind is None:
+                infrastructure_failure_kind = None
+            elif isinstance(raw_infrastructure_failure_kind, str):
+                try:
+                    infrastructure_failure_kind = ExecutionInfrastructureFailureKind(raw_infrastructure_failure_kind)
+                except ValueError:
+                    raise ExecutionContractError(
+                        "execution test result infrastructure_failure_kind is invalid"
+                    ) from None
+            else:
+                raise ExecutionContractError("execution test result infrastructure_failure_kind is invalid")
             item = TestCaseResult(
                 status=item_status,
                 passed=raw_item["passed"],
                 runtime_ms=raw_item["runtime_ms"],
                 stdout=raw_item["stdout"],
                 stderr=raw_item["stderr"],
+                infrastructure_failure_kind=infrastructure_failure_kind,
             )
             validate_test_case_result(item)
             test_results.append(item)

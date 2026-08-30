@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import math
+import socket
 from dataclasses import replace
 from email.message import Message
 from pathlib import Path
 from typing import Any, cast
-from urllib.error import HTTPError
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request
+from urllib.error import URLError
 
 import pytest
 
@@ -18,6 +19,7 @@ from code_verifier.config import ConfigError
 from code_verifier.execution import (
     CodeExecutor,
     ExecutionContractError,
+    ExecutionInfrastructureFailureKind,
     ExecutionStatus,
     PistonExecutor,
     execution_result_to_mapping,
@@ -26,8 +28,9 @@ from code_verifier.execution import (
 from code_verifier.execution import harness as harness_module
 from code_verifier.execution import piston as piston_module
 from code_verifier.execution.piston import (
+    HttpClientPistonTransport,
     PistonTransportError,
-    UrlLibPistonTransport,
+    classify_piston_retryable_infrastructure_failure,
     load_piston_executor_config,
     piston_executor_config_from_mapping,
 )
@@ -77,42 +80,107 @@ def test_piston_executor_version_changes_with_harness_and_implementation_protoco
 ) -> None:
     config = piston_executor_config_from_mapping(_valid_mapping())
     baseline = piston_executor_version(config)
+    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v3")
+    assert piston_executor_version(config) != baseline
     monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v2")
+    monkeypatch.setattr(piston_module, "PISTON_EXECUTOR_IMPLEMENTATION_VERSION", "piston-executor-v3")
     assert piston_executor_version(config) != baseline
-    monkeypatch.setattr(harness_module, "PYTHON_HARNESS_PROTOCOL_VERSION", "trusted-parent-v1")
-    monkeypatch.setattr(piston_module, "PISTON_EXECUTOR_IMPLEMENTATION_VERSION", "piston-executor-v2")
-    assert piston_executor_version(config) != baseline
+
+
+class _FakeSocket:
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeouts.append(timeout)
 
 
 class _FakeResponse:
-    def __init__(self, body: bytes, content_type: str = "application/json") -> None:
+    def __init__(
+        self,
+        body: bytes,
+        content_type: str = "application/json",
+        *,
+        status: int = 200,
+        will_close: bool = False,
+        connection_header: str | None = None,
+        read_error: BaseException | None = None,
+    ) -> None:
         self._body = io.BytesIO(body)
+        self._read_error = read_error
         self.headers = Message()
         self.headers["Content-Type"] = content_type
+        if connection_header is not None:
+            self.headers["Connection"] = connection_header
+        self.status = status
+        self.will_close = will_close
+        self.closed = False
 
     def read(self, size: int = -1) -> bytes:
+        if self._read_error is not None:
+            raise self._read_error
         return self._body.read(size)
 
-    def __enter__(self) -> _FakeResponse:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
+    def close(self) -> None:
+        self.closed = True
 
 
-class _FakeOpener:
-    def __init__(self, responses: list[object]) -> None:
-        self._responses = responses
-        self.requests: list[Request] = []
-        self.timeouts: list[float] = []
+class _FakeHTTPConnection:
+    def __init__(
+        self,
+        responses: list[object],
+        *,
+        connect_error: BaseException | None = None,
+        request_errors: list[BaseException | None] | None = None,
+    ) -> None:
+        self._responses = list(responses)
+        self._connect_error = connect_error
+        self._request_errors = [] if request_errors is None else list(request_errors)
+        self.sock: _FakeSocket | None = None
+        self.timeout: float | None = None
+        self.connect_calls = 0
+        self.close_calls = 0
+        self.requests: list[tuple[str, str, bytes | None, dict[str, str]]] = []
 
-    def open(self, request: Request, *, timeout: float) -> Any:
-        self.requests.append(request)
-        self.timeouts.append(timeout)
+    def connect(self) -> None:
+        self.connect_calls += 1
+        if self._connect_error is not None:
+            raise self._connect_error
+        self.sock = _FakeSocket()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.requests.append((method, path, body, {} if headers is None else dict(headers)))
+        error = self._request_errors.pop(0) if self._request_errors else None
+        if error is not None:
+            raise error
+
+    def getresponse(self) -> Any:
         response = self._responses.pop(0)
         if isinstance(response, BaseException):
             raise response
         return response
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.sock = None
+
+
+class _FakeHTTPConnectionFactory:
+    def __init__(self, connections: list[_FakeHTTPConnection]) -> None:
+        self._connections = list(connections)
+        self.created: list[tuple[str, int, float, _FakeHTTPConnection]] = []
+
+    def __call__(self, host: str, port: int, timeout: float) -> _FakeHTTPConnection:
+        connection = self._connections.pop(0)
+        connection.timeout = timeout
+        self.created.append((host, port, timeout, connection))
+        return connection
 
 
 def test_piston_config_accepts_exact_local_mapping(tmp_path: Path) -> None:
@@ -199,78 +267,215 @@ def test_piston_config_rejects_invalid_limits_and_bool_numbers() -> None:
         piston_executor_config_from_mapping(too_small)
 
 
-def test_transport_builds_exact_runtime_and_execute_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    opener = _FakeOpener([_FakeResponse(b"[]"), _FakeResponse(b'{"run":{}}')])
-    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000/")
+def test_transport_reuses_one_connection_for_runtime_and_execute_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = _FakeHTTPConnection([_FakeResponse(b"[]"), _FakeResponse(b'{"run":{}}')])
+    factory = _FakeHTTPConnectionFactory([connection])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000/")
 
     assert transport.list_runtimes(timeout_seconds=1.5, max_response_bytes=64) == []
     payload: dict[str, object] = {"language": "python", "files": []}
     assert transport.execute_request(payload, timeout_seconds=2.5, max_response_bytes=64) == {"run": {}}
 
-    assert [request.full_url for request in opener.requests] == [
-        "http://127.0.0.1:2000/api/v2/runtimes",
-        "http://127.0.0.1:2000/api/v2/execute",
+    assert len(factory.created) == 1
+    assert factory.created[0][:3] == ("127.0.0.1", 2000, 1.5)
+    assert connection.connect_calls == 1
+    assert [(method, path) for method, path, _, _ in connection.requests] == [
+        ("GET", "/api/v2/runtimes"),
+        ("POST", "/api/v2/execute"),
     ]
-    assert opener.requests[0].get_method() == "GET"
-    assert opener.requests[1].get_method() == "POST"
-    assert json.loads(cast(bytes, opener.requests[1].data)) == payload
-    assert opener.requests[1].get_header("Content-type") == "application/json"
-    assert opener.timeouts == [1.5, 2.5]
+    assert json.loads(cast(bytes, connection.requests[1][2])) == payload
+    assert connection.requests[1][3]["Content-Type"] == "application/json"
+    assert connection.timeout == 2.5
+    assert connection.sock is not None
+    assert connection.sock.timeouts == [2.5]
 
 
-def test_transport_rejects_non_utf8_request_payload_without_network() -> None:
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+def test_transport_detects_peer_closed_real_socket_before_reuse() -> None:
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+    connection = http.client.HTTPConnection("127.0.0.1", 2000)
+    client, peer = socket.socketpair()
+    connection.sock = client
+    try:
+        assert transport._connection_has_pending_peer_state(connection) is False
+        peer.close()
+        assert transport._connection_has_pending_peer_state(connection) is True
+    finally:
+        connection.close()
+        peer.close()
+
+
+def test_transport_discards_detected_stale_connection_before_sending_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    second = _FakeHTTPConnection([_FakeResponse(b'{"run":{}}')])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=64) == []
+    monkeypatch.setattr(transport, "_connection_has_pending_peer_state", lambda connection: connection is first)
+    payload: dict[str, object] = {"language": "python", "files": []}
+    assert transport.execute_request(payload, timeout_seconds=1.0, max_response_bytes=64) == {"run": {}}
+
+    assert first.close_calls >= 1
+    assert [(method, path) for method, path, _, _ in first.requests] == [("GET", "/api/v2/runtimes")]
+    assert [(method, path) for method, path, _, _ in second.requests] == [("POST", "/api/v2/execute")]
+
+
+def test_transport_rejects_non_utf8_request_payload_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    factory = _FakeHTTPConnectionFactory([])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
     with pytest.raises(PistonTransportError, match="invalid piston request"):
         transport.execute_request(
             {"language": "python", "source": "\ud800"},
             timeout_seconds=1.0,
             max_response_bytes=64,
         )
+    assert factory.created == []
 
 
-def test_transport_disables_proxy_and_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured_handlers: tuple[object, ...] = ()
-    opener = _FakeOpener([_FakeResponse(b"[]")])
+@pytest.mark.parametrize(("will_close", "connection_header"), [(True, None), (False, "close")])
+def test_transport_server_close_discards_connection_and_next_request_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+    will_close: bool,
+    connection_header: str | None,
+) -> None:
+    first = _FakeHTTPConnection([_FakeResponse(b"[]", will_close=will_close, connection_header=connection_header)])
+    second = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
 
-    def fake_build_opener(*handlers: object) -> _FakeOpener:
-        nonlocal captured_handlers
-        captured_handlers = handlers
-        return opener
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=16) == []
+    assert first.close_calls == 1
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=16) == []
+    assert len(factory.created) == 2
+    assert len(first.requests) == 1
+    assert len(second.requests) == 1
 
-    monkeypatch.setattr(piston_module, "build_opener", fake_build_opener)
-    transport = UrlLibPistonTransport("http://localhost:2000")
-    transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=16)
 
-    proxy_handler = next(handler for handler in captured_handlers if isinstance(handler, ProxyHandler))
-    redirect_handler = next(handler for handler in captured_handlers if isinstance(handler, HTTPRedirectHandler))
-    assert cast(Any, proxy_handler).proxies == {}
-    assert type(redirect_handler).__name__ == "_RejectRedirects"
+def test_transport_stale_post_reset_is_not_replayed_and_next_independent_request_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _FakeHTTPConnection([http.client.RemoteDisconnected("private stale detail")])
+    second = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+    payload: dict[str, object] = {"language": "python", "files": []}
+
+    with pytest.raises(PistonTransportError) as error:
+        transport.execute_request(payload, timeout_seconds=1.0, max_response_bytes=64)
+    assert error.value.kind is piston_module.PistonTransportFailureKind.CONNECTION_RESET
+    assert error.value.safe_to_retry is False
+    assert error.value.remote_execution_ambiguous is True
+    assert len(first.requests) == 1
+    assert len(factory.created) == 1
+
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=64) == []
+    assert len(factory.created) == 2
+    assert len(first.requests) == 1
+    assert len(second.requests) == 1
+
+
+def test_transport_read_timeout_fails_closed_discards_and_reconnects_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _FakeHTTPConnection([_FakeResponse(b"", read_error=TimeoutError("private timeout detail"))])
+    second = _FakeHTTPConnection([_FakeResponse(b"[]")])
+    factory = _FakeHTTPConnectionFactory([first, second])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+
+    with pytest.raises(PistonTransportError) as error:
+        transport.execute_request({"language": "python"}, timeout_seconds=1.0, max_response_bytes=64)
+    assert error.value.kind is piston_module.PistonTransportFailureKind.READ_TIMEOUT
+    assert error.value.safe_to_retry is False
+    assert first.close_calls >= 1
+    assert len(first.requests) == 1
+
+    assert transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=64) == []
+    assert len(factory.created) == 2
 
 
 def test_transport_rejects_non_json_and_oversized_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    opener = _FakeOpener([_FakeResponse(b"{}", "text/plain"), _FakeResponse(b"0123456789")])
-    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+    non_json = _FakeHTTPConnection([_FakeResponse(b"{}", "text/plain")])
+    oversized = _FakeHTTPConnection([_FakeResponse(b"0123456789")])
+    factory = _FakeHTTPConnectionFactory([non_json, oversized])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
     with pytest.raises(PistonTransportError, match="non-json"):
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=8)
     with pytest.raises(PistonTransportError, match="exceeded"):
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=8)
 
 
-def test_transport_sanitizes_http_and_json_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transport_sanitizes_non_2xx_and_json_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = "HIDDEN_RESPONSE_SENTINEL"
-    error = HTTPError("http://127.0.0.1:2000", 500, sentinel, Message(), io.BytesIO(sentinel.encode()))
-    opener = _FakeOpener([error, _FakeResponse(sentinel.encode())])
-    monkeypatch.setattr(piston_module, "build_opener", lambda *handlers: opener)
-    transport = UrlLibPistonTransport("http://127.0.0.1:2000")
+    http_failure = _FakeHTTPConnection([_FakeResponse(sentinel.encode(), status=500)])
+    invalid_json = _FakeHTTPConnection([_FakeResponse(sentinel.encode())])
+    factory = _FakeHTTPConnectionFactory([http_failure, invalid_json])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
 
     with pytest.raises(PistonTransportError) as http_error:
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
     assert sentinel not in str(http_error.value)
+    assert http_error.value.kind is piston_module.PistonTransportFailureKind.HTTP_ERROR
     with pytest.raises(PistonTransportError) as json_error:
         transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
     assert sentinel not in str(json_error.value)
+    assert json_error.value.kind is piston_module.PistonTransportFailureKind.INVALID_RESPONSE
+
+
+def test_transport_normalizes_incomplete_response_stream_without_retryable_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse(b"", read_error=http.client.IncompleteRead(b"partial"))
+    connection = _FakeHTTPConnection([response])
+    factory = _FakeHTTPConnectionFactory([connection])
+    monkeypatch.setattr(http.client, "HTTPConnection", factory)
+    transport = HttpClientPistonTransport("http://127.0.0.1:2000")
+    with pytest.raises(PistonTransportError) as error:
+        transport.list_runtimes(timeout_seconds=1.0, max_response_bytes=128)
+    assert error.value.kind is piston_module.PistonTransportFailureKind.INVALID_RESPONSE
+    assert error.value.safe_to_retry is False
+    assert error.value.remote_execution_ambiguous is True
+    assert "partial" not in str(error.value)
+    assert connection.close_calls >= 1
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_kind", "safe_to_retry"),
+    [
+        (
+            URLError(ConnectionRefusedError(111, "private refused detail")),
+            piston_module.PistonTransportFailureKind.CONNECTION_REFUSED,
+            True,
+        ),
+        (
+            ConnectionResetError(104, "private reset detail"),
+            piston_module.PistonTransportFailureKind.CONNECTION_RESET,
+            False,
+        ),
+        (TimeoutError("private timeout detail"), piston_module.PistonTransportFailureKind.READ_TIMEOUT, False),
+        (
+            OSError(113, "private unreachable detail"),
+            piston_module.PistonTransportFailureKind.PRECONNECT_FAILURE,
+            True,
+        ),
+    ],
+)
+def test_transport_classifies_network_failures_without_leaking_details(
+    error: BaseException,
+    expected_kind: piston_module.PistonTransportFailureKind,
+    safe_to_retry: bool,
+) -> None:
+    classified = piston_module._classified_transport_error(error)
+    assert classified.kind is expected_kind
+    assert classified.safe_to_retry is safe_to_retry
+    assert "private" not in str(classified)
 
 
 class _FakeTransport:
@@ -278,10 +483,17 @@ class _FakeTransport:
         self.runtimes = [] if runtimes is None else runtimes
         self.responses = [] if responses is None else list(responses)
         self.runtime_calls = 0
+        self.close_calls = 0
+        self.events: list[str] = []
         self.execute_calls: list[tuple[dict[str, object], float, int]] = []
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.events.append("close")
 
     def list_runtimes(self, *, timeout_seconds: float, max_response_bytes: int) -> object:
         self.runtime_calls += 1
+        self.events.append("runtime")
         if isinstance(self.runtimes, BaseException):
             raise self.runtimes
         return self.runtimes
@@ -293,6 +505,7 @@ class _FakeTransport:
         timeout_seconds: float,
         max_response_bytes: int,
     ) -> object:
+        self.events.append("execute")
         self.execute_calls.append((payload, timeout_seconds, max_response_bytes))
         response = self.responses.pop(0)
         if isinstance(response, BaseException):
@@ -378,6 +591,20 @@ def test_validate_runtime_requires_exact_installed_python_version() -> None:
     unavailable, _ = _executor([], runtimes=[_runtime_record("3.11.0")])
     with pytest.raises(PistonTransportError, match="unavailable"):
         unavailable.validate_runtime()
+
+
+def test_prepare_infrastructure_retry_drops_connection_before_and_after_runtime_probe() -> None:
+    executor, transport = _executor([_run_response()], runtimes=[_runtime_record()])
+    assert executor.prepare_infrastructure_retry() == "3.10.0"
+    assert _execute(executor).status is ExecutionStatus.PASSED
+    assert transport.runtime_calls == 1
+    assert transport.close_calls == 2
+    assert transport.events == ["close", "runtime", "close", "execute"]
+
+    unavailable, unavailable_transport = _executor([], runtimes=[_runtime_record("3.11.0")])
+    with pytest.raises(PistonTransportError, match="unavailable"):
+        unavailable.prepare_infrastructure_retry()
+    assert unavailable_transport.events == ["close", "runtime", "close"]
 
 
 def test_validate_runtime_rejects_duplicate_and_malformed_runtime_records() -> None:
@@ -514,6 +741,104 @@ def test_execute_transport_error_is_sanitized_sandbox_error() -> None:
     assert result.status is ExecutionStatus.SANDBOX_ERROR
     assert sentinel not in result.test_results[0].stderr
     assert result.test_results[0].stderr == "piston transport failed"
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.PISTON_TRANSPORT
+    )
+
+
+def test_execute_piston_internal_xx_is_sanitized_and_retryable() -> None:
+    sentinel = "PRIVATE_PISTON_INTERNAL_SENTINEL"
+    executor, _ = _executor([_run_response(status="XX", code=None, stderr=sentinel)])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert sentinel not in result.test_results[0].stderr
+    assert result.test_results[0].stderr == "piston internal execution failed"
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.PISTON_INTERNAL
+    )
+
+
+def test_invalid_harness_report_is_structured_retryable_infrastructure() -> None:
+    executor, _ = _executor([_run_response(stdout="ordinary output")])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert result.test_results[0].stderr == "invalid harness report"
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL
+    )
+
+
+def test_invalid_piston_response_is_structured_retryable_infrastructure() -> None:
+    executor, _ = _executor([{"run": {"stdout": 123, "stderr": ""}}])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert result.test_results[0].stderr == "invalid piston response"
+    assert (
+        result.test_results[0].infrastructure_failure_kind
+        is ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL
+    )
+    assert (
+        classify_piston_retryable_infrastructure_failure(result)
+        is ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL
+    )
+
+
+def test_compile_stage_candidate_failure_remains_non_retryable_sandbox_error() -> None:
+    response = _run_response()
+    response["compile"] = {
+        "stdout": "",
+        "stderr": "candidate compile failure",
+        "code": 1,
+        "signal": None,
+        "message": None,
+        "status": "RE",
+        "cpu_time": 1.0,
+        "wall_time": 2.0,
+        "memory": 1024,
+    }
+    executor, _ = _executor([response])
+    result = _execute(executor)
+
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert result.test_results[0].stderr == "piston compile stage failed"
+    assert result.test_results[0].infrastructure_failure_kind is None
+    assert classify_piston_retryable_infrastructure_failure(result) is None
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _run_response(status="TO", code=None),
+        _run_response(status="SG", signal="SIGKILL", message="memory limit"),
+        _run_response(status="RE", code=1),
+        _run_response(outcome="wrong_answer"),
+        _run_response(outcome="output_limit"),
+    ],
+)
+def test_candidate_failures_do_not_gain_infrastructure_kind(response: dict[str, object]) -> None:
+    executor, _ = _executor([response])
+    result = _execute(executor)
+
+    assert all(item.infrastructure_failure_kind is None for item in result.test_results)
+    assert classify_piston_retryable_infrastructure_failure(result) is None
+
+
+def test_later_structured_infrastructure_failure_controls_aggregate_status() -> None:
+    executor, transport = _executor(
+        [_run_response(outcome="wrong_answer"), _run_response(stdout="ordinary output")],
+        stop_on_first_failure=False,
+    )
+
+    result = _execute(executor, [{"input": [1], "expected": 1}, {"input": [2], "expected": 2}])
+
+    assert len(transport.execute_calls) == 2
+    assert result.status is ExecutionStatus.SANDBOX_ERROR
+    assert (
+        classify_piston_retryable_infrastructure_failure(result) is ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL
+    )
 
 
 def test_execute_empty_tests_does_not_call_transport() -> None:

@@ -11,6 +11,7 @@ import pytest
 from code_verifier.execution import (
     CodeExecutor,
     ExecutionContractError,
+    ExecutionInfrastructureFailureKind,
     ExecutionResult,
     ExecutionStatus,
     MockExecutor,
@@ -31,6 +32,7 @@ def _test_result(
     runtime_ms: float = 1.0,
     stdout: str = "",
     stderr: str = "",
+    infrastructure_failure_kind: ExecutionInfrastructureFailureKind | None = None,
 ) -> ExecutionTestCaseResult:
     return ExecutionTestCaseResult(
         status=status,
@@ -38,6 +40,7 @@ def _test_result(
         runtime_ms=runtime_ms,
         stdout=stdout,
         stderr=stderr,
+        infrastructure_failure_kind=infrastructure_failure_kind,
     )
 
 
@@ -373,8 +376,22 @@ def test_execution_result_to_mapping_is_exact_and_json_serializable() -> None:
         "pass_rate": 1.0,
         "runtime_ms": 3.0,
         "test_results": [
-            {"status": "passed", "passed": True, "runtime_ms": 1.0, "stdout": "ok", "stderr": ""},
-            {"status": "passed", "passed": True, "runtime_ms": 2.0, "stdout": "", "stderr": "warning"},
+            {
+                "status": "passed",
+                "passed": True,
+                "runtime_ms": 1.0,
+                "stdout": "ok",
+                "stderr": "",
+                "infrastructure_failure_kind": None,
+            },
+            {
+                "status": "passed",
+                "passed": True,
+                "runtime_ms": 2.0,
+                "stdout": "",
+                "stderr": "warning",
+                "infrastructure_failure_kind": None,
+            },
         ],
     }
     assert json.loads(json.dumps(mapping, allow_nan=False)) == mapping
@@ -384,6 +401,36 @@ def test_execution_result_from_mapping_round_trips_exact_mapping() -> None:
     mapping = execution_result_to_mapping(_execution_result())
     parsed = execution_result_from_mapping(mapping)
     assert execution_result_to_mapping(parsed) == mapping
+
+
+def test_execution_result_mapping_round_trips_infrastructure_failure_kind() -> None:
+    result = _execution_result(
+        status=ExecutionStatus.SANDBOX_ERROR,
+        passed_tests=0,
+        total_tests=1,
+        pass_rate=0.0,
+        test_results=[
+            _test_result(
+                ExecutionStatus.SANDBOX_ERROR,
+                stderr="invalid piston response",
+                infrastructure_failure_kind=ExecutionInfrastructureFailureKind.PISTON_RESPONSE_PROTOCOL,
+            )
+        ],
+    )
+
+    mapping = execution_result_to_mapping(result)
+    raw_test = cast(list[dict[str, object]], mapping["test_results"])[0]
+    assert raw_test["infrastructure_failure_kind"] == "piston_response_protocol"
+    assert execution_result_from_mapping(mapping) == result
+
+
+def test_execution_result_from_mapping_accepts_legacy_test_result_without_infrastructure_kind() -> None:
+    mapping = execution_result_to_mapping(_execution_result())
+    raw_test = cast(list[dict[str, object]], mapping["test_results"])[0]
+    raw_test.pop("infrastructure_failure_kind")
+
+    parsed = execution_result_from_mapping(mapping)
+    assert parsed.test_results[0].infrastructure_failure_kind is None
 
 
 @pytest.mark.parametrize(

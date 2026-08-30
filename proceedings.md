@@ -724,3 +724,15 @@ WP5-a/WP5-b 已完成统一评测的 development 工程合同，WP5-c 现进一�
 ### WP6 聚合状态
 
 WP6-a/WP6-c 已完成 SFT 数据、训练控制面、completed checkpoint identity、PEFT reload 与统一 B 组评测的 development 工程合同；WP6-d 现进一步完成正式 optimizer-based SFT B、checkpoint/成本与 400 题 B numerical validation。归档的旧 WP6-b blocked history 仍仅作为审计历史，不代表被 main 接受的独立 stage。至此 WP6 的 development + formal B validation 范围完成，后续 validation 依赖转入 WP7 的 Public/Hidden GRPO C/D 正式训练与评测。
+
+---
+
+## Project workflow transport amendment: 1660 Ti initiated reverse SSH for Piston
+
+- **生效日期**：2026-08-27
+- **性质**：项目级 workflow/infrastructure transport amendment；不修改 Piston host、Piston image/runtime、experiment definition、formal artifact identity、dataset/model/training/evaluation identity，也不重写既有 operator evidence。
+- 项目唯一 Piston host 仍为 `1660ti-wsl`，Piston API 仍只绑定该机 `127.0.0.1:2000`，4090 上 CodeVerifier 仍只使用 `http://127.0.0.1:2000`。变化仅是 SSH tunnel 的发起方向：canonical transport 改为 GTX 1660 Ti control plane 主动连接当前算力平台公网 SSH endpoint，并建立 `-R 127.0.0.1:2000:127.0.0.1:2000` loopback-only reverse forward。
+- provider SSH hostname/port/authentication 为 machine-local operator state，不进入 Git。4090 target-start preflight 不再启动旧 `ensure-piston-1660ti-tunnel.sh` / Tailscale local-forward helper；需要 Piston 时只 health-check 现有 `127.0.0.1:2000` listener、`/api/v2/runtimes` 与项目 `PistonExecutor.validate_runtime()` exact `3.10.0`。
+- 2026-08-27 实测 reverse-forward 后，4090 fresh `/api/v2/runtimes` 30 次 mean `97.56 ms`、p50 `98.759 ms`、p95 `104.156 ms`；可信 `print(1)` fresh 10 次 mean `134.31 ms`。相较先前 Tailscale DERP 路径约 `1.06–1.09 s` 的 fresh 请求，连接/执行端到端延迟约降低 90%。4090 上项目 `PistonExecutor.validate_runtime()` 返回 exact `3.10.0`，并且经该 reverse tunnel 的真实 `make test-piston` 为 `9 passed, 0 skipped, 0 failed`。
+- 已有 WP7-c operator `run.sh`/checkpoint SHA provenance 保持 immutable，不回写旧脚本；active stage 如需采用本 transport update，按既有 active-stage workflow migration 规则记录独立 `workflow_runtime_commit`，新 operator checkpoint 才按 reverse-forward policy 生成。
+- transport 切换验证期间 4090 无 formal SFT/GRPO/model-loading target-GPU process；正式 target-GPU run 活跃时仍禁止重启或扰动该 SSH transport。

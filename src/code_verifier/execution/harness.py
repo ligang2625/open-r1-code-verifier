@@ -18,7 +18,7 @@ HarnessOutcome: TypeAlias = Literal[
     "harness_error",
 ]
 
-PYTHON_HARNESS_PROTOCOL_VERSION = "trusted-parent-v1"
+PYTHON_HARNESS_PROTOCOL_VERSION = "trusted-parent-v2"
 
 _ALLOWED_OUTCOMES = frozenset(
     {"passed", "wrong_answer", "syntax_error", "runtime_error", "output_limit", "harness_error"}
@@ -438,13 +438,11 @@ def _run_candidate(function_name: str, input_value: object, max_output_bytes: in
         "result": _CHILD_RESULT_LIMIT_BYTES,
     }
     exceeded = {name: False for name in streams}
-    killed_for_limit = False
     try:
         while True:
             _drain_ready(selector, buffers, limits, exceeded, timeout=0.01)
             if (exceeded["stdout"] or exceeded["stderr"] or exceeded["result"]) and process.poll() is None:
                 process.kill()
-                killed_for_limit = True
             return_code = process.poll()
             if return_code is None:
                 continue
@@ -462,10 +460,8 @@ def _run_candidate(function_name: str, input_value: object, max_output_bytes: in
     return_code = process.wait()
     captured_stdout = _bounded_text(bytes(buffers["stdout"]), max_output_bytes)
     captured_stderr = _bounded_text(bytes(buffers["stderr"]), max_output_bytes)
-    if exceeded["stdout"] or exceeded["stderr"]:
+    if exceeded["stdout"] or exceeded["stderr"] or exceeded["result"]:
         return "output_limit", None, captured_stdout, captured_stderr
-    if exceeded["result"] or killed_for_limit:
-        return "harness_error", None, captured_stdout, captured_stderr
     if return_code != 0:
         _propagate_child_failure(return_code)
 

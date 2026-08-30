@@ -191,6 +191,12 @@ def test_harness_bounded_stdout_and_stderr_report_output_limit(tmp_path: Path, c
     assert len(report.stderr.encode()) <= 64
 
 
+def test_harness_oversized_candidate_return_reports_output_limit(tmp_path: Path) -> None:
+    code = "def target(value):\n    return 'x' * (9 * 1024 * 1024)\n"
+    report = _run_program(tmp_path, _program(code, None, None))
+    assert report.outcome == "output_limit"
+
+
 def _marker_line(payload: str, *, marker: str = _MARKER) -> str:
     return f"__CODE_VERIFIER_RESULT__:{marker}:{payload}"
 

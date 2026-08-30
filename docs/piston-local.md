@@ -2,12 +2,12 @@
 
 Piston is an external sandbox service. It is not a Git submodule or vendored dependency of this repository. The CodeVerifier process sends untrusted source text only to a loopback HTTP endpoint and must never execute model-generated code directly in the training/evaluation process.
 
-**Current project topology:** the only Piston host is `1660ti-wsl`. `home-piston-01` is retired and must not be reintroduced. The pinned service runs on the GTX 1660 Ti WSL host. The 1660 Ti control plane uses its loopback endpoint directly; a 4090 target-GPU job that needs Piston reaches the same service only through `4090 127.0.0.1:2000 -> 1660ti-wsl 127.0.0.1:2000`. The existing 4090 helper is `/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh`.
+**Current project topology:** the only Piston host is `1660ti-wsl`. `home-piston-01` is retired and must not be reintroduced. The pinned service runs on the GTX 1660 Ti WSL host. The 1660 Ti control plane uses its loopback endpoint directly; for Piston-dependent work on the 4090, the 1660 Ti initiates an outbound SSH connection to the current provider public SSH endpoint and creates `-R 127.0.0.1:2000:127.0.0.1:2000`. CodeVerifier on the 4090 therefore still sees only `http://127.0.0.1:2000`. Provider SSH hostname/port/authentication are machine-local operator state and are not committed.
 
 The loopback endpoint may be backed by either:
 
 1. a Piston service running on the same Linux host/VM; or
-2. the recommended cloud-GPU topology: a dedicated CPU Linux host/VM running Piston, reached from the GPU container through an SSH local forward.
+2. the recommended cloud-GPU topology: a dedicated CPU Linux host/VM running Piston, connected to the GPU container through loopback-only SSH forwarding.
 
 In both cases CodeVerifier still connects only to `http://127.0.0.1:2000`. Do not put a LAN/public Piston address in project configuration.
 
@@ -37,16 +37,16 @@ Dedicated CPU Linux host / VM
   pinned privileged Piston container
   Piston API: 127.0.0.1:2000 only
               |
-              | SSH local forward
+              | outbound SSH + reverse forward
               v
 Ordinary RTX 4090 GPU container
-  127.0.0.1:2000  -> SSH tunnel
+  127.0.0.1:2000  <- SSH reverse tunnel
   open-r1-code-verifier
   PyTorch / CUDA / SFT / GRPO / evaluation
   no Docker daemon required
 ```
 
-Docker, `--privileged`, and Piston cgroup requirements belong to the dedicated Piston host in this topology. The 4090 container only needs the pinned training environment, GPU access, persistent storage, SSH client connectivity to the Piston host, and the loopback tunnel.
+Docker, `--privileged`, and Piston cgroup requirements belong to the dedicated Piston host in this topology. The 4090 container only needs the pinned training environment, GPU access, persistent storage, its existing provider SSH service, and the loopback reverse tunnel.
 
 Do not replace this topology with direct host execution of candidate code merely because the GPU container cannot run Docker.
 
@@ -55,7 +55,7 @@ Do not replace this topology with direct host execution of candidate code merely
 The service and tunnel must satisfy all of these requirements:
 
 - Piston publishes port 2000 only on `127.0.0.1` or another loopback address on the Piston host;
-- the GPU container reaches Piston only through an SSH local forward that itself binds `127.0.0.1` on the GPU side;
+- the GPU container reaches Piston only through loopback-only SSH forwarding that binds `127.0.0.1` on the GPU side;
 - never expose Piston directly to a LAN or the public internet;
 - use a dedicated Piston Linux host/VM because the Piston API container requires elevated privileges;
 - do not mount the Docker socket, repository, home directory, credentials, or unrelated host paths into execution jobs;
@@ -118,17 +118,23 @@ curl --fail --silent --show-error \
 
 The response must contain exactly the configured Python version before the GPU node is allowed to use this service.
 
-## RTX 4090 container: establish the SSH loopback tunnel
+## GTX 1660 Ti control plane: establish the 4090 loopback reverse tunnel
 
-Run the existing helper from the 4090 GPU container; it owns the canonical SSH target `1660ti-wsl` and loopback mapping:
+From the 1660 Ti WSL control plane, establish a long-lived outbound SSH session to the current provider public SSH endpoint and bind the 4090 side only on loopback:
 
 ```bash
-/root/sj-tmp/open-r1-code-verifier-outputs/machine/ensure-piston-1660ti-tunnel.sh
+ssh -N -T \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -R 127.0.0.1:2000:127.0.0.1:2000 \
+  -p <CURRENT_PROVIDER_SSH_PORT> \
+  root@<CURRENT_PROVIDER_SSH_HOST>
 ```
 
-For troubleshooting, the underlying contract is an SSH local forward from 4090 `127.0.0.1:2000` to `1660ti-wsl` `127.0.0.1:2000`. Do not substitute another Piston host.
+The current provider host/port and authentication are machine-local operator state. Do not commit them to the repository. The former 4090-side Tailscale/local-forward helper is not part of the canonical transport after this change.
 
-Keep this SSH session alive for the entire training/evaluation command that needs Piston. If the SSH process exits, CodeVerifier must fail closed on Piston transport errors rather than running candidate code locally.
+Keep this SSH session alive for the entire training/evaluation command that needs Piston. If the SSH process exits, CodeVerifier must fail closed on Piston transport errors rather than running candidate code locally. If a formal target-GPU run is already active, do not restart or perturb the tunnel; only perform read-only health checks.
 
 The project YAML remains unchanged:
 
@@ -237,7 +243,7 @@ docker rm --force piston_wp3b
 docker volume rm piston_wp3b
 ```
 
-On the 4090 GPU container, stop the tunnel by terminating its foreground `ssh -N -T ...` process. Stopping the tunnel must not modify the Piston host or its volume.
+On the GTX 1660 Ti control plane, stop the tunnel by terminating the foreground `ssh -N -T ... -R 127.0.0.1:2000:127.0.0.1:2000 ...` process. Stopping the tunnel must not modify the Piston service, its container, or its volume. Never terminate or restart this transport while a formal target-GPU run is active.
 
 ## Known MVP limitation
 

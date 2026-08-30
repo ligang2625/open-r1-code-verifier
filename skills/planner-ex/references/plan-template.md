@@ -57,7 +57,7 @@
 - 通过标准：...
 - 失败处理：停止本次 execution，保持 `HEAD == plan_commit`，修复环境后可重新调用 execution-router；不得先提交部分实现。
 
-> 这里只放能够在 GTX 1660 Ti control plane 实施前判断的非破坏性 prerequisites，例如 `1660ti-wsl` Piston、必要依赖 import、control-plane data/cache。validation 的 4090 READY、>=22 GiB GPU、target model/cache/data 与 persistent artifact/HF/data roots **不属于 planner/bootstrap preflight**；它们由具体 target-GPU gate 的 portable `run.sh` 在 4090 operator-start preflight 中 fail closed 检查。4090 如需 Piston，只允许通过 SSH local forward 使用唯一 host `1660ti-wsl` 的 loopback Piston。
+> 这里只放能够在 GTX 1660 Ti control plane 实施前判断的非破坏性 prerequisites，例如 `1660ti-wsl` Piston、必要依赖 import、control-plane data/cache。validation 的 4090 READY、>=22 GiB GPU、target model/cache/data 与 persistent artifact/HF/data roots **不属于 planner/bootstrap preflight**；它们由具体 target-GPU gate 的 portable `run.sh` 在 4090 operator-start preflight 中 fail closed 检查。4090 如需 Piston，当前 canonical transport 是 1660 Ti control plane 主动连接 provider public SSH endpoint，并以 loopback-only reverse forward `-R 127.0.0.1:2000:127.0.0.1:2000` 提供唯一 host `1660ti-wsl` 的 Piston；target preflight 只验证 4090 loopback endpoint 与 exact runtime。
 
 ### Operator terminal execution（仅 `validation + target_hardware=24GB GPU`；schema 名称保留，但覆盖所有 target-GPU gates）
 
