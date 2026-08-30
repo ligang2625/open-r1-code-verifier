@@ -1931,3 +1931,83 @@ execution_checkpoint:
 ```
 
 C27 supersedes C26 only for the generation gate. C26 remains immutable failed historical evidence. The control plane does not push, start, or monitor C27.
+
+## E0 — completed WP7-c implementation after C27 generation resume
+
+The C27 target generation evidence and both synchronized 400-row generation bundles were independently revalidated byte-for-byte on the GTX 1660 Ti control plane before any verification was started. The received C27 operator evidence SHA256 is `4e2912a57b7fa5f1a3864db3e2bf938026357f4808bc85ae513042dca677a098`; postcheck SHA256 is `dc014c76b6bfb73fb6d30de8ddd13865309f1cd148c3eb8bd03cdab332807745`; terminal log SHA256 is `e80c71e40dca99aa79b6bab01ab8e8c84a331fa2d55d07e38d649dfc1fe11732`. Evidence binds checkpoint `0e2a894943cfb623610e937380342d148ad8cff0`, result code `d53a18cd951a3cab7e5571f95b3b508b61878b2d`, workflow runtime `657030c47a29411e343049926de10730858104a8`, and tracked script SHA256 `e03bae85798260d2e5dfe4fb515bf7f703dc47f09deae57c67a3c8ac6f164926`, with `command_rc=0`, `postcheck_rc=0`, `gate_status=passed`, generation-only execution, no target Piston verification, and strict C/D 400-row generation readback at `resumed=400, generated=0`.
+
+Every C27 expected generation artifact was rehashed against `operator-evidence.json`. Public generation records SHA256 is `a5d841f625fe1d3126e858f8c12081babb7a7739c84667a715e175bfbef07357`; Hidden generation records SHA256 is `f84c2ab7037c3ec297b1786171c0272f782f98b22ca1d8a81e6bb02eb384bfd0`. Both generation bundles are completed at 400 rows, bind `project_commit=0e2a894943cfb623610e937380342d148ad8cff0`, evaluation dataset SHA256 `770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae`, ordered problem IDs SHA256 `2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9`, formal pair SHA256 `31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9`, Piston definition SHA256 `f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`, seed 42, the exact frozen model/Open-R1/dependency identities, and their respective independent formal GRPO checkpoint identities.
+
+A fresh external control-plane result root `/home/dzy/wp7c-verified` was used for real local-Piston evaluation; no verification artifact was written into the stage worktree. `configs/execution/piston-local.yaml` rehashed to the sealed Piston definition and real runtime acceptance passed 9 selected tests with zero selected skips/failures. Public and Hidden `verify-eval` each processed all 400 generated completions through local Piston with four workers (`resumed=0, verified=400`), followed by strict readback (`resumed=400, verified=0`). Both result streams have 400 unique problem IDs in the exact sealed order, zero `sandbox_error` rows, zero sandbox-error failure counts, and no infrastructure-failure field occurrence. Public verification results SHA256 is `7c5bb7497389872ee55ec67c4cb73cb188b68f0da06750013f1bd7a734cbb913`; Hidden is `004d5655b438244a729acd0b2b1fe33aed8ae5e8758fe462ac7215d1f54d12c5`.
+
+`aggregate-eval` then completed independently for both 400-row runs. Public summary SHA256 is `6cc3fa7b785f01aef55e6a13e082266385ea01a77950a36ffaf1e7285e25480c` and `main_results.csv` SHA256 is `c39c75737cf9e4befd43e782d1bfe1f59e1aa8b8a932cb4d5bb341d39fafafc8`; Hidden summary SHA256 is `f63a20181f2f560ffdf1b6bdcb385f6dbbf83f1a05b5592013315ff401a2273d` and `main_results.csv` SHA256 is `8da0439242fdb15274b4300fb17ebc813eb692cdbc220f3ebc70c5919cff0dcf`. Public aggregate metrics include visible pass@1 `0.3625`, train-hidden pass@1 `0.34`, eval-hidden pass@1 `0.375`, and eval-hidden average test pass rate `0.44875`; Hidden records the same three pass@1 values and eval-hidden average test pass rate `0.45125`. All persisted aggregate numeric values are finite and each summary traces to 400 rows, the exact C/D checkpoint, project commit, dataset, dependency, model and seed identities.
+
+Final executor-owned acceptance on the current stage HEAD passed: `make lint`; `make test` with 1030 passed / 3 expected env-gated Piston skips / 0 failed; `make test-gpu` with 3/3 passed; and real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` with 9 selected passed / 2 deselected / 0 selected skipped or failed. `.ai-bridge/**` remains untracked, no C/D training or 4090 generation was repeated, no historical C25/C26/C27 checkpoint was modified, and no push/review/finalize/merge was performed.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP7-c
+  execution_id: E0
+  task_kind: implementation
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: 0e2a894943cfb623610e937380342d148ad8cff0
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  workflow_runtime_commit: 657030c47a29411e343049926de10730858104a8
+  operator_checkpoint_reconciliation_version: 1
+  reconciled_checkpoint_id: C25
+  reconciled_checkpoint_commit: e0ec354790d42753c8170625adea4d5e28fe4325
+  reconciled_checkpoint_task_kind_raw: repair
+  reconciled_checkpoint_task_kind_effective: implementation
+  reconciled_control_plane_evidence_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-formal/C25
+  accepted_c25_operator_evidence_sha256: 0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e
+  accepted_c25_postcheck_sha256: c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63
+  resumed_from_checkpoint_id: C27
+  resumed_from_checkpoint_commit: 0e2a894943cfb623610e937380342d148ad8cff0
+  operator_gate_id: grpo-cd-generate-eval
+  operator_handoff_mode: portable_target
+  operator_restart_policy: exact_rerun
+  operator_evidence_sha256: 4e2912a57b7fa5f1a3864db3e2bf938026357f4808bc85ae513042dca677a098
+  operator_postcheck_sha256: dc014c76b6bfb73fb6d30de8ddd13865309f1cd148c3eb8bd03cdab332807745
+  operator_terminal_log_sha256: e80c71e40dca99aa79b6bab01ab8e8c84a331fa2d55d07e38d649dfc1fe11732
+  superseded_checkpoint_id: C26
+  superseded_checkpoint_commit: d53a18cd951a3cab7e5571f95b3b508b61878b2d
+  superseded_operator_script_sha256: f1fb281c0aef9ca237584b99374033a58a68fa75adc26ffbf1cdc111ae3f1565
+  superseded_terminal_log_sha256: 28b31446fee864dab14ed9dd73d83831b1679d86c8117b93e01a3570bdab0c80
+  superseded_generation_started: false
+  evaluation_dataset_sha256: 770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae
+  ordered_problem_ids_sha256: 2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  public_generation_run_sha256: 0d081a3aded9eda7c3f12f40536f31016d2b9255054f9c5d4f4f8ab998e2f623
+  public_generation_records_sha256: a5d841f625fe1d3126e858f8c12081babb7a7739c84667a715e175bfbef07357
+  hidden_generation_run_sha256: 644fbd3abac1ff58884d1820feb93079e81cde0df542f64d5139a966a8ab3d27
+  hidden_generation_records_sha256: f84c2ab7037c3ec297b1786171c0272f782f98b22ca1d8a81e6bb02eb384bfd0
+  control_plane_verification_root: /home/dzy/wp7c-verified
+  public_verification_run_sha256: bf777fc62d40249c86b4a17c92e39a06fe784688238a336faf109dfbc2b82bb2
+  public_verification_results_sha256: 7c5bb7497389872ee55ec67c4cb73cb188b68f0da06750013f1bd7a734cbb913
+  public_verification_rows: 400
+  public_verification_readback_resumed: 400
+  public_verification_readback_verified: 0
+  public_sandbox_error_rows: 0
+  public_infrastructure_failure_rows: 0
+  hidden_verification_run_sha256: 5d6cc0a8a08efaf1f8cea927190531a3a5ff0decdc4531cd49e7d1f6375d03ba
+  hidden_verification_results_sha256: 004d5655b438244a729acd0b2b1fe33aed8ae5e8758fe462ac7215d1f54d12c5
+  hidden_verification_rows: 400
+  hidden_verification_readback_resumed: 400
+  hidden_verification_readback_verified: 0
+  hidden_sandbox_error_rows: 0
+  hidden_infrastructure_failure_rows: 0
+  public_aggregate_summary_sha256: 6cc3fa7b785f01aef55e6a13e082266385ea01a77950a36ffaf1e7285e25480c
+  public_aggregate_main_results_sha256: c39c75737cf9e4befd43e782d1bfe1f59e1aa8b8a932cb4d5bb341d39fafafc8
+  hidden_aggregate_summary_sha256: f63a20181f2f560ffdf1b6bdcb385f6dbbf83f1a05b5592013315ff401a2273d
+  hidden_aggregate_main_results_sha256: 8da0439242fdb15274b4300fb17ebc813eb692cdbc220f3ebc70c5919cff0dcf
+  evidence_class: real-training/numerical
+  status: completed
+```
+
+E0 closes only routed execution. Independent review remains a separate lifecycle boundary and is not performed in this execution conversation.
