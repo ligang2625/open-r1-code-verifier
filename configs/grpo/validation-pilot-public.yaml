@@ -22,7 +22,7 @@ lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.05
 logging_steps: 1
-save_steps: 10
+save_steps: 50
 eval_steps: 50
 seed: 42
 min_cuda_memory_gb: 20.0

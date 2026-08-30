@@ -166,12 +166,12 @@ def test_wp7a_public_and_hidden_configs_match_except_reward_source() -> None:
     validate_grpo_config_pair(public, hidden)
 
 
-def test_wp7c_pilot_configs_checkpoint_every_ten_optimizer_steps() -> None:
+def test_wp7c_pilot_configs_checkpoint_every_fifty_optimizer_steps() -> None:
     public = load_grpo_training_config(Path("configs/grpo/validation-pilot-public.yaml"))
     hidden = load_grpo_training_config(Path("configs/grpo/validation-pilot-hidden.yaml"))
     validate_grpo_config_pair(public, hidden)
     assert public.max_steps == hidden.max_steps == 100
-    assert public.save_steps == hidden.save_steps == 10
+    assert public.save_steps == hidden.save_steps == 50
 
 
 def test_wp7a_grpo_dataset_uses_shared_prompt_and_payload_boundaries() -> None:
