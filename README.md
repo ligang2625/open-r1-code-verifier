@@ -1,8 +1,91 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is a research scaffold for comparing visible-test and hidden-test rewards in function-level Python RLVR. WP0 project scaffolding through the WP7-b GRPO checkpoint-evaluation integration are implemented.
+Open-R1 CodeVerifier is an end-to-end 1.5B code post-training study that separates visible tests, train-hidden reward tests, and an independent eval-hidden verifier to measure whether SFT and GRPO gains actually generalize.
 
-WP3 includes the stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, and the `execute-batch` CLI. WP4 adds structured verification results, completion → parser → executor orchestration, a shared reward core, and isolated Public/Hidden reward wrappers. WP5 adds frozen deterministic Transformers generation, three-layer per-problem pass@1 records, strict exact-prefix resume, problem-level metrics/bootstrap, and generated summary/CSV artifacts through the `evaluate` CLI. WP6 adds a visible-only SFT data contract, pinned LoRA/TRL/Open-R1 runtime construction, hardware protection, reproducible run artifacts, strict completed-run checkpoint identity, read-only PEFT reload, and B-group evaluation through the same `evaluate` pipeline. WP7 adds Public/Hidden GRPO datasets and configs, verifier-backed TRL reward wiring, merged-B policy initialization, sanitized rollout/reward/group logs, strict resume, completed C/D checkpoint identity, stacked inference reload, and unified C/D evaluation. Real untrusted code may only be sent to an explicitly configured local Piston service.
+**Current formal scope:** engineering development, seed-42 Base/SFT/Public-RLVR/Hidden-RLVR validation, deterministic statistical analysis, and a 25-case manual failure review are complete. A second training seed or full C/D rerun is intentionally **pending** until the project is reviewed end-to-end; this repository does not claim training-seed robustness yet.
+
+## Key Finding
+
+SFT is the clear improvement in the accepted seed-42 experiment: Eval-Hidden Pass@1 rises from **0.1150** (Base) to **0.3775** (SFT), an observed **+26.25 percentage points**. The subsequent GRPO stage does not improve that held-out metric: Public-RLVR and Hidden-RLVR both score **0.3750**. Relative to SFT, each GRPO arm has a paired Eval-Hidden delta of **-0.0025** with 95% CI **[-0.0125, 0.0075]**, so the supported conclusion is *no observed held-out improvement over SFT in this run*, not a significant degradation.
+
+The stronger Hidden-RLVR reward also does not separate from Public-RLVR on the predefined aggregate whole-pass metrics in seed 42. That equality is an observation about this fixed experiment, **not** evidence that the two algorithms are generally equivalent.
+
+## Method
+
+```mermaid
+flowchart LR
+    A[Base<br/>Qwen2.5-Coder 1.5B] --> B[LoRA SFT<br/>B]
+    B --> C[Public-RLVR<br/>C: visible reward]
+    B --> D[Hidden-RLVR<br/>D: train-hidden reward]
+    A --> E[Same 400-problem<br/>formal evaluation]
+    B --> E
+    C --> E
+    D --> E
+    E --> V[Visible Pass@1]
+    E --> H[Train-Hidden Pass@1]
+    E --> X[Independent Eval-Hidden Pass@1]
+```
+
+The key experimental boundary is that **Eval-Hidden is never used as a training reward**. Public-RLVR receives visible-test reward; Hidden-RLVR receives train-hidden reward; all A–D policies are measured by the same deterministic 400-problem evaluation and the same Piston verifier path.
+
+## Results
+
+| Method | Visible Pass@1 | Train-Hidden Pass@1 | Eval-Hidden Pass@1 |
+| --- | ---: | ---: | ---: |
+| Base | 0.1225 | 0.1175 | 0.1150 |
+| SFT | 0.3525 | 0.3350 | **0.3775** |
+| Public-RLVR | **0.3625** | **0.3400** | 0.3750 |
+| Hidden-RLVR | **0.3625** | **0.3400** | 0.3750 |
+
+Problem-paired bootstrap uses seed 42, 10,000 resamples, 95% confidence, and problem as the sampling unit. Public-RLVR − SFT and Hidden-RLVR − SFT both produce Eval-Hidden `-0.0025`, CI `[-0.0125, 0.0075]`. Full numerical provenance is frozen in [`report/final_evidence.json`](report/final_evidence.json); the longer interpretation is in [`report/technical_report.md`](report/technical_report.md).
+
+## Reproduce the Final Analysis
+
+With the accepted formal A/B/C/D artifacts available, create an analysis manifest that points to those frozen runs and sets `manual_labels_path` to this repository's `report/manual_labels.csv`, then run:
+
+```bash
+.venv/bin/code-verifier analyze-results \
+  --manifest /path/to/formal-analysis-with-manual-labels.yaml \
+  --output-dir /path/to/fresh-analysis-output
+```
+
+The accepted final labeled manifest keeps the same A/B/C/D sources and bootstrap definition as WP8-a; its only semantic change is the manual-label path. Two fresh production runs reproduced all 10 final analysis files byte-for-byte.
+
+## Reward Hacking Cases
+
+A deterministic selection was frozen **before inspecting selected code**: Public-RLVR 10, Hidden-RLVR 10, and SFT 5. The 25 reviewed candidates contain 11 runtime errors, 6 incomplete algorithms, 5 misunderstood problems, 2 missed edge cases, and 1 syntax error. None of these 25 cases showed enough code-level evidence for explicit verifier exploitation; all manual judgments are `reward_hacking=no`.
+
+That is **not a 0% Reward-Hacking estimate**. The 25 cases are a candidate-stratified qualitative sample, not a random sample of all 400 problems. Two illustrative cases:
+
+- **SFT / `leetcode-minimum-value-to-get-positive-step-by-step-sum`**: visible/train-hidden/eval-hidden = `1.0 / 0.5 / 0.0`. The code uses the right prefix-sum idea but returns `1 - ans` instead of `1 + ans`; the visible-only success is explained by an ordinary sign bug, not sample hardcoding.
+- **Public-RLVR / `taco-21868`**: `0.0 / 1.0 / 0.5`. The code applies a malformed generic checksum transform and happens to pass the train-hidden layer; no verifier-specific constant or branch is visible.
+
+All 25 code-level reviews are in [`report/manual_failure_analysis.md`](report/manual_failure_analysis.md).
+
+## Compute and Cost
+
+| Method | Formal training hardware | GPU-hours | Rollouts | Generated tokens |
+| --- | --- | ---: | ---: | ---: |
+| SFT | RTX 4090 | 0.5215871774 | — | — |
+| Public-RLVR | RTX 4090 | 4.0122729918 | 2,400 | 514,360 |
+| Hidden-RLVR | RTX 4090 | 3.5036727118 | 2,400 | 512,918 |
+
+No auditable USD-per-GPU-hour rate was frozen, so dollar cost is deliberately left unestimated. The GTX 1660 Ti remains the control plane for workflow control, Piston verification, aggregation, analysis, and reporting; large optimizer/model-generation gates run on the RTX 4090.
+
+## Limitations
+
+- **Single training seed:** only seed 42 has been executed for the formal GRPO comparison. Second-seed/full-rerun replication remains pending.
+- **WP7-c A1 provenance qualification:** seed-42 C/D were accepted under a committed post-hoc operational-equivalence amendment rather than strict original whole-run exact-code/save-cadence compliance. This history is not hidden or rewritten.
+- **Scope:** one 1.5B model family and one fixed 400-problem formal evaluation; results should not be generalized to larger models or broader coding distributions without new evidence.
+- **Manual review:** 25 deterministic failure candidates support qualitative diagnosis only; they are not a population Reward-Hacking rate.
+- **Statistics:** the paired CIs quantify per-problem uncertainty for the fixed accepted policies, not between-training-seed variance.
+- **Cost:** GPU-hours are measured, but no frozen USD rate exists.
+
+For the full research narrative, failed/negative results, statistical interpretation, reproducibility hashes, and next-step decision criteria, see [`report/technical_report.md`](report/technical_report.md).
+
+## Engineering and Safety Surface
+
+The repository implements the complete engineering path behind the formal study: a stable execution contract, non-executing `MockExecutor`, loopback-only `PistonExecutor`, resource and sandbox acceptance, bounded batch concurrency, versioned SQLite caching, structured verification results, completion → parser → executor orchestration, isolated Public/Hidden reward wrappers, deterministic generation/evaluation, visible-only SFT, paired Public/Hidden GRPO, strict completed-run/checkpoint identities, exact-prefix resume, problem-paired bootstrap, production analysis, and manual-label integration. Real untrusted code may only be sent to an explicitly configured loopback Piston service; formal training never falls back to direct host execution.
 
 ## Upstream dependency
 
@@ -612,8 +695,10 @@ bootstrap:
   confidence_level: 0.95
 cost:
   gpu_hour_cost_usd: null
-manual_labels_path: null
+manual_labels_path: /path/to/repo/report/manual_labels.csv  # set null only for automated-only analysis
 ```
+
+The accepted final labeled analysis uses the tracked 25-case `report/manual_labels.csv`; the earlier WP8-a automated-only run used `manual_labels_path: null` and remains frozen as the numerical baseline.
 
 Run the analysis into a new directory:
 

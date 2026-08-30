@@ -1,0 +1,272 @@
+{
+  "algorithm": "sha256(namespace|method|run_id|problem_id), ascending within method",
+  "available_candidate_counts": {
+    "Hidden-RLVR": 120,
+    "Public-RLVR": 113,
+    "SFT": 110
+  },
+  "schema_version": 1,
+  "selected": [
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "taco-4842",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "0238c54d52d15dca54dabd7d6746816d49d6ca69e360eecfeb17f99c998acaf2"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "leetcode-count-pairs-of-connectable-servers-in-a-weighted-tree-network",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "04460bc4aeec1d2e82ea53706b29760f1efb266284f61bd4880a1430a41f1b40"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "leetcode-falling-squares",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "04d0d6e3434a115a73503ff3ead5f093b967e3f257d3e50a62a42e10184483da"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "taco-4289",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "06e6fa15a62ad718dc92a556814c2fd5bad2b39e23b117275666756a0c4c522e"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "taco-17884",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "085d16301834c2951d540b0a6c1a37f93525a662c51d2dcffbf759f4e7209a52"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "taco-21547",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "09b88274867af2f57a997449fea04b8150bc22da8b96a6265e6082706ced8cce"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "leetcode-subsequence-with-the-minimum-score",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "0b326d3b3a5b6fc42fb11a07ff3543f3d44c1861a1130b37856a500138803a12"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "taco-3662",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "0c9d26bbda68d4e82da29b472c5f518423d7d951f4c28abb2e7afb1976a15f8c"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "taco-9797",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "0d2d18baf6754b6444e141495d85ed33ba14047cd8ce38123eddf52c8b313d6f"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "Public-RLVR",
+      "problem_id": "taco-21868",
+      "run_id": "C-public-grpo-formal-seed42",
+      "selection_key": "0f9e6cfb0e35591972c8abe5886c63eb57652e1ef0126bf014d15b5e35b11ffd"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure",
+        "runtime_error"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "taco-12532",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "007ce54c8aa2fba017b13ccd55063a114bfb7db159986194d89118d3a7bd5e9d"
+    },
+    {
+      "auto_error_category": "parse_error:invalid_python_syntax",
+      "candidate_reasons": [
+        "wrong_signature_or_parse"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "taco-4537",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "014c93eba68906cc7ef52feb670bbaf65740a9f8b9c9ad2df83eb445dbe257ee"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "leetcode-finding-the-users-active-minutes",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "022bd2c3a9c55fa857c627b378b9d48e08463391a00cc227f2f61780c2ddfad1"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "taco-18125",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "03483f4231fa0f6dc77cdae6c6b16dd0fbe7f3842db6efd01ffd631f8ef18b8b"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "taco-3906",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "072996161d38ef5b3685207e4c71915315c082fb46c3ca95ece8b67834802e0e"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "leetcode-disconnect-path-in-a-binary-matrix-by-at-most-one-flip",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "084bbe0e4f1da5e7f9941fcfe25f555d281b39e64de1a8b68bd7456dd3df4fde"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "leetcode-subsequence-with-the-minimum-score",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "085d7a318e38f0d88692aa2dfdf02ab84c8e7bb5dd1265494dfd2fc8630bc1e2"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "taco-772",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "09d6885c9b5256ddde7a2263e8cdd397814358c95453995922ac5f335c494199"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "taco-3323",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "0dd2c6669df16f3c8c1a9ea5bf84e8da4b4c0ea8532745ca44cdad2eb79b8aa2"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "Hidden-RLVR",
+      "problem_id": "taco-134",
+      "run_id": "D-hidden-grpo-formal-seed42",
+      "selection_key": "0eb161eb4357da14e270e2f4ef1ca7c80d6011ac54e9223b90f73d1c1a16557f"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "SFT",
+      "problem_id": "leetcode-max-number-of-k-sum-pairs",
+      "run_id": "B-sft-formal-seed42",
+      "selection_key": "00a9f3dabe2340710fc8d96ea0b90feaf1f8b29007a250db3c30b3ad3e223fc8"
+    },
+    {
+      "auto_error_category": "wrong_answer",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure"
+      ],
+      "method": "SFT",
+      "problem_id": "taco-3906",
+      "run_id": "B-sft-formal-seed42",
+      "selection_key": "00c01ba86ca3983f9942c214759de64f3872c51a25cda4819db26bd4bb55bb1b"
+    },
+    {
+      "auto_error_category": "visible_only_success",
+      "candidate_reasons": [
+        "visible_pass_eval_fail",
+        "large_public_eval_gap"
+      ],
+      "method": "SFT",
+      "problem_id": "leetcode-minimum-value-to-get-positive-step-by-step-sum",
+      "run_id": "B-sft-formal-seed42",
+      "selection_key": "0328e4009905ea1c64b8c6f238fbe4de5d31a4c40cf53ef38286291d35db8fde"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "runtime_error"
+      ],
+      "method": "SFT",
+      "problem_id": "leetcode-falling-squares",
+      "run_id": "B-sft-formal-seed42",
+      "selection_key": "0555aca3cee6cfb34bc69dbadf24f6ddbb8c0ee46eb0898664e7e011a3da1be7"
+    },
+    {
+      "auto_error_category": "runtime_error",
+      "candidate_reasons": [
+        "partial_eval_hidden_failure",
+        "runtime_error"
+      ],
+      "method": "SFT",
+      "problem_id": "taco-12532",
+      "run_id": "B-sft-formal-seed42",
+      "selection_key": "065221166e3302676f0448bf4d3022e36951569b61ec9480d16d793f117f03dc"
+    }
+  ],
+  "selected_counts": {
+    "Hidden-RLVR": 10,
+    "Public-RLVR": 10,
+    "SFT": 5
+  },
+  "selection_namespace": "wp7-d-final-manual-v1|seed42",
+  "source_failure_candidates_sha256": "4410a05e2838a0be92997141bf19bb2b518a4985a8afabdc87442812827408ed",
+  "source_row_count": 653
+}
