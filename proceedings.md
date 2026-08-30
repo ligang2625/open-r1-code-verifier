@@ -736,3 +736,37 @@ WP6-a/WP6-c 已完成 SFT 数据、训练控制面、completed checkpoint identi
 - 2026-08-27 实测 reverse-forward 后，4090 fresh `/api/v2/runtimes` 30 次 mean `97.56 ms`、p50 `98.759 ms`、p95 `104.156 ms`；可信 `print(1)` fresh 10 次 mean `134.31 ms`。相较先前 Tailscale DERP 路径约 `1.06–1.09 s` 的 fresh 请求，连接/执行端到端延迟约降低 90%。4090 上项目 `PistonExecutor.validate_runtime()` 返回 exact `3.10.0`，并且经该 reverse tunnel 的真实 `make test-piston` 为 `9 passed, 0 skipped, 0 failed`。
 - 已有 WP7-c operator `run.sh`/checkpoint SHA provenance 保持 immutable，不回写旧脚本；active stage 如需采用本 transport update，按既有 active-stage workflow migration 规则记录独立 `workflow_runtime_commit`，新 operator checkpoint 才按 reverse-forward policy 生成。
 - transport 切换验证期间 4090 无 formal SFT/GRPO/model-loading target-GPU process；正式 target-GPU run 活跃时仍禁止重启或扰动该 SSH transport。
+
+---
+
+## WP7-c：Formal Public/Hidden GRPO C/D validation 与统一评测
+
+- **完成日期**：2026-08-30
+- **阶段状态**：已完成
+- **验收结论**：通过（依据 `ai-work/reviewer/WP7-c-review.md` R2；采用 committed amendment A1 的 post-hoc operational-equivalence acceptance）
+- **执行计划**：`ai-work/planner/WP7-c-plan.md`
+- **实施范围**：完成正式 Public GRPO C / Hidden GRPO D 的 paired validation、真实 24GB target-GPU training evidence、completed checkpoint / reward / rollout / group provenance、400 题 deterministic generation、GTX 1660 Ti control-plane 上的真实 Piston verification 与统一 aggregation，并补齐 GRPO resume / transport-resilience / operator provenance 的 durability 缺口；未执行 WP8 最终 A–D 统计分析、人工 20-case analysis 或最终论文表格/结论。
+
+### 本阶段完成的功能与正式证据
+
+- C/D 共用正式 SFT B、seed 42、模型/revision、dependency/Open-R1 identity、2500 training problem pairing 与 `paired_definition_sha256=31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9`；Public reward 只读 `visible_tests`，Hidden reward 只读 `train_hidden_tests`。两条 formal run 均完成到 global step 300。
+- 已认证的 C25 formal canonical streams 中，Public/Hidden 各有 2400 reward rows、2400 rollout rows、600 group rows；无 canonical infrastructure/sandbox contamination，扫描数值均 finite。失败 attempt 与 same-run trainer checkpoint recovery history 保留，恢复逻辑在 optimizer update 前 fail closed 并恢复 canonical stream 到 checkpoint boundary。
+- C27 对 completed C/D 各生成 400 个唯一 deterministic records；4090 strict readback 均为 `resumed=400, generated=0`。随后 `/home/dzy/wp7c-verified` 在真实 local Piston 上对 Public/Hidden 各完成 400/400 verification，strict readback 均为 `resumed=400, verified=0`，且问题顺序与对应 generation 完全一致、无 sandbox/infrastructure rows。
+- 统一 aggregation：Public 为 Visible Pass@1 `0.3625`、Train-Hidden Pass@1 `0.34`、Eval-Hidden Pass@1 `0.375`、Eval-Hidden average test pass rate `0.44875`；Hidden 的三个 Pass@1 同为 `0.3625 / 0.34 / 0.375`，Eval-Hidden average test pass rate `0.45125`。Public summary SHA256 为 `6cc3fa7b785f01aef55e6a13e082266385ea01a77950a36ffaf1e7285e25480c`，Hidden 为 `f63a20181f2f560ffdf1b6bdcb385f6dbbf83f1a05b5592013315ff401a2273d`。
+- R2 独立验收通过：`make lint`；focused GRPO/resume/harness/resilience suite `67 passed`；`make test` 为 `1030 passed, 3 skipped`；`make test-gpu` 为 `3 passed`；真实 `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` 为 `9 passed, 2 deselected`，无 selected skip/failure。
+
+### A1 post-hoc amendment 与历史偏差披露
+
+- 原 sealed plan 的 whole-run exact-code-identity 要求和 `save_steps=50` acceptance-critical cadence **没有被历史 C/D 严格满足**：accepted pilot/formal 分别使用历史 `save_steps=10/25`，formal Public/Hidden 的完成链也跨越了已记录的 tracked code transitions。R1 因此曾以 `R1-B1` blocker 与 `R1-M1` major 判定 `needs_repair`。
+- committed amendment A1 在不豁免真实执行、completed steps、artifact authenticity、hidden-test isolation、安全边界或 failed reward batch-before-optimizer fail-closed 要求的前提下，用户授权以保存完整 attempt/resume/provenance、canonical stream boundary restoration、actual-path/other-arm operational equivalence 和下游 hash revalidation 替代“仅为 exact Git identity / save cadence 重跑 4090”的要求。R2 据此判定两项历史问题 resolved under A1。
+- C28 修复 pilot checkpoint 保持 `abandoned_unexecuted`；不存在把未执行 C28 target gate 描述为通过的情形。当前 future-run configs 已恢复 `save_steps=50`。
+- 因此本阶段 PASS 是明确的 **post-hoc operational-equivalence acceptance**，不是“原计划严格 preregistered compliance”的声明；后续 WP8 最终分析/报告必须继续保留该披露。
+
+### 配置影响与验收结论
+
+- 本 stage 新增/强化 formal GRPO paired binding、completed/resume lineage、Piston transport resilience、operator evidence 与相关 tests/configs；`pyproject.toml`、`uv.lock` 和 `third_party/open-r1` gitlink 未修改，因此没有 dependency upgrade 或上游 submodule 变更。
+- WP7-c merge commit：`6ca8ba9de04303c32a027af439881afd96e9ae67`。
+
+### WP7 聚合状态
+
+WP7-a/WP7-b 已完成 GRPO control-plane、reward isolation、paired fairness、completed C/D identity、stacked inference reload 与统一 evaluation/aggregation 的 development 工程合同；WP7-c 现完成正式 Public/Hidden GRPO C/D 的 real-training/numerical validation、400 题 generation、真实 Piston verification 与 aggregation。至此 WP7 的 development + formal C/D validation 范围完成；下一 dependency-ready validation 工作转入 WP8 的正式 A–D comparison、bootstrap/statistical analysis、人工 case analysis 与最终报告。

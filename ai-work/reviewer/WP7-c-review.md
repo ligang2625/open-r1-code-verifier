@@ -211,3 +211,16 @@ repair_routing:
 **PASS.** WP7-c at reviewed HEAD `7885d502077660d87ec48c17bd0e6db24c6fd1e2` satisfies the effective validation contract `sealed plan + committed amendment A1` and all unaffected real-training, isolation, safety, completed-step, artifact-authenticity, generation, real-Piston and aggregation requirements. This PASS is explicitly **post-hoc operational-equivalence acceptance**: the historical C/D artifacts do not strictly conform to the original whole-run exact-code-identity or `save_steps=50` requirements, and final reporting/proceedings must preserve that disclosure rather than describe the result as strictly preregistered/original-plan compliant.
 
 Next lifecycle operation: `$stage-lifecycle checkpoint_review`. Reviewer-ex stops here: do not commit, merge, finalize, update proceedings, or start another execution from this review invocation.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP7-c
+  review_round: 2
+  review_commit: d9c53c08798009128d502e94bb113dbea23aec4d
+  merge_commit: 6ca8ba9de04303c32a027af439881afd96e9ae67
+  finalized_at: "2026-08-30T10:19:08+02:00"
+  status: finalized
+```
