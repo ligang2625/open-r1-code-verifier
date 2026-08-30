@@ -2081,3 +2081,220 @@ execution_checkpoint:
 ```
 
 C28 is the only next target-GPU action for review round 1. The Web executor does not push, execute, or monitor C28.
+
+## E1 — post-hoc A1 preserved-evidence equivalence repair
+
+The user explicitly declined a new RTX 4090 C/D rerun and authorized validation protocol amendment A1. A1 is committed at `72e12971a277f186663e102338096e14db55f6b1`, directly after the unexecuted C28 checkpoint `f6336c7fa22c74a94955ea529f5333a89bc1d8ee`, and is implemented by clean workflow runtime `c18925ae7b953e0f7022bb7c2a15c0a630258b83`. The original sealed plan and R1 review remain byte-for-byte historical artifacts: A1 is explicitly `post_hoc: true`, does not claim original-plan compliance, and only replaces R1-B1/R1-M1's exact-whole-run-code-identity and checkpoint-save-cadence rerun requirements with preserved-evidence operational-equivalence acceptance. A1 SHA256 is `aeb5f660af1662b961994276b10fa3f75b194d2b5c82b478915fa5e68bd7f3d5`. C28 remains immutable and was not executed: its recorded control-plane receive directory `/home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C28` did not exist at amendment/execution preflight, and its script remains SHA256 `ce55751b0c67800a18db4cc15fcebf6ace1d3a73455709641d50367ce811f749`.
+
+### R1-M1 — checkpoint cadence accepted as operational persistence
+
+The historical C13 pilot evidence was independently reopened rather than inferred from E0 prose. C13 operator evidence/postcheck rehash to `91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b` / `91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f`. Public/Hidden pilot run metadata rehash to `921be22bd58ea17377404e286e872acd24a125cde36790026d9291401fc58fe1` / `4b491b482b8d268403eef96cd4d2c78e085d67bf3754e43cb23ad774a01f46d4`; both are real completed step-100 runs with seed 42, 800 canonical reward rows, 200 group rows, zero canonical infrastructure/sandbox rows and the same pilot paired-definition SHA256 `bb8a733b2f6b9519d6e9c9de087461a975ba830f6c132a8f06120881576b512f`. Their resolved historical cadence is preserved as `save_steps=10`; it is not rewritten to 50.
+
+The C25 formal Public/Hidden resolved configs rehash to `01c333536fe7984c7c67edcd744da64c901800a3850627ee060c00db14d898fe` / `8e65daa05d2d5a4e7297730c1c7ab535632aeb1d0359e8d620f4c7f9943bd178`. They both preserve `max_steps=300`, seed 42, beta 0.01, learning rate 5e-6, cosine scheduler, warmup 0.05, gradient accumulation 8, num_generations 4, the same LoRA 16/32/0.05 settings, generation limits and BF16 policy; the historical cadence is `save_steps=25`. Public/Hidden differ only in the intended data/reward-mode/run identity dimensions. Current tracked future-run configs remain restored to `save_steps=50`; A1 accepts the already-completed 10/25 cadence only as persistence/recovery frequency and does not retroactively assert it matched the sealed plan.
+
+### R1-B1 — actual-path code-migration equivalence
+
+The C25 target evidence rehashes exactly to operator evidence `0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e` and postcheck `c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63`. Every synchronized formal metadata/telemetry file checked byte-for-byte against C25's expected-artifact inventory: Public `run.json`/metrics/rollouts/rewards/groups are respectively `5dcd27af74589c1329d8717fc0f03a4726ffc428a26e9ff380ecaab74e5442b5`, `4463e420162368411421b220ff94d9708588296fd64662d65193dd635a3baf7e`, `d09d0b5c048ffd891f486232fbcfad7993dc3cb83ff9ae8777cc98184ae699cc`, `d709ecac0ab2c1c5849201f3d80883f8eaaddf54025857bcfa95a547671b29b7`, `cca167986ca2e39061b19cc261a40eb9c1146c4de4be5139a2af6d9cd78628b3`; Hidden equivalents are `911044d6b460d8ce9e958254fa6d75fb2fd1c77a2a82431752ea9b04548ca526`, `7cd0de7f9fa2a1ef3b4bbcf985f4fefac6d27bc76f5d41e2316bc9e187dc5f70`, `08cb1485b89e8d39f5863c3a891af2f4b676d035a8f33c36b8369b2ae5022995`, `0b85089404c8f970aa199821e4b8ba5aeb0101c63cc8f339a72f31dcc88782ed`, `915d45c6bb72463e970773372584fce55a3ada8a5c1e7f3078fba17c3eba66dc`.
+
+Public preserves four attempts: three under `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b`, then a completed attempt under `47c7fb2a55b91e471aeca5ededf6e0233f4f93f9` from validated same-run `checkpoint-175`. Hidden preserves three attempts: origin `47c7fb2a55b91e471aeca5ededf6e0233f4f93f9`, a failed retry-v2 attempt under `3675bf55c339dbfe0d1c0c248418c6efdd0da170` from `checkpoint-125`, then the completed attempt under `31b997279ff4e908165b93187fc898922a059de4` from that same validated `checkpoint-125`. C25 postcheck preserves recovery archives `before-attempt-2-resume-checkpoint-125` and `before-attempt-3-resume-checkpoint-125` for Hidden, and corresponding Public checkpoint-boundary archives at 150/175. Production GRPO reward handling still fail-closes an infrastructure-affected reward batch with `aborting before optimizer update`; resume recovery archives failed streaming suffixes/future checkpoints and restores the canonical rollout/reward/group streams exactly to the selected checkpoint boundary before continuing.
+
+The completed canonical streams provide the result-affecting actual-path check that R1 lacked. Both formal runs are `status=completed`, `global_step=300`, descendants of the same `B-sft-formal-seed42`, with seed 42, identical B model/revision/config/data/dependency identities and formal paired-definition SHA256 `31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9`. Each has exactly 2400 canonical rewards, 2400 rollouts and 600 groups; all numeric metric values inspected are finite; neither canonical reward stream contains `infrastructure_failure=true` or `sandbox_error`. Public's accepted `leetcode-all-paths-from-source-to-target` rows are ordinary `wrong_answer/runtime_error` outcomes and never exercise the C25 output-limit classification. Hidden's accepted rows contain exactly the formerly fatal oversized candidate as non-infrastructure `status=output_limit` with `failure_counts.output_limit=2`; the remaining group items are ordinary candidate outcomes. Thus the C25 result-affecting classification change is evidenced on Hidden while the accepted Public canonical path does not exercise that changed behavior.
+
+### Downstream preserved evidence
+
+C27 generation evidence/postcheck rehash to `4e2912a57b7fa5f1a3864db3e2bf938026357f4808bc85ae513042dca677a098` / `dc014c76b6bfb73fb6d30de8ddd13865309f1cd148c3eb8bd03cdab332807745`. Public/Hidden generation `run.json` hashes remain `0d081a3aded9eda7c3f12f40536f31016d2b9255054f9c5d4f4f8ab998e2f623` / `644fbd3abac1ff58884d1820feb93079e81cde0df542f64d5139a966a8ab3d27`; the generation streams remain exactly 400 rows with hashes `a5d841f625fe1d3126e858f8c12081babb7a7739c84667a715e175bfbef07357` / `f84c2ab7037c3ec297b1786171c0272f782f98b22ca1d8a81e6bb02eb384bfd0`. C27 postcheck independently binds formal checkpoint identities `628abb90a1fe57d32f7bcbba1b58ace1aed2c35fb5501871f7ce35dd8a4d05d7` / `1d661a8b5f7f591da6591bed1647cdaab3f54b881996e1913bd079fb6bfcf11d`, dataset SHA256 `770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae`, ordered IDs `2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9`, the same formal pair/Piston/model/revision/B/seed identities, and strict readback `resumed=400, generated=0` for both arms.
+
+The existing `/home/dzy/wp7c-verified` real-Piston results also revalidate without regeneration. Public/Hidden each contain 400 rows and 400 unique problem IDs, zero sandbox rows and zero true infrastructure markers. Public results/summary/main-results hashes are `7c5bb7497389872ee55ec67c4cb73cb188b68f0da06750013f1bd7a734cbb913` / `6cc3fa7b785f01aef55e6a13e082266385ea01a77950a36ffaf1e7285e25480c` / `c39c75737cf9e4befd43e782d1bfe1f59e1aa8b8a932cb4d5bb341d39fafafc8`; Hidden equivalents are `004d5655b438244a729acd0b2b1fe33aed8ae5e8758fe462ac7215d1f54d12c5` / `f63a20181f2f560ffdf1b6bdcb385f6dbbf83f1a05b5592013315ff401a2273d` / `8da0439242fdb15274b4300fb17ebc813eb692cdbc220f3ebc70c5919cff0dcf`. Both evaluation `run.json` files bind the exact generation records hash, formal checkpoint identity, dataset/order, model/revision, dependency lock, Piston definition and project commit; aggregate numeric values inspected are finite.
+
+### Control-plane regression after A1
+
+No target-GPU command was launched. The exact current stage remained clean throughout the evidence audit. Focused GRPO/cadence regression passed `91` tests; `make lint` passed Ruff check/format and strict mypy; `make test` passed `1030` with `3` expected environment-gated Piston skips and zero failures; real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` passed all `9` selected tests with `2` deselected; `make test-gpu` passed `3/3` on the GTX 1660 Ti control plane. Primary and stage `.ai-bridge/**` remain zero-tracked.
+
+Under the effective `sealed plan + A1` contract, executor-owned evidence for R1-B1 and R1-M1 is complete without a new 4090 run. This is explicitly a retrospective operational-equivalence disposition, not a claim that historical C/D strictly followed the original exact-code-identity or save-steps=50 requirements. Independent R2 review remains required to decide PASS.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP7-c
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_plan_amendment_id: A1
+  source_plan_amendment_commit: 72e12971a277f186663e102338096e14db55f6b1
+  source_plan_amendment_sha256: aeb5f660af1662b961994276b10fa3f75b194d2b5c82b478915fa5e68bd7f3d5
+  protocol_amendment_post_hoc: true
+  source_review_round: 1
+  source_review_commit: deebfa0f02097a0593674aaa88d1f673427ab19e
+  repair_issue_ids: [R1-B1, R1-M1]
+  result_code_commit: 72e12971a277f186663e102338096e14db55f6b1
+  workflow_runtime_commit: c18925ae7b953e0f7022bb7c2a15c0a630258b83
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  evidence_reuse_mode: preserved_formal_operational_equivalence
+  target_gpu_rerun_performed: false
+  superseded_operator_checkpoint_id: C28
+  superseded_operator_checkpoint_commit: f6336c7fa22c74a94955ea529f5333a89bc1d8ee
+  superseded_operator_gate_id: grpo-cd-pilot
+  superseded_operator_script_sha256: ce55751b0c67800a18db4cc15fcebf6ace1d3a73455709641d50367ce811f749
+  operator_checkpoint_disposition: abandoned_unexecuted
+  c28_operator_execution_observed: false
+  c28_control_plane_evidence_receive_dir_existed: false
+  accepted_pilot_checkpoint_id: C13
+  accepted_pilot_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  accepted_pilot_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  historical_pilot_save_steps: 10
+  pilot_public_global_step: 100
+  pilot_hidden_global_step: 100
+  accepted_formal_checkpoint_id: C25
+  accepted_formal_operator_evidence_sha256: 0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e
+  accepted_formal_postcheck_sha256: c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63
+  historical_formal_save_steps: 25
+  formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  public_formal_run_sha256: 5dcd27af74589c1329d8717fc0f03a4726ffc428a26e9ff380ecaab74e5442b5
+  hidden_formal_run_sha256: 911044d6b460d8ce9e958254fa6d75fb2fd1c77a2a82431752ea9b04548ca526
+  public_formal_final_code_commit: 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9
+  hidden_formal_final_code_commit: 31b997279ff4e908165b93187fc898922a059de4
+  public_formal_final_resume_checkpoint: checkpoints/checkpoint-175
+  hidden_formal_final_resume_checkpoint: checkpoints/checkpoint-125
+  public_formal_reward_rows: 2400
+  hidden_formal_reward_rows: 2400
+  public_formal_group_rows: 600
+  hidden_formal_group_rows: 600
+  public_formal_canonical_infrastructure_rows: 0
+  hidden_formal_canonical_infrastructure_rows: 0
+  public_formal_canonical_sandbox_rows: 0
+  hidden_formal_canonical_sandbox_rows: 0
+  public_c25_output_limit_path_exercised: false
+  hidden_c25_output_limit_path_exercised: true
+  accepted_generation_checkpoint_id: C27
+  accepted_generation_operator_evidence_sha256: 4e2912a57b7fa5f1a3864db3e2bf938026357f4808bc85ae513042dca677a098
+  accepted_generation_postcheck_sha256: dc014c76b6bfb73fb6d30de8ddd13865309f1cd148c3eb8bd03cdab332807745
+  public_generation_records_sha256: a5d841f625fe1d3126e858f8c12081babb7a7739c84667a715e175bfbef07357
+  hidden_generation_records_sha256: f84c2ab7037c3ec297b1786171c0272f782f98b22ca1d8a81e6bb02eb384bfd0
+  public_verification_results_sha256: 7c5bb7497389872ee55ec67c4cb73cb188b68f0da06750013f1bd7a734cbb913
+  hidden_verification_results_sha256: 004d5655b438244a729acd0b2b1fe33aed8ae5e8758fe462ac7215d1f54d12c5
+  public_aggregate_summary_sha256: 6cc3fa7b785f01aef55e6a13e082266385ea01a77950a36ffaf1e7285e25480c
+  hidden_aggregate_summary_sha256: f63a20181f2f560ffdf1b6bdcb385f6dbbf83f1a05b5592013315ff401a2273d
+  control_plane_verification_root: /home/dzy/wp7c-verified
+  evidence_class: real-training/numerical
+  reporting_disclosure_required: true
+  status: completed
+```
+
+E1 closes only the amendment-backed routed repair execution. R1 history, A1, C28 and all existing target artifacts remain immutable. The next action is a fresh independent reviewer-ex conversation for review round 2; this execution conversation does not self-review, checkpoint a review, finalize, merge or push.
+
+### E1 supplemental preserved-evidence audit
+
+The user explicitly rejected a fresh C28/pilot/formal rerun and authorized reuse of the already-completed real evidence. The immutable sealed plan and R1 review remain unchanged. Workflow-maintenance commit `c18925ae7b953e0f7022bb7c2a15c0a630258b83` adds the restricted `validation-protocol-amendment-v1` control path, and stage amendment A1 is committed at `72e12971a277f186663e102338096e14db55f6b1` with SHA256 `aeb5f660af1662b961994276b10fa3f75b194d2b5c82b478915fa5e68bd7f3d5`. A1 is explicitly `post_hoc: true`, binds review round 1 issues `R1-B1/R1-M1`, and replaces only the exact-save-cadence and exact-whole-run-code-identity rerun requirements with preserved-evidence operational-equivalence acceptance. It does not waive real training, hidden isolation, reward-source separation, sandbox/safety, completed-step, finite-telemetry, hash/provenance, or real-Piston requirements.
+
+A1 supersedes C28 as an action, not as history. C28 checkpoint commit `f6336c7fa22c74a94955ea529f5333a89bc1d8ee` and tracked script SHA256 `ce55751b0c67800a18db4cc15fcebf6ace1d3a73455709641d50367ce811f749` remain immutable. At amendment time `/home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C28` did not exist, and this Web executor never launched or monitored C28, so its disposition is `abandoned_unexecuted`; C28 is not reported as passed.
+
+`R1-M1` is resolved under A1 as a persistence-cadence deviation rather than a scientific-definition failure. The preserved C13 pilot operator evidence/postcheck rehash to `91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b` / `91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f`. Both Public and Hidden C13 pilot runs are real completed 100-step runs with historical `save_steps=10`, 800 reward rows, 800 rollout rows, and 200 group rows each. The preserved C25 formal configs are paired at `max_steps=300, save_steps=25`; excluding the intended dataset/reward-mode/run-name differences, Public/Hidden resolved configs match exactly, including beta, gradient accumulation, learning rate, LoRA parameters, cosine scheduler, generation lengths/count, batch size, seed, temperature/top-p, and warmup. Both formal runs complete 300 optimizer steps. The current tracked pilot/formal configs remain restored to `save_steps=50` for future execution, so A1 accepts historical evidence without claiming that the historical cadence complied with the original sealed value.
+
+`R1-B1` is resolved under A1 by an actual-path code-migration audit. C25 operator evidence/postcheck independently rehash to `0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e` / `c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63`. Public run metadata SHA256 is `5dcd27af74589c1329d8717fc0f03a4726ffc428a26e9ff380ecaab74e5442b5`; its attempts are `a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b` fresh, then same-code checkpoint-150, same-code checkpoint-175, then migration to `47c7fb2a55b91e471aeca5ededf6e0233f4f93f9` from checkpoint-175 with `scientific_change=false`, finishing global step 300. Hidden run metadata SHA256 is `911044d6b460d8ce9e958254fa6d75fb2fd1c77a2a82431752ea9b04548ca526`; its attempts are `47c7fb2a...` fresh, migration to `3675bf55c339dbfe0d1c0c248418c6efdd0da170` from checkpoint-125 with retry-v2 and a failed suffix, then migration to `31b997279ff4e908165b93187fc898922a059de4` from the same checkpoint-125 and completion at step 300. Hidden postcheck preserves both `before-attempt-2-resume-checkpoint-125` and `before-attempt-3-resume-checkpoint-125` recovery archives, so the failed suffix is not silently rewritten into the canonical stream.
+
+The accepted Public/Hidden formal runs retain the same completed `B-sft-formal-seed42`, seed 42, model/revision, dependency lock, Open-R1 identity, and `paired_definition_sha256=31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9`. Each canonical run contains exactly 2400 reward rows, 2400 rollout rows, and 600 group rows with finite persisted telemetry and no canonical `infrastructure_failure` or `sandbox_error` reward rows. The result-affecting trusted-harness repair is bounded by observed path behavior: Public canonical rewards contain zero `output_limit` rows and its retry telemetry has zero operational events; Hidden canonical rewards contain exactly one ordinary non-infrastructure `output_limit` row after the C25 repair and zero infrastructure/sandbox rows. The focused current-source recovery/classification suite (`test_grpo_resume_lineage`, `test_grpo_transport_failure`, `test_harness`, `test_piston_resilience`) passes 67/67 and covers fail-closed reward infrastructure handling before optimizer update, same-run checkpoint/recovery lineage, and candidate output-limit classification. Together with the preserved same-checkpoint restart/recovery archives, this satisfies A1's no-canonical-contamination requirement without asserting literal whole-run commit identity.
+
+The downstream artifacts were reused only after byte-level and content-level revalidation. C27 operator evidence/postcheck/terminal log rehash to `4e2912a57b7fa5f1a3864db3e2bf938026357f4808bc85ae513042dca677a098` / `dc014c76b6bfb73fb6d30de8ddd13865309f1cd148c3eb8bd03cdab332807745` / `e80c71e40dca99aa79b6bab01ab8e8c84a331fa2d55d07e38d649dfc1fe11732`. Public generation run/records rehash to `0d081a3aded9eda7c3f12f40536f31016d2b9255054f9c5d4f4f8ab998e2f623` / `a5d841f625fe1d3126e858f8c12081babb7a7739c84667a715e175bfbef07357`; Hidden to `644fbd3abac1ff58884d1820feb93079e81cde0df542f64d5139a966a8ab3d27` / `f84c2ab7037c3ec297b1786171c0272f782f98b22ca1d8a81e6bb02eb384bfd0`. Both bundles remain completed, exactly 400 unique rows, dataset SHA256 `770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae`, ordered-ID SHA256 `2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9`, seed 42, and generation project commit `0e2a894943cfb623610e937380342d148ad8cff0`; C27 evidence binds the accepted formal pair SHA above.
+
+The existing real-Piston results under `/home/dzy/wp7c-verified` were also rehashed and parsed rather than regenerated. Public verification run/results are `bf777fc62d40249c86b4a17c92e39a06fe784688238a336faf109dfbc2b82bb2` / `7c5bb7497389872ee55ec67c4cb73cb188b68f0da06750013f1bd7a734cbb913`; Hidden are `5d6cc0a8a08efaf1f8cea927190531a3a5ff0decdc4531cd49e7d1f6375d03ba` / `004d5655b438244a729acd0b2b1fe33aed8ae5e8758fe462ac7215d1f54d12c5`. Both contain exactly 400 unique results, bind the same dataset/order and Piston definition `f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e`, and have no sandbox execution status or infrastructure-failure field occurrence. Public aggregate summary/main-results hashes remain `6cc3fa7b785f01aef55e6a13e082266385ea01a77950a36ffaf1e7285e25480c` / `c39c75737cf9e4befd43e782d1bfe1f59e1aa8b8a932cb4d5bb341d39fafafc8`; Hidden remain `f63a20181f2f560ffdf1b6bdcb385f6dbbf83f1a05b5592013315ff401a2273d` / `8da0439242fdb15274b4300fb17ebc813eb692cdbc220f3ebc70c5919cff0dcf`.
+
+Current control-plane acceptance on A1 HEAD is green: `make lint` passed Ruff check/format plus strict mypy; `make test` passed 1030 with 3 expected environment-gated Piston skips; `make test-gpu` passed 3/3 on the GTX 1660 Ti; real `make test-piston PISTON_CONFIG=configs/execution/piston-local.yaml` passed all 9 selected tests with 2 deselected; and the focused recovery/classification suite passed 67/67. No target-GPU training or generation was started, no existing formal/generation/evaluation artifact was mutated, no sealed plan/review/checkpoint history was rewritten, and no push/review/finalize/merge was performed.
+
+```yaml
+supplemental_evidence_record:
+  version: 1
+  stage_id: WP7-c
+  supports_execution_id: E1
+  task_kind: repair
+  source_plan_commit: 8464e69691c527c726a2e28e5a7ca81fa2001bbf
+  source_review_round: 1
+  source_review_commit: deebfa0f02097a0593674aaa88d1f673427ab19e
+  repair_issue_ids: [R1-B1, R1-M1]
+  source_plan_amendment_id: A1
+  source_plan_amendment_commit: 72e12971a277f186663e102338096e14db55f6b1
+  source_plan_amendment_sha256: aeb5f660af1662b961994276b10fa3f75b194d2b5c82b478915fa5e68bd7f3d5
+  protocol_amendment_post_hoc: true
+  workflow_runtime_commit: c18925ae7b953e0f7022bb7c2a15c0a630258b83
+  result_code_commit: 72e12971a277f186663e102338096e14db55f6b1
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  superseded_operator_checkpoint_id: C28
+  superseded_operator_checkpoint_commit: f6336c7fa22c74a94955ea529f5333a89bc1d8ee
+  superseded_operator_script_sha256: ce55751b0c67800a18db4cc15fcebf6ace1d3a73455709641d50367ce811f749
+  operator_checkpoint_disposition: abandoned_unexecuted
+  superseded_operator_receive_dir: /home/dzy/wp7c-operator-evidence/WP7-c/grpo-cd-pilot/C28
+  superseded_operator_receive_dir_existed_at_amendment: false
+  historical_pilot_checkpoint_id: C13
+  historical_pilot_operator_evidence_sha256: 91647fa09354f1dbaf486b7d94960934391467470665401022493ad5fb87d50b
+  historical_pilot_postcheck_sha256: 91d4825b86a325a8f9765bfb9d99ab51345051c046c9847cfe335aadad487b2f
+  historical_pilot_max_steps: 100
+  historical_pilot_save_steps: 10
+  historical_pilot_public_reward_rows: 800
+  historical_pilot_public_rollout_rows: 800
+  historical_pilot_public_group_rows: 200
+  historical_pilot_hidden_reward_rows: 800
+  historical_pilot_hidden_rollout_rows: 800
+  historical_pilot_hidden_group_rows: 200
+  historical_formal_max_steps: 300
+  historical_formal_save_steps: 25
+  current_future_pilot_save_steps: 50
+  current_future_formal_save_steps: 50
+  accepted_c25_operator_evidence_sha256: 0fe7f376fb94918f5e5aee1c28bcc0ac159687fefd9600509efb35773ca2df9e
+  accepted_c25_postcheck_sha256: c41e17a3a22b1e3c54de006c058165e32c0774c2d50581844194906c75b46a63
+  accepted_public_formal_run_sha256: 5dcd27af74589c1329d8717fc0f03a4726ffc428a26e9ff380ecaab74e5442b5
+  accepted_hidden_formal_run_sha256: 911044d6b460d8ce9e958254fa6d75fb2fd1c77a2a82431752ea9b04548ca526
+  accepted_formal_pair_sha256: 31f5464abf094d14cf86e8ef4dd909b8a1be559c8b4ca8b96473070a9f1daad9
+  public_formal_attempt_code_commits: [a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b, a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b, a7c3c4da77b6cb6af387a74667e42d33bc9f7e6b, 47c7fb2a55b91e471aeca5ededf6e0233f4f93f9]
+  public_formal_attempt_resumes: [null, checkpoints/checkpoint-150, checkpoints/checkpoint-175, checkpoints/checkpoint-175]
+  hidden_formal_attempt_code_commits: [47c7fb2a55b91e471aeca5ededf6e0233f4f93f9, 3675bf55c339dbfe0d1c0c248418c6efdd0da170, 31b997279ff4e908165b93187fc898922a059de4]
+  hidden_formal_attempt_resumes: [null, checkpoints/checkpoint-125, checkpoints/checkpoint-125]
+  public_formal_global_step: 300
+  hidden_formal_global_step: 300
+  public_formal_reward_rows: 2400
+  public_formal_rollout_rows: 2400
+  public_formal_group_rows: 600
+  hidden_formal_reward_rows: 2400
+  hidden_formal_rollout_rows: 2400
+  hidden_formal_group_rows: 600
+  public_canonical_output_limit_reward_rows: 0
+  hidden_canonical_output_limit_reward_rows: 1
+  public_canonical_infrastructure_reward_rows: 0
+  hidden_canonical_infrastructure_reward_rows: 0
+  public_canonical_sandbox_reward_rows: 0
+  hidden_canonical_sandbox_reward_rows: 0
+  public_reward_retry_operational_events: 0
+  hidden_recovery_archives: [before-attempt-2-resume-checkpoint-125, before-attempt-3-resume-checkpoint-125]
+  accepted_c27_operator_evidence_sha256: 4e2912a57b7fa5f1a3864db3e2bf938026357f4808bc85ae513042dca677a098
+  accepted_c27_postcheck_sha256: dc014c76b6bfb73fb6d30de8ddd13865309f1cd148c3eb8bd03cdab332807745
+  accepted_c27_terminal_log_sha256: e80c71e40dca99aa79b6bab01ab8e8c84a331fa2d55d07e38d649dfc1fe11732
+  public_generation_run_sha256: 0d081a3aded9eda7c3f12f40536f31016d2b9255054f9c5d4f4f8ab998e2f623
+  public_generation_records_sha256: a5d841f625fe1d3126e858f8c12081babb7a7739c84667a715e175bfbef07357
+  hidden_generation_run_sha256: 644fbd3abac1ff58884d1820feb93079e81cde0df542f64d5139a966a8ab3d27
+  hidden_generation_records_sha256: f84c2ab7037c3ec297b1786171c0272f782f98b22ca1d8a81e6bb02eb384bfd0
+  generation_rows_each: 400
+  evaluation_dataset_sha256: 770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae
+  ordered_problem_ids_sha256: 2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9
+  piston_definition_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  public_verification_run_sha256: bf777fc62d40249c86b4a17c92e39a06fe784688238a336faf109dfbc2b82bb2
+  public_verification_results_sha256: 7c5bb7497389872ee55ec67c4cb73cb188b68f0da06750013f1bd7a734cbb913
+  hidden_verification_run_sha256: 5d6cc0a8a08efaf1f8cea927190531a3a5ff0decdc4531cd49e7d1f6375d03ba
+  hidden_verification_results_sha256: 004d5655b438244a729acd0b2b1fe33aed8ae5e8758fe462ac7215d1f54d12c5
+  verification_rows_each: 400
+  verification_sandbox_error_rows: 0
+  verification_infrastructure_failure_rows: 0
+  public_aggregate_summary_sha256: 6cc3fa7b785f01aef55e6a13e082266385ea01a77950a36ffaf1e7285e25480c
+  public_aggregate_main_results_sha256: c39c75737cf9e4befd43e782d1bfe1f59e1aa8b8a932cb4d5bb341d39fafafc8
+  hidden_aggregate_summary_sha256: f63a20181f2f560ffdf1b6bdcb385f6dbbf83f1a05b5592013315ff401a2273d
+  hidden_aggregate_main_results_sha256: 8da0439242fdb15274b4300fb17ebc813eb692cdbc220f3ebc70c5919cff0dcf
+  focused_equivalence_tests_passed: 67
+  full_tests_passed: 1030
+  full_tests_expected_skipped: 3
+  gpu_tests_passed: 3
+  piston_selected_tests_passed: 9
+  piston_deselected_tests: 2
+  evidence_class: real-training/numerical
+  audit_status: completed
+```
+
+This supplemental audit supports the authoritative E1 record above and is not a second execution record. Independent review remains a fresh-conversation boundary.
