@@ -10,6 +10,7 @@ import shutil
 import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -598,10 +599,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _row_count(path: Path) -> int:
+def _artifact_stats(path: Path) -> tuple[str, int]:
+    """Return SHA256 and logical row count in one bounded-memory streaming pass."""
+    digest = hashlib.sha256()
     if path.suffix == ".jsonl":
-        return sum(bool(line.strip()) for line in path.read_text(encoding="utf-8").splitlines())
-    return 1
+        rows = 0
+        with path.open("rb") as handle:
+            for line in handle:
+                digest.update(line)
+                if line.strip():
+                    rows += 1
+        return digest.hexdigest(), rows
+
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest(), 1
 
 
 def _artifact_inventory(root: Path) -> dict[str, JsonValue]:
@@ -610,7 +623,8 @@ def _artifact_inventory(root: Path) -> dict[str, JsonValue]:
         path = root / relative
         if not path.is_file():
             raise RefreshDataError(f"required refresh artifact is missing: {relative}")
-        inventory[relative] = {"sha256": _sha256(path), "rows": _row_count(path)}
+        digest, rows = _artifact_stats(path)
+        inventory[relative] = {"sha256": digest, "rows": rows}
     return inventory
 
 
@@ -784,7 +798,8 @@ def _check_artifact_hashes(dataset_dir: Path, manifest: Mapping[str, object]) ->
         if not isinstance(record, Mapping) or set(record) != {"sha256", "rows"}:
             raise RefreshDataError(f"artifact inventory record for {relative} has an invalid shape")
         path = dataset_dir / relative
-        if record["sha256"] != _sha256(path) or record["rows"] != _row_count(path):
+        actual_sha256, actual_rows = _artifact_stats(path)
+        if record["sha256"] != actual_sha256 or record["rows"] != actual_rows:
             raise RefreshDataError(f"artifact hash/row-count mismatch for {relative}")
 
 
@@ -919,6 +934,22 @@ def check_refresh_data(
     return summary
 
 
+def _load_refresh_source_projections(
+    sources: Sequence[RefreshSourceSpec],
+    *,
+    cache_dir: Path | None,
+) -> list[tuple[RefreshSourceSnapshot, list[RefreshCandidate]]]:
+    """Load independent pinned source projections concurrently while preserving tracked source order."""
+    if len(sources) <= 1:
+        return [load_refresh_source(source, cache_dir=cache_dir) for source in sources]
+
+    def load_one(source: RefreshSourceSpec) -> tuple[RefreshSourceSnapshot, list[RefreshCandidate]]:
+        return load_refresh_source(source, cache_dir=cache_dir)
+
+    with ThreadPoolExecutor(max_workers=min(4, len(sources))) as pool:
+        return list(pool.map(load_one, sources))
+
+
 def prepare_refresh_data(
     config: RefreshDataConfig,
     *,
@@ -948,8 +979,7 @@ def prepare_refresh_data(
     )
     source_snapshots: list[RefreshSourceSnapshot] = []
     all_candidates: list[RefreshCandidate] = []
-    for source in config.sources:
-        snapshot, candidates = load_refresh_source(source, cache_dir=source_cache_dir)
+    for snapshot, candidates in _load_refresh_source_projections(config.sources, cache_dir=source_cache_dir):
         source_snapshots.append(snapshot)
         all_candidates.extend(candidates)
     if len({candidate.candidate_id for candidate in all_candidates}) != len(all_candidates):
@@ -1134,7 +1164,7 @@ def prepare_refresh_data(
         _write_json(temporary / "refresh_manifest.json", root_manifest)
         check_refresh_data(temporary, reference_dataset_dir=reference_dataset_dir)
         os.replace(temporary, output_dir)
-        return check_refresh_data(output_dir, reference_dataset_dir=reference_dataset_dir)
+        return _summary_from_manifest(output_dir, root_manifest)
     except Exception as error:
         shutil.rmtree(temporary, ignore_errors=True)
         if isinstance(error, RefreshDataError):
