@@ -58,6 +58,35 @@ def split_test_cases(
     )
 
 
+def split_refresh_test_cases(
+    tests: Sequence[TestCase],
+    *,
+    problem_id: str,
+    seed: int,
+) -> tuple[tuple[TestCase, ...], tuple[TestCase, ...], tuple[TestCase, ...]]:
+    """Split one WP9-a candidate into deterministic non-empty visible/hidden layers."""
+    ensure_unique_test_cases(tests, context=f"refresh problem {problem_id}")
+    if len(tests) < 4:
+        raise ValueError(f"refresh problem {problem_id} requires at least 4 unique tests, got {len(tests)}")
+
+    digest = hashlib.sha256(f"wp9a-refresh-tests-v1|{seed}|{problem_id}".encode()).digest()
+    shuffled = list(tests)
+    random.Random(int.from_bytes(digest, byteorder="big")).shuffle(shuffled)
+
+    visible_count = 2
+    if len(shuffled) >= 8:
+        train_hidden_count = 3
+    else:
+        remaining = len(shuffled) - visible_count
+        train_hidden_count = remaining // 2
+    hidden_end = visible_count + train_hidden_count
+    return (
+        tuple(shuffled[:visible_count]),
+        tuple(shuffled[visible_count:hidden_end]),
+        tuple(shuffled[hidden_end:]),
+    )
+
+
 def adapt_raw_problem(raw: RawCodeProblem, *, seed: int, config: TestSplitConfig) -> CodeProblem:
     """Split one raw problem and build a validated canonical problem."""
     visible, train_hidden, eval_hidden = split_test_cases(

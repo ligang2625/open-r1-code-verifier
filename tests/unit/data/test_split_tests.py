@@ -15,6 +15,7 @@ from code_verifier.data.split_tests import (
 )
 from code_verifier.data.split_tests import (
     adapt_raw_problem,
+    split_refresh_test_cases,
     split_test_cases,
     validate_test_split_config,
 )
@@ -101,3 +102,39 @@ def test_adapt_raw_problem_produces_valid_canonical_problem() -> None:
     problem = adapt_raw_problem(raw, seed=42, config=_config())
     assert problem.problem_id == raw.problem_id
     assert [len(problem.visible_tests), len(problem.train_hidden_tests), len(problem.eval_hidden_tests)] == [2, 2, 2]
+
+
+@pytest.mark.parametrize(
+    ("count", "expected_sizes"),
+    [
+        (4, [2, 1, 1]),
+        (5, [2, 1, 2]),
+        (7, [2, 2, 3]),
+        (8, [2, 3, 3]),
+        (12, [2, 3, 7]),
+    ],
+)
+def test_refresh_split_uses_frozen_layer_sizes(count: int, expected_sizes: list[int]) -> None:
+    tests = tuple(CodeTestCase(input=f"in-{index}", expected=f"out-{index}") for index in range(count))
+    layers = split_refresh_test_cases(tests, problem_id="refresh", seed=42)
+    assert [len(layer) for layer in layers] == expected_sizes
+    assigned = [hash_test_case(test) for test in chain.from_iterable(layers)]
+    assert len(assigned) == len(set(assigned)) == count
+
+
+def test_refresh_split_is_repeatable_and_seeded() -> None:
+    tests = tuple(CodeTestCase(input=f"in-{index}", expected=f"out-{index}") for index in range(12))
+    assert split_refresh_test_cases(tests, problem_id="refresh", seed=42) == split_refresh_test_cases(
+        tests, problem_id="refresh", seed=42
+    )
+    assert split_refresh_test_cases(tests, problem_id="refresh", seed=41) != split_refresh_test_cases(
+        tests, problem_id="refresh", seed=42
+    )
+
+
+def test_refresh_split_rejects_fewer_than_four_or_duplicate_tests() -> None:
+    tests = tuple(CodeTestCase(input=index, expected=index) for index in range(4))
+    with pytest.raises(ValueError, match="at least 4"):
+        split_refresh_test_cases(tests[:3], problem_id="refresh", seed=42)
+    with pytest.raises(DuplicateDataError):
+        split_refresh_test_cases((*tests[:3], tests[0]), problem_id="refresh", seed=42)

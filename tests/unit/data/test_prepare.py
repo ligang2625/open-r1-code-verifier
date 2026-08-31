@@ -20,6 +20,7 @@ from code_verifier.data.prepare import (
     check_prepared_data,
     data_config_from_mapping,
     export_hf_dataset,
+    load_canonical_jsonl,
     load_hf_dataset,
     prepare_data,
     write_jsonl,
@@ -168,6 +169,13 @@ def test_write_jsonl_is_deterministic_and_round_trippable(tmp_path: Path) -> Non
     assert write_jsonl(records, second) == 2
     assert first.read_bytes() == second.read_bytes()
     assert [json.loads(line) for line in first.read_text(encoding="utf-8").splitlines()] == records
+
+
+def test_public_canonical_loader_round_trips_exact_problem(tmp_path: Path) -> None:
+    problem = _canonical_problem(0, "train")
+    path = tmp_path / "canonical.jsonl"
+    write_jsonl([problem_to_mapping(problem)], path)
+    assert load_canonical_jsonl(path) == [problem]
 
 
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029"])

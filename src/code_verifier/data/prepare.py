@@ -318,7 +318,7 @@ def prepare_data(
         raise DataPreparationError(f"Data preparation failed: {error}") from error
 
 
-def _load_canonical(path: Path) -> list[CodeProblem]:
+def load_canonical_jsonl(path: Path) -> list[CodeProblem]:
     """Load physical-LF canonical JSONL, accepting CRLF and ignoring blank/trailing lines."""
     try:
         lines = path.read_text(encoding="utf-8").split("\n")
@@ -377,7 +377,7 @@ def _check_training_artifact_matches_canonical(
 def check_prepared_data(dataset_dir: Path) -> PreparationSummary:
     """Reload canonical and training artifacts and rerun all WP1 invariants."""
     canonical_path = dataset_dir / "canonical" / "problems.jsonl"
-    problems = _load_canonical(canonical_path)
+    problems = load_canonical_jsonl(canonical_path)
     check_dataset(problems)
 
     training_dir = dataset_dir / "training"
