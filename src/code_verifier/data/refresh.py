@@ -511,9 +511,17 @@ def _fingerprint_from_mapping(value: object) -> RefreshFingerprint:
     )
 
 
-def _decision_to_mapping(decision: RefreshDedupDecision) -> dict[str, JsonValue]:
+def _decision_to_mapping(
+    decision: RefreshDedupDecision,
+    candidate: RefreshCandidate,
+) -> dict[str, JsonValue]:
+    if decision.candidate_id != candidate.candidate_id:
+        raise RefreshDataError("dedup decision/candidate identity mismatch")
     return {
         "candidate_id": decision.candidate_id,
+        "source_name": candidate.source_name,
+        "source_record_id": candidate.source_record_id,
+        "raw_record_sha256": candidate.raw_record_sha256,
         "retained": decision.retained,
         "rejection_reason": decision.rejection_reason,
         "overlap_class": decision.overlap_class,
@@ -951,6 +959,7 @@ def prepare_refresh_data(
         all_candidates.extend(candidates)
     if len({candidate.candidate_id for candidate in all_candidates}) != len(all_candidates):
         raise RefreshDataError("source ingestion produced duplicate candidate IDs")
+    candidate_by_id = {candidate.candidate_id: candidate for candidate in all_candidates}
     decisions = classify_refresh_candidates(
         all_candidates,
         sft_references=sft_references,
@@ -1017,7 +1026,7 @@ def prepare_refresh_data(
         )
         _write_json(temporary / "manifest" / "reference_snapshots.json", reference_snapshot)
         write_jsonl(
-            (_decision_to_mapping(decision) for decision in decisions),
+            (_decision_to_mapping(decision, candidate_by_id[decision.candidate_id]) for decision in decisions),
             temporary / "manifest" / "dedup_decisions.jsonl",
         )
         write_jsonl(selection, temporary / "manifest" / "selection.jsonl")
