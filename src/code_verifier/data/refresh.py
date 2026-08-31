@@ -29,6 +29,8 @@ from code_verifier.data.refresh_dedup import (
     RefreshDedupDecision,
     RefreshDedupPolicy,
     RefreshFingerprint,
+    _build_near_index_context,
+    _NearIndexContext,
     build_refresh_fingerprint,
     candidate_fingerprint,
     classify_refresh_candidates,
@@ -655,12 +657,13 @@ def _audit_selected_evaluation_overlap(
     reference_fingerprints: Mapping[str, Sequence[RefreshFingerprint]],
     *,
     policy: RefreshDedupPolicy,
+    near_context: _NearIndexContext | None = None,
 ) -> None:
     selected = [_fingerprint_from_mapping(record["fingerprint"]) for record in selection]
     for reference_class in ("validation", "project_test", "external_eval"):
         references = reference_fingerprints[reference_class]
         exact = find_exact_duplicate_matches(selected, references)
-        near = find_near_duplicate_matches(selected, references, policy=policy)
+        near = find_near_duplicate_matches(selected, references, policy=policy, context=near_context)
         if exact or near:
             raise RefreshDataError(
                 f"selected refresh pool overlaps {reference_class}: exact={len(exact)}, near={len(near)}"
@@ -674,6 +677,7 @@ def _audit_sft_overlap(
     policy: RefreshDedupPolicy,
     expected_count: int,
     hard_max: float,
+    near_context: _NearIndexContext | None = None,
 ) -> None:
     reuse: list[RefreshFingerprint] = []
     external: list[RefreshFingerprint] = []
@@ -692,7 +696,7 @@ def _audit_sft_overlap(
         raise RefreshDataError("every explicit SFT reuse record must exact-match the frozen SFT reference split")
     if find_exact_duplicate_matches(external, sft_references):
         raise RefreshDataError("external selected records contain exact incidental SFT overlap")
-    if find_near_duplicate_matches(external, sft_references, policy=policy):
+    if find_near_duplicate_matches(external, sft_references, policy=policy, context=near_context):
         raise RefreshDataError("external selected records contain accepted-near incidental SFT overlap")
     fraction = len(reuse) / len(selection)
     if fraction > hard_max:
@@ -882,7 +886,13 @@ def check_refresh_data(
     reference_canonical = reference_dataset_dir / "canonical" / "problems.jsonl"
     if formal.get("canonical_sha256") != _sha256(reference_canonical):
         raise RefreshDataError("frozen formal reference canonical SHA256 does not match refresh provenance")
-    check_prepared_data(reference_dataset_dir)
+    split_counts = formal.get("split_counts")
+    if (
+        not isinstance(split_counts, Mapping)
+        or set(split_counts) != {"train", "validation", "test"}
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in split_counts.values())
+    ):
+        raise RefreshDataError("reference snapshot formal split_counts are invalid")
     reference_fingerprints = _reference_fingerprints_from_snapshot(reference_snapshot)
 
     problems = load_canonical_jsonl(dataset_dir / "canonical" / "problems.jsonl")
@@ -908,13 +918,29 @@ def check_refresh_data(
 
     _check_training_views(problems, dataset_dir)
     typed_selection = cast(list[dict[str, JsonValue]], selection_records)
-    _audit_selected_evaluation_overlap(typed_selection, reference_fingerprints, policy=policy)
+    selected_fingerprints = [_fingerprint_from_mapping(record["fingerprint"]) for record in typed_selection]
+    all_reference_fingerprints = [
+        fingerprint
+        for reference_class in ("sft", "validation", "project_test", "external_eval")
+        for fingerprint in reference_fingerprints[reference_class]
+    ]
+    near_context = _build_near_index_context(
+        [*selected_fingerprints, *all_reference_fingerprints],
+        threshold=policy.near_jaccard_threshold,
+    )
+    _audit_selected_evaluation_overlap(
+        typed_selection,
+        reference_fingerprints,
+        policy=policy,
+        near_context=near_context,
+    )
     _audit_sft_overlap(
         typed_selection,
         reference_fingerprints["sft"],
         policy=policy,
         expected_count=expected_overlap_count,
         hard_max=float(hard_max),
+        near_context=near_context,
     )
     quality_count = sum(record.get("quality_gate_required") is True for record in selection_records)
     summary = _summary_from_manifest(dataset_dir, manifest)
@@ -1030,16 +1056,7 @@ def prepare_refresh_data(
         reference_sets,
         policy=policy,
     )
-    reference_fingerprints = _reference_fingerprints_from_snapshot(reference_snapshot)
     overlap_count = int(round(config.selection.target_size * config.selection.sft_overlap_fraction))
-    _audit_selected_evaluation_overlap(selection, reference_fingerprints, policy=policy)
-    _audit_sft_overlap(
-        selection,
-        reference_fingerprints["sft"],
-        policy=policy,
-        expected_count=overlap_count,
-        hard_max=config.selection.sft_overlap_hard_max,
-    )
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
     try:

@@ -10,6 +10,7 @@ from code_verifier.data.deduplicate import (
     DuplicateDataError,
     ensure_no_problem_overlap_across_splits,
     ensure_unique_problem_ids,
+    normalize_text,
     test_case_hash,
 )
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
@@ -67,7 +68,7 @@ _ALLOWED_FIELDS = {
 
 def check_no_test_layer_overlap(problem: CodeProblem) -> None:
     """Reject normalized test reuse within or across the three layers."""
-    seen: dict[str, tuple[str, int]] = {}
+    seen: dict[object, tuple[str, int]] = {}
     layers = (
         ("visible_tests", problem.visible_tests),
         ("train_hidden_tests", problem.train_hidden_tests),
@@ -75,15 +76,18 @@ def check_no_test_layer_overlap(problem: CodeProblem) -> None:
     )
     for layer_name, tests in layers:
         for index, test_case in enumerate(tests):
-            digest = test_case_hash(test_case)
-            previous = seen.get(digest)
+            if isinstance(test_case.input, str) and isinstance(test_case.expected, str):
+                key: object = (normalize_text(test_case.input), normalize_text(test_case.expected))
+            else:
+                key = test_case_hash(test_case)
+            previous = seen.get(key)
             if previous is not None:
                 previous_layer, previous_index = previous
                 raise LeakageError(
                     f"problem {problem.problem_id} repeats a normalized test in "
                     f"{previous_layer}[{previous_index}] and {layer_name}[{index}]"
                 )
-            seen[digest] = (layer_name, index)
+            seen[key] = (layer_name, index)
 
 
 def check_dataset(problems: Sequence[CodeProblem]) -> None:

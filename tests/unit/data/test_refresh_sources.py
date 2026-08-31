@@ -77,8 +77,18 @@ def test_deepcoder_stdio_rows_map_to_stable_candidates(config_name: str) -> None
     assert first.test_fingerprint == stable_json_hash(sorted(first.test_case_hashes))
 
 
-def test_deepcoder_fast_raw_hash_matches_generic_canonical_hash() -> None:
-    row = _prime_row()
+@pytest.mark.parametrize(
+    "row",
+    [
+        _prime_row(),
+        {
+            "problem": 'Unicode 雪 and quotes " plus slash \\ and newline\n',
+            "solutions": ['return "雪"', "line one\nline two", "\\path\\value"],
+            "tests": '{"escaped":"\\u96ea","quote":"\\""}',
+        },
+    ],
+)
+def test_deepcoder_fast_raw_hash_matches_generic_canonical_hash(row: dict[str, object]) -> None:
     assert _deepcoder_raw_record_hash(row) == stable_json_hash(row)
 
 

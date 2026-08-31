@@ -179,6 +179,20 @@ def test_overlap_hashes_normalized_test_values() -> None:
         )
 
 
+def test_overlap_rejects_normalized_string_stdio_values() -> None:
+    problem = _dataset()[0]
+    normalized_duplicate = CodeTestCase(input="\uff21  B\r\nC", expected="value   out\n")
+    whitespace_variant = CodeTestCase(input="A B C", expected="value out")
+    with pytest.raises(LeakageError):
+        check_no_test_layer_overlap(
+            replace(
+                problem,
+                visible_tests=(normalized_duplicate,),
+                eval_hidden_tests=(whitespace_variant,),
+            )
+        )
+
+
 def test_load_training_artifact_rejects_duplicate_json_key(tmp_path: Path) -> None:
     path = tmp_path / "public_grpo.jsonl"
     path.write_text('{"problem_id":"p1","problem_id":"p2"}\n', encoding="utf-8")

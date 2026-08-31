@@ -235,17 +235,27 @@ def _raw_reference_solution_hash(value: object, *, record_id: str) -> str | None
 
 
 def _deepcoder_raw_record_hash(row: Mapping[str, object]) -> str:
-    """Hash a schema-validated parquet row without repeating generic JSON freezing."""
-    try:
-        payload = json.dumps(
-            dict(row),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-    except (TypeError, ValueError) as error:
-        raise RefreshSourceError(f"DeepCoder row is not canonical-JSON serializable: {error}") from error
+    """Hash the fixed DeepCoder projection using the exact canonical-JSON byte contract."""
+    if set(row) != {"problem", "solutions", "tests"}:
+        raise RefreshSourceError("DeepCoder row has unexpected top-level schema")
+    problem = row["problem"]
+    solutions = row["solutions"]
+    tests = row["tests"]
+    if not isinstance(problem, str) or not isinstance(tests, str):
+        raise RefreshSourceError("DeepCoder problem/tests projection fields must be strings")
+    if not isinstance(solutions, list) or any(not isinstance(item, str) for item in solutions):
+        raise RefreshSourceError("DeepCoder solutions projection field must be a list of strings")
+
+    encode = json.encoder.encode_basestring
+    payload = (
+        '{"problem":'
+        + encode(problem)
+        + ',"solutions":['
+        + ",".join(encode(item) for item in solutions)
+        + '],"tests":'
+        + encode(tests)
+        + "}"
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
