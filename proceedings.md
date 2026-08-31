@@ -825,3 +825,17 @@ WP7-a/WP7-b 已完成 GRPO control-plane、reward isolation、paired fairness、
 ### WP8 聚合状态
 
 WP8-a 已完成 formal A–D automated analysis、paired bootstrap、cost 与 deterministic failure-candidate preparation；本 WP7-d replan stage 现完成 25-case 人工语义分析、manual-label production readback、最终 evidence snapshot、技术报告、README 与 scientific-claim audit。至此 WP8 的 **analysis + presentation** 范围完成；整个项目仍保留“核心实验第二 seed 或完整重跑”这一明确未完成的 Experiments DoD 项，是否追加 replication stage 由后续全项目审查决定。
+
+---
+
+## Project decision：激活 WP9 GRPO Refresh research track（2026-08-31）
+
+- **性质**：post-WP8 项目级 research/spec routing decision；不追溯修改已 finalized 的 WP0–WP8、A/B/C/D、seed-42 数值、WP7-c A1 disclosure 或现有 final report evidence。
+- **Active specification**：`PROJECT_SPEC_GRPO_Refresh.md` 升级为 `Active v1.0`，作为 WP9 / GRPO Refresh 的强制增量规格。WP9 planner/executor/reviewer 必须同时读取主 `PROJECT_SPEC_Open-R1_CodeVerifier.md`、该 addendum 与本 proceedings；WP9 范围存在默认值冲突时以 Refresh addendum 为准。
+- **Replication status**：原规格要求的“第二 training seed 或完整 C/D rerun”仍保留为未完成 robustness/replication item，但根据完成后的全项目复核，当前不优先直接复刻旧 100% SFT-overlap / `num_generations=4` 协议。该 replication item 标记为 **deferred, not cancelled**，不得在新对话中自动覆盖当前 active track。
+- **Refresh rationale**：第一轮正式 C/D 实际 600/600 GRPO problems 均来自已经进行 SFT supervision 的 2500 题 train split；同时 Public/Hidden total-reward zero-variance group 分别约 32.17% / 31.83%。新 track 优先修复 problem-overlap 与 reward-informativeness/throughput 设计后再运行 C2/D2。
+- **Frozen refresh constraints**：SFT/GRPO overlap target `5–10%`、hard max `15%`、validation/project-test/external-final-eval overlap `0`；calibration 与正式 GRPO `num_generations=8`；active pool 默认 `>=70% dual-informative`；k=8 pilot zero-variance target `<20%`、`>25%` stop-and-recalibrate；same-GPU Public/Hidden concurrency 只能在 benchmark 证明安全且 paired wall-clock 至少改善约 15% 后采用；400 题 evaluation 优先采用 batched generation + concurrent control-plane verification。
+- **WP9 dependency order**：`WP9-a Refresh data foundation (development)` → `WP9-b calibration/k=8/throughput engineering (development)` → `WP9-c real calibration and pilot (validation)` → `WP9-d formal C2/D2 (validation)` → `WP9-e evaluation and refresh analysis (validation/control plane)`。如果 planner 因规模需要继续拆分，可细分 stage，但不得改变 development-first 和真实 target-GPU boundary。
+- **Next dependency-ready stage**：**`WP9-a`**。其范围限定为新 candidate source ingestion/provenance、cross-source + SFT/eval dedup、SFT/GRPO overlap control、canonical three-test-layer materialization 与 Public/Hidden training views；本阶段不运行真实 B calibration、不启动 GRPO、不产生 C2/D2 数值。
+- **Planner routing rule**：新对话若被要求“继续项目 / 检查现状 / 规划下一 stage”，必须识别本 decision record，并以 `WP9-a` 为下一阶段调用 planner；在本 record 被后续 finalized proceedings 明确更新前，不得把旧 second-seed replication 作为默认 next stage。
+- **Original Development Complete Record**：仍然只证明原 WP0–WP8 development track 已完成且保持 immutable。WP9 是新的 post-completion research extension；WP9-a/WP9-b 中新增工程工作仍属于 `stage_profile: development`，不能因为旧 completion record 已存在就跳过工程 stage 或直接在 validation 里修改功能。

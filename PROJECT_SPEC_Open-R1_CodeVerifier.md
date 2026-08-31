@@ -51,6 +51,7 @@
 17. **真实 SFT/GRPO 训练与最终数值验收集中到开发完成之后，但 control plane 不迁移。** terminal development 必须先用 WP0–WP8 Development Completion Inventory 证明全部 development deliverables 已覆盖并完成 closeout。finalize 后，validation planner/bootstrap/reviewer/routing、数据准备与实验分析仍在 GTX 1660 Ti 上进行；只有真实 Base/SFT/GRPO/必要 GPU inference/numerical acceptance 等 target-GPU gate 才把 exact commit + portable operator handoff 交给 4090。正式 job 完成并保存 artifacts/evidence 后，4090 可以关闭，后续 aggregation/CI/error analysis/report 回到 1660 Ti。
 18. synthetic/mock/minimal fixture 可以用于验证代码合同、错误处理、artifact schema、resume/checkpoint wiring 和聚合逻辑；这些证据可以满足 development-stage 的工程验收，但**永远不能**冒充真实训练完成、正式 checkpoint、A–D 数值结果或 final research gate。
 19. validation 阶段原则上不再扩展功能。若 4090 真实运行暴露实现缺陷，应通过当前 validation stage 的正常 review/repair 闭环做最小修复，并重新通过适用的 development regression/gpu/piston 测试后再重跑受影响的真实 validation gate；不得借 repair 扩展功能或临时修改实验定义来绕过问题。
+20. **Post-WP8 active research addendum：** `PROJECT_SPEC_GRPO_Refresh.md` 是当前 WP9 / GRPO Refresh 的强制增量规格。任何规划、实现、validation 或 review 进入 WP9 前都必须同时读取本文件、该 addendum 与 `proceedings.md`。对于 WP9 范围内的冲突项，以 Refresh addendum 为准（包括但不限于 SFT/GRPO overlap、offline calibration、`num_generations=8`、zero-variance policy、throughput/batching）；它不追溯修改 WP0–WP8 或历史 A/B/C/D evidence。当前 active track 与 next dependency-ready stage 由 `proceedings.md` 的最新项目级 decision record 决定。
 
 ---
 
@@ -1880,6 +1881,28 @@ python -m code_verifier.cli --help
 - 至少 20 个案例人工分析；
 - 报告包含正向或负向结论。
 
+## WP9：GRPO Refresh post-WP8 research track
+
+### 权威规格与历史边界
+
+WP9 的详细研究与工程合同由 `PROJECT_SPEC_GRPO_Refresh.md` 定义。原 `Development Complete Record` 只证明 WP0–WP8 development track 已完成；它保持有效且不得重写，但**不代表新提出的 WP9 extension 已经完成 development**。因此，WP9 中能够在 GTX 1660 Ti/CPU + Piston + fixture 上完成的新增工程工作仍必须按 `stage_profile: development` 先完成，再进入需要真实 B/C2/D2 模型计算的 validation gate。
+
+历史 A/B/C/D artifact、seed-42 conclusion 与 WP7-c A1 disclosure 保持 immutable。旧规格中的“第二 seed 或完整 C/D rerun”仍是 robustness/replication item，但在 WP9 激活后暂时 deferred，不再是当前 next dependency-ready stage。
+
+### WP9 高层阶段注册表
+
+以下顺序用于新对话与 planner 确定 active work；若单个阶段规模超过 planner 限制，可以继续细分，但不得改变依赖顺序或合并 development 与真实 target-GPU validation：
+
+1. **WP9-a — Refresh data foundation（development）**：接入新的 verifiable coding candidate source，冻结 source provenance/revision，完成 cross-source + SFT + validation/test/external-eval exact/near dedup，落实 SFT/GRPO overlap 5–10% target / 15% hard max，并把可用新题规范化为项目三层测试 schema 与 Public/Hidden training views。该阶段不运行真实 B inference、不启动 GRPO。
+2. **WP9-b — Calibration / k=8 / throughput engineering（development）**：实现冻结 B 的 offline calibration 与 active-pool builder、dual/public-only/hidden-only informativeness 统计、`num_generations=8` GRPO 配置与 zero-variance telemetry、verifier concurrency、deterministic batched evaluation generation 和 throughput benchmark harness。只用 fixture/mock/synthetic 关闭工程合同。
+3. **WP9-c — Real calibration and pilot（validation）**：在冻结 B 上运行真实 8-sample calibration，冻结约 2500–4000（默认 3000）GRPO active pool，并完成 k=8 Public/Hidden pilot、zero-variance gate 与训练/评测吞吐 benchmark；真实模型 generation 属于 24GB operator gate，verification/aggregation 尽量回到 control plane。
+4. **WP9-d — Formal C2/D2（validation）**：从同一 B、同一 frozen active pool 与相同训练预算执行正式 Public C2 / Hidden D2，按 Refresh addendum 的公平性、resume 与 evidence contract 完成训练及 generation。
+5. **WP9-e — Evaluation and final refresh analysis（validation/control plane）**：完成 400 题 batched generation parity、并发 Piston verification、aggregation、paired statistics、efficiency/zero-variance 分析与最终 refresh report。
+
+### 当前下一阶段
+
+在 `proceedings.md` 没有更新为其它 finalized/active stage 前，**下一 dependency-ready stage 固定为 `WP9-a`**。新对话若被要求“检查项目现状并规划下一 stage”，planner 必须先读取 Refresh addendum，并为 WP9-a 生成 plan；不得退回旧 C/D second-seed replication 作为默认下一阶段。
+
 ---
 
 # 21. 项目负责人 Code Review 清单
@@ -2370,7 +2393,7 @@ Codex 遇到不影响研究问题的实现选择时，采用：
 | 主模型 | 1.5B 代码 Instruct 模型 |
 | SFT | LoRA |
 | RL | TRL/Open-R1 GRPO |
-| Group size | 4 |
+| Group size | 原 C/D 为 4；active WP9 C2/D2 按 `PROJECT_SPEC_GRPO_Refresh.md` 固定为 8 |
 | Max completion | 512 tokens |
 | 主指标 | Eval-Hidden Pass@1 |
 | 核心对照 | Public-RLVR vs Hidden-RLVR |
@@ -2379,7 +2402,9 @@ Codex 遇到不影响研究问题的实现选择时，采用：
 | 统计 | Paired bootstrap 95% CI |
 | 实验追踪 | W&B 或等价本地 JSONL |
 | 可选方向 | 简单 SFT 轨迹筛选 |
-| 非目标 | Agent、PRM、训练系统优化、多领域 |
+| 非目标 | Agent、PRM、多领域；WP9 仅允许 Refresh addendum 明确定义的 bounded training/evaluation throughput optimization |
+
+本表中没有显式标记 WP9 override 的条目，继续作为原项目默认值；凡 WP9 scope 与 `PROJECT_SPEC_GRPO_Refresh.md` 存在冲突，以 active addendum 为准。
 
 ---
 

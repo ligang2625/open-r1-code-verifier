@@ -1,7 +1,7 @@
 @~/.codex/AGENTS.md
 ## Repository Guidelines
-project instructions are in `PROJECT_SPEC_Open-R1_CodeVerifier.md`
-project proceedings are in `proceedings.md`
+project instructions are in `PROJECT_SPEC_Open-R1_CodeVerifier.md`; the active post-WP8 research addendum is `PROJECT_SPEC_GRPO_Refresh.md`. For any WP9 / GRPO Refresh planning, implementation, validation, or review, agents MUST read both specifications. When a WP9-specific default conflicts with the original WP0-WP8 specification, the Refresh addendum controls that new scope while historical WP0-WP8 evidence remains immutable.
+project proceedings are in `proceedings.md`; it is the authoritative source for the currently active research track and next dependency-ready stage.
 use `uv` to manage virtual environment and python packages
 For long-running asynchronous work:
 - Empty `write_stdin` polls MUST use `yield_time_ms >= 180000`; prefer `300000` when intermediate output is not needed.
