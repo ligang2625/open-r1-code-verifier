@@ -17,15 +17,16 @@ from pathlib import Path
 from typing import Literal, cast
 
 from code_verifier.config import ConfigError, load_yaml_mapping
-from code_verifier.data.deduplicate import problem_reference_solution_hash, problem_test_set_hash, stable_json_hash
+from code_verifier.data.deduplicate import problem_reference_solution_hash, stable_json_hash
 from code_verifier.data.json_strict import json_values_equal, loads_strict
 from code_verifier.data.leakage_checks import (
     TrainingArtifactKind,
+    _build_training_record_unchecked,
     build_training_record,
     check_no_test_layer_overlap,
     load_training_artifact,
 )
-from code_verifier.data.prepare import DataPreparationError, check_prepared_data, load_canonical_jsonl, write_jsonl
+from code_verifier.data.prepare import DataPreparationError, load_canonical_jsonl, write_jsonl_with_stats
 from code_verifier.data.refresh_dedup import (
     RefreshDedupDecision,
     RefreshDedupPolicy,
@@ -48,13 +49,13 @@ from code_verifier.data.refresh_sources import (
     canonicalize_refresh_candidate,
     load_humanevalplus_references,
     load_refresh_source,
+    refresh_problem_test_set_fingerprint,
 )
 from code_verifier.data.schema import (
     CodeProblem,
     JsonValue,
     json_value_to_mutable,
     problem_to_mapping,
-    validate_problem,
 )
 
 REFRESH_SCHEMA_VERSION = "wp9a-refresh-v1"
@@ -412,7 +413,7 @@ def _problem_reference(
         function_signature=problem.function_signature,
         source_url_hash=problem.metadata.source_url_hash,
         reference_solution_hash=problem_reference_solution_hash(problem),
-        test_fingerprint=problem_test_set_hash(problem),
+        test_fingerprint=refresh_problem_test_set_fingerprint(problem),
     )
 
 
@@ -433,7 +434,7 @@ def _selected_sft_fingerprint(problem: CodeProblem, *, policy: RefreshDedupPolic
         function_signature=problem.function_signature,
         source_url_hash=problem.metadata.source_url_hash,
         reference_solution_hash=problem_reference_solution_hash(problem),
-        test_fingerprint=problem_test_set_hash(problem),
+        test_fingerprint=refresh_problem_test_set_fingerprint(problem),
         policy=policy,
     )
 
@@ -620,13 +621,22 @@ def _artifact_stats(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), 1
 
 
-def _artifact_inventory(root: Path) -> dict[str, JsonValue]:
+def _artifact_inventory(
+    root: Path,
+    *,
+    precomputed_jsonl: Mapping[str, tuple[int, str]] | None = None,
+) -> dict[str, JsonValue]:
     inventory: dict[str, JsonValue] = {}
+    precomputed = {} if precomputed_jsonl is None else precomputed_jsonl
     for relative in _REQUIRED_ARTIFACTS:
         path = root / relative
         if not path.is_file():
             raise RefreshDataError(f"required refresh artifact is missing: {relative}")
-        digest, rows = _artifact_stats(path)
+        cached = precomputed.get(relative)
+        if cached is None:
+            digest, rows = _artifact_stats(path)
+        else:
+            rows, digest = cached
         inventory[relative] = {"sha256": digest, "rows": rows}
     return inventory
 
@@ -659,8 +669,15 @@ def _audit_selected_evaluation_overlap(
     *,
     policy: RefreshDedupPolicy,
     near_context: _NearIndexContext | None = None,
+    selected_fingerprints: Sequence[RefreshFingerprint] | None = None,
 ) -> None:
-    selected = [_fingerprint_from_mapping(record["fingerprint"]) for record in selection]
+    selected = (
+        list(selected_fingerprints)
+        if selected_fingerprints is not None
+        else [_fingerprint_from_mapping(record["fingerprint"]) for record in selection]
+    )
+    if len(selected) != len(selection):
+        raise RefreshDataError("selected fingerprint count does not match selection records")
     for reference_class in ("validation", "project_test", "external_eval"):
         references = reference_fingerprints[reference_class]
         exact = find_exact_duplicate_matches(selected, references)
@@ -679,11 +696,18 @@ def _audit_sft_overlap(
     expected_count: int,
     hard_max: float,
     near_context: _NearIndexContext | None = None,
+    selected_fingerprints: Sequence[RefreshFingerprint] | None = None,
 ) -> None:
+    selected = (
+        list(selected_fingerprints)
+        if selected_fingerprints is not None
+        else [_fingerprint_from_mapping(record["fingerprint"]) for record in selection]
+    )
+    if len(selected) != len(selection):
+        raise RefreshDataError("selected fingerprint count does not match selection records")
     reuse: list[RefreshFingerprint] = []
     external: list[RefreshFingerprint] = []
-    for record in selection:
-        fingerprint = _fingerprint_from_mapping(record["fingerprint"])
+    for record, fingerprint in zip(selection, selected, strict=True):
         if record["overlap_origin"] == "sft_reuse":
             reuse.append(fingerprint)
         elif record["overlap_origin"] == "external_new":
@@ -802,8 +826,15 @@ def _check_artifact_hashes(dataset_dir: Path, manifest: Mapping[str, object]) ->
         record = artifacts[relative]
         if not isinstance(record, Mapping) or set(record) != {"sha256", "rows"}:
             raise RefreshDataError(f"artifact inventory record for {relative} has an invalid shape")
-        path = dataset_dir / relative
-        actual_sha256, actual_rows = _artifact_stats(path)
+
+    def collect_stats(relative: str) -> tuple[str, int]:
+        return _artifact_stats(dataset_dir / relative)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        actual_stats = dict(zip(_REQUIRED_ARTIFACTS, pool.map(collect_stats, _REQUIRED_ARTIFACTS), strict=True))
+    for relative in _REQUIRED_ARTIFACTS:
+        record = cast(Mapping[str, object], artifacts[relative])
+        actual_sha256, actual_rows = actual_stats[relative]
         if record["sha256"] != actual_sha256 or record["rows"] != actual_rows:
             raise RefreshDataError(f"artifact hash/row-count mismatch for {relative}")
 
@@ -813,8 +844,12 @@ def _check_training_views(problems: Sequence[CodeProblem], dataset_dir: Path) ->
     hidden_path = dataset_dir / "training" / "hidden_grpo.jsonl"
     public = load_training_artifact(public_path, kind=TrainingArtifactKind.PUBLIC_GRPO)
     hidden = load_training_artifact(hidden_path, kind=TrainingArtifactKind.HIDDEN_GRPO)
-    expected_public = [build_training_record(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in problems]
-    expected_hidden = [build_training_record(problem, kind=TrainingArtifactKind.HIDDEN_GRPO) for problem in problems]
+    expected_public = [
+        _build_training_record_unchecked(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in problems
+    ]
+    expected_hidden = [
+        _build_training_record_unchecked(problem, kind=TrainingArtifactKind.HIDDEN_GRPO) for problem in problems
+    ]
     if len(public) != len(problems) or len(hidden) != len(problems):
         raise RefreshDataError("Public/Hidden training views must have the same row count as canonical")
     for index, (actual, expected) in enumerate(zip(public, expected_public, strict=True)):
@@ -903,7 +938,6 @@ def check_refresh_data(
     if len(ids) != len(set(ids)):
         raise RefreshDataError("refresh canonical contains duplicate problem IDs")
     for problem in problems:
-        validate_problem(problem)
         check_no_test_layer_overlap(problem)
 
     selection_records = _load_jsonl(dataset_dir / "manifest" / "selection.jsonl")
@@ -934,6 +968,7 @@ def check_refresh_data(
         reference_fingerprints,
         policy=policy,
         near_context=near_context,
+        selected_fingerprints=selected_fingerprints,
     )
     _audit_sft_overlap(
         typed_selection,
@@ -942,6 +977,7 @@ def check_refresh_data(
         expected_count=expected_overlap_count,
         hard_max=float(hard_max),
         near_context=near_context,
+        selected_fingerprints=selected_fingerprints,
     )
     quality_count = sum(record.get("quality_gate_required") is True for record in selection_records)
     summary = _summary_from_manifest(dataset_dir, manifest)
@@ -990,10 +1026,15 @@ def prepare_refresh_data(
     if output_dir.exists():
         raise RefreshDataError(f"refresh output directory must not already exist: {output_dir}")
     try:
-        check_prepared_data(reference_dataset_dir)
         formal_problems = load_canonical_jsonl(reference_dataset_dir / "canonical" / "problems.jsonl")
     except DataPreparationError as error:
         raise RefreshDataError(f"formal reference dataset is invalid: {error}") from error
+    present_splits = {problem.split for problem in formal_problems}
+    missing_splits = {"train", "validation", "test"} - present_splits
+    if missing_splits:
+        raise RefreshDataError(
+            f"formal reference canonical is missing required split(s): {', '.join(sorted(missing_splits))}"
+        )
     sft_references, validation_references, project_test_references = _reference_sets(formal_problems)
     policy = RefreshDedupPolicy(
         config.selection.token_ngram_size,
@@ -1066,24 +1107,28 @@ def prepare_refresh_data(
             [_snapshot_mapping(item) for item in source_snapshots],
         )
         _write_json(temporary / "manifest" / "reference_snapshots.json", reference_snapshot)
-        write_jsonl(
+        precomputed_jsonl: dict[str, tuple[int, str]] = {}
+        precomputed_jsonl["manifest/dedup_decisions.jsonl"] = write_jsonl_with_stats(
             (_decision_to_mapping(decision, candidate_by_id[decision.candidate_id]) for decision in decisions),
             temporary / "manifest" / "dedup_decisions.jsonl",
         )
-        write_jsonl(selection, temporary / "manifest" / "selection.jsonl")
-        write_jsonl(
+        precomputed_jsonl["manifest/selection.jsonl"] = write_jsonl_with_stats(
+            selection,
+            temporary / "manifest" / "selection.jsonl",
+        )
+        precomputed_jsonl["manifest/problem_order.jsonl"] = write_jsonl_with_stats(
             ({"ordinal": index, "problem_id": problem.problem_id} for index, problem in enumerate(problems)),
             temporary / "manifest" / "problem_order.jsonl",
         )
-        write_jsonl(
+        precomputed_jsonl["canonical/problems.jsonl"] = write_jsonl_with_stats(
             (problem_to_mapping(problem) for problem in problems),
             temporary / "canonical" / "problems.jsonl",
         )
-        write_jsonl(
+        precomputed_jsonl["training/public_grpo.jsonl"] = write_jsonl_with_stats(
             (build_training_record(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in problems),
             temporary / "training" / "public_grpo.jsonl",
         )
-        write_jsonl(
+        precomputed_jsonl["training/hidden_grpo.jsonl"] = write_jsonl_with_stats(
             (build_training_record(problem, kind=TrainingArtifactKind.HIDDEN_GRPO) for problem in problems),
             temporary / "training" / "hidden_grpo.jsonl",
         )
@@ -1137,7 +1182,7 @@ def prepare_refresh_data(
                 "status": "passed",
             },
         )
-        artifacts = _artifact_inventory(temporary)
+        artifacts = _artifact_inventory(temporary, precomputed_jsonl=precomputed_jsonl)
         root_manifest: dict[str, JsonValue] = {
             "schema_version": REFRESH_SCHEMA_VERSION,
             "seed": seed,

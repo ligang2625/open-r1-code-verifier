@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
 
-from code_verifier.data.deduplicate import canonical_json, stable_json_hash, unique_test_case_hashes
+from code_verifier.data.deduplicate import (
+    DuplicateDataError,
+    canonical_json,
+    normalize_text,
+    stable_json_hash,
+    test_case_hash,
+)
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
 from code_verifier.data.schema import CodeProblem, ProblemMetadata, TestCase, validate_problem
 from code_verifier.data.split_tests import _split_refresh_test_cases_prevalidated, split_refresh_test_cases
@@ -66,8 +74,8 @@ class RefreshCandidate:
     difficulty: Difficulty
     category: tuple[str, ...]
     raw_record_sha256: str
-    test_case_hashes: tuple[str, ...] | None = None
     test_fingerprint: str | None = None
+    test_validation_guard: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +239,88 @@ def _taco_tests(value: object, *, record_id: str) -> tuple[TestCase, ...]:
     )
 
 
+def _framed_text(value: str) -> bytes:
+    data = value.encode("utf-8")
+    return len(data).to_bytes(8, byteorder="big") + data
+
+
+def refresh_test_set_fingerprint(test_cases: Sequence[TestCase], *, context: str) -> str:
+    """Hash a normalized test set once while rejecting normalized duplicates."""
+    keys: list[tuple[str, str, str]] = []
+    first_index: dict[tuple[str, str, str], int] = {}
+    for index, test_case in enumerate(test_cases):
+        if isinstance(test_case.input, str) and isinstance(test_case.expected, str):
+            key = ("stdio", normalize_text(test_case.input), normalize_text(test_case.expected))
+        else:
+            key = ("generic", test_case_hash(test_case), "")
+        previous = first_index.get(key)
+        if previous is not None:
+            raise DuplicateDataError(
+                f"{context} contains duplicate normalized tests at indexes {previous} and {index}"
+            )
+        first_index[key] = index
+        keys.append(key)
+
+    digest = hashlib.sha256()
+    for key in sorted(keys):
+        for part in key:
+            digest.update(_framed_text(part))
+    return digest.hexdigest()
+
+
+def refresh_problem_test_set_fingerprint(problem: CodeProblem) -> str:
+    """Hash all canonical problem tests with the WP9-a refresh fingerprint protocol."""
+    tests = (*problem.visible_tests, *problem.train_hidden_tests, *problem.eval_hidden_tests)
+    return refresh_test_set_fingerprint(tests, context=f"problem {problem.problem_id}")
+
+
+def _stdio_test_payload_sha256(test_cases: Sequence[TestCase]) -> str:
+    """Hash exact ordered stdio test payloads for cheap frozen-candidate integrity checks."""
+    digest = hashlib.sha256()
+    for test_case in test_cases:
+        if not isinstance(test_case.input, str) or not isinstance(test_case.expected, str):
+            raise ValueError("prevalidated refresh test payloads must remain string stdio pairs")
+        digest.update(_framed_text(test_case.input))
+        digest.update(_framed_text(test_case.expected))
+    return digest.hexdigest()
+
+
+def _refresh_stdio_test_fingerprints(test_cases: Sequence[TestCase], *, context: str) -> tuple[str, str]:
+    """Compute normalized set fingerprint and exact payload SHA in one stdio-only pass."""
+    keys: list[tuple[str, str, str]] = []
+    first_index: dict[tuple[str, str, str], int] = {}
+    payload_digest = hashlib.sha256()
+    for index, test_case in enumerate(test_cases):
+        if not isinstance(test_case.input, str) or not isinstance(test_case.expected, str):
+            raise ValueError("refresh source tests must remain string stdio pairs")
+        key = ("stdio", normalize_text(test_case.input), normalize_text(test_case.expected))
+        previous = first_index.get(key)
+        if previous is not None:
+            raise DuplicateDataError(
+                f"{context} contains duplicate normalized tests at indexes {previous} and {index}"
+            )
+        first_index[key] = index
+        keys.append(key)
+        payload_digest.update(_framed_text(test_case.input))
+        payload_digest.update(_framed_text(test_case.expected))
+
+    normalized_digest = hashlib.sha256()
+    for key in sorted(keys):
+        for part in key:
+            normalized_digest.update(_framed_text(part))
+    return normalized_digest.hexdigest(), payload_digest.hexdigest()
+
+
+def _test_validation_guard(test_fingerprint: str, payload_sha256: str) -> str:
+    return stable_json_hash(
+        {
+            "protocol": "wp9a-prevalidated-tests-v1",
+            "test_fingerprint": test_fingerprint,
+            "payload_sha256": payload_sha256,
+        }
+    )
+
+
 def _raw_reference_solution_hash(value: object, *, record_id: str) -> str | None:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise RefreshSourceError(f"{record_id}: solutions must be a list of strings")
@@ -286,12 +376,12 @@ def _candidate_from_row(
             tests = _taco_tests(parsed_tests, record_id=record_id)
         else:
             raise RefreshSourceError(f"unsupported DeepCoder config {spec.config_name!r}")
-        test_hashes = unique_test_case_hashes(tests, context=record_id)
+        if len(tests) < 4:
+            return None
+        test_fingerprint, payload_sha256 = _refresh_stdio_test_fingerprints(tests, context=record_id)
     except ValueError:
         return None
-    if len(tests) < 4:
-        return None
-    test_fingerprint = stable_json_hash(sorted(test_hashes))
+    validation_guard = _test_validation_guard(test_fingerprint, payload_sha256)
     candidate_id = stable_json_hash(
         {
             "protocol": "wp9a-refresh-candidate-v1",
@@ -317,8 +407,8 @@ def _candidate_from_row(
         difficulty="unknown",
         category=("stdio",),
         raw_record_sha256=resolved_raw_hash,
-        test_case_hashes=test_hashes,
         test_fingerprint=test_fingerprint,
+        test_validation_guard=validation_guard,
     )
 
 
@@ -344,18 +434,23 @@ def load_refresh_source(
     _validate_license(snapshot_dir, spec.declared_license)
 
     candidates: list[RefreshCandidate] = []
-    raw_hashes: list[str] = []
+    projection_digest = hashlib.sha256()
     scanned_rows = 0
-    for row_index, row in enumerate(
-        _iter_parquet_rows(snapshot_dir, spec.config_name, spec.split),
-        start=0,
-    ):
-        scanned_rows += 1
+    rows = enumerate(_iter_parquet_rows(snapshot_dir, spec.config_name, spec.split), start=0)
+
+    def project_row(item: tuple[int, Mapping[str, object]]) -> tuple[str, RefreshCandidate | None]:
+        row_index, row = item
         raw_hash = _deepcoder_raw_record_hash(row)
-        raw_hashes.append(raw_hash)
-        candidate = _candidate_from_row(spec, row, row_index=row_index, raw_hash=raw_hash)
-        if candidate is not None:
-            candidates.append(candidate)
+        return raw_hash, _candidate_from_row(spec, row, row_index=row_index, raw_hash=raw_hash)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        while batch := list(islice(rows, 128)):
+            scanned_rows += len(batch)
+            for raw_hash, candidate in pool.map(project_row, batch):
+                projection_digest.update(raw_hash.encode("ascii"))
+                projection_digest.update(b"\n")
+                if candidate is not None:
+                    candidates.append(candidate)
     snapshot = RefreshSourceSnapshot(
         source_name=spec.source_name,
         dataset_id=spec.dataset_id,
@@ -365,7 +460,7 @@ def load_refresh_source(
         declared_license=spec.declared_license,
         scanned_rows=scanned_rows,
         accepted_rows=len(candidates),
-        projection_fingerprint_sha256=_projection_fingerprint(raw_hashes),
+        projection_fingerprint_sha256=projection_digest.hexdigest(),
     )
     return snapshot, candidates
 
@@ -449,21 +544,25 @@ _REFRESH_INTERFACE_NOTE = (
 
 def canonicalize_refresh_candidate(candidate: RefreshCandidate, *, seed: int) -> tuple[CodeProblem, bool]:
     """Return a canonical train problem plus whether its test count needs a later quality gate."""
-    if candidate.test_case_hashes is None:
+    if candidate.test_validation_guard is None:
         visible, train_hidden, eval_hidden = split_refresh_test_cases(
             candidate.tests,
             problem_id=candidate.candidate_id,
             seed=seed,
         )
     else:
-        expected_fingerprint = stable_json_hash(sorted(candidate.test_case_hashes))
-        if candidate.test_fingerprint != expected_fingerprint:
-            raise ValueError(f"refresh candidate {candidate.candidate_id} has inconsistent prevalidated test hashes")
+        if candidate.test_fingerprint is None:
+            raise ValueError(
+                f"refresh candidate {candidate.candidate_id} is missing its prevalidated test fingerprint"
+            )
+        payload_sha256 = _stdio_test_payload_sha256(candidate.tests)
+        expected_guard = _test_validation_guard(candidate.test_fingerprint, payload_sha256)
+        if candidate.test_validation_guard != expected_guard:
+            raise ValueError(f"refresh candidate {candidate.candidate_id} has inconsistent prevalidated tests")
         visible, train_hidden, eval_hidden = _split_refresh_test_cases_prevalidated(
             candidate.tests,
             problem_id=candidate.candidate_id,
             seed=seed,
-            test_case_hashes=candidate.test_case_hashes,
         )
     problem = CodeProblem(
         problem_id=candidate.candidate_id,

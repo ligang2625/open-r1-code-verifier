@@ -15,10 +15,13 @@ from code_verifier.data.refresh_sources import (
     RefreshSourceSpec,
     _candidate_from_row,
     _deepcoder_raw_record_hash,
+    _refresh_stdio_test_fingerprints,
     _resolve_snapshot,
+    _stdio_test_payload_sha256,
     _validate_license,
     canonicalize_refresh_candidate,
     load_humanevalplus_references,
+    refresh_test_set_fingerprint,
 )
 from code_verifier.data.schema import TestCase as CodeTestCase
 
@@ -72,9 +75,8 @@ def test_deepcoder_stdio_rows_map_to_stable_candidates(config_name: str) -> None
     assert first.function_name == "solve_io"
     assert first.function_signature == "def solve_io(input_text: str) -> str:"
     assert first.raw_reference_solution_hash is not None
-    assert first.test_case_hashes is not None
-    assert len(first.test_case_hashes) == 8
-    assert first.test_fingerprint == stable_json_hash(sorted(first.test_case_hashes))
+    assert first.test_fingerprint == refresh_test_set_fingerprint(first.tests, context="test")
+    assert first.test_validation_guard is not None
 
 
 @pytest.mark.parametrize(
@@ -90,6 +92,14 @@ def test_deepcoder_stdio_rows_map_to_stable_candidates(config_name: str) -> None
 )
 def test_deepcoder_fast_raw_hash_matches_generic_canonical_hash(row: dict[str, object]) -> None:
     assert _deepcoder_raw_record_hash(row) == stable_json_hash(row)
+
+
+def test_combined_stdio_fingerprints_match_independent_helpers() -> None:
+    candidate = _candidate_from_row(_spec("primeintellect"), _prime_row(), row_index=2)
+    assert candidate is not None
+    fingerprint, payload_sha256 = _refresh_stdio_test_fingerprints(candidate.tests, context="fixture")
+    assert fingerprint == refresh_test_set_fingerprint(candidate.tests, context="fixture")
+    assert payload_sha256 == _stdio_test_payload_sha256(candidate.tests)
 
 
 def test_deepcoder_rejects_malformed_unsafe_and_low_test_rows() -> None:
@@ -151,12 +161,12 @@ def test_canonicalize_refresh_candidate_uses_scalar_stdio_contract_and_quality_f
 def test_canonicalize_loader_candidate_reuses_validated_hashes_and_rejects_tamper() -> None:
     candidate = _candidate_from_row(_spec("primeintellect"), _prime_row(), row_index=3)
     assert candidate is not None
-    assert candidate.test_case_hashes is not None
+    assert candidate.test_validation_guard is not None
     problem, quality_gate_required = canonicalize_refresh_candidate(candidate, seed=42)
     assert quality_gate_required is False
     assert len(problem.visible_tests) + len(problem.train_hidden_tests) + len(problem.eval_hidden_tests) == 8
 
-    with pytest.raises(ValueError, match="inconsistent prevalidated test hashes"):
+    with pytest.raises(ValueError, match="inconsistent prevalidated tests"):
         canonicalize_refresh_candidate(replace(candidate, test_fingerprint="0" * 64), seed=42)
 
 

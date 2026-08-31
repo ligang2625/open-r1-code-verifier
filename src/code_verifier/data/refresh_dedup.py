@@ -11,8 +11,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from code_verifier.data.deduplicate import normalize_text, stable_json_hash, test_case_hash
-from code_verifier.data.refresh_sources import OverlapReference, RefreshCandidate
+from code_verifier.data.deduplicate import normalize_text, stable_json_hash
+from code_verifier.data.refresh_sources import OverlapReference, RefreshCandidate, refresh_test_set_fingerprint
 
 RecordClass = Literal["candidate", "sft", "validation", "project_test", "external_eval"]
 
@@ -117,7 +117,10 @@ def candidate_fingerprint(candidate: RefreshCandidate, *, policy: RefreshDedupPo
     """Build one candidate fingerprint without the stdio wrapper boilerplate added at materialization time."""
     test_fingerprint = candidate.test_fingerprint
     if test_fingerprint is None:
-        test_fingerprint = stable_json_hash(sorted(test_case_hash(test) for test in candidate.tests))
+        test_fingerprint = refresh_test_set_fingerprint(
+            candidate.tests,
+            context=f"candidate {candidate.candidate_id}",
+        )
     return build_refresh_fingerprint(
         record_id=candidate.candidate_id,
         record_class="candidate",

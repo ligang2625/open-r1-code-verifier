@@ -23,7 +23,7 @@ class DuplicateDataError(ValueError):
 
 def normalize_text(value: str) -> str:
     """Normalize Unicode plus all whitespace deterministically."""
-    normalized = unicodedata.normalize("NFKC", value)
+    normalized = value if value.isascii() else unicodedata.normalize("NFKC", value)
     return " ".join(normalized.split())
 
 

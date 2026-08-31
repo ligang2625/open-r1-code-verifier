@@ -12,6 +12,7 @@ import pytest
 from code_verifier.data.leakage_checks import (
     LeakageError,
     TrainingArtifactKind,
+    _build_training_record_unchecked,
     build_training_record,
     check_dataset,
     check_no_test_layer_overlap,
@@ -126,6 +127,12 @@ def test_hidden_record_contains_no_eval_hidden_tests() -> None:
     record = build_training_record(_dataset()[0], kind=TrainingArtifactKind.HIDDEN_GRPO)
     assert "train_hidden_tests" in record
     assert "eval_hidden_tests" not in record
+
+
+@pytest.mark.parametrize("kind", list(TrainingArtifactKind))
+def test_unchecked_training_builder_matches_validated_public_builder(kind: TrainingArtifactKind) -> None:
+    problem = _dataset()[0]
+    assert _build_training_record_unchecked(problem, kind=kind) == build_training_record(problem, kind=kind)
 
 
 @pytest.mark.parametrize("kind", list(TrainingArtifactKind))

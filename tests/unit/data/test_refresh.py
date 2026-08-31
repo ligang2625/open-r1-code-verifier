@@ -159,7 +159,6 @@ def _patch_pipeline_sources(
     *,
     candidates: list[RefreshCandidate],
 ) -> None:
-    monkeypatch.setattr(refresh_module, "check_prepared_data", lambda path: None)
     monkeypatch.setattr(
         refresh_module,
         "load_refresh_source",
@@ -348,7 +347,6 @@ def test_failed_prepare_does_not_publish_partial_output(
 ) -> None:
     reference = tmp_path / "reference"
     _write_reference_dataset(reference)
-    monkeypatch.setattr(refresh_module, "check_prepared_data", lambda path: None)
     monkeypatch.setattr(
         refresh_module,
         "load_humanevalplus_references",

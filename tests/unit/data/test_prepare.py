@@ -24,6 +24,7 @@ from code_verifier.data.prepare import (
     load_hf_dataset,
     prepare_data,
     write_jsonl,
+    write_jsonl_with_stats,
 )
 from code_verifier.data.schema import CodeProblem, JsonValue, problem_from_mapping, problem_to_mapping
 
@@ -165,9 +166,13 @@ def test_write_jsonl_is_deterministic_and_round_trippable(tmp_path: Path) -> Non
     records: list[dict[str, JsonValue]] = [{"b": 2, "a": 1}, {"message": "你好"}]
     first = tmp_path / "first.jsonl"
     second = tmp_path / "second.jsonl"
+    third = tmp_path / "third.jsonl"
     assert write_jsonl(records, first) == 2
     assert write_jsonl(records, second) == 2
-    assert first.read_bytes() == second.read_bytes()
+    rows, digest = write_jsonl_with_stats(records, third)
+    assert rows == 2
+    assert first.read_bytes() == second.read_bytes() == third.read_bytes()
+    assert digest == hashlib.sha256(third.read_bytes()).hexdigest()
     assert [json.loads(line) for line in first.read_text(encoding="utf-8").splitlines()] == records
 
 

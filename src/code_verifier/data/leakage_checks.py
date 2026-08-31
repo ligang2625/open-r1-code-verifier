@@ -126,12 +126,12 @@ def _metadata_to_json(problem: CodeProblem) -> dict[str, JsonValue]:
     }
 
 
-def build_training_record(
+def _build_training_record_unchecked(
     problem: CodeProblem,
     *,
     kind: TrainingArtifactKind,
 ) -> dict[str, JsonValue]:
-    """Construct a training record from an explicit per-kind field whitelist."""
+    """Construct the exact whitelist view; callers must validate unless the canonical source was already validated."""
     record: dict[str, JsonValue] = {}
     record["problem_id"] = problem.problem_id
     if kind is TrainingArtifactKind.SFT:
@@ -157,6 +157,16 @@ def build_training_record(
         record["metadata"] = _metadata_to_json(problem)
     else:
         raise LeakageError(f"unsupported training artifact kind {kind!r}")
+    return record
+
+
+def build_training_record(
+    problem: CodeProblem,
+    *,
+    kind: TrainingArtifactKind,
+) -> dict[str, JsonValue]:
+    """Construct and validate a training record from an explicit per-kind field whitelist."""
+    record = _build_training_record_unchecked(problem, kind=kind)
     check_training_record(record, kind=kind)
     return record
 
