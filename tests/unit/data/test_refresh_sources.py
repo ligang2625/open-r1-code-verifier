@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from code_verifier.data.deduplicate import stable_json_hash
 from code_verifier.data.refresh_sources import (
     RefreshCandidate,
     RefreshSourceError,
     RefreshSourceSpec,
     _candidate_from_row,
+    _deepcoder_raw_record_hash,
     _resolve_snapshot,
     _validate_license,
     canonicalize_refresh_candidate,
@@ -69,6 +71,12 @@ def test_deepcoder_stdio_rows_map_to_stable_candidates(config_name: str) -> None
     assert first.function_name == "solve_io"
     assert first.function_signature == "def solve_io(input_text: str) -> str:"
     assert first.raw_reference_solution_hash is not None
+    assert first.test_fingerprint is not None
+
+
+def test_deepcoder_fast_raw_hash_matches_generic_canonical_hash() -> None:
+    row = _prime_row()
+    assert _deepcoder_raw_record_hash(row) == stable_json_hash(row)
 
 
 def test_deepcoder_rejects_malformed_unsafe_and_low_test_rows() -> None:

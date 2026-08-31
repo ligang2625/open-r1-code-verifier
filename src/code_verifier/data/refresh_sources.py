@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from code_verifier.data.deduplicate import canonical_json, ensure_unique_test_cases, stable_json_hash
+from code_verifier.data.deduplicate import canonical_json, stable_json_hash, unique_test_case_hashes
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
 from code_verifier.data.schema import CodeProblem, ProblemMetadata, TestCase, validate_problem
 from code_verifier.data.split_tests import split_refresh_test_cases
@@ -65,6 +66,7 @@ class RefreshCandidate:
     difficulty: Difficulty
     category: tuple[str, ...]
     raw_record_sha256: str
+    test_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,11 +233,27 @@ def _raw_reference_solution_hash(value: object, *, record_id: str) -> str | None
     return None if not normalized else stable_json_hash(normalized)
 
 
+def _deepcoder_raw_record_hash(row: Mapping[str, object]) -> str:
+    """Hash a schema-validated parquet row without repeating generic JSON freezing."""
+    try:
+        payload = json.dumps(
+            dict(row),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise RefreshSourceError(f"DeepCoder row is not canonical-JSON serializable: {error}") from error
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _candidate_from_row(
     spec: RefreshSourceSpec,
     row: Mapping[str, object],
     *,
     row_index: int,
+    raw_hash: str | None = None,
 ) -> RefreshCandidate | None:
     if set(row) != {"problem", "solutions", "tests"}:
         raise RefreshSourceError(f"{spec.source_name} row {row_index}: unexpected top-level schema")
@@ -243,7 +261,7 @@ def _candidate_from_row(
     if not isinstance(prompt, str) or not prompt.strip():
         return None
     record_id = f"{spec.config_name}/{spec.split}/{row_index}"
-    raw_hash = stable_json_hash(dict(row))
+    resolved_raw_hash = _deepcoder_raw_record_hash(row) if raw_hash is None else raw_hash
     solution_hash = _raw_reference_solution_hash(row["solutions"], record_id=record_id)
     try:
         parsed_tests = _strict_tests_json(row["tests"], record_id=record_id)
@@ -253,11 +271,12 @@ def _candidate_from_row(
             tests = _taco_tests(parsed_tests, record_id=record_id)
         else:
             raise RefreshSourceError(f"unsupported DeepCoder config {spec.config_name!r}")
-        ensure_unique_test_cases(tests, context=record_id)
+        test_hashes = unique_test_case_hashes(tests, context=record_id)
     except ValueError:
         return None
     if len(tests) < 4:
         return None
+    test_fingerprint = stable_json_hash(sorted(test_hashes))
     candidate_id = stable_json_hash(
         {
             "protocol": "wp9a-refresh-candidate-v1",
@@ -267,7 +286,7 @@ def _candidate_from_row(
             "config_name": spec.config_name,
             "split": spec.split,
             "row_index": row_index,
-            "raw_record_sha256": raw_hash,
+            "raw_record_sha256": resolved_raw_hash,
         }
     )
     return RefreshCandidate(
@@ -282,7 +301,8 @@ def _candidate_from_row(
         raw_reference_solution_hash=solution_hash,
         difficulty="unknown",
         category=("stdio",),
-        raw_record_sha256=raw_hash,
+        raw_record_sha256=resolved_raw_hash,
+        test_fingerprint=test_fingerprint,
     )
 
 
@@ -315,9 +335,9 @@ def load_refresh_source(
         start=0,
     ):
         scanned_rows += 1
-        raw_hash = stable_json_hash(dict(row))
+        raw_hash = _deepcoder_raw_record_hash(row)
         raw_hashes.append(raw_hash)
-        candidate = _candidate_from_row(spec, row, row_index=row_index)
+        candidate = _candidate_from_row(spec, row, row_index=row_index, raw_hash=raw_hash)
         if candidate is not None:
             candidates.append(candidate)
     snapshot = RefreshSourceSnapshot(

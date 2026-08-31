@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -62,6 +63,10 @@ def _tokens(text: str) -> tuple[str, ...]:
     return tuple(re.findall(r"\w+|[^\w\s]", normalized, flags=re.UNICODE))
 
 
+def _ngram_hash(gram: str) -> str:
+    return hashlib.sha256(gram.encode("utf-8")).hexdigest()
+
+
 def _token_ngrams(statement: str, contract: str | None, *, n: int) -> tuple[str, ...]:
     tokens = _tokens(statement)
     if contract is not None:
@@ -69,9 +74,9 @@ def _token_ngrams(statement: str, contract: str | None, *, n: int) -> tuple[str,
     if not tokens:
         return ()
     if len(tokens) < n:
-        return (stable_json_hash("\x1f".join(tokens)),)
+        return (_ngram_hash("\x1f".join(tokens)),)
     grams = {"\x1f".join(tokens[index : index + n]) for index in range(len(tokens) - n + 1)}
-    return tuple(sorted(stable_json_hash(gram) for gram in grams))
+    return tuple(sorted(_ngram_hash(gram) for gram in grams))
 
 
 def build_refresh_fingerprint(
@@ -106,7 +111,9 @@ def build_refresh_fingerprint(
 
 def candidate_fingerprint(candidate: RefreshCandidate, *, policy: RefreshDedupPolicy) -> RefreshFingerprint:
     """Build one candidate fingerprint without the stdio wrapper boilerplate added at materialization time."""
-    test_fingerprint = stable_json_hash(sorted(test_case_hash(test) for test in candidate.tests))
+    test_fingerprint = candidate.test_fingerprint
+    if test_fingerprint is None:
+        test_fingerprint = stable_json_hash(sorted(test_case_hash(test) for test in candidate.tests))
     return build_refresh_fingerprint(
         record_id=candidate.candidate_id,
         record_class="candidate",
@@ -153,18 +160,16 @@ def _jaccard(left: tuple[str, ...], right: tuple[str, ...]) -> float:
     return 0.0 if union_size == 0 else len(left_set & right_set) / union_size
 
 
-def _global_token_order(
-    queries: Sequence[RefreshFingerprint], references: Sequence[RefreshFingerprint]
-) -> dict[str, int]:
+def _global_token_order(fingerprints: Sequence[RefreshFingerprint]) -> dict[str, int]:
     frequency: Counter[str] = Counter()
-    for fingerprint in (*queries, *references):
+    for fingerprint in fingerprints:
         frequency.update(fingerprint.token_ngrams)
     ordered = sorted(frequency, key=lambda token: (frequency[token], token))
     return {token: index for index, token in enumerate(ordered)}
 
 
-def _ordered_ngrams(fingerprint: RefreshFingerprint, order: dict[str, int]) -> tuple[str, ...]:
-    return tuple(sorted(fingerprint.token_ngrams, key=lambda token: (order[token], token)))
+def _fingerprint_key(fingerprint: RefreshFingerprint) -> tuple[RecordClass, str]:
+    return fingerprint.record_class, fingerprint.record_id
 
 
 def _prefix_length(size: int, threshold: float) -> int:
@@ -173,30 +178,59 @@ def _prefix_length(size: int, threshold: float) -> int:
     return max(1, size - math.ceil(threshold * size) + 1)
 
 
+@dataclass(frozen=True)
+class _NearIndexContext:
+    token_order: Mapping[str, int]
+    prefixes: Mapping[tuple[RecordClass, str], tuple[str, ...]]
+
+
+def _build_near_index_context(
+    fingerprints: Sequence[RefreshFingerprint],
+    *,
+    threshold: float,
+) -> _NearIndexContext:
+    unique: dict[tuple[RecordClass, str], RefreshFingerprint] = {}
+    for fingerprint in fingerprints:
+        key = _fingerprint_key(fingerprint)
+        previous = unique.get(key)
+        if previous is not None and previous != fingerprint:
+            raise ValueError(f"duplicate fingerprint identity {key}")
+        unique[key] = fingerprint
+    token_order = _global_token_order(list(unique.values()))
+    prefixes: dict[tuple[RecordClass, str], tuple[str, ...]] = {}
+    for key, fingerprint in unique.items():
+        ordered = sorted(fingerprint.token_ngrams, key=lambda token: (token_order[token], token))
+        prefixes[key] = tuple(ordered[: _prefix_length(len(ordered), threshold)])
+    return _NearIndexContext(token_order=token_order, prefixes=prefixes)
+
+
 def _candidate_pairs(
     queries: Sequence[RefreshFingerprint],
     references: Sequence[RefreshFingerprint],
     *,
     policy: RefreshDedupPolicy,
+    context: _NearIndexContext | None = None,
 ) -> set[tuple[int, int]]:
-    """Generate deterministic high-threshold candidate pairs through a global-order prefix index."""
-    order = _global_token_order(queries, references)
+    """Generate deterministic high-threshold candidate pairs through a shared rare-token prefix index."""
+    if context is None:
+        context = _build_near_index_context(
+            [*queries, *references],
+            threshold=policy.near_jaccard_threshold,
+        )
     index: dict[str, list[int]] = defaultdict(list)
-    reference_sizes = [len(set(reference.token_ngrams)) for reference in references]
+    reference_sizes = [len(reference.token_ngrams) for reference in references]
     for ref_index, reference in enumerate(references):
-        ordered = _ordered_ngrams(reference, order)
-        for token in ordered[: _prefix_length(len(ordered), policy.near_jaccard_threshold)]:
+        for token in context.prefixes[_fingerprint_key(reference)]:
             index[token].append(ref_index)
 
     result: set[tuple[int, int]] = set()
     for query_index, query in enumerate(queries):
-        query_size = len(set(query.token_ngrams))
+        query_size = len(query.token_ngrams)
         if query_size == 0:
             continue
         minimum_size = math.ceil(policy.near_jaccard_threshold * query_size)
         maximum_size = math.floor(query_size / policy.near_jaccard_threshold)
-        ordered = _ordered_ngrams(query, order)
-        for token in ordered[: _prefix_length(len(ordered), policy.near_jaccard_threshold)]:
+        for token in context.prefixes[_fingerprint_key(query)]:
             for ref_index in index.get(token, ()):
                 if minimum_size <= reference_sizes[ref_index] <= maximum_size:
                     result.add((query_index, ref_index))
@@ -253,11 +287,12 @@ def find_near_duplicate_matches(
     references: Sequence[RefreshFingerprint],
     *,
     policy: RefreshDedupPolicy,
+    context: _NearIndexContext | None = None,
 ) -> dict[str, tuple[str, float]]:
     """Return the best accepted-near match per query after prefix pruning and exact Jaccard verification."""
     validate_refresh_dedup_policy(policy)
     best: dict[str, tuple[str, float]] = {}
-    for query_index, ref_index in sorted(_candidate_pairs(queries, references, policy=policy)):
+    for query_index, ref_index in sorted(_candidate_pairs(queries, references, policy=policy, context=context)):
         query = queries[query_index]
         reference = references[ref_index]
         if query.record_id == reference.record_id and query.record_class == reference.record_class:
@@ -277,6 +312,7 @@ def _reference_match_map(
     references: Sequence[RefreshFingerprint],
     *,
     policy: RefreshDedupPolicy,
+    context: _NearIndexContext | None = None,
 ) -> dict[str, tuple[str, str, float | None]]:
     """Match one reference class in bulk so exact and prefix indexes are constructed only once."""
     if not queries or not references:
@@ -325,7 +361,7 @@ def _reference_match_map(
             matched_class = reference_by_id[matched_id].record_class
             result[query.record_id] = (matched_id, f"exact_{matched_class}_{signal}", 1.0)
 
-    near_matches = find_near_duplicate_matches(queries, references, policy=policy)
+    near_matches = find_near_duplicate_matches(queries, references, policy=policy, context=context)
     for query_id, (matched_id, similarity) in near_matches.items():
         if query_id in result:
             continue
@@ -359,6 +395,7 @@ def _external_duplicate_components(
     fingerprints: Sequence[RefreshFingerprint],
     *,
     policy: RefreshDedupPolicy,
+    context: _NearIndexContext | None = None,
 ) -> dict[str, str]:
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
     dsu = _DisjointSet(by_id)
@@ -380,7 +417,9 @@ def _external_duplicate_components(
             else:
                 exact_indexes[key] = fingerprint.record_id
 
-    for left_index, right_index in sorted(_candidate_pairs(fingerprints, fingerprints, policy=policy)):
+    for left_index, right_index in sorted(
+        _candidate_pairs(fingerprints, fingerprints, policy=policy, context=context)
+    ):
         if left_index >= right_index:
             continue
         left = fingerprints[left_index]
@@ -415,17 +454,37 @@ def classify_refresh_candidates(
     if len(fingerprint_by_id) != len(candidates):
         raise ValueError("refresh candidates must have unique candidate_id values")
 
-    evaluation_groups = [
-        [reference_fingerprint(item, policy=policy) for item in validation_references],
-        [reference_fingerprint(item, policy=policy) for item in project_test_references],
-        [reference_fingerprint(item, policy=policy) for item in external_eval_references],
-    ]
-    evaluation_matches = [
-        _reference_match_map(candidate_fingerprints, references, policy=policy) for references in evaluation_groups
-    ]
+    validation_fingerprints = [reference_fingerprint(item, policy=policy) for item in validation_references]
+    project_test_fingerprints = [reference_fingerprint(item, policy=policy) for item in project_test_references]
+    external_eval_fingerprints = [reference_fingerprint(item, policy=policy) for item in external_eval_references]
     sft_fingerprints = [reference_fingerprint(item, policy=policy) for item in sft_references]
-    sft_matches = _reference_match_map(candidate_fingerprints, sft_fingerprints, policy=policy)
-    representatives = _external_duplicate_components(candidates, candidate_fingerprints, policy=policy)
+    evaluation_groups = [validation_fingerprints, project_test_fingerprints, external_eval_fingerprints]
+    near_context = _build_near_index_context(
+        [
+            *candidate_fingerprints,
+            *validation_fingerprints,
+            *project_test_fingerprints,
+            *external_eval_fingerprints,
+            *sft_fingerprints,
+        ],
+        threshold=policy.near_jaccard_threshold,
+    )
+    evaluation_matches = [
+        _reference_match_map(candidate_fingerprints, references, policy=policy, context=near_context)
+        for references in evaluation_groups
+    ]
+    sft_matches = _reference_match_map(
+        candidate_fingerprints,
+        sft_fingerprints,
+        policy=policy,
+        context=near_context,
+    )
+    representatives = _external_duplicate_components(
+        candidates,
+        candidate_fingerprints,
+        policy=policy,
+        context=near_context,
+    )
 
     decisions: list[RefreshDedupDecision] = []
     for candidate in sorted(candidates, key=lambda item: item.candidate_id):

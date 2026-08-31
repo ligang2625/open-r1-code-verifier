@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import replace
 
 import pytest
@@ -77,10 +78,38 @@ def test_normalize_text_equates_newline_unicode_and_spacing_variants() -> None:
     assert normalize_text("\uff21  B\r\nC   \n") == normalize_text("A B C")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "\uff21  B\r\nC   \n",
+        "alpha\tbeta\r gamma\n",
+        "  mixed\u2003unicode\u00a0space  ",
+        "line one  \nline two\t\tline three",
+    ],
+)
+def test_normalize_text_matches_previous_whitespace_contract(value: str) -> None:
+    normalized = unicodedata.normalize("NFKC", value).replace("\r\n", "\n").replace("\r", "\n")
+    without_trailing = "\n".join(line.rstrip() for line in normalized.split("\n"))
+    assert normalize_text(value) == " ".join(without_trailing.split())
+
+
 def test_test_case_hash_uses_expected_value() -> None:
     first = CodeTestCase(input=["same"], expected=1)
     second = CodeTestCase(input=["same"], expected=2)
     assert hash_test_case(first) != hash_test_case(second)
+
+
+def test_string_test_case_hash_matches_canonical_generic_contract() -> None:
+    input_text = '\uff21  B\r\nC "quoted" \\ path'
+    expected_text = " \u4f60\u597d value  \r\n"
+    test_case = CodeTestCase(input=input_text, expected=expected_text)
+    expected = stable_json_hash(
+        {
+            "input": normalize_text(input_text),
+            "expected": normalize_text(expected_text),
+        }
+    )
+    assert hash_test_case(test_case) == expected
 
 
 def test_unique_test_cases_reject_normalized_duplicate() -> None:
