@@ -35,6 +35,14 @@ from code_verifier.data.prepare import (
     load_data_preparation_config,
     prepare_data,
 )
+from code_verifier.data.refresh import (
+    RefreshDataError,
+    RefreshPreparationSummary,
+    check_refresh_data,
+    load_refresh_data_config,
+    prepare_refresh_data,
+)
+from code_verifier.data.refresh_sources import RefreshSourceError
 from code_verifier.data.schema import SchemaError
 from code_verifier.environment import write_environment_record
 from code_verifier.evaluation.evaluate import (
@@ -103,6 +111,8 @@ DATA_ERRORS = (
     DuplicateDataError,
     LeakageError,
     DataPreparationError,
+    RefreshDataError,
+    RefreshSourceError,
 )
 EXECUTION_ERRORS = (
     ExecutionContractError,
@@ -203,6 +213,47 @@ def _check_data(args: argparse.Namespace) -> int:
     """Validate an existing WP1 prepared dataset and print a summary."""
     summary = check_prepared_data(Path(str(args.dataset)))
     _print_summary("checked", summary)
+    return 0
+
+
+def _print_refresh_summary(action: str, summary: RefreshPreparationSummary) -> None:
+    """Print one secret-free WP9-a refresh data summary."""
+    print(
+        f"{action} refresh dataset selected={summary.selected_problems} "
+        f"external_retained={summary.external_candidates_retained} "
+        f"sft_overlap={summary.sft_overlap_count}/{summary.selected_problems} "
+        f"quality_gate_required={summary.quality_gate_required_count}"
+    )
+    print(f"canonical_jsonl={summary.canonical_jsonl}")
+    print(f"public_grpo={summary.public_grpo_jsonl}")
+    print(f"hidden_grpo={summary.hidden_grpo_jsonl}")
+    print(f"refresh_manifest={summary.root_manifest}")
+
+
+def _prepare_refresh_data(args: argparse.Namespace) -> int:
+    """Run the pinned WP9-a refresh data foundation pipeline."""
+    config_path = Path(str(args.config))
+    reference_dataset_dir = Path(str(args.reference_dataset_dir))
+    source_cache_dir = None if args.source_cache_dir is None else Path(str(args.source_cache_dir))
+    output_dir = Path(str(args.output_dir))
+    summary = prepare_refresh_data(
+        load_refresh_data_config(config_path),
+        seed=int(args.seed),
+        reference_dataset_dir=reference_dataset_dir,
+        source_cache_dir=source_cache_dir,
+        output_dir=output_dir,
+    )
+    _print_refresh_summary("prepared", summary)
+    return 0
+
+
+def _check_refresh_data(args: argparse.Namespace) -> int:
+    """Strictly reload and verify an existing WP9-a refresh artifact tree."""
+    summary = check_refresh_data(
+        Path(str(args.dataset)),
+        reference_dataset_dir=Path(str(args.reference_dataset_dir)),
+    )
+    _print_refresh_summary("checked", summary)
     return 0
 
 
@@ -902,7 +953,7 @@ def _analyze_results(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CodeVerifier command-line parser with WP0-WP8 commands."""
+    """Build the CodeVerifier command-line parser with WP0-WP9 commands."""
     parser = argparse.ArgumentParser(
         prog="code-verifier",
         description="Open-R1 CodeVerifier project commands.",
@@ -937,6 +988,42 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--dataset", type=Path, required=True, help="prepared dataset root to verify")
     _add_common_arguments(check_parser, output_dir_default=Path("outputs/check-data"))
     check_parser.set_defaults(handler=_check_data)
+
+    refresh_prepare_parser = subparsers.add_parser(
+        "prepare-refresh-data",
+        help="prepare deterministic WP9-a refresh data from pinned sources",
+    )
+    refresh_prepare_parser.add_argument("--config", type=Path, required=True, help="tracked WP9-a refresh YAML config")
+    refresh_prepare_parser.add_argument(
+        "--reference-dataset-dir",
+        type=Path,
+        required=True,
+        help="frozen prepared dataset root providing SFT/validation/project-test references",
+    )
+    refresh_prepare_parser.add_argument(
+        "--source-cache-dir",
+        type=Path,
+        default=None,
+        help="optional Hugging Face cache root; use with HF offline mode for cached-only preparation",
+    )
+    refresh_prepare_parser.add_argument("--seed", type=int, default=42, help="deterministic seed (default: 42)")
+    refresh_prepare_parser.add_argument("--output-dir", type=Path, required=True, help="fresh refresh artifact root")
+    refresh_prepare_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
+    refresh_prepare_parser.set_defaults(handler=_prepare_refresh_data)
+
+    refresh_check_parser = subparsers.add_parser(
+        "check-refresh-data",
+        help="strictly verify an existing WP9-a refresh artifact tree",
+    )
+    refresh_check_parser.add_argument("--dataset", type=Path, required=True, help="refresh artifact root to verify")
+    refresh_check_parser.add_argument(
+        "--reference-dataset-dir",
+        type=Path,
+        required=True,
+        help="same frozen prepared dataset root used by preparation",
+    )
+    refresh_check_parser.add_argument("--log-level", default="INFO", help="standard logging level (default: INFO)")
+    refresh_check_parser.set_defaults(handler=_check_refresh_data)
 
     parse_parser = subparsers.add_parser(
         "parse-code",
