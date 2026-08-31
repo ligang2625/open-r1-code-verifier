@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 import re
 from collections import Counter, defaultdict
@@ -75,8 +76,11 @@ def _token_ngrams(statement: str, contract: str | None, *, n: int) -> tuple[str,
         return ()
     if len(tokens) < n:
         return (_ngram_hash("\x1f".join(tokens)),)
-    grams = {"\x1f".join(tokens[index : index + n]) for index in range(len(tokens) - n + 1)}
-    return tuple(sorted(_ngram_hash(gram) for gram in grams))
+    hashed_grams: dict[str, None] = {}
+    for index in range(len(tokens) - n + 1):
+        gram_hash = _ngram_hash("\x1f".join(tokens[index : index + n]))
+        hashed_grams.setdefault(gram_hash, None)
+    return tuple(hashed_grams)
 
 
 def build_refresh_fingerprint(
@@ -90,7 +94,7 @@ def build_refresh_fingerprint(
     test_fingerprint: str | None,
     policy: RefreshDedupPolicy,
 ) -> RefreshFingerprint:
-    """Build stable exact signals and sorted token n-grams from raw task text plus contract."""
+    """Build stable exact signals and deterministic token n-grams from raw task text plus contract."""
     validate_refresh_dedup_policy(policy)
     statement = normalize_text(prompt)
     if not statement:
@@ -160,12 +164,11 @@ def _jaccard(left: tuple[str, ...], right: tuple[str, ...]) -> float:
     return 0.0 if union_size == 0 else len(left_set & right_set) / union_size
 
 
-def _global_token_order(fingerprints: Sequence[RefreshFingerprint]) -> dict[str, int]:
+def _global_token_frequency(fingerprints: Sequence[RefreshFingerprint]) -> Counter[str]:
     frequency: Counter[str] = Counter()
     for fingerprint in fingerprints:
         frequency.update(fingerprint.token_ngrams)
-    ordered = sorted(frequency, key=lambda token: (frequency[token], token))
-    return {token: index for index, token in enumerate(ordered)}
+    return frequency
 
 
 def _fingerprint_key(fingerprint: RefreshFingerprint) -> tuple[RecordClass, str]:
@@ -180,7 +183,6 @@ def _prefix_length(size: int, threshold: float) -> int:
 
 @dataclass(frozen=True)
 class _NearIndexContext:
-    token_order: Mapping[str, int]
     prefixes: Mapping[tuple[RecordClass, str], tuple[str, ...]]
 
 
@@ -196,12 +198,18 @@ def _build_near_index_context(
         if previous is not None and previous != fingerprint:
             raise ValueError(f"duplicate fingerprint identity {key}")
         unique[key] = fingerprint
-    token_order = _global_token_order(list(unique.values()))
+    frequency = _global_token_frequency(list(unique.values()))
     prefixes: dict[tuple[RecordClass, str], tuple[str, ...]] = {}
     for key, fingerprint in unique.items():
-        ordered = sorted(fingerprint.token_ngrams, key=lambda token: (token_order[token], token))
-        prefixes[key] = tuple(ordered[: _prefix_length(len(ordered), threshold)])
-    return _NearIndexContext(token_order=token_order, prefixes=prefixes)
+        prefix_length = _prefix_length(len(fingerprint.token_ngrams), threshold)
+        prefixes[key] = tuple(
+            heapq.nsmallest(
+                prefix_length,
+                fingerprint.token_ngrams,
+                key=lambda token: (frequency[token], token),
+            )
+        )
+    return _NearIndexContext(prefixes=prefixes)
 
 
 def _candidate_pairs(
