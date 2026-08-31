@@ -69,8 +69,9 @@ def _token_ngrams(statement: str, contract: str | None, *, n: int) -> tuple[str,
     if not tokens:
         return ()
     if len(tokens) < n:
-        return ("\x1f".join(tokens),)
-    return tuple(sorted({"\x1f".join(tokens[index : index + n]) for index in range(len(tokens) - n + 1)}))
+        return (stable_json_hash("\x1f".join(tokens)),)
+    grams = {"\x1f".join(tokens[index : index + n]) for index in range(len(tokens) - n + 1)}
+    return tuple(sorted(stable_json_hash(gram) for gram in grams))
 
 
 def build_refresh_fingerprint(
@@ -205,6 +206,51 @@ def _candidate_pairs(
     return result
 
 
+def find_exact_duplicate_matches(
+    queries: Sequence[RefreshFingerprint],
+    references: Sequence[RefreshFingerprint],
+) -> dict[str, tuple[str, str]]:
+    """Return the deterministic best exact-signal match for each query using exact indexes."""
+    indexes: dict[str, dict[object, str]] = {
+        "statement_contract": {},
+        "source_url": {},
+        "reference_solution": {},
+        "test_fingerprint": {},
+    }
+    for reference in sorted(references, key=lambda item: item.record_id):
+        values: tuple[tuple[str, object | None], ...] = (
+            (
+                "statement_contract",
+                (reference.normalized_statement_hash, reference.contract_hash),
+            ),
+            ("source_url", reference.source_url_hash),
+            ("reference_solution", reference.reference_solution_hash),
+            ("test_fingerprint", reference.test_fingerprint),
+        )
+        for signal, value in values:
+            if value is not None:
+                indexes[signal].setdefault(value, reference.record_id)
+
+    matches: dict[str, tuple[str, str]] = {}
+    for query in queries:
+        candidates: list[tuple[str, str]] = []
+        values = (
+            ("statement_contract", (query.normalized_statement_hash, query.contract_hash)),
+            ("source_url", query.source_url_hash),
+            ("reference_solution", query.reference_solution_hash),
+            ("test_fingerprint", query.test_fingerprint),
+        )
+        for signal, value in values:
+            if value is None:
+                continue
+            matched_id = indexes[signal].get(value)
+            if matched_id is not None:
+                candidates.append((matched_id, signal))
+        if candidates:
+            matches[query.record_id] = min(candidates)
+    return matches
+
+
 def find_near_duplicate_matches(
     queries: Sequence[RefreshFingerprint],
     references: Sequence[RefreshFingerprint],
@@ -229,36 +275,66 @@ def find_near_duplicate_matches(
     return best
 
 
-def _best_exact_match(
-    query: RefreshFingerprint,
-    references: Sequence[RefreshFingerprint],
-) -> tuple[RefreshFingerprint, str] | None:
-    matches: list[tuple[RefreshFingerprint, str]] = []
-    for reference in references:
-        signal = _exact_signal(query, reference)
-        if signal is not None:
-            matches.append((reference, signal))
-    if not matches:
-        return None
-    return min(matches, key=lambda item: (item[0].record_id, item[1]))
-
-
-def _reference_decision(
-    query: RefreshFingerprint,
+def _reference_match_map(
+    queries: Sequence[RefreshFingerprint],
     references: Sequence[RefreshFingerprint],
     *,
     policy: RefreshDedupPolicy,
-) -> tuple[str, str, float | None] | None:
-    exact = _best_exact_match(query, references)
-    if exact is not None:
-        reference, signal = exact
-        return reference.record_id, f"exact_{reference.record_class}_{signal}", 1.0
-    near = find_near_duplicate_matches([query], references, policy=policy).get(query.record_id)
-    if near is None:
-        return None
-    matched_id, similarity = near
-    matched_class = next(reference.record_class for reference in references if reference.record_id == matched_id)
-    return matched_id, f"near_{matched_class}", similarity
+) -> dict[str, tuple[str, str, float | None]]:
+    """Match one reference class in bulk so exact and prefix indexes are constructed only once."""
+    if not queries or not references:
+        return {}
+    reference_by_id = {reference.record_id: reference for reference in references}
+    if len(reference_by_id) != len(references):
+        raise ValueError("overlap references must have unique reference_id values within a class")
+
+    exact_indexes: dict[str, dict[object, str]] = {
+        "statement_contract": {},
+        "source_url": {},
+        "reference_solution": {},
+        "test_fingerprint": {},
+    }
+    for reference in sorted(references, key=lambda item: item.record_id):
+        values: tuple[tuple[str, object | None], ...] = (
+            (
+                "statement_contract",
+                (reference.normalized_statement_hash, reference.contract_hash),
+            ),
+            ("source_url", reference.source_url_hash),
+            ("reference_solution", reference.reference_solution_hash),
+            ("test_fingerprint", reference.test_fingerprint),
+        )
+        for signal, value in values:
+            if value is not None:
+                exact_indexes[signal].setdefault(value, reference.record_id)
+
+    result: dict[str, tuple[str, str, float | None]] = {}
+    for query in queries:
+        values = (
+            ("statement_contract", (query.normalized_statement_hash, query.contract_hash)),
+            ("source_url", query.source_url_hash),
+            ("reference_solution", query.reference_solution_hash),
+            ("test_fingerprint", query.test_fingerprint),
+        )
+        exact: list[tuple[str, str]] = []
+        for signal, value in values:
+            if value is None:
+                continue
+            matched_id = exact_indexes[signal].get(value)
+            if matched_id is not None:
+                exact.append((matched_id, signal))
+        if exact:
+            matched_id, signal = min(exact)
+            matched_class = reference_by_id[matched_id].record_class
+            result[query.record_id] = (matched_id, f"exact_{matched_class}_{signal}", 1.0)
+
+    near_matches = find_near_duplicate_matches(queries, references, policy=policy)
+    for query_id, (matched_id, similarity) in near_matches.items():
+        if query_id in result:
+            continue
+        matched_class = reference_by_id[matched_id].record_class
+        result[query_id] = (matched_id, f"near_{matched_class}", similarity)
+    return result
 
 
 class _DisjointSet:
@@ -343,21 +419,24 @@ def classify_refresh_candidates(
         raise ValueError("refresh candidates must have unique candidate_id values")
 
     evaluation_groups = [
-        ("validation", [reference_fingerprint(item, policy=policy) for item in validation_references]),
-        ("project_test", [reference_fingerprint(item, policy=policy) for item in project_test_references]),
-        ("external_eval", [reference_fingerprint(item, policy=policy) for item in external_eval_references]),
+        [reference_fingerprint(item, policy=policy) for item in validation_references],
+        [reference_fingerprint(item, policy=policy) for item in project_test_references],
+        [reference_fingerprint(item, policy=policy) for item in external_eval_references],
+    ]
+    evaluation_matches = [
+        _reference_match_map(candidate_fingerprints, references, policy=policy) for references in evaluation_groups
     ]
     sft_fingerprints = [reference_fingerprint(item, policy=policy) for item in sft_references]
+    sft_matches = _reference_match_map(candidate_fingerprints, sft_fingerprints, policy=policy)
     representatives = _external_duplicate_components(candidates, candidate_fingerprints, policy=policy)
 
     decisions: list[RefreshDedupDecision] = []
     for candidate in sorted(candidates, key=lambda item: item.candidate_id):
         query = fingerprint_by_id[candidate.candidate_id]
-        hard_match: tuple[str, str, float | None] | None = None
-        for _class_name, references in evaluation_groups:
-            hard_match = _reference_decision(query, references, policy=policy)
-            if hard_match is not None:
-                break
+        hard_match = next(
+            (matches[candidate.candidate_id] for matches in evaluation_matches if candidate.candidate_id in matches),
+            None,
+        )
         if hard_match is not None:
             matched_id, reason, similarity = hard_match
             decisions.append(
@@ -372,7 +451,7 @@ def classify_refresh_candidates(
             )
             continue
 
-        sft_match = _reference_decision(query, sft_fingerprints, policy=policy)
+        sft_match = sft_matches.get(candidate.candidate_id)
         if sft_match is not None:
             matched_id, reason, similarity = sft_match
             decisions.append(
