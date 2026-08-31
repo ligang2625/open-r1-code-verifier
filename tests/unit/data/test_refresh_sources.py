@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -71,7 +72,9 @@ def test_deepcoder_stdio_rows_map_to_stable_candidates(config_name: str) -> None
     assert first.function_name == "solve_io"
     assert first.function_signature == "def solve_io(input_text: str) -> str:"
     assert first.raw_reference_solution_hash is not None
-    assert first.test_fingerprint is not None
+    assert first.test_case_hashes is not None
+    assert len(first.test_case_hashes) == 8
+    assert first.test_fingerprint == stable_json_hash(sorted(first.test_case_hashes))
 
 
 def test_deepcoder_fast_raw_hash_matches_generic_canonical_hash() -> None:
@@ -133,6 +136,18 @@ def test_canonicalize_refresh_candidate_uses_scalar_stdio_contract_and_quality_f
     for test in candidate.tests:
         assert str(test.input) not in problem.prompt
         assert str(test.expected) not in problem.prompt
+
+
+def test_canonicalize_loader_candidate_reuses_validated_hashes_and_rejects_tamper() -> None:
+    candidate = _candidate_from_row(_spec("primeintellect"), _prime_row(), row_index=3)
+    assert candidate is not None
+    assert candidate.test_case_hashes is not None
+    problem, quality_gate_required = canonicalize_refresh_candidate(candidate, seed=42)
+    assert quality_gate_required is False
+    assert len(problem.visible_tests) + len(problem.train_hidden_tests) + len(problem.eval_hidden_tests) == 8
+
+    with pytest.raises(ValueError, match="inconsistent prevalidated test hashes"):
+        canonicalize_refresh_candidate(replace(candidate, test_fingerprint="0" * 64), seed=42)
 
 
 def test_license_validation_is_case_and_punctuation_insensitive(tmp_path: Path) -> None:

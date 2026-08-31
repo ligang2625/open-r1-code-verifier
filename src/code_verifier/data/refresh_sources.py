@@ -12,7 +12,7 @@ from typing import Literal, cast
 from code_verifier.data.deduplicate import canonical_json, stable_json_hash, unique_test_case_hashes
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
 from code_verifier.data.schema import CodeProblem, ProblemMetadata, TestCase, validate_problem
-from code_verifier.data.split_tests import split_refresh_test_cases
+from code_verifier.data.split_tests import _split_refresh_test_cases_prevalidated, split_refresh_test_cases
 
 Difficulty = Literal["easy", "medium", "hard", "unknown"]
 ReferenceClass = Literal["sft", "validation", "project_test", "external_eval"]
@@ -66,6 +66,7 @@ class RefreshCandidate:
     difficulty: Difficulty
     category: tuple[str, ...]
     raw_record_sha256: str
+    test_case_hashes: tuple[str, ...] | None = None
     test_fingerprint: str | None = None
 
 
@@ -302,6 +303,7 @@ def _candidate_from_row(
         difficulty="unknown",
         category=("stdio",),
         raw_record_sha256=resolved_raw_hash,
+        test_case_hashes=test_hashes,
         test_fingerprint=test_fingerprint,
     )
 
@@ -433,11 +435,22 @@ _REFRESH_INTERFACE_NOTE = (
 
 def canonicalize_refresh_candidate(candidate: RefreshCandidate, *, seed: int) -> tuple[CodeProblem, bool]:
     """Return a canonical train problem plus whether its test count needs a later quality gate."""
-    visible, train_hidden, eval_hidden = split_refresh_test_cases(
-        candidate.tests,
-        problem_id=candidate.candidate_id,
-        seed=seed,
-    )
+    if candidate.test_case_hashes is None:
+        visible, train_hidden, eval_hidden = split_refresh_test_cases(
+            candidate.tests,
+            problem_id=candidate.candidate_id,
+            seed=seed,
+        )
+    else:
+        expected_fingerprint = stable_json_hash(sorted(candidate.test_case_hashes))
+        if candidate.test_fingerprint != expected_fingerprint:
+            raise ValueError(f"refresh candidate {candidate.candidate_id} has inconsistent prevalidated test hashes")
+        visible, train_hidden, eval_hidden = _split_refresh_test_cases_prevalidated(
+            candidate.tests,
+            problem_id=candidate.candidate_id,
+            seed=seed,
+            test_case_hashes=candidate.test_case_hashes,
+        )
     problem = CodeProblem(
         problem_id=candidate.candidate_id,
         source=candidate.source_name,

@@ -66,6 +66,22 @@ def split_refresh_test_cases(
 ) -> tuple[tuple[TestCase, ...], tuple[TestCase, ...], tuple[TestCase, ...]]:
     """Split one WP9-a candidate into deterministic non-empty visible/hidden layers."""
     ensure_unique_test_cases(tests, context=f"refresh problem {problem_id}")
+    return _split_refresh_test_cases_prevalidated(tests, problem_id=problem_id, seed=seed)
+
+
+def _split_refresh_test_cases_prevalidated(
+    tests: Sequence[TestCase],
+    *,
+    problem_id: str,
+    seed: int,
+    test_case_hashes: Sequence[str] | None = None,
+) -> tuple[tuple[TestCase, ...], tuple[TestCase, ...], tuple[TestCase, ...]]:
+    """Split refresh tests after loader-owned normalized uniqueness validation."""
+    if test_case_hashes is not None:
+        if len(test_case_hashes) != len(tests):
+            raise ValueError(f"refresh problem {problem_id} prevalidated test hash count mismatch")
+        if len(set(test_case_hashes)) != len(test_case_hashes):
+            raise ValueError(f"refresh problem {problem_id} prevalidated test hashes are not unique")
     if len(tests) < 4:
         raise ValueError(f"refresh problem {problem_id} requires at least 4 unique tests, got {len(tests)}")
 
