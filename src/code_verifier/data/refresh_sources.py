@@ -169,8 +169,7 @@ def _iter_parquet_rows(snapshot: Path, config_name: str, split: str) -> Iterable
             column_names = parquet_file.schema_arrow.names
             if set(column_names) != {"problem", "solutions", "tests"}:
                 raise RefreshSourceError(
-                    f"DeepCoder schema drift in {path.name}: expected problem/solutions/tests, "
-                    f"got {column_names}"
+                    f"DeepCoder schema drift in {path.name}: expected problem/solutions/tests, got {column_names}"
                 )
             for batch in parquet_file.iter_batches(
                 batch_size=128,

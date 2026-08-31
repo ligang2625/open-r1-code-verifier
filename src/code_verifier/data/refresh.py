@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import math
@@ -1179,6 +1180,27 @@ def prepare_refresh_data(
             "quality_gate_required_count": quality_count,
         }
         _write_json(temporary / "refresh_manifest.json", root_manifest)
+
+        # Strict readback reloads the multi-gigabyte canonical/training artifacts. Release
+        # construction-only objects first so the validation pass does not duplicate the
+        # full candidate/test payload in memory on the control-plane machine.
+        del all_candidates
+        del candidate_by_id
+        del decisions
+        del retained_candidates
+        del sft_problems
+        del problems
+        del selection
+        del selected_external
+        del reference_snapshot
+        del reference_sets
+        del sft_references
+        del validation_references
+        del project_test_references
+        del external_eval_references
+        del formal_problems
+        gc.collect()
+
         check_refresh_data(temporary, reference_dataset_dir=reference_dataset_dir)
         os.replace(temporary, output_dir)
         return _summary_from_manifest(output_dir, root_manifest)
