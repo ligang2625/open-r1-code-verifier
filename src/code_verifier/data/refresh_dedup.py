@@ -134,10 +134,7 @@ def reference_fingerprint(reference: OverlapReference, *, policy: RefreshDedupPo
 
 
 def _exact_signal(left: RefreshFingerprint, right: RefreshFingerprint) -> str | None:
-    if (
-        left.normalized_statement_hash == right.normalized_statement_hash
-        and left.contract_hash == right.contract_hash
-    ):
+    if left.normalized_statement_hash == right.normalized_statement_hash and left.contract_hash == right.contract_hash:
         return "statement_contract"
     for name in ("source_url_hash", "reference_solution_hash", "test_fingerprint"):
         left_value = getattr(left, name)
@@ -470,8 +467,10 @@ def classify_refresh_candidates(
         if representative != candidate.candidate_id:
             representative_fingerprint = fingerprint_by_id[representative]
             exact_signal = _exact_signal(query, representative_fingerprint)
-            similarity = 1.0 if exact_signal is not None else _jaccard(
-                query.token_ngrams, representative_fingerprint.token_ngrams
+            similarity = (
+                1.0
+                if exact_signal is not None
+                else _jaccard(query.token_ngrams, representative_fingerprint.token_ngrams)
             )
             decisions.append(
                 RefreshDedupDecision(

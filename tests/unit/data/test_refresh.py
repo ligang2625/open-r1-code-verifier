@@ -198,14 +198,14 @@ def test_refresh_config_loads_exact_tracked_shape_and_rejects_unknown_keys(tmp_p
                 "sources:",
                 "  - source_name: source-a",
                 "    dataset_id: fixture/deepcoder",
-                f"    revision: \"{'1' * 40}\"",
+                f'    revision: "{"1" * 40}"',
                 "    config_name: primeintellect",
                 "    split: train",
                 "    declared_license: MIT",
                 "    adapter: deepcoder",
                 "external_eval:",
                 "  dataset_id: fixture/humanevalplus",
-                f"  revision: \"{'2' * 40}\"",
+                f'  revision: "{"2" * 40}"',
                 "selection:",
                 "  target_size: 10000",
                 "  sft_overlap_fraction: 0.075",
@@ -228,9 +228,9 @@ def test_refresh_config_loads_exact_tracked_shape_and_rejects_unknown_keys(tmp_p
 
 
 def test_deterministic_stratified_select_is_permutation_invariant() -> None:
-    candidates = [
-        _candidate(f"a-{index}", source="source-a") for index in range(6)
-    ] + [_candidate(f"b-{index}", source="source-b") for index in range(4)]
+    candidates = [_candidate(f"a-{index}", source="source-a") for index in range(6)] + [
+        _candidate(f"b-{index}", source="source-b") for index in range(4)
+    ]
     first = deterministic_stratified_select(candidates, count=5, seed=42, namespace="fixture")
     second = deterministic_stratified_select(list(reversed(candidates)), count=5, seed=42, namespace="fixture")
     first_ids = [_selection_id(item) for item in first]

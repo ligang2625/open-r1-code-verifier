@@ -217,9 +217,7 @@ def _validate_selection_config(config: RefreshSelectionConfig) -> None:
         raise ValueError("sft_overlap_hard_max must be in [0, 1]")
     if config.sft_overlap_fraction > config.sft_overlap_hard_max:
         raise ValueError("sft_overlap_fraction must not exceed sft_overlap_hard_max")
-    validate_refresh_dedup_policy(
-        RefreshDedupPolicy(config.token_ngram_size, config.near_jaccard_threshold)
-    )
+    validate_refresh_dedup_policy(RefreshDedupPolicy(config.token_ngram_size, config.near_jaccard_threshold))
 
 
 def _selection_identity(value: object) -> tuple[str, str, str]:
@@ -392,9 +390,7 @@ def select_refresh_pool(
         raise RefreshDataError("selected pool contains duplicate problem IDs")
     problems.sort(
         key=lambda problem: (
-            stable_json_hash(
-                {"namespace": "wp9a-problem-order-v1", "seed": seed, "problem_id": problem.problem_id}
-            ),
+            stable_json_hash({"namespace": "wp9a-problem-order-v1", "seed": seed, "problem_id": problem.problem_id}),
             problem.problem_id,
         )
     )
@@ -703,8 +699,7 @@ def _build_reference_snapshot(
         for name, references in reference_sets.items()
     }
     split_counts = {
-        split: sum(problem.split == split for problem in formal_problems)
-        for split in ("train", "validation", "test")
+        split: sum(problem.split == split for problem in formal_problems) for split in ("train", "validation", "test")
     }
     snapshot_value = {
         "schema_version": REFERENCE_SNAPSHOT_SCHEMA_VERSION,
@@ -984,9 +979,7 @@ def prepare_refresh_data(
         seed=seed,
     )
     selected_external_ids = {
-        cast(str, record["problem_id"])
-        for record in selection
-        if record["overlap_origin"] == "external_new"
+        cast(str, record["problem_id"]) for record in selection if record["overlap_origin"] == "external_new"
     }
     selected_external = {
         candidate.candidate_id: candidate
@@ -1107,9 +1100,7 @@ def prepare_refresh_data(
             "source_projection_fingerprints": {
                 snapshot.source_name: snapshot.projection_fingerprint_sha256 for snapshot in source_snapshots
             },
-            "formal_reference_canonical_sha256": _sha256(
-                reference_dataset_dir / "canonical" / "problems.jsonl"
-            ),
+            "formal_reference_canonical_sha256": _sha256(reference_dataset_dir / "canonical" / "problems.jsonl"),
             "external_eval": {
                 "dataset_id": config.external_eval_dataset_id,
                 "revision": config.external_eval_revision,
@@ -1131,9 +1122,7 @@ def prepare_refresh_data(
             "order_namespace": "wp9a-problem-order-v1",
         }
         root_manifest["artifacts"] = artifacts
-        root_manifest["selected_ids_order_sha256"] = stable_json_hash(
-            [problem.problem_id for problem in problems]
-        )
+        root_manifest["selected_ids_order_sha256"] = stable_json_hash([problem.problem_id for problem in problems])
         root_manifest["counts"] = {
             "total_candidates_scanned": sum(snapshot.scanned_rows for snapshot in source_snapshots),
             "external_candidates_retained": len(retained_candidates),
@@ -1151,4 +1140,3 @@ def prepare_refresh_data(
         if isinstance(error, RefreshDataError):
             raise
         raise RefreshDataError(f"refresh data preparation failed: {error}") from error
-
