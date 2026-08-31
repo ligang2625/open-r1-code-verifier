@@ -165,16 +165,21 @@ def _iter_parquet_rows(snapshot: Path, config_name: str, split: str) -> Iterable
         import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
         for path in files:
-            table = pq.read_table(path)
-            if set(table.column_names) != {"problem", "solutions", "tests"}:
+            parquet_file = pq.ParquetFile(path)
+            column_names = parquet_file.schema_arrow.names
+            if set(column_names) != {"problem", "solutions", "tests"}:
                 raise RefreshSourceError(
                     f"DeepCoder schema drift in {path.name}: expected problem/solutions/tests, "
-                    f"got {table.column_names}"
+                    f"got {column_names}"
                 )
-            for row in table.to_pylist():
-                if not isinstance(row, Mapping):
-                    raise RefreshSourceError(f"DeepCoder row in {path.name} is not a mapping")
-                yield cast(Mapping[str, object], row)
+            for batch in parquet_file.iter_batches(
+                batch_size=128,
+                columns=["problem", "solutions", "tests"],
+            ):
+                for row in batch.to_pylist():
+                    if not isinstance(row, Mapping):
+                        raise RefreshSourceError(f"DeepCoder row in {path.name} is not a mapping")
+                    yield cast(Mapping[str, object], row)
     except RefreshSourceError:
         raise
     except Exception as error:
