@@ -312,3 +312,74 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## E6 repair summary
+
+R6 repair was executed in the same `WP9-a` worktree with `backend=local`,
+`source_mode=single`, and `effective_execution_mode=single`, sourced from review
+round 6 / commit `78b61380edcfb2e10cf701e6015c92234ce4b4e0`. The repair is limited
+to `R6-M1`: a production-shadow end-to-end strict-readback regression was added
+for rehashed non-canonical dedup decision order. The code/test commit is
+`fd40e526f6ec4e0d511e24f5b34762ad648b7404`.
+
+### Issue disposition
+
+- `R6-M1`: the integration regression materializes a valid fixture artifact,
+  swaps its first two valid `manifest/dedup_decisions.jsonl` rows, updates only
+  that artifact's root SHA256 entry, calls public `check_refresh_data()`, and
+  requires rejection with the canonical `candidate_id` order error. The prior
+  parser unit regression remains covered.
+
+### Repair verification
+
+- Execution preflight passed at the router-provided repair baseline: `HEAD`
+  matched review commit `78b61380edcfb2e10cf701e6015c92234ce4b4e0`; the sealed
+  plan remained at `72a91b652a38fe4e7e58a396c76bfd77fb46a66b`; the stage branch
+  was `feat/wp9-a`; `git ls-files .ai-bridge` was empty; and the stage venv
+  resolved `code_verifier` and `open_r1`.
+- Formal canonical preflight passed: `3,200` canonical rows with split counts
+  `2,500/300/400`, canonical SHA256
+  `d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6`.
+- Offline pinned-source probes passed through the production source loaders:
+  PrimeIntellect `16,252/11,323` with projection
+  `6241f5c56810008cf12cb94b47d9ec8fd49f5048fa2900d77b3ce87531f2480c`, TACO
+  `7,436/2,642` with projection
+  `d5b1242810ec37f9a524a7e2c7b3731595e269544b7add719cccfea51e2fe6de`, and
+  HumanEvalPlus `164/164` with projection
+  `d538bb58cbf89c74001c7e60b21a38552af6666da695e27182d66c97297b0314`.
+- The literal `uv run` import probe was blocked by the environment's read-only
+  default uv cache and unavailable offline package metadata; the equivalent
+  stage interpreter import probe passed and no dependency changed. Temporary
+  control-plane storage was writable with ample free space.
+- Affected targeted verification passed: existing refresh unit parser regression
+  plus the new integration regression (`20 passed`); the full sealed-plan WP9-a
+  focused suite passed (`187 passed`).
+- `make lint` passed: Ruff check, Ruff format check, and strict mypy over 121
+  source/test files.
+- Sandboxed `make test` encountered 28 unrelated existing SFT/GRPO
+  GPU-environment guard failures because that sandbox exposes no NVML/GPU. The
+  same command with host GPU access passed: `1,110 passed, 3 skipped, 0 failed`;
+  the three skips are the existing opt-in real-Piston tests. WP9-a tests passed
+  in both runs.
+- Only `tests/integration/test_wp9a_refresh_data_pipeline.py` changed in the
+  repair code/test commit. The plan, review, specifications, proceedings,
+  `third_party/open-r1`, and `.ai-bridge` tracked state were not modified. No
+  push was performed.
+
+## Structured E6 execution record
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-a
+  execution_id: E6
+  task_kind: repair
+  source_plan_commit: 72a91b652a38fe4e7e58a396c76bfd77fb46a66b
+  source_review_round: 6
+  source_review_commit: 78b61380edcfb2e10cf701e6015c92234ce4b4e0
+  repair_issue_ids: [R6-M1]
+  result_code_commit: fd40e526f6ec4e0d511e24f5b34762ad648b7404
+  execution_backend: local_codex
+  effective_execution_mode: single
+  status: completed
+```
