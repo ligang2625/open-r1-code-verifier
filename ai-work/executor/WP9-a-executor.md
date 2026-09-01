@@ -180,3 +180,56 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## E3 repair summary
+
+R3 repair ran in the same `WP9-a` worktree with `backend=local`, `source_mode=single`, and
+`effective_execution_mode=single`, sourced from review round 3 / commit
+`d87ae07ec3750274a2f37b9983a60b6a5e327f17`. The repair code commit is
+`6bfd1619bf7a578b26f2195ad58ab69ef1e111e8`.
+
+### Issue disposition
+
+- `R2-M1`: production strict readback now binds the HumanEvalPlus exclusion set to the frozen 164-record
+  fingerprint-inventory SHA256 and pinned projection SHA256. Replacing the stored external-eval fingerprints while
+  preserving local count/root hashes fails closed.
+- `R3-M1`: `wp9a-refresh-v1` config accepts exactly the two approved DeepCoder projections. Strict readback validates
+  source snapshot shape, unique identities, row counts and SHA formats, cross-binds snapshots to both root source
+  structures, and verifies the pinned scan/accept/projection identities independently.
+- `R3-M2`: production readback independently requires 10,000 / 0.075 / 0.15 / 750 / 9,250. Small engineering
+  fixtures use the explicit `wp9a-refresh-test-v1` protocol and require `allow_test_protocol=True`; the production
+  `check-refresh-data` CLI cannot silently certify them.
+
+### Repair verification
+
+- Execution preflight passed at the exact R3 review baseline: clean `feat/wp9-a`, no tracked `.ai-bridge`, sealed plan
+  unchanged, required imports available, formal canonical split counts `2500/300/400`, pinned source schemas probed,
+  and writable control-plane temporary storage confirmed.
+- Sealed-plan focused unit/integration suite: `182 passed`.
+- Existing repaired real artifact `wp9a-refresh-seed42-r2e2-final1` passed the new production strict readback:
+  selected `10,000`, external retained `9,565`, SFT reuse `750`, quality-gate-required `1,086`.
+- `make lint`: PASS; Ruff check/format and strict mypy passed for `121` files.
+- Sandboxed `make test` could not access NVML and failed 28 existing SFT/GRPO GPU-environment fixture tests with
+  `gpu_count=0`; no WP9-a test failed. The same command rerun on the authorized GTX 1660 Ti host environment passed:
+  `1105 passed, 3 skipped`; the skips are the existing real-Piston opt-in cases.
+- Only `src/code_verifier/data/refresh.py`, `tests/unit/data/test_refresh.py`, and
+  `tests/integration/test_wp9a_refresh_data_pipeline.py` changed. Plan/review/spec/proceedings/`third_party/open-r1`
+  remained unmodified, and `.ai-bridge/**` remained untracked.
+
+## Structured E3 execution record
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-a
+  execution_id: E3
+  task_kind: repair
+  source_plan_commit: 72a91b652a38fe4e7e58a396c76bfd77fb46a66b
+  source_review_round: 3
+  source_review_commit: d87ae07ec3750274a2f37b9983a60b6a5e327f17
+  repair_issue_ids: [R2-M1, R3-M1, R3-M2]
+  result_code_commit: 6bfd1619bf7a578b26f2195ad58ab69ef1e111e8
+  execution_backend: local_codex
+  effective_execution_mode: single
+  status: completed
+```
