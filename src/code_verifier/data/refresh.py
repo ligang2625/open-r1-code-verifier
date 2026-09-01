@@ -752,6 +752,7 @@ def _parse_dedup_decisions(
     source_counts: Counter[str] = Counter()
     source_record_ids: set[tuple[str, str]] = set()
     decisions: dict[str, Mapping[str, object]] = {}
+    previous_candidate_id: str | None = None
     for record in records:
         if set(record) != _DEDUP_DECISION_FIELDS:
             raise RefreshDataError("dedup decision record schema is invalid")
@@ -765,6 +766,9 @@ def _parse_dedup_decisions(
             raise RefreshDataError("dedup decision references an unknown source")
         if candidate_id in decisions:
             raise RefreshDataError("dedup decisions contain a duplicate candidate_id")
+        if previous_candidate_id is not None and candidate_id <= previous_candidate_id:
+            raise RefreshDataError("dedup decisions are not in canonical candidate_id order")
+        previous_candidate_id = candidate_id
         source_record_identity = (source_name, source_record_id)
         if source_record_identity in source_record_ids:
             raise RefreshDataError("dedup decisions contain a duplicate source record identity")

@@ -438,6 +438,20 @@ def test_dedup_decision_parser_enforces_exact_schema_and_frozen_provenance_inven
     parsed = refresh_module._parse_dedup_decisions([decision], source_snapshots=[snapshot], production=False)
     assert parsed == {"candidate-a": decision}
 
+    later_decision = dict(decision)
+    later_decision["candidate_id"] = "candidate-b"
+    later_decision["source_record_id"] = "source-a/train/2"
+    later_decision["raw_record_sha256"] = "e" * 64
+    two_row_snapshot: dict[str, object] = {"source_name": "source-a", "accepted_rows": 2}
+    ordered = refresh_module._parse_dedup_decisions(
+        [decision, later_decision], source_snapshots=[two_row_snapshot], production=False
+    )
+    assert list(ordered) == ["candidate-a", "candidate-b"]
+    with pytest.raises(RefreshDataError, match="canonical candidate_id order"):
+        refresh_module._parse_dedup_decisions(
+            [later_decision, decision], source_snapshots=[two_row_snapshot], production=False
+        )
+
     unexpected = dict(decision)
     unexpected["unexpected"] = True
     with pytest.raises(RefreshDataError, match="schema"):
