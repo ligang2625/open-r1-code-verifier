@@ -371,6 +371,104 @@ def test_frozen_inventory_anchor_rejects_same_count_fingerprint_replacement() ->
         )
 
 
+def test_selection_parser_rejects_schema_and_provenance_drift() -> None:
+    fingerprint = RefreshFingerprint(
+        record_id="candidate-a",
+        record_class="candidate",
+        normalized_statement_hash="a" * 64,
+        contract_hash="b" * 64,
+        source_url_hash=None,
+        reference_solution_hash=None,
+        test_fingerprint="c" * 64,
+        token_ngrams=("one two three four five",),
+    )
+    external: dict[str, object] = {
+        "schema_version": refresh_module.SELECTION_SCHEMA_VERSION,
+        "problem_id": "candidate-a",
+        "source": "source-a",
+        "difficulty": "easy",
+        "overlap_origin": "external_new",
+        "quality_gate_required": False,
+        "source_record_id": "source-a/train/1",
+        "raw_record_sha256": "d" * 64,
+        "fingerprint": refresh_module._fingerprint_to_mapping(fingerprint),
+    }
+    assert refresh_module._parse_selection_records([external]) == [external]
+
+    unexpected = dict(external)
+    unexpected["unexpected"] = True
+    with pytest.raises(RefreshDataError, match="schema/version"):
+        refresh_module._parse_selection_records([unexpected])
+
+    missing = dict(external)
+    missing.pop("difficulty")
+    with pytest.raises(RefreshDataError, match="schema/version"):
+        refresh_module._parse_selection_records([missing])
+
+    bad_raw_hash = dict(external)
+    bad_raw_hash["raw_record_sha256"] = "not-a-sha"
+    with pytest.raises(RefreshDataError, match="raw_record_sha256"):
+        refresh_module._parse_selection_records([bad_raw_hash])
+
+    sft_reuse = dict(external)
+    sft_reuse["overlap_origin"] = "sft_reuse"
+    sft_reuse["source_record_id"] = None
+    sft_reuse["raw_record_sha256"] = None
+    assert refresh_module._parse_selection_records([sft_reuse]) == [sft_reuse]
+    sft_reuse["source_record_id"] = "forged"
+    with pytest.raises(RefreshDataError, match="must be null"):
+        refresh_module._parse_selection_records([sft_reuse])
+
+
+def test_dedup_decision_parser_enforces_exact_schema_and_frozen_provenance_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot: dict[str, object] = {"source_name": "source-a", "accepted_rows": 1}
+    decision: dict[str, object] = {
+        "candidate_id": "candidate-a",
+        "source_name": "source-a",
+        "source_record_id": "source-a/train/1",
+        "raw_record_sha256": "d" * 64,
+        "retained": True,
+        "rejection_reason": None,
+        "overlap_class": "none",
+        "matched_record_id": None,
+        "similarity": None,
+    }
+    parsed = refresh_module._parse_dedup_decisions([decision], source_snapshots=[snapshot], production=False)
+    assert parsed == {"candidate-a": decision}
+
+    unexpected = dict(decision)
+    unexpected["unexpected"] = True
+    with pytest.raises(RefreshDataError, match="schema"):
+        refresh_module._parse_dedup_decisions([unexpected], source_snapshots=[snapshot], production=False)
+
+    invalid_type = dict(decision)
+    invalid_type["retained"] = 1
+    with pytest.raises(RefreshDataError, match="retained must be a boolean"):
+        refresh_module._parse_dedup_decisions([invalid_type], source_snapshots=[snapshot], production=False)
+
+    frozen_inventory = [
+        {
+            "candidate_id": decision["candidate_id"],
+            "source_record_id": decision["source_record_id"],
+            "raw_record_sha256": decision["raw_record_sha256"],
+        }
+    ]
+    monkeypatch.setitem(
+        refresh_module._WP9A_PRODUCTION_ACCEPTED_CANDIDATE_INVENTORY_SHA256,
+        "source-a",
+        stable_json_hash(frozen_inventory),
+    )
+    refresh_module._parse_dedup_decisions([decision], source_snapshots=[snapshot], production=True)
+
+    forged = dict(decision)
+    forged["source_record_id"] = "forged-source-record"
+    forged["raw_record_sha256"] = "e" * 64
+    with pytest.raises(RefreshDataError, match="accepted-candidate provenance does not match frozen inventory"):
+        refresh_module._parse_dedup_decisions([forged], source_snapshots=[snapshot], production=True)
+
+
 def test_selected_test_fingerprint_still_rejects_cross_layer_duplicates() -> None:
     problem = _problem("duplicate-layer", "train")
     duplicated = replace(

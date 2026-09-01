@@ -503,6 +503,94 @@ def test_wp9a_strict_readback_rebuilds_formal_reference_fingerprints(
         check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
+def test_wp9a_strict_readback_rejects_forged_selected_raw_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "selected-provenance-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+
+    selection_path = root / "manifest" / "selection.jsonl"
+    selection = _read_jsonl(selection_path)
+    selected = next(record for record in selection if record["overlap_origin"] == "external_new")
+    selected["source_record_id"] = "forged-source-record"
+    selected["raw_record_sha256"] = "f" * 64
+    _write_jsonl_records(selection_path, selection)
+    _rewrite_root_artifact_hash(root, "manifest/selection.jsonl")
+
+    with pytest.raises(
+        RefreshDataError,
+        match="selected external provenance does not match its retained dedup decision",
+    ):
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
+
+
+def test_wp9a_strict_readback_rejects_selected_candidate_marked_rejected_in_dedup_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "selected-rejected-decision-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+
+    selection = _read_jsonl(root / "manifest" / "selection.jsonl")
+    selected_id = cast(
+        str,
+        next(record for record in selection if record["overlap_origin"] == "external_new")["problem_id"],
+    )
+
+    decisions_path = root / "manifest" / "dedup_decisions.jsonl"
+    decisions = _read_jsonl(decisions_path)
+    decision = next(record for record in decisions if record["candidate_id"] == selected_id)
+    assert decision["retained"] is True
+    decision["retained"] = False
+    decision["rejection_reason"] = "forged_rejection"
+    decision["overlap_class"] = "evaluation_overlap"
+    decision["matched_record_id"] = "forged-reference"
+    decision["similarity"] = 1.0
+    _write_jsonl_records(decisions_path, decisions)
+    _rewrite_root_artifact_hash(root, "manifest/dedup_decisions.jsonl")
+
+    dedup_summary_path = root / "reports" / "dedup_summary.json"
+    dedup_summary = cast(dict[str, object], json.loads(dedup_summary_path.read_text(encoding="utf-8")))
+    dedup_summary["dedup_retained_candidates"] = cast(int, dedup_summary["dedup_retained_candidates"]) - 1
+    rejection_counts = cast(dict[str, object], dedup_summary["dedup_rejection_counts"])
+    rejection_counts["forged_rejection"] = 1
+    dedup_summary_path.write_text(
+        json.dumps(dedup_summary, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    _rewrite_root_artifact_hash(root, "reports/dedup_summary.json")
+
+    manifest_path = root / "refresh_manifest.json"
+    manifest = cast(dict[str, object], json.loads(manifest_path.read_text(encoding="utf-8")))
+    counts = cast(dict[str, object], manifest["counts"])
+    counts["external_candidates_retained"] = cast(int, counts["external_candidates_retained"]) - 1
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RefreshDataError,
+        match="selected external provenance does not match its retained dedup decision",
+    ):
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
+
+
 @pytest.mark.parametrize("hard_max", [0.20, 0.50])
 def test_wp9a_strict_readback_rejects_manifest_hard_max_above_fifteen_percent(
     tmp_path: Path,
@@ -560,6 +648,8 @@ def test_wp9a_strict_readback_rejects_actual_selected_overlap_above_fifteen_perc
     changed = next(record for record in selection if record["overlap_origin"] == "external_new")
     changed_problem = canonical[cast(str, changed["problem_id"])]
     changed["overlap_origin"] = "sft_reuse"
+    changed["source_record_id"] = None
+    changed["raw_record_sha256"] = None
     changed["fingerprint"] = refresh_module._fingerprint_to_mapping(
         refresh_module._selected_sft_fingerprint(
             changed_problem,

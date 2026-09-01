@@ -66,6 +66,29 @@ REFRESH_TEST_SCHEMA_VERSION = "wp9a-refresh-test-v1"
 REFERENCE_SNAPSHOT_SCHEMA_VERSION = "wp9a-reference-snapshots-v1"
 SELECTION_SCHEMA_VERSION = "wp9a-selection-v1"
 
+_SELECTION_FIELDS = {
+    "schema_version",
+    "problem_id",
+    "source",
+    "difficulty",
+    "overlap_origin",
+    "quality_gate_required",
+    "source_record_id",
+    "raw_record_sha256",
+    "fingerprint",
+}
+_DEDUP_DECISION_FIELDS = {
+    "candidate_id",
+    "source_name",
+    "source_record_id",
+    "raw_record_sha256",
+    "retained",
+    "rejection_reason",
+    "overlap_class",
+    "matched_record_id",
+    "similarity",
+}
+
 _WP9A_PRODUCTION_TARGET_SIZE = 10_000
 _WP9A_PRODUCTION_SFT_OVERLAP_FRACTION = 0.075
 _WP9A_SFT_OVERLAP_HARD_MAX = 0.15
@@ -100,6 +123,10 @@ _WP9A_PRODUCTION_SOURCES = (
 _WP9A_PRODUCTION_SOURCE_SNAPSHOTS = {
     "deepcoder-primeintellect": (16_252, 11_323, "6241f5c56810008cf12cb94b47d9ec8fd49f5048fa2900d77b3ce87531f2480c"),
     "deepcoder-taco": (7_436, 2_642, "d5b1242810ec37f9a524a7e2c7b3731595e269544b7add719cccfea51e2fe6de"),
+}
+_WP9A_PRODUCTION_ACCEPTED_CANDIDATE_INVENTORY_SHA256 = {
+    "deepcoder-primeintellect": "37c62e2a5446517974a060242eedc93af7a44c505666346f824b12085ed3bcd0",
+    "deepcoder-taco": "6baac4a1e44340c13bf25c750836821d95b2b1c0c519588b8e977b75ce310701",
 }
 
 _REQUIRED_ARTIFACTS = (
@@ -682,6 +709,120 @@ def _decision_to_mapping(
     }
 
 
+def _parse_selection_records(records: Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
+    parsed: list[Mapping[str, object]] = []
+    for record in records:
+        if set(record) != _SELECTION_FIELDS or record.get("schema_version") != SELECTION_SCHEMA_VERSION:
+            raise RefreshDataError("selection record schema/version is invalid")
+        for field in ("problem_id", "source", "difficulty"):
+            if not isinstance(record[field], str) or not cast(str, record[field]).strip():
+                raise RefreshDataError(f"selection record {field} must be a non-empty string")
+        if record["difficulty"] not in {"easy", "medium", "hard", "unknown"}:
+            raise RefreshDataError("selection record difficulty is invalid")
+        if not isinstance(record["quality_gate_required"], bool):
+            raise RefreshDataError("selection record quality_gate_required must be a boolean")
+        _fingerprint_from_mapping(record["fingerprint"])
+
+        origin = record["overlap_origin"]
+        source_record_id = record["source_record_id"]
+        raw_record_sha256 = record["raw_record_sha256"]
+        if origin == "sft_reuse":
+            if source_record_id is not None or raw_record_sha256 is not None:
+                raise RefreshDataError("SFT-reuse selection provenance fields must be null")
+        elif origin == "external_new":
+            if not isinstance(source_record_id, str) or not source_record_id.strip():
+                raise RefreshDataError("external selection source_record_id must be a non-empty string")
+            if not _is_sha256(raw_record_sha256):
+                raise RefreshDataError("external selection raw_record_sha256 is invalid")
+        else:
+            raise RefreshDataError("selection overlap_origin must be sft_reuse or external_new")
+        parsed.append(record)
+    return parsed
+
+
+def _parse_dedup_decisions(
+    records: Sequence[Mapping[str, object]],
+    *,
+    source_snapshots: Sequence[Mapping[str, object]],
+    production: bool,
+) -> dict[str, Mapping[str, object]]:
+    expected_source_counts = {
+        cast(str, snapshot["source_name"]): cast(int, snapshot["accepted_rows"]) for snapshot in source_snapshots
+    }
+    source_counts: Counter[str] = Counter()
+    source_record_ids: set[tuple[str, str]] = set()
+    decisions: dict[str, Mapping[str, object]] = {}
+    for record in records:
+        if set(record) != _DEDUP_DECISION_FIELDS:
+            raise RefreshDataError("dedup decision record schema is invalid")
+        for field in ("candidate_id", "source_name", "source_record_id"):
+            if not isinstance(record[field], str) or not cast(str, record[field]).strip():
+                raise RefreshDataError(f"dedup decision {field} must be a non-empty string")
+        candidate_id = cast(str, record["candidate_id"])
+        source_name = cast(str, record["source_name"])
+        source_record_id = cast(str, record["source_record_id"])
+        if source_name not in expected_source_counts:
+            raise RefreshDataError("dedup decision references an unknown source")
+        if candidate_id in decisions:
+            raise RefreshDataError("dedup decisions contain a duplicate candidate_id")
+        source_record_identity = (source_name, source_record_id)
+        if source_record_identity in source_record_ids:
+            raise RefreshDataError("dedup decisions contain a duplicate source record identity")
+        if not _is_sha256(record["raw_record_sha256"]):
+            raise RefreshDataError("dedup decision raw_record_sha256 is invalid")
+        if not isinstance(record["retained"], bool):
+            raise RefreshDataError("dedup decision retained must be a boolean")
+        similarity = record["similarity"]
+        if similarity is not None and (
+            isinstance(similarity, bool)
+            or not isinstance(similarity, int | float)
+            or not math.isfinite(float(similarity))
+            or not 0.0 <= float(similarity) <= 1.0
+        ):
+            raise RefreshDataError("dedup decision similarity is invalid")
+        if record["retained"]:
+            if (
+                record["rejection_reason"] is not None
+                or record["overlap_class"] != "none"
+                or record["matched_record_id"] is not None
+                or similarity is not None
+            ):
+                raise RefreshDataError("retained dedup decision has rejection evidence")
+        elif (
+            not isinstance(record["rejection_reason"], str)
+            or not record["rejection_reason"].strip()
+            or not isinstance(record["overlap_class"], str)
+            or not record["overlap_class"].strip()
+            or record["overlap_class"] == "none"
+            or not isinstance(record["matched_record_id"], str)
+            or not record["matched_record_id"].strip()
+            or similarity is None
+        ):
+            raise RefreshDataError("rejected dedup decision is missing rejection evidence")
+        decisions[candidate_id] = record
+        source_record_ids.add(source_record_identity)
+        source_counts[source_name] += 1
+
+    if dict(source_counts) != expected_source_counts:
+        raise RefreshDataError("dedup decisions do not cover every source-accepted candidate exactly once")
+    if production:
+        for source_name in sorted(expected_source_counts):
+            inventory = [
+                {
+                    "candidate_id": record["candidate_id"],
+                    "source_record_id": record["source_record_id"],
+                    "raw_record_sha256": record["raw_record_sha256"],
+                }
+                for record in records
+                if record["source_name"] == source_name
+            ]
+            inventory.sort(key=lambda item: cast(str, item["candidate_id"]))
+            expected_sha256 = _WP9A_PRODUCTION_ACCEPTED_CANDIDATE_INVENTORY_SHA256.get(source_name)
+            if expected_sha256 is None or stable_json_hash(inventory) != expected_sha256:
+                raise RefreshDataError(f"{source_name} accepted-candidate provenance does not match frozen inventory")
+    return decisions
+
+
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     validated = json_value_to_mutable(value, field_path=str(path))
@@ -1043,7 +1184,7 @@ def _check_source_provenance(
     manifest: Mapping[str, object],
     *,
     production: bool,
-) -> None:
+) -> list[Mapping[str, object]]:
     snapshots_value = _load_json(dataset_dir / "manifest" / "source_snapshots.json")
     if not isinstance(snapshots_value, list) or not snapshots_value:
         raise RefreshDataError("source_snapshots.json must contain a non-empty list")
@@ -1134,6 +1275,7 @@ def _check_source_provenance(
             )
         if snapshots_value != expected_snapshots:
             raise RefreshDataError("source snapshots do not match the frozen WP9-a production projections")
+    return snapshots
 
 
 def _check_frozen_fingerprint_inventory(
@@ -1167,7 +1309,32 @@ def check_refresh_data(
     else:
         raise RefreshDataError("refresh manifest schema_version is invalid")
     _check_artifact_hashes(dataset_dir, manifest)
-    _check_source_provenance(dataset_dir, manifest, production=production)
+    source_snapshots = _check_source_provenance(dataset_dir, manifest, production=production)
+    dedup_decision_records = _load_jsonl(dataset_dir / "manifest" / "dedup_decisions.jsonl")
+    dedup_decisions = _parse_dedup_decisions(
+        dedup_decision_records,
+        source_snapshots=source_snapshots,
+        production=production,
+    )
+    retained_candidate_count = sum(record["retained"] is True for record in dedup_decision_records)
+    rejection_counts = Counter(
+        cast(str, record["rejection_reason"]) for record in dedup_decision_records if record["retained"] is False
+    )
+    total_source_rows_scanned = sum(cast(int, snapshot["scanned_rows"]) for snapshot in source_snapshots)
+    _check_exact_json_report(
+        dataset_dir / "reports" / "dedup_summary.json",
+        {
+            "total_source_rows_scanned": total_source_rows_scanned,
+            "adapter_accepted_candidates": len(dedup_decision_records),
+            "dedup_retained_candidates": retained_candidate_count,
+            "source_adapter_rejected_rows": {
+                cast(str, snapshot["source_name"]): cast(int, snapshot["scanned_rows"])
+                - cast(int, snapshot["accepted_rows"])
+                for snapshot in source_snapshots
+            },
+            "dedup_rejection_counts": dict(sorted(rejection_counts.items())),
+        },
+    )
 
     policy_value = manifest.get("dedup_policy")
     if not isinstance(policy_value, Mapping) or set(policy_value) != {
@@ -1356,7 +1523,7 @@ def check_refresh_data(
     if len(ids) != len(set(ids)):
         raise RefreshDataError("refresh canonical contains duplicate problem IDs")
 
-    selection_records = _load_jsonl(dataset_dir / "manifest" / "selection.jsonl")
+    selection_records = _parse_selection_records(_load_jsonl(dataset_dir / "manifest" / "selection.jsonl"))
     if [record.get("problem_id") for record in selection_records] != ids:
         raise RefreshDataError("selection manifest problem IDs/order do not match canonical")
     order_records = _load_jsonl(dataset_dir / "manifest" / "problem_order.jsonl")
@@ -1380,6 +1547,19 @@ def check_refresh_data(
         quality_count += int(quality_required)
         overlap_count += int(record.get("overlap_origin") == "sft_reuse")
         selected_fingerprints.append(_canonical_selection_fingerprint(problem, record, policy=policy))
+        if record["overlap_origin"] == "external_new":
+            decision = dedup_decisions.get(problem.problem_id)
+            if decision is None:
+                raise RefreshDataError("selected external problem has no dedup decision")
+            if (
+                decision["retained"] is not True
+                or decision["rejection_reason"] is not None
+                or decision["overlap_class"] != "none"
+                or decision["source_name"] != record["source"]
+                or decision["source_record_id"] != record["source_record_id"]
+                or decision["raw_record_sha256"] != record["raw_record_sha256"]
+            ):
+                raise RefreshDataError("selected external provenance does not match its retained dedup decision")
     actual_overlap_fraction = overlap_count / len(problems)
     if actual_overlap_fraction > _WP9A_SFT_OVERLAP_HARD_MAX:
         raise RefreshDataError(
@@ -1448,6 +1628,10 @@ def check_refresh_data(
         },
     )
     summary = _summary_from_manifest(dataset_dir, manifest)
+    if summary.total_candidates_scanned != total_source_rows_scanned:
+        raise RefreshDataError("refresh manifest total_candidates_scanned does not match source snapshots")
+    if summary.external_candidates_retained != retained_candidate_count:
+        raise RefreshDataError("refresh manifest external_candidates_retained does not match dedup decisions")
     if summary.selected_problems != len(problems):
         raise RefreshDataError("refresh manifest selected_problems does not match canonical")
     if summary.sft_overlap_count != expected_overlap_count:
