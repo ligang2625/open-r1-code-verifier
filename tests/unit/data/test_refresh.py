@@ -30,6 +30,9 @@ from code_verifier.data.refresh_sources import (
 from code_verifier.data.schema import CodeProblem, ProblemMetadata, problem_to_mapping
 from code_verifier.data.schema import TestCase as CodeTestCase
 
+HUMANEVAL_DATASET_ID = "evalplus/humanevalplus"
+HUMANEVAL_REVISION = "aa0d916268b1c17e84e881e9bd460508dd2fd308"
+
 
 def _metadata(*, difficulty: str = "easy") -> ProblemMetadata:
     return ProblemMetadata(
@@ -87,8 +90,8 @@ def _candidate(candidate_id: str, *, source: str = "source-a", difficulty: str =
 def _selection_config(*, target_size: int = 8) -> RefreshSelectionConfig:
     return RefreshSelectionConfig(
         target_size=target_size,
-        sft_overlap_fraction=0.25,
-        sft_overlap_hard_max=0.25,
+        sft_overlap_fraction=0.125,
+        sft_overlap_hard_max=0.15,
         token_ngram_size=5,
         near_jaccard_threshold=0.90,
     )
@@ -109,8 +112,8 @@ def _source_spec() -> RefreshSourceSpec:
 def _data_config(*, target_size: int = 8) -> RefreshDataConfig:
     return RefreshDataConfig(
         sources=(_source_spec(),),
-        external_eval_dataset_id="fixture/humanevalplus",
-        external_eval_revision="2" * 40,
+        external_eval_dataset_id=HUMANEVAL_DATASET_ID,
+        external_eval_revision=HUMANEVAL_REVISION,
         selection=_selection_config(target_size=target_size),
     )
 
@@ -144,8 +147,8 @@ def _fake_source_snapshot(candidate_count: int) -> RefreshSourceSnapshot:
 def _fake_external_snapshot() -> RefreshSourceSnapshot:
     return RefreshSourceSnapshot(
         source_name="humanevalplus",
-        dataset_id="fixture/humanevalplus",
-        revision="2" * 40,
+        dataset_id=HUMANEVAL_DATASET_ID,
+        revision=HUMANEVAL_REVISION,
         config_name=None,
         split="test",
         declared_license="Apache-2.0",
@@ -204,8 +207,8 @@ def test_refresh_config_loads_exact_tracked_shape_and_rejects_unknown_keys(tmp_p
                 "    declared_license: MIT",
                 "    adapter: deepcoder",
                 "external_eval:",
-                "  dataset_id: fixture/humanevalplus",
-                f'  revision: "{"2" * 40}"',
+                f"  dataset_id: {HUMANEVAL_DATASET_ID}",
+                f'  revision: "{HUMANEVAL_REVISION}"',
                 "selection:",
                 "  target_size: 10000",
                 "  sft_overlap_fraction: 0.075",
@@ -257,7 +260,49 @@ def test_refresh_config_rejects_wp9a_dedup_protocol_variants(
                 "adapter": "deepcoder",
             }
         ],
-        "external_eval": {"dataset_id": "fixture/humanevalplus", "revision": "2" * 40},
+        "external_eval": {"dataset_id": HUMANEVAL_DATASET_ID, "revision": HUMANEVAL_REVISION},
+        "selection": selection,
+    }
+    with pytest.raises(ConfigError, match="freezes"):
+        refresh_data_config_from_mapping(config, config_path=tmp_path / "refresh.yaml")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target_size", 9999),
+        ("sft_overlap_fraction", 0.10),
+        ("sft_overlap_hard_max", 0.20),
+        ("sft_overlap_hard_max", 0.50),
+    ],
+)
+def test_refresh_config_rejects_wp9a_selection_protocol_variants(
+    tmp_path: Path,
+    field: str,
+    value: int | float,
+) -> None:
+    selection: dict[str, object] = {
+        "target_size": 10000,
+        "sft_overlap_fraction": 0.075,
+        "sft_overlap_hard_max": 0.15,
+        "token_ngram_size": 5,
+        "near_jaccard_threshold": 0.90,
+    }
+    selection[field] = value
+    config: dict[str, object] = {
+        "version": "wp9a-refresh-v1",
+        "sources": [
+            {
+                "source_name": "source-a",
+                "dataset_id": "fixture/deepcoder",
+                "revision": "1" * 40,
+                "config_name": "primeintellect",
+                "split": "train",
+                "declared_license": "MIT",
+                "adapter": "deepcoder",
+            }
+        ],
+        "external_eval": {"dataset_id": HUMANEVAL_DATASET_ID, "revision": HUMANEVAL_REVISION},
         "selection": selection,
     }
     with pytest.raises(ConfigError, match="freezes"):
@@ -302,12 +347,12 @@ def test_select_refresh_pool_enforces_explicit_overlap_and_frozen_order() -> Non
     )
     assert [problem.problem_id for problem in first_problems] == [problem.problem_id for problem in second_problems]
     assert first_manifest == second_manifest
-    assert sum(record["overlap_origin"] == "sft_reuse" for record in first_manifest) == 2
-    assert sum(record["overlap_origin"] == "external_new" for record in first_manifest) == 6
+    assert sum(record["overlap_origin"] == "sft_reuse" for record in first_manifest) == 1
+    assert sum(record["overlap_origin"] == "external_new" for record in first_manifest) == 7
 
 
 def test_select_refresh_pool_fails_closed_when_external_population_is_short() -> None:
-    with pytest.raises(RefreshDataError, match="quota requires 6"):
+    with pytest.raises(RefreshDataError, match="quota requires 7"):
         select_refresh_pool(
             sft_problems=[_problem("train-a", "train"), _problem("train-b", "train")],
             new_candidates=[_candidate(f"external-{index}") for index in range(5)],
@@ -342,8 +387,8 @@ def test_prepare_check_is_byte_deterministic_and_views_are_isolated(
         output_dir=second,
     )
     assert first_summary.selected_problems == second_summary.selected_problems == 8
-    assert first_summary.sft_overlap_count == second_summary.sft_overlap_count == 2
-    assert first_summary.sft_overlap_fraction == second_summary.sft_overlap_fraction == 0.25
+    assert first_summary.sft_overlap_count == second_summary.sft_overlap_count == 1
+    assert first_summary.sft_overlap_fraction == second_summary.sft_overlap_fraction == 0.125
     assert _tree_bytes(first) == _tree_bytes(second)
 
     public = (first / "training" / "public_grpo.jsonl").read_bytes()

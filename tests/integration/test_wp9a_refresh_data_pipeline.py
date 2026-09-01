@@ -34,7 +34,8 @@ from code_verifier.data.schema import problem_to_mapping
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "wp9a"
 DEEP_REVISION = "1" * 40
-HUMANEVAL_REVISION = "2" * 40
+HUMANEVAL_DATASET_ID = "evalplus/humanevalplus"
+HUMANEVAL_REVISION = "aa0d916268b1c17e84e881e9bd460508dd2fd308"
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
@@ -81,7 +82,7 @@ def _patch_snapshot_resolution(
         del cache_dir
         if dataset_id == "fixture/deepcoder" and revision == DEEP_REVISION:
             return deepcoder_snapshot
-        if dataset_id == "fixture/humanevalplus" and revision == HUMANEVAL_REVISION:
+        if dataset_id == HUMANEVAL_DATASET_ID and revision == HUMANEVAL_REVISION:
             return humaneval_snapshot
         raise AssertionError(f"unexpected fixture snapshot request {dataset_id}@{revision}")
 
@@ -110,12 +111,12 @@ def _config() -> RefreshDataConfig:
                 adapter="deepcoder",
             ),
         ),
-        external_eval_dataset_id="fixture/humanevalplus",
+        external_eval_dataset_id=HUMANEVAL_DATASET_ID,
         external_eval_revision=HUMANEVAL_REVISION,
         selection=RefreshSelectionConfig(
-            target_size=8,
-            sft_overlap_fraction=0.25,
-            sft_overlap_hard_max=0.25,
+            target_size=7,
+            sft_overlap_fraction=1 / 7,
+            sft_overlap_hard_max=0.15,
             token_ngram_size=5,
             near_jaccard_threshold=0.90,
         ),
@@ -201,12 +202,12 @@ def test_wp9a_fixture_prepare_check_is_deterministic_and_leakage_safe(
 
     assert first_summary.total_candidates_scanned == second_summary.total_candidates_scanned == 12
     assert first_summary.external_candidates_retained == second_summary.external_candidates_retained == 6
-    assert first_summary.selected_problems == second_summary.selected_problems == 8
-    assert first_summary.sft_overlap_count == second_summary.sft_overlap_count == 2
-    assert first_summary.sft_overlap_fraction == second_summary.sft_overlap_fraction == 0.25
-    assert first_summary.quality_gate_required_count == second_summary.quality_gate_required_count == 3
+    assert first_summary.selected_problems == second_summary.selected_problems == 7
+    assert first_summary.sft_overlap_count == second_summary.sft_overlap_count == 1
+    assert first_summary.sft_overlap_fraction == second_summary.sft_overlap_fraction == 1 / 7
+    assert first_summary.quality_gate_required_count == second_summary.quality_gate_required_count == 2
     assert _tree_bytes(first) == _tree_bytes(second)
-    assert check_refresh_data(first, reference_dataset_dir=reference).selected_problems == 8
+    assert check_refresh_data(first, reference_dataset_dir=reference).selected_problems == 7
 
     decisions = _read_jsonl(first / "manifest" / "dedup_decisions.jsonl")
     overlap_counts = Counter(str(record["overlap_class"]) for record in decisions)
@@ -227,8 +228,8 @@ def test_wp9a_fixture_prepare_check_is_deterministic_and_leakage_safe(
     assert any(reason.startswith("exact_sft") for reason in reasons)
 
     selection = _read_jsonl(first / "manifest" / "selection.jsonl")
-    assert Counter(str(record["overlap_origin"]) for record in selection) == {"sft_reuse": 2, "external_new": 6}
-    assert sum(record["quality_gate_required"] is True for record in selection) == 3
+    assert Counter(str(record["overlap_origin"]) for record in selection) == {"sft_reuse": 1, "external_new": 6}
+    assert sum(record["quality_gate_required"] is True for record in selection) == 2
 
     canonical_ids = _jsonl_ids(first / "canonical" / "problems.jsonl")
     public_ids = _jsonl_ids(first / "training" / "public_grpo.jsonl")
@@ -412,6 +413,155 @@ def test_wp9a_strict_readback_recomputes_report_semantics(
     _rewrite_root_artifact_hash(root, "reports/evaluation_overlap.json")
 
     with pytest.raises(RefreshDataError, match="evaluation_overlap.json"):
+        check_refresh_data(root, reference_dataset_dir=reference)
+
+
+def test_wp9a_strict_readback_rebuilds_formal_reference_fingerprints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "formal-reference-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+
+    formal = load_canonical_jsonl(reference / "canonical" / "problems.jsonl")
+    validation = next(problem for problem in formal if problem.split == "validation")
+    selection_path = root / "manifest" / "selection.jsonl"
+    selection = _read_jsonl(selection_path)
+    selected_record = next(record for record in selection if record["overlap_origin"] == "external_new")
+    selected_id = cast(str, selected_record["problem_id"])
+
+    canonical_path = root / "canonical" / "problems.jsonl"
+    canonical_records = _read_jsonl(canonical_path)
+    selected_canonical = next(record for record in canonical_records if record["problem_id"] == selected_id)
+    selected_canonical["prompt"] = f"{validation.prompt}\n\n{refresh_sources_module._REFRESH_INTERFACE_NOTE}"
+    selected_canonical["function_name"] = validation.function_name
+    selected_canonical["function_signature"] = validation.function_signature
+    _write_jsonl_records(canonical_path, canonical_records)
+
+    tampered_problems = load_canonical_jsonl(canonical_path)
+    tampered_problem = next(problem for problem in tampered_problems if problem.problem_id == selected_id)
+    rebuilt_selected = refresh_module.build_refresh_fingerprint(
+        record_id=tampered_problem.problem_id,
+        record_class="candidate",
+        prompt=validation.prompt,
+        function_signature=tampered_problem.function_signature,
+        source_url_hash=tampered_problem.metadata.source_url_hash,
+        reference_solution_hash=None,
+        test_fingerprint=refresh_module.refresh_problem_test_set_fingerprint(tampered_problem),
+        policy=refresh_module.RefreshDedupPolicy(5, 0.90),
+    )
+    selected_record["fingerprint"] = refresh_module._fingerprint_to_mapping(rebuilt_selected)
+    _write_jsonl_records(selection_path, selection)
+    validation_fingerprint = refresh_module.reference_fingerprint(
+        refresh_module._problem_reference(validation, "validation"),
+        policy=refresh_module.RefreshDedupPolicy(5, 0.90),
+    )
+    assert selected_id in refresh_module.find_exact_duplicate_matches([rebuilt_selected], [validation_fingerprint])
+
+    write_jsonl(
+        (build_training_record(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in tampered_problems),
+        root / "training" / "public_grpo.jsonl",
+    )
+    write_jsonl(
+        (build_training_record(problem, kind=TrainingArtifactKind.HIDDEN_GRPO) for problem in tampered_problems),
+        root / "training" / "hidden_grpo.jsonl",
+    )
+    for relative in (
+        "canonical/problems.jsonl",
+        "training/public_grpo.jsonl",
+        "training/hidden_grpo.jsonl",
+        "manifest/selection.jsonl",
+    ):
+        _rewrite_root_artifact_hash(root, relative)
+
+    snapshot_path = root / "manifest" / "reference_snapshots.json"
+    snapshot = cast(dict[str, object], json.loads(snapshot_path.read_text(encoding="utf-8")))
+    fingerprints = cast(dict[str, object], snapshot["fingerprints"])
+    fingerprints["validation"] = []
+    snapshot_path.write_text(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    _rewrite_root_artifact_hash(root, "manifest/reference_snapshots.json")
+
+    with pytest.raises(RefreshDataError, match="validation fingerprints do not match authoritative formal canonical"):
+        check_refresh_data(root, reference_dataset_dir=reference)
+
+
+@pytest.mark.parametrize("hard_max", [0.20, 0.50])
+def test_wp9a_strict_readback_rejects_manifest_hard_max_above_fifteen_percent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hard_max: float,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / f"hard-max-{hard_max}"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+    report_path = root / "reports" / "sft_overlap.json"
+    report = cast(dict[str, object], json.loads(report_path.read_text(encoding="utf-8")))
+    report["sft_overlap_hard_max"] = hard_max
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    _rewrite_root_artifact_hash(root, "reports/sft_overlap.json")
+    manifest_path = root / "refresh_manifest.json"
+    manifest = cast(dict[str, object], json.loads(manifest_path.read_text(encoding="utf-8")))
+    selection_protocol = cast(dict[str, object], manifest["selection_protocol"])
+    selection_protocol["sft_overlap_hard_max"] = hard_max
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RefreshDataError, match="hard max exceeds frozen 0.15 ceiling"):
+        check_refresh_data(root, reference_dataset_dir=reference)
+
+
+def test_wp9a_strict_readback_rejects_actual_selected_overlap_above_fifteen_percent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "actual-overlap-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+    canonical = {
+        problem.problem_id: problem for problem in load_canonical_jsonl(root / "canonical" / "problems.jsonl")
+    }
+    selection_path = root / "manifest" / "selection.jsonl"
+    selection = _read_jsonl(selection_path)
+    changed = next(record for record in selection if record["overlap_origin"] == "external_new")
+    changed_problem = canonical[cast(str, changed["problem_id"])]
+    changed["overlap_origin"] = "sft_reuse"
+    changed["fingerprint"] = refresh_module._fingerprint_to_mapping(
+        refresh_module._selected_sft_fingerprint(
+            changed_problem,
+            policy=refresh_module.RefreshDedupPolicy(5, 0.90),
+        )
+    )
+    _write_jsonl_records(selection_path, selection)
+    _rewrite_root_artifact_hash(root, "manifest/selection.jsonl")
+
+    with pytest.raises(RefreshDataError, match="actual selected SFT overlap .* exceeds frozen 0.15 ceiling"):
         check_refresh_data(root, reference_dataset_dir=reference)
 
 

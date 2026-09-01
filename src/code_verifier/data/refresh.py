@@ -63,6 +63,13 @@ REFRESH_SCHEMA_VERSION = "wp9a-refresh-v1"
 REFERENCE_SNAPSHOT_SCHEMA_VERSION = "wp9a-reference-snapshots-v1"
 SELECTION_SCHEMA_VERSION = "wp9a-selection-v1"
 
+_WP9A_PRODUCTION_TARGET_SIZE = 10_000
+_WP9A_PRODUCTION_SFT_OVERLAP_FRACTION = 0.075
+_WP9A_SFT_OVERLAP_HARD_MAX = 0.15
+_WP9A_EXTERNAL_EVAL_DATASET_ID = "evalplus/humanevalplus"
+_WP9A_EXTERNAL_EVAL_REVISION = "aa0d916268b1c17e84e881e9bd460508dd2fd308"
+_WP9A_EXTERNAL_EVAL_LICENSE = "Apache-2.0"
+
 _REQUIRED_ARTIFACTS = (
     "manifest/source_snapshots.json",
     "manifest/reference_snapshots.json",
@@ -205,10 +212,31 @@ def refresh_data_config_from_mapping(value: Mapping[str, object], *, config_path
         _validate_selection_config(selection_config)
     except ValueError as error:
         raise ConfigError(f"{config_path}.selection: {error}") from error
+    frozen_selection = {
+        "target_size": (_WP9A_PRODUCTION_TARGET_SIZE, selection_config.target_size),
+        "sft_overlap_fraction": (_WP9A_PRODUCTION_SFT_OVERLAP_FRACTION, selection_config.sft_overlap_fraction),
+        "sft_overlap_hard_max": (_WP9A_SFT_OVERLAP_HARD_MAX, selection_config.sft_overlap_hard_max),
+    }
+    for field, (expected, actual) in frozen_selection.items():
+        if isinstance(expected, float):
+            matches = math.isclose(float(actual), expected, rel_tol=0.0, abs_tol=1e-12)
+        else:
+            matches = actual == expected
+        if not matches:
+            raise ConfigError(
+                f"{config_path}.selection.{field}: {REFRESH_SCHEMA_VERSION} freezes this value to {expected}"
+            )
+    external_dataset_id = _nonempty_string(external["dataset_id"], field="external_eval.dataset_id")
+    external_revision = _full_sha(external["revision"], field="external_eval.revision")
+    if external_dataset_id != _WP9A_EXTERNAL_EVAL_DATASET_ID or external_revision != _WP9A_EXTERNAL_EVAL_REVISION:
+        raise ConfigError(
+            f"{config_path}.external_eval: {REFRESH_SCHEMA_VERSION} freezes HumanEvalPlus to "
+            f"{_WP9A_EXTERNAL_EVAL_DATASET_ID}@{_WP9A_EXTERNAL_EVAL_REVISION}"
+        )
     return RefreshDataConfig(
         sources=tuple(sources),
-        external_eval_dataset_id=_nonempty_string(external["dataset_id"], field="external_eval.dataset_id"),
-        external_eval_revision=_full_sha(external["revision"], field="external_eval.revision"),
+        external_eval_dataset_id=external_dataset_id,
+        external_eval_revision=external_revision,
         selection=selection_config,
     )
 
@@ -224,6 +252,10 @@ def _validate_selection_config(config: RefreshSelectionConfig) -> None:
         raise ValueError("sft_overlap_fraction must be in [0, 1]")
     if not 0.0 <= config.sft_overlap_hard_max <= 1.0:
         raise ValueError("sft_overlap_hard_max must be in [0, 1]")
+    if config.sft_overlap_hard_max > _WP9A_SFT_OVERLAP_HARD_MAX:
+        raise ValueError(
+            f"{REFRESH_SCHEMA_VERSION} freezes the SFT overlap hard maximum at {_WP9A_SFT_OVERLAP_HARD_MAX}"
+        )
     if config.sft_overlap_fraction > config.sft_overlap_hard_max:
         raise ValueError("sft_overlap_fraction must not exceed sft_overlap_hard_max")
     validate_refresh_dedup_policy(RefreshDedupPolicy(config.token_ngram_size, config.near_jaccard_threshold))
@@ -817,7 +849,12 @@ def _build_reference_snapshot(
 
 
 def _reference_fingerprints_from_snapshot(value: object) -> dict[str, list[RefreshFingerprint]]:
-    if not isinstance(value, dict) or value.get("schema_version") != REFERENCE_SNAPSHOT_SCHEMA_VERSION:
+    expected_fields = {"schema_version", "formal", "external_eval_snapshot", "fingerprints"}
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_fields
+        or value.get("schema_version") != REFERENCE_SNAPSHOT_SCHEMA_VERSION
+    ):
         raise RefreshDataError("reference snapshot schema/version is invalid")
     fingerprints = value.get("fingerprints")
     expected_classes = {"sft", "validation", "project_test", "external_eval"}
@@ -988,6 +1025,18 @@ def check_refresh_data(
         raise RefreshDataError("refresh manifest external_new_count is invalid")
     if isinstance(hard_max, bool) or not isinstance(hard_max, int | float):
         raise RefreshDataError("refresh manifest sft_overlap_hard_max is invalid")
+    hard_max_value = float(hard_max)
+    overlap_fraction_value = float(overlap_fraction)
+    if hard_max_value > _WP9A_SFT_OVERLAP_HARD_MAX:
+        raise RefreshDataError(
+            f"refresh manifest SFT overlap hard max exceeds frozen {_WP9A_SFT_OVERLAP_HARD_MAX:.2f} ceiling"
+        )
+    if overlap_fraction_value > _WP9A_SFT_OVERLAP_HARD_MAX:
+        raise RefreshDataError(
+            f"refresh manifest configured SFT overlap exceeds frozen {_WP9A_SFT_OVERLAP_HARD_MAX:.2f} ceiling"
+        )
+    if overlap_fraction_value > hard_max_value:
+        raise RefreshDataError("refresh manifest configured SFT overlap exceeds its hard max")
     if selection_protocol.get("sft_namespace") != "wp9a-sft-reuse-v1":
         raise RefreshDataError("refresh manifest sft selection namespace is invalid")
     if selection_protocol.get("external_namespace") != "wp9a-external-new-v1":
@@ -1002,20 +1051,95 @@ def check_refresh_data(
     reference_snapshot = _load_json(dataset_dir / "manifest" / "reference_snapshots.json")
     if not isinstance(reference_snapshot, dict):
         raise RefreshDataError("reference_snapshots.json must contain an object")
+    reference_fingerprints = _reference_fingerprints_from_snapshot(reference_snapshot)
+
     formal = reference_snapshot.get("formal")
-    if not isinstance(formal, Mapping):
+    if not isinstance(formal, Mapping) or set(formal) != {"canonical_sha256", "split_counts"}:
         raise RefreshDataError("reference snapshot formal identity is invalid")
     reference_canonical = reference_dataset_dir / "canonical" / "problems.jsonl"
-    if formal.get("canonical_sha256") != _sha256(reference_canonical):
+    actual_formal_sha256 = _sha256(reference_canonical)
+    if formal.get("canonical_sha256") != actual_formal_sha256:
         raise RefreshDataError("frozen formal reference canonical SHA256 does not match refresh provenance")
+    if manifest.get("formal_reference_canonical_sha256") != actual_formal_sha256:
+        raise RefreshDataError(
+            "root manifest formal reference canonical SHA256 does not match authoritative reference"
+        )
+    try:
+        formal_problems = load_canonical_jsonl(reference_canonical)
+    except DataPreparationError as error:
+        raise RefreshDataError(f"formal reference dataset is invalid: {error}") from error
+    actual_split_counts = {
+        split: sum(problem.split == split for problem in formal_problems) for split in ("train", "validation", "test")
+    }
     split_counts = formal.get("split_counts")
     if (
         not isinstance(split_counts, Mapping)
         or set(split_counts) != {"train", "validation", "test"}
         or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in split_counts.values())
+        or dict(split_counts) != actual_split_counts
     ):
-        raise RefreshDataError("reference snapshot formal split_counts are invalid")
-    reference_fingerprints = _reference_fingerprints_from_snapshot(reference_snapshot)
+        raise RefreshDataError("reference snapshot formal split_counts do not match authoritative reference canonical")
+    sft_references, validation_references, project_test_references = _reference_sets(formal_problems)
+    rebuilt_formal_references = {
+        "sft": sft_references,
+        "validation": validation_references,
+        "project_test": project_test_references,
+    }
+    for reference_class, references in rebuilt_formal_references.items():
+        rebuilt = [reference_fingerprint(reference, policy=policy) for reference in references]
+        if reference_fingerprints[reference_class] != rebuilt:
+            raise RefreshDataError(
+                f"reference snapshot {reference_class} fingerprints do not match authoritative formal canonical"
+            )
+        reference_fingerprints[reference_class] = rebuilt
+
+    external_snapshot = reference_snapshot.get("external_eval_snapshot")
+    expected_external_snapshot_fields = {
+        "source_name",
+        "dataset_id",
+        "revision",
+        "config_name",
+        "split",
+        "declared_license",
+        "scanned_rows",
+        "accepted_rows",
+        "projection_fingerprint_sha256",
+    }
+    if not isinstance(external_snapshot, Mapping) or set(external_snapshot) != expected_external_snapshot_fields:
+        raise RefreshDataError("reference snapshot external-eval identity is invalid")
+    external_count = len(reference_fingerprints["external_eval"])
+    if (
+        external_snapshot.get("source_name") != "humanevalplus"
+        or external_snapshot.get("dataset_id") != _WP9A_EXTERNAL_EVAL_DATASET_ID
+        or external_snapshot.get("revision") != _WP9A_EXTERNAL_EVAL_REVISION
+        or external_snapshot.get("config_name") is not None
+        or external_snapshot.get("split") != "test"
+        or external_snapshot.get("declared_license") != _WP9A_EXTERNAL_EVAL_LICENSE
+        or external_snapshot.get("scanned_rows") != external_count
+        or external_snapshot.get("accepted_rows") != external_count
+        or external_count <= 0
+    ):
+        raise RefreshDataError("reference snapshot external-eval contract is invalid")
+    external_projection = external_snapshot.get("projection_fingerprint_sha256")
+    if (
+        not isinstance(external_projection, str)
+        or len(external_projection) != 64
+        or any(character not in "0123456789abcdef" for character in external_projection.casefold())
+    ):
+        raise RefreshDataError("reference snapshot external-eval projection fingerprint is invalid")
+    root_external = manifest.get("external_eval")
+    if not isinstance(root_external, Mapping) or set(root_external) != {
+        "dataset_id",
+        "revision",
+        "projection_fingerprint_sha256",
+    }:
+        raise RefreshDataError("root manifest external_eval identity is invalid")
+    if (
+        root_external.get("dataset_id") != _WP9A_EXTERNAL_EVAL_DATASET_ID
+        or root_external.get("revision") != _WP9A_EXTERNAL_EVAL_REVISION
+        or root_external.get("projection_fingerprint_sha256") != external_projection
+    ):
+        raise RefreshDataError("root manifest external_eval identity does not match reference snapshot")
 
     problems = load_canonical_jsonl(dataset_dir / "canonical" / "problems.jsonl")
     if len(problems) != target_size or any(problem.split != "train" for problem in problems):
@@ -1050,6 +1174,12 @@ def check_refresh_data(
         quality_count += int(quality_required)
         overlap_count += int(record.get("overlap_origin") == "sft_reuse")
         selected_fingerprints.append(_canonical_selection_fingerprint(problem, record, policy=policy))
+    actual_overlap_fraction = overlap_count / len(problems)
+    if actual_overlap_fraction > _WP9A_SFT_OVERLAP_HARD_MAX:
+        raise RefreshDataError(
+            f"actual selected SFT overlap {actual_overlap_fraction:.6f} exceeds frozen "
+            f"{_WP9A_SFT_OVERLAP_HARD_MAX:.2f} ceiling"
+        )
     if overlap_count != expected_overlap_count:
         raise RefreshDataError("selection SFT overlap count does not match selection protocol")
     if len(problems) - overlap_count != expected_external_count:
