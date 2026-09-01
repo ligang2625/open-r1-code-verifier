@@ -233,3 +233,46 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## E4 repair summary
+
+R4 repair was taken over in the same `WP9-a` worktree after the local agent exhausted its quota before creating any R4 code or execution-report commit. The inherited tracked diff was limited to the R4-M1 readback work; the Web/CodexPro executor validated that diff against the committed R4 review baseline, completed the missing regressions and acceptance, and committed the final repair as `c2cddff5bc947e8a0ee279b655cbbec527f02afd`.
+
+Routing remained the sealed R4 `source_mode=single` / `single_class=normal`; the completing runtime was `backend=web`, so `effective_execution_mode=single`. Source review round 4 is commit `3badd4cb0149ee6fecf9297156a7eb8642ae6b4d`, with repair scope `[R4-M1]` only.
+
+### Issue disposition
+
+- `R4-M1`: strict readback now exact-schema parses `selection.jsonl` and `dedup_decisions.jsonl`; external selection provenance must use a non-empty source record id and valid raw-record SHA, while SFT reuse requires both provenance fields to be null.
+- Every parsed dedup decision is unique by candidate id and source-record identity, has strict retained/rejected evidence types, and production readback requires exact per-source accepted-candidate provenance inventory hashes. The two tracked anchors were independently rebuilt from the pinned local DeepCoder cache: PrimeIntellect `11,323` accepted candidates -> `37c62e2a5446517974a060242eedc93af7a44c505666346f824b12085ed3bcd0`; TACO `2,642` -> `6baac4a1e44340c13bf25c750836821d95b2b1c0c519588b8e977b75ce310701`.
+- Every selected `external_new` row is cross-bound to the dedup decision with the same candidate/problem id and exact source name, source-record id, and raw-record SHA, and that decision must be retained with no rejection and `overlap_class=none`. A self-consistent selection+decision provenance rewrite is therefore rejected by the frozen accepted-candidate inventory.
+- Strict readback now recomputes `reports/dedup_summary.json` from source snapshots plus parsed decisions and cross-checks root `total_candidates_scanned` / `external_candidates_retained` against those recomputed values.
+- New adversarial regressions cover forged selected raw provenance, a selected candidate rewritten to a rejected dedup decision while dedup summary/root counts are also made self-consistent, exact selection/dedup schemas, provenance type drift, and the frozen accepted-candidate inventory anchor. The earlier >15% overlap tamper was updated to satisfy the new SFT null-provenance schema so it continues exercising the intended ceiling gate.
+
+### Repair verification
+
+- Takeover/preflight: `HEAD=3badd4cb0149ee6fecf9297156a7eb8642ae6b4d` before the repair commit; stage branch `feat/wp9-a`; primary/stage `git ls-files .ai-bridge` empty; stage `.venv` resolves both `code_verifier` and `open_r1` into the WP9-a worktree; Ruff/mypy/pytest available. Frozen formal canonical was located by SHA256 `d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6`.
+- R4-focused unit/integration subset: `34 passed`.
+- Full sealed-plan WP9-a focused suite: `186 passed`.
+- `make lint`: PASS; Ruff check/format and strict mypy passed for `121` source/test files.
+- `make test`: PASS — `1109 passed, 3 skipped`; skips are the existing real-Piston opt-in cases.
+- New production checker strict-readback of both existing repaired real outputs `wp9a-refresh-seed42-r2e2-final1` and `wp9a-refresh-seed42-r2e2-final4`: PASS, each selected `10,000`, external retained `9,565`, SFT reuse `750`, quality-gate-required `1,086`.
+- Because E4 changes readback validation/anchors only and does not change production artifact bytes, no new materialization was required. The existing deterministic pair was re-compared: identical `13/13` file sets, `0` SHA256 mismatches, root manifest SHA256 `98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625`.
+- Only `src/code_verifier/data/refresh.py`, `tests/unit/data/test_refresh.py`, and `tests/integration/test_wp9a_refresh_data_pipeline.py` changed in the R4 code commit. Plan/review/spec/proceedings/`third_party/open-r1` remained unmodified, and `.ai-bridge/**` remained untracked.
+
+## Structured E4 execution record
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-a
+  execution_id: E4
+  task_kind: repair
+  source_plan_commit: 72a91b652a38fe4e7e58a396c76bfd77fb46a66b
+  source_review_round: 4
+  source_review_commit: 3badd4cb0149ee6fecf9297156a7eb8642ae6b4d
+  repair_issue_ids: [R4-M1]
+  result_code_commit: c2cddff5bc947e8a0ee279b655cbbec527f02afd
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  status: completed
+```
