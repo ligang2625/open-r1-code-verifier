@@ -2,7 +2,7 @@
 
 ## Scope
 
-`task_kind=implementation` 与 `task_kind=repair` 互斥。Implementation 按 plan steps；repair 只按 router 的 repair_issue_ids。Plan 的全局验收在 repair 中只是 regression gate，不扩大修复范围。
+`task_kind=implementation` 与 `task_kind=repair` 互斥。用户未覆盖时 implementation 按 plan steps、repair 按 router issue scope；用户明确改变实现/scope/order时按 effective contract执行并记录。Plan 的全局验收在 repair 中只是 regression gate，不自动扩大修复范围。
 
 ## Worker boundaries
 
@@ -13,7 +13,7 @@
 
 ## Coordinator
 
-- 基于真实代码复核 ≥2 独立 subplans，否则 routed MULTI 返回 ROUTING_MISMATCH；
+- 基于真实代码复核 effective topology；默认 MULTI 应有 ≥2 独立 subplans，但若只剩 1 个可靠 lane，可降级/串行化并记录，不为形式制造假并行；
 - 汇总 diff，亲自跑整体验收；
 - 仅 coordinator commit；
 - code/test commit 完成后捕获 result_code_commit，再 append execution report 并 docs commit。
@@ -38,12 +38,12 @@ execution_record:
   status: completed
 ```
 
-Repair E1/E2/... 填整数 review round、review commit 和 exact repair_issue_ids。
+Repair E1/E2/... 记录 review provenance anchor 与 effective repair issue scope；普通 review commit SHA 漂移不要求 exact 等式。
 
 ## Repair scope
 
-不存在“blocker/major/minor 默认全部修复”的 routed 规则。只有 repair_issue_ids 是本轮可修改问题；routing 外 finding 记录给 reviewer，不顺手修。
+用户未覆盖时不存在“blocker/major/minor 默认全部修复”的规则，默认按 repair_issue_ids；用户明确增加/替换 scope 时按 effective issues 执行并记录。
 
 ## Failure
 
-plan/review provenance、worktree/branch、scope ownership、测试/规格冲突任一不满足时 fail closed；不改 routing，不伪造 completed record。
+worktree/stage 身份错误、scope 无法归属、测试/规格不可调和冲突时 fail closed。普通 plan/review provenance SHA 漂移先看 lineage/diff；routing 可因用户指令或真实依赖调整 effective topology，但不得伪造 completed record。

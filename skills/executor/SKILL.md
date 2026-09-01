@@ -1,6 +1,6 @@
 ---
 name: executor
-description: Local Codex MULTI execution protocol。仅用于 execution-router backend=local；Sol/medium coordinator 将 routed implementation/repair 拆给 Luna/max workers，要求至少 2 个真实独立 lane，并写统一 v2 execution_record。不得重判 routing、不得 review/finalize。
+description: Local Codex execution protocol。默认执行 router 的 MULTI routing，但用户明确指令或当前代码依赖可覆盖 sealed workstream 方式；coordinator 由 LLM 判断 continuation/resume 和有效 lane 拆分。保留必要 stage/operator/transport 完整性边界，不把普通 commit/SHA 漂移或无法维持原 MULTI 形式当作机械阻塞。
 ---
 
 # Codex Executor
@@ -25,15 +25,15 @@ worker 不再创建 agent。模型配置不由 router 覆盖。
 
 ## Invocation mode
 
-本 skill **只支持 routed v2**。调用必须同时包含 `source_mode=multi`、`backend=local`、`task_kind`、`stage_id`、`plan_commit`；缺少任一项返回 `EXECUTOR_ROUTING_CONTEXT_INCOMPLETE`。不提供 legacy direct mode，也不自行从文件名/当前分支猜 execution source。
+本 skill 默认消费 routed v2 上下文；`stage_id`、准确 worktree 和 task_kind 是必要身份信息。`plan_commit`/routing/checkpoint 等字段应尽量提供以便审计，但缺少普通 provenance 字段时，先尝试从 repo state 唯一恢复；只有 stage/source 无法可靠定位时才返回 `EXECUTOR_ROUTING_CONTEXT_INCOMPLETE`。
 
 ## Routed MULTI 前置
 
-router 必须传：stage_id、绝对 worktree、plan path、plan_commit、`task_kind=implementation|repair`、`source_mode=multi`、`backend=local`、`stage_profile`、`control_plane_hardware`、`target_hardware`、`evidence_class`、`development_terminal`。`control_plane_hardware` 固定 GTX 1660 Ti；validation 普通 dispatch 不要求/传入 4090 roots。router 若对已封存旧 stage 使用迁移兼容，还会传 `legacy_control_plane_default=true` 与 exact `workflow_runtime_commit`；coordinator 只能消费这两个显式字段，不能自行给缺失字段补默认值。repair/resume 继续携带既有 review/checkpoint provenance；portable operator resume 传 `operator_handoff_mode/operator_gate_id/operator_restart_policy/operator_script/operator_script_sha256/target path templates/control-plane evidence directory/expected_artifacts`，legacy operator 兼容其旧 absolute fields。
+router 应尽量提供 stage_id、绝对 worktree、plan path/plan_commit、task_kind、source/effective routing、backend、profile/hardware/evidence metadata，以及 repair/resume context。`stage_id`、worktree、task_kind 与实际 backend 是必要身份；plan/review/workflow-runtime/checkpoint commits 是审计 anchors，缺失或漂移时可从 repo state 恢复，不要求 exact SHA。portable operator resume 仍必须提供足够的 handoff checkpoint/script/evidence context来证明实际 target run。
 
 `task_kind` 两条路径互斥；repair 完成后不得继续 implementation。
 
-main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码和对应 routing source，并解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`，与 router 输入逐项一致。control plane 固定 GTX 1660 Ti；development target=GTX 1660 Ti+engineering；validation 固定 real-training/numerical+terminal=false，target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU gates）。target=24GB 时全部 24GB acceptance 必须由 operator block 覆盖。若 plan 缺少 `control_plane_hardware`，只有 router 已传 `legacy_control_plane_default=true` 且 execution/review provenance 证明这是迁移前已进入执行/review 的 sealed stage 时才运行时解释为 GTX 1660 Ti；不得改写 plan，也不得扩展到纯 PLANNED stage。workers/coordinator 始终只做 control-plane scope，fixture/mock/synthetic 不得满足真实 gate。普通 execution/resume HEAD/checkpoint guards 保持不变；任何业务修改/worker spawn 前 coordinator 串行执行 control-plane preflight。正常新 plan 完整执行其 preflight；旧 sealed stage 使用 `legacy_control_plane_default=true` 时，旧 preflight 中 control-plane 可执行且与本次 task 相关的 Git/transport/stage-env/Piston/data/readback/短测试必须重跑，而仅用于 4090 target-start 的 CUDA/VRAM/BF16/machine-record/target roots/target-local model-cache 检查不得在 1660 Ti 强制重跑，只能由已 committed target/operator evidence 保持历史证明，并在本次 repair 真正需要新的 target-GPU execution 时重新进入 operator boundary。validation 不读取本机 4090 machine record、不要求 24GB GPU，也不解析 target roots。若有 operator gate，coordinator 负责集成、1660 Ti validation、tracked operator script/evidence contract；任何 worker/coordinator 都不得启动 target-GPU command。execution report 继续 append-only。
+main 开始任何拆分/修改前先进入 stage worktree、读 plan/spec/代码、Git history 和对应 routing source，并解析 stage profile/hardware/evidence boundary。sealed routing 和 preflight 是默认执行合同；用户明确指令优先，LLM 也可在真实依赖变化时调整 effective lane 划分、顺序或从 MULTI 降为更合适的执行方式，只要记录偏差且不突破 operator/证据/安全边界。普通 HEAD/checkpoint SHA 只用于定位，不作为单独的硬停止条件。workers/coordinator 始终只做 control-plane scope，fixture/mock/synthetic 不得满足真实 validation gate；operator target command 仍不得由 worker/coordinator 启动。execution report 继续 append-only。
 
 stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若任一 routed workstream 需要修改 `pyproject.toml` 或 `uv.lock`，必须由 coordinator 在 spawn 相关 worker/继续依赖测试前串行运行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode full`，建立完整 stage-local pinned environment；之后全部 workers/tests 使用该 stage `.venv`，不能继续借 primary overlay 隐式满足依赖。
 
@@ -43,35 +43,35 @@ stage `.venv` 默认是 lifecycle 创建的 primary-dependency overlay。若任�
 
 仅当 coordinator 已经集成并 commit 了可保留的部分 workstreams/repair，stage clean，随后遇到无需修改 tracked 仓库即可修复的环境/基础设施故障时，才允许暂停。源码 lint/type/test failure、tracked config/dependency bug 或 acceptance 逻辑失败不是 environment interruption。
 
-暂停时 coordinator 捕获 partial `result_code_commit=HEAD`，在 execution report EOF 追加 `execution_checkpoint(version=1, checkpoint_id=Cn, task/source provenance, result_code_commit, interruption_class=environment, resume_allowed=true, failed_command, blocker, completed_scope, remaining_scope, status=interrupted)`，只提交 report docs commit，并返回 `EXECUTION_ENV_INTERRUPTED`。checkpoint docs commit 的 parent 必须是 result_code_commit；不得 checkpoint 未 commit 的 worker diff，也不得自动 retire。
+暂停时 coordinator 捕获 partial `result_code_commit=HEAD`，在 execution report EOF 追加 environment checkpoint 并提交 report。`result_code_commit` 是 partial-code provenance anchor；checkpoint docs commit parent 不要求机械等于它，只要中间 history 可解释且没有未记录的冲突业务修改。不得把无法归属的 worker diff 伪装成 checkpoint，也不得自动 retire。
 
-resume 必须来自 router 的 current-head checkpoint。coordinator 不重新执行 completed_scope 对应的已提交 lanes，只为 remaining_scope 重新形成需要的 worker tasks；原 source MULTI routing 不改变。允许重新跑 plan preflight、受影响测试与最终 acceptance。若环境仍坏且没有新 code commit，保持原 checkpoint；若 resume 后又产生新有效 commit 再被环境阻塞，可追加下一 Cn。完成后 execution_record 额外记录 `resumed_from_checkpoint_id/commit` 供审计。
+resume/continue 优先利用最新可靠 checkpoint，但不要求 checkpoint commit 恰好等于 current HEAD。coordinator 根据 commits、diff、report、tests 和用户指令推导 effective completed/remaining scope，避免重复已完成 lane；若原 MULTI 划分已不合适，可调整 effective workers 或直接由 coordinator 完成串行剩余工作，并在 report 记录 continuation judgment。
 
 ## Operator terminal gate / resume
 
 sealed validation plan 只有在 `target_hardware=24GB GPU` 时使用 operator block，且它覆盖全部 24GB acceptance gates。workers 只能实现/测试 control-plane workstreams；coordinator 集成后负责 tracked operator handoff，任何 worker/coordinator 都不启动 target-GPU command。
 
-coordinator 预分配 checkpoint_id，生成唯一 tracked secret-free immutable `ai-work/executor/operator/<stage>/<gate>/<checkpoint>/run.sh`。script 在 4090 验证 exact checkpoint commit/parent/latest checkpoint/script SHA、clean tree、target machine READY、>=22528 MiB GPU、roots/model/data/cache/storage/lock；需要 Piston 时只 health-check 由 1660 Ti control plane 预先建立的 canonical loopback reverse forward 与 exact runtime，不在 target 端启动旧 Tailscale/local-forward helper。它执行 start preflight → target command → sealed post-run acceptance；只有 `command_rc=0 && postcheck_rc=0` 才 `gate_status=passed`。每 attempt 生成 versioned evidence，绑定 stage/plan/operator-checkpoint/result-code/checkpoint/gate/script path+SHA、machine-record SHA、GPU/roots/Piston、timestamps、rc/status、formal run 与 expected-artifact inventory/hashes。
+coordinator 预分配 checkpoint_id，生成唯一 tracked secret-free immutable `ai-work/executor/operator/<stage>/<gate>/<checkpoint>/run.sh`。target 端必须验证 clean tree、current HEAD 就是用户 handoff 的 checkpoint commit、stage/gate/script path 可归属并且 tracked script SHA 匹配；parent/result_code/latest-checkpoint 等普通 SHA 只作诊断，不要求机械等式。随后验证 target machine/GPU/roots/model/data/cache/storage/lock/Piston（如需要）。script 执行 start preflight → target command → post-run acceptance；只有 `command_rc=0 && postcheck_rc=0` 才 `gate_status=passed`，evidence 绑定实际 handoff commit、script SHA、运行环境和 artifact identity。
 
-coordinator 计算 script SHA，append portable operator checkpoint，并显式记录 `operator_handoff_mode: portable_target`；一个 provenance commit 只提交 execution report + 该新 script，parent=result_code_commit。返回 `EXECUTION_OPERATOR_ACTION_REQUIRED` 时明确不自动 push：用户先经 Git 让 exact checkpoint commit 在 4090 可达，再 checkout/detach、clean-check、重算 SHA并运行 tracked script。exact-rerun/trainer-checkpoint/latest-valid Trainer checkpoint/strict-loader/quarantine/no-overwrite 语义保持。
+coordinator 计算 script SHA，append portable operator checkpoint，并记录 `operator_handoff_mode: portable_target`。checkpoint commit 应尽量保持为 execution report + script 的窄范围；若包含可解释且不改变待运行业务代码的 provenance/docs 变化也可接受。`result_code_commit` 是审计 anchor，不要求 parent SHA 机械相等。用户仍必须让实际 handoff checkpoint commit 在 4090 可达并 checkout 后重算 script SHA；exact-rerun/trainer-checkpoint/quarantine/no-overwrite 语义保持。
 
-Active-stage migration repair 可使用 `operator_handoff_mode: control_plane_manual`，但只在 router 已传 `legacy_control_plane_default=true` + exact `workflow_runtime_commit`、`task_kind=repair`、latest reviewer 明确要求补迁移前 operator provenance且命令无新的 24GB GPU execution 时。coordinator 不把它拆给 worker；自己生成 tracked immutable script，status/log/evidence 写 worktree 外 persistent control-plane namespace，绑定 frozen generation/data/verifier/Open-R1/dependency/Piston/formal namespace与 fresh non-overwriting repair output，并在 checkpoint commit 后要求用户在 1660 Ti 手工运行。不得用于 implementation、新 plan或普通 offload。
+`operator_handoff_mode: control_plane_manual` 只用于明确的 control-plane-only repair，且命令不能包含新的 24GB GPU execution。latest review 或用户明确指令必须能说明为何需要该 path。`workflow_runtime_commit`、review/source commits 可记录为审计 anchors，但不要求 exact SHA 关系；tracked script SHA、frozen input/output identity、command/postcheck status 仍需可独立验证。不得用它绕过真正 target-GPU gate。
 
-operator resume 由 coordinator 在 1660 Ti 计算 evidence SHA256。`portable_target` 严格验证 target schema/provenance、tracked script SHA、`command_rc=0/postcheck_rc=0/gate_status=passed`、formal artifact identity与 synced small-file hashes；required large-artifact property 未被 evidence/postcheck证明时保持 checkpoint并要求短时只读 target check。`control_plane_manual` 严格验证 plan/review/workflow-runtime/checkpoint/script、frozen identities、fresh output inventory与同样的 command/postcheck/gate status，不要求任何 4090 fields。成功 gate 的 handoff mode/evidence SHA256必须写入最终 completed execution record；环境故障保持 current checkpoint/HEAD，无合法 trainer checkpoint或 tracked bug 时按原 MULTI routing 最小修复并 quarantine旧 run。
+operator resume 由 coordinator 计算 received evidence SHA256。严格校验只集中在证明实际运行对象所需的内容：handoff checkpoint identity、tracked script SHA、evidence bytes、`command_rc/postcheck_rc/gate_status`、formal artifact identity及必要 synced-file hashes。plan/review/workflow-runtime/result-code 等 commit SHA 作为审计 anchors；有漂移时检查 lineage/diff，不要求逐字段相等。证据不足以证明 required large-artifact property 时才要求短时只读 target check。成功 gate 的 handoff mode/evidence SHA 写入 completed record。
 
-## Anti-fake-parallel hard guard
+## Parallelism judgment
 
-routed MULTI 必须基于真实代码形成 ≥2 个 mutually independent subplans：tracked write file/symbol ownership 可分离、无未完成 public API 前置依赖、各自有独立测试。
+routed MULTI 默认应基于真实代码形成 ≥2 个 mutually independent subplans；sealed MULTI 是 planner 的先验判断，不要求 executor 为了形式一致制造并行。
 
-若只能形成 1 个：不 spawn worker、不实现，返回 `ROUTING_MISMATCH`；不得退化为 Sol coordinator + 1 Luna。
+若当前代码状态只能形成 1 个可靠 lane，coordinator 可以退化为单 lane/串行执行，或在用户明确要求时采用用户指定拓扑；记录 `effective_execution_mode` 和原因即可。只有无法形成安全、完整的执行方案时才停止。
 
 - implementation：复核 plan candidate `steps`。
 - repair：只复核/拆分 router 的 `repair_issue_ids`，worker issue 并集必须恰好等于这些 IDs。
 
 ## task_kind=implementation（仅 routed v2）
 
-1. 确认 report 不存在 matching completed E0。普通 execution 要求 stage `HEAD == plan_commit`；resume 要求 `HEAD == resume_checkpoint_commit`，并从 remaining_scope 恢复，不重新执行 completed_scope。其它 HEAD 前进停止并报告 unknown incomplete implementation。
-2. 普通 execution 按 plan steps 拆独立 subplans；resume 只为 remaining_scope 中尚未完成的 lanes/集成工作拆任务，sealed routing 本身不改。
+1. 确认 report 不存在 matching completed E0。比较 plan baseline、current HEAD、partial commits/checkpoints 和 working tree；只要状态可归因且剩余范围可可靠判断，就从当前状态继续。HEAD 前进本身不是 blocker。
+2. 用户未覆盖时按 plan steps/默认 routing 拆 subplans；resume/continue 只处理实际剩余范围。用户明确方案或真实依赖可以改变 effective routing，而无需改写 sealed plan。
 3. 每个 worker 任务必须自包含：worktree、plan、assigned steps、唯一 tracked write_scope、禁止项、定向测试、汇报格式。
 4. workers 只改 assigned tracked scope，不 stage/commit、不写总报告。
 5. coordinator 汇总 diff、解决集成顺序、亲自运行定向 + executor-owned 全局短时验收。若下一步命中 operator long gate，转入 Operator terminal protocol，禁止直接执行长命令。
@@ -81,8 +81,8 @@ routed MULTI 必须基于真实代码形成 ≥2 个 mutually independent subpla
 
 ## task_kind=repair（仅 routed v2）
 
-1. 普通 repair 开始修改前 stage HEAD 必须等于 router `review_commit`；resume repair 要求 `HEAD == resume_checkpoint_commit`，且 checkpoint 精确绑定同一 review round/commit/issues。其它状态停止。
-2. 普通 repair 只按 `repair_issue_ids` 拆 subplans；resume 只处理 remaining_scope 中尚未完成的 repair lanes。其它 review finding/plan step 不自动进入 scope。
+1. repair 以 latest review 为默认基线；比较 review 后 commits/checkpoints/diff，LLM 判断哪些问题已完成、哪些仍需处理。普通 HEAD 漂移或 checkpoint 不完全匹配不单独构成停止条件。
+2. 默认按 `repair_issue_ids` 拆 subplans；用户明确增加、替换或重定义 repair scope 时，以用户指令为准并记录 effective scope。resume/continue 只处理实际尚未完成部分。
 3. worker issue_ids 不重叠、tracked write_scope 不重叠；全部 repair_issue_ids 恰好覆盖一次。
 4. worker 做最小修复和定向测试；不提交。
 5. coordinator 集成后运行受影响测试 + plan 中 executor-owned 的全局 regression/acceptance。全局测试只验证，不扩大 repair scope。若需要重跑受影响的 operator long gate，按 Operator terminal protocol 生成新的 checkpoint/script，禁止 coordinator/worker 直接执行。
@@ -133,11 +133,11 @@ backend/effective mode 只用于审计，不参与 reviewer provenance 判定。
 ## 自检
 
 - [ ] task_kind 互斥；
-- [ ] Execution preflight 在首次/恢复后的新业务修改或 worker spawn 前完成；baseline preflight 失败未产生业务 commit/report；已有 partial commits 后的 environment interruption 如需暂停，已写合法 checkpoint 而不是强制 retire；
-- [ ] validation target=24GB 时全部 24GB gates 均由 operator boundary 承担；workers/coordinator 未启动 target command；tracked script/commit-parent/diff/SHA、target preflight、mandatory postcheck、atomic status/append-only log、trainer checkpoint/quarantine 均正确；resume 已验证 evidence schema、command/postcheck/gate_status 与 evidence SHA，并把成功 gate 的 evidence SHA 写入 completed record；
+- [ ] 已执行当前 task 必要的 preflight；partial/incomplete 状态优先 continuation assessment，没有因缺少 exact checkpoint 或普通 SHA 漂移强制 retire；
+- [ ] validation target=24GB 时全部真实 target gates 均由 operator boundary 承担；workers/coordinator 未启动 target command；actual handoff commit、tracked script SHA、target preflight/postcheck、evidence/artifact identity 可验证，普通 parent/source SHA 仅作审计；
 - [ ] validation 的正式 checkpoint/result 只写 target persistent artifact_root；control plane 不要求挂载该 root，portable operator evidence 足以跨机器核验，真实 checkpoint/result 未写入 `.worktrees/...`；
-- [ ] routed MULTI ≥2 真实 subplans，否则已 ROUTING_MISMATCH；
-- [ ] repair worker issue 并集恰好等于 repair_issue_ids；
+- [ ] effective topology 基于真实依赖；MULTI 不足两 lane 时已合理降级/串行化并记录，而不是制造假并行；
+- [ ] repair effective issue scope 已完整覆盖；用户未覆盖时默认覆盖 router issues，用户 override 时已记录新的 effective scope；
 - [ ] worker tracked write_scope/临时输出互不冲突；
 - [ ] coordinator 亲自完成整体验收与 commits；
 - [ ] result_code_commit 在 report docs commit 前捕获；

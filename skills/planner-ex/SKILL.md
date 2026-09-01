@@ -1,6 +1,6 @@
 ---
 name: planner-ex
-description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与代码现状生成下一 stage 的函数级最终 plan 和 execution_routing；不做 Git mutation、不选择 execution backend。计划通过 handoff 交给 Web/Local 共用 stage-lifecycle bootstrap_plan 封存，再由 execution-router 在运行时选择 local/web backend。
+description: Web/CodexPro 规划入口。根据规格、proceedings、代码现状和用户当前意图生成 stage plan/routing。sealed plan 是后续执行的默认基线而非不可变宗旨；用户后续明确改变实现方式时无需为了维护旧 plan hash 阻塞 execution。planner 记录必要 stage identity/provenance，但避免把普通 commit SHA 当成过度严格的状态机门槛。
 ---
 
 # Planner Ex
@@ -14,6 +14,8 @@ description: Web/CodexPro 规划入口。根据 Open-R1 规格、proceedings 与
 - 不启动 executor；
 - 不在 `main` 写最终 plan 文件；
 - 最终 plan 交给共用 `stage-lifecycle bootstrap_plan` 写入并 commit；该 lifecycle 可由 Web GPT + CodexPro 或 Local Codex 执行。
+
+计划的语义是“用户未另行指示时的默认执行合同”。execution/review 期间用户明确提出新的实现、顺序、scope 或恢复方式时，后续环节直接以该用户指令形成 effective contract；不要求先回到 planner 重写 sealed plan，也不应仅因偏离旧 plan SHA 判定失败。需要审计时在 execution/review artifact 中记录 override 即可。
 
 planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `git worktree list` / branch / log 等只读状态，但不得进入已有 stage worktree 继续规划，也不得创建、删除、移动或修改任何 worktree/branch。
 
@@ -34,7 +36,7 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 
 - 0 个 active stage：允许规划下一 stage；
 - 1 个或多个 active stage：默认返回 `PLANNER_ACTIVE_STAGE_EXISTS`，不得规划后续 stage；
-- 只有用户明确要求“重规划当前 stage”才允许进入 replan；replan 仅允许该 stage 仍处于纯 PLANNED 状态：没有 completed implementation record，且 stage `HEAD` 仍等于当前 plan seal commit。只要 plan seal 后已有任何其它 commit，就返回 `PLANNER_REPLAN_AFTER_EXECUTION`，不得覆盖原 plan，后续变化交给 execution/review 流程处理。
+- 用户明确要求“重规划当前 stage”时可进入 replan。若 stage 已有 execution/review history，不覆盖或删除历史 artifact；planner 读取当前代码/历史并生成新的 plan amendment/后续 plan，或明确把用户变化交给 execution override 记录。只有无法区分哪些历史仍有效、会导致两个互斥 stage 同时活跃时才停止。`HEAD != plan_commit` 本身不再是拒绝 replan 的理由。
 
 禁止按“最近创建”“最大 WP 编号”猜当前 stage。
 
@@ -90,7 +92,7 @@ planner-ex 必须以**主仓库 root checkout** 为工作区。它可以读取 `
 - `evidence_class: engineering | real-training/numerical`
 - `development_terminal: true | false`
 
-每份 plan 还必须包含一个 **Execution preflight** 小节，列出在首次业务修改/commit 前可由 control plane 完成的非破坏性环境检查及通过标准，例如 `1660ti-wsl` Piston、必要 Python imports、control-plane data/cache 与本 stage 真正需要的本地服务。**不要**把 4090 是否在线、4090 的 `.ai-bridge/validation-machine.json`、>=22528 MiB CUDA、4090 model cache 或 target persistent roots 放进 planner/bootstrap/control-plane Execution preflight；这些条件属于具体 target-GPU gate 的 operator-start short preflight。4090 若需要 Piston，当前 canonical topology 是由 1660 Ti control plane 主动连接当前 provider public SSH endpoint，并用 `-R 127.0.0.1:2000:127.0.0.1:2000` 把 `1660ti-wsl` 的 loopback Piston 映射为 4090 本机 `127.0.0.1:2000`；provider host/port/authentication 保持 machine-local/untracked，target-start preflight 只验证 loopback endpoint 与 exact runtime，不在 4090 启动旧 Tailscale/local-forward helper。preflight 失败时 executor 必须在相应 plan/review baseline 停止；无法在实施前判定的逻辑/测试失败不强行塞入 preflight。
+每份 plan 还必须包含一个 **Execution preflight** 小节，列出在首次业务修改前通常必要的非破坏性环境检查及通过标准。该清单是默认建议，不要求 executor 重跑与当前 scope 无关、已被可靠 evidence 覆盖或明显过时的检查；executor 可由 LLM 判断必要最小集合并记录理由。4090/target-only 条件仍属于具体 operator-start preflight，不能在 control plane 伪造或提前强制满足。
 
 若 validation stage 的 `target_hardware=24GB GPU`，plan 必须包含唯一一份结构化 **Operator terminal execution** block（schema 名称为兼容性保留，语义覆盖所有 target-GPU gate，不只长任务），并为每个 gate 提供对应的命令模板/成功条件：
 
@@ -109,11 +111,11 @@ operator_terminal_execution:
 
 - `gate_id` 在 stage 内唯一；`run_kind` 为非空描述；`executor_runs_command` 固定 `false`；`restart_policy` 必须是 `exact_rerun | trainer_checkpoint`；`expected_artifacts` 非空，使用 `$CODE_VERIFIER_ARTIFACT_ROOT/...` 这类 **target-runtime template**，不得要求 control plane 已解析 4090 绝对路径，也不得指向 stage worktree。staged formal evaluation 的 target operator gate 通常只覆盖 generation bundle 并使用 `exact_rerun`；随后 control-plane `verify-eval`/`aggregate-eval` 不应伪装成 24GB gate。`train-sft` / `train-grpo` 必须使用 `trainer_checkpoint`。
 - 每个 gate 的正文必须给出 executor 生成 `run.sh` 所需的**完整命令模板**、环境变量、成功/失败判据、resume 后需要核验的 artifact/identity，以及与 `restart_policy` 一致的失败恢复策略。必须同时定义：① **operator-start short preflight**：取得锁后、目标命令前重新验证 GPU/CUDA、Piston（如适用）、model/data/cache、persistent roots 与 bytes/inodes；② **operator post-run acceptance**：目标命令返回 0 后，在 4090 上立即执行短时 strict loader/completed-status/metrics-schema/artifact-identity 等 plan-specific 验证。只有 `command_rc=0` 且 `postcheck_rc=0` 才能产生 `gate_status=passed`；postcheck 失败必须让 script 非零退出并保留 evidence。存储阈值按本 stage 规模给出可判定规则；不得把真实机器绝对路径硬编码进 sealed plan，统一使用 `$CODE_VERIFIER_ARTIFACT_ROOT/$HF_HOME/$CODE_VERIFIER_DATA_ROOT`。
-- operator handoff 必须是**Git 自包含且可跨机器执行**的。control-plane executor 生成唯一 tracked、immutable、secret-free `ai-work/executor/operator/{stage_id}/{gate_id}/{checkpoint_id}/run.sh`；operator checkpoint 记录 repo-relative script path、SHA256、target status/log/evidence templates 与 expected-artifact contract，并以一个 checkpoint commit 同时提交 execution report + **恰好这一份新 script**。`.ai-bridge/**` 仍完全不 tracked。operator action 必须提醒用户先通过 Git 让 exact checkpoint commit 在 4090 可达（例如 control plane push 后 target fetch；workflow 本身不自动 push），然后在 4090 checkout/detach 到 exact commit、确认 working tree clean、重新计算 script SHA256 并直接运行 tracked script；不存在权威的 out-of-band script copy。script 不硬编码 1660 Ti 路径，而从 target checkout/显式 `CODE_VERIFIER_TARGET_REPO` 解析当前 repo；它验证 current `HEAD` 就是包含 latest operator checkpoint 与自身的 commit、其 parent 等于 `result_code_commit`、该 checkpoint commit 只新增/修改本 stage execution report 与该 tracked script、latest checkpoint 的 stage/gate/checkpoint-id/script-path/SHA 与自身一致。随后验证 target-local `.ai-bridge/validation-machine.json`、READY/Piston identity、persistent roots 与 >=22528 MiB GPU，取得锁，执行 start preflight、target command 与 post-run acceptance。
-- `restart_policy=exact_rerun` 时，环境故障可在**不改变 stage HEAD/checkpoint**的前提下重跑同一 immutable script，由底层 exact-prefix resume 验证 identity；`restart_policy=trainer_checkpoint` 时，同一个 script 必须在再次运行时检测 canonical run 是否已有合法同-run `checkpoint-*`，存在则自动把 latest numeric checkpoint 作为 `--resume-from-checkpoint` 传给 `train-sft/train-grpo`，从而保持 operator checkpoint commit / training `project_commit` 不漂移。已有 run 但没有合法 checkpoint 时必须 fail closed，不能删除/覆盖 run；若最高编号 checkpoint 在 Trainer 实际加载时被判为不完整/损坏，resume 诊断必须先把该 checkpoint 单独移动到 persistent quarantine 并记录，再保持同一 stage HEAD 重跑 script 让其退回前一个合法 checkpoint。
+- operator handoff 必须是**Git 自包含且可跨机器执行**的。control-plane executor 生成 tracked、immutable、secret-free `ai-work/executor/operator/{stage_id}/{gate_id}/{checkpoint_id}/run.sh`；operator checkpoint 记录 repo-relative script path、SHA256、target status/log/evidence templates 与 expected-artifact contract。checkpoint commit 应尽量保持为 execution report + script 的窄范围，但可包含已解释且不改变待运行业务代码的 provenance/docs 变化。`.ai-bridge/**` 仍完全不 tracked。用户通过 Git 让**实际 handoff checkpoint commit**在 4090 可达，然后 checkout/detach 到该 commit、确认 working tree clean、重新计算 script SHA256 并运行 tracked script。target 端必要 Git 校验只保留：current HEAD 就是用户 handoff 的 commit、stage/gate/checkpoint/script path 可归属、tracked script SHA 与记录一致。parent/result_code/latest-checkpoint/source-plan 等普通 commit 关系只作诊断/审计，不要求机械等式。随后验证 target machine/runtime/storage 等真正影响运行真实性的条件。
+- `restart_policy=exact_rerun` 时，环境故障可以重跑**同一实际 handoff commit 中的 immutable script**；control-plane stage HEAD 后续是否前移不影响这个 target attempt，只要该 handoff commit/script 仍与当前 effective gate 兼容。`restart_policy=trainer_checkpoint` 时，script 可检测 canonical run 中的合法同-run trainer checkpoint 并选择 latest valid checkpoint 恢复。已有 run 但没有可恢复 checkpoint、或 checkpoint 损坏时应 fail closed / quarantine，避免覆盖历史结果；是否需要新的 handoff commit 由 LLM 根据 tracked code/config 是否改变和当前 gate compatibility 判断，而不是为了维持普通 project/source SHA 强行保持旧 HEAD。
 - 若失败需要 tracked source/config/test 修复，或 incomplete run 与新 code identity 不再兼容，旧 persistent run **不得删除或覆盖**；executor 必须先把它移动到 artifact root 下唯一 quarantine 路径并在 execution report 记录 original/quarantine path 与原因，再用新的 operator checkpoint/script 从 canonical run path fresh restart。没有 checkpoint 的早期中断也走同一 quarantine + fresh-restart 路径。
 - executor 在 operator pause 前完成并 commit 所有应有的 tracked code/config/test；若该 validation stage 在 gate 前不需要任何 tracked 修改，也允许 operator checkpoint 的 `result_code_commit == plan_commit`（repair 时可等于 `review_commit`），不得为了制造 code commit 改文件。
-- 每次 target attempt 都必须写 versioned、secret-free `operator-evidence.json`。最小字段绑定 `stage_id/source_plan_commit/operator_checkpoint_commit/result_code_commit/checkpoint_id/operator_gate_id/operator_script_path/operator_script_sha256`，target machine-record SHA256、GPU identity/VRAM、resolved roots、Piston identity（如 required）、attempt timestamps、`command_rc/postcheck_rc/gate_status`、formal run identity，以及 expected-artifact inventory（至少 path/size；identity/metadata artifacts 必须 SHA256）。只有 command + postcheck 都通过才能 `gate_status=passed`。用户把 evidence 与必要 status/log/manifest/metrics 小文件 byte-for-byte 同步回 control plane 后再显式 resume；resume 计算 received evidence SHA256、逐字段绑定 current checkpoint，并把该 SHA256 写入最终 completed execution record。大型 checkpoint 默认不复制；若 evidence/postcheck 不能证明某个 required large-artifact property，则在 PASS 前做一次短时只读 target check。用户口头结果或 exit code 单独永远不是 evidence。
+- 每次 target attempt 都必须写 versioned、secret-free `operator-evidence.json`。必要 strict identity 聚焦于 `stage_id/operator_checkpoint_commit/checkpoint_id/operator_gate_id/operator_script_path/operator_script_sha256`、target machine/runtime identity、attempt timestamps、`command_rc/postcheck_rc/gate_status`、formal run identity，以及 required artifact inventory/hashes。`source_plan_commit/result_code_commit/review/workflow-runtime` 等普通 commit 字段可以继续记录为审计 anchors，但 resume 不要求它们逐字段与当前 control-plane 状态机械相等；有漂移时检查 lineage/diff 与 gate compatibility。用户同步 evidence 后重算 received evidence SHA256，并把它记录到 completed execution record。大型 checkpoint 默认不复制；evidence/postcheck 不能证明 required large-artifact property 时再做短时只读 target check。用户口头结果或 exit code 单独仍不是 formal evidence。
 - `target_hardware=GTX 1660 Ti (6GB)` 的 validation stage 不写该 block；`target_hardware=24GB GPU` 时该 block 必须覆盖全部 24GB acceptance gates，即使其中某个 gate 很短。
 
 `development_terminal: true` 的 plan 必须包含结构化 `Development Completion Inventory`，并额外把 development closeout 全局 gate 写入总体验收：`make lint`、`make test`、`make test-gpu`、`make test-piston`（项目配置的真实 loopback Piston，0 failed/0 skipped）以及生产关键路径无 stub/TODO/fake implementation 的检查。`DEV-CLOSEOUT` 仅运行这些收口检查并写 execution evidence，不新增功能；其 routing 固定为 SINGLE，且允许 zero-code E0。
@@ -192,7 +194,7 @@ planner-ex 不写模型名/effort，也不选择 execution backend。`backend=lo
 
 1. 自检 schema、范围、验收与 stage metadata；
 2. 不写入 main 的 `ai-work/planner/`；
-3. handoff 前再次确认 `main HEAD == planning_base_commit`，且 `git worktree list` / stage branch 集合与规划开始时一致；若 planner 运行期间出现新的 branch/worktree 或 primary HEAD 改变，返回 `PLANNER_GIT_STATE_CHANGED`，不要发布可执行 handoff；
+3. handoff 前比较 current main/worktree/branch 与规划起点。若 main HEAD 或 worktree 集合发生变化，先判断变化是否影响本 plan 的 stage identity、依赖或 scope；无实质冲突时可更新/记录 effective base 后发布，只有出现无法合并的并发 stage、计划依赖已失效或 provenance 无法判定时返回 `PLANNER_GIT_STATE_CHANGED`；
 4. 优先通过 CodexPro handoff 发布完整正文，并明确下一步：`$stage-lifecycle bootstrap_plan`；调用方可在当前 Web GPT + CodexPro 或 Local Codex 中执行同一个 lifecycle skill；
 5. 若只能文本返回，必须同时返回 `stage_id / planning_base_commit / branch / worktree / final plan path`，供 bootstrap 使用。
 
@@ -200,10 +202,10 @@ planner-ex 不写模型名/effort，也不选择 execution backend。`backend=lo
 
 ## 自检
 
-- [ ] 无 active stage，或本次是明确且允许的 pre-execution replan；
+- [ ] active stage 状态已检查；用户未要求 replan/override 时不会无故并行规划冲突 stage，用户明确重规划已有历史 stage 时保留旧 artifact/history并形成 amendment/effective contract；
 - [ ] stage_id 唯一且完整，拆分 stage 使用 `WPn-a/b/...`；
 - [ ] 已明确 `stage_profile / target_hardware / evidence_class / development_terminal`，development stage 不包含 24GB 真实训练 gate，validation stage 不接受 synthetic/mock 作为完成证据；
-- [ ] 已写 control-plane Execution preflight，只包含当前 1660 Ti 实施前可判断的 Piston/import/local data-cache 等 blocker；target 4090 CUDA/model/cache/roots 没有被错误提前要求；
+- [ ] 已写默认 control-plane Execution preflight，只包含有实际价值的 prerequisites；executor 后续可基于 evidence/current state选择必要最小集合；target-only preflight没有被提前强加到 control plane；
 - [ ] validation target=1660 时只消费有 identity/hash 绑定的 formal evidence；target=24GB 时真实输出使用 target-runtime persistent `CODE_VERIFIER_ARTIFACT_ROOT` 语义，唯一 checkpoint/result 不在 stage worktree；
 - [ ] validation target=24GB 时所有 24GB acceptance gates（包括短 smoke）均在合法 `operator_terminal_execution` block 中；每 gate 有正确 restart policy（SFT/GRPO=`trainer_checkpoint`）、tracked Git script provenance、target-start preflight、mandatory post-run acceptance、versioned evidence schema/evidence-SHA resume binding 与 quarantine/no-overwrite；
 - [ ] 若仍有 development deliverable 未覆盖，没有错误标记 terminal；若 `development_terminal=true`，Development Completion Inventory 已逐项覆盖 WP0–WP8 且包含完整 closeout gates；
@@ -213,9 +215,9 @@ planner-ex 不写模型名/effort，也不选择 execution backend。`backend=lo
 - [ ] 只覆盖一个可独立验收 stage；
 - [ ] 每步函数级、可测试、可判定；
 - [ ] 没有 plan 外范围蔓延或 `third_party/open-r1/` 修改；
-- [ ] routing 三维独立评估，MULTI 通过 hard gate；
+- [ ] routing 三维独立评估；MULTI 作为初始/default assessment 只有在确有收益时选择，后续 executor 可按用户指令/真实依赖调整 effective topology；
 - [ ] plan 未写模型/effort；
 - [ ] planner-ex 没有创建 worktree/branch、commit/merge/push，也没有在 main 写最终 plan；
 - [ ] `.ai-bridge/**` 是 ignored/untracked transport，planner 没有把它纳入任何 Git artifact；
-- [ ] planner-ex 前后的 primary HEAD、worktree 集合与 stage branch 集合一致；
+- [ ] planner-ex 前后 primary HEAD/worktree/branch 的变化已比较；有变化时已判断是否影响 plan scope/base，而不是仅因 SHA/集合改变拒绝 handoff；
 - [ ] 最终正文已准备交给 `stage-lifecycle bootstrap_plan`。

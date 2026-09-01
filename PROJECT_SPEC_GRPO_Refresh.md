@@ -968,7 +968,7 @@ refresh_defaults:
 
 # 17. 后续规划与 stage 路由
 
-本规格已经激活为 WP9 research track。Git lifecycle、函数级实施细节、operator script、正式训练时间和 execution backend 仍由后续各 stage plan / lifecycle / router 决定；但为了让新对话可以从仓库状态自动确定下一步，本规格冻结以下高层依赖顺序。
+本规格已经激活为 WP9 research track。Git lifecycle、函数级实施细节、operator script、正式训练时间和 execution backend 仍由当前项目 workflow、后续 stage plan / lifecycle / router 决定；sealed plan/routing 是默认执行基线而非普通 Git SHA 状态锁，用户明确的实现/routing/recovery override 可以形成 recorded effective contract。**这种 workflow 灵活性不改变本规格的 MUST/MUST NOT、数据隔离、实验身份、真实 calibration/pilot/formal evidence 或 WP9 依赖顺序。**为了让新对话可以从仓库状态自动确定下一步，本规格冻结以下高层依赖顺序。
 
 ## 17.1 WP9-a — Refresh data foundation
 

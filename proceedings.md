@@ -867,3 +867,16 @@ WP8-a 已完成 formal A–D automated analysis、paired bootstrap、cost 与 de
 ### WP9 后续路由
 
 WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next dependency-ready stage 是 `WP9-b`（Calibration / k=8 / throughput engineering，development）**。原 second-seed/full-rerun robustness item 继续保持 deferred, not cancelled，不覆盖当前 WP9 routing。
+
+---
+
+## Project workflow amendment: effective contract / semantic continuation（2026-09-01）
+
+- **性质**：项目级 workflow/provenance policy 更新；supersede 旧 workflow 文档中把普通 plan/review/result/checkpoint-parent/workflow-runtime SHA 等式当作执行状态锁的部分，不追溯修改任何 finalized stage、历史 review 结论、正式 experiment definition、formal artifact identity 或既有 operator evidence。
+- **Contract precedence**：项目规格/active addendum 的 MUST/MUST NOT、安全与 scientific evidence 边界始终最高；在这些硬规范内，用户明确的新实现方式、业务 scope、步骤顺序、execution routing 或恢复策略优先于 sealed plan/review 的默认实现合同。sealed artifact 保留为历史 baseline，不要求为了 override 重写文件或维护旧 hash 等式。
+- **Continuation-first**：`plan_commit`、`review_commit`、`result_code_commit`、checkpoint parent、`planning_base_commit`、`workflow_runtime_commit` 等普通 Git identity 主要作为审计 anchors。partial stage 应先由 LLM 根据 Git history、execution/review report、diff、tests 与用户意图推导 effective completed/remaining scope；formal checkpoint 是首选恢复记录但不是唯一继续凭证。只有 stage/source 无法安全归属、状态不可恢复或用户明确 abandon 时才使用 `retire_incomplete`。
+- **Routing flexibility**：SINGLE/MULTI/workstream/repair routing 是默认 orchestration assessment；用户 override 或真实代码依赖可以改变 effective topology、顺序或 scope，并在 execution/review 中记录理由。不得为了保持 sealed routing 的形式制造假 lane、重复工作或无意义 commit。
+- **Review/finalize semantics**：reviewer 审查当前实际代码与 effective contract；普通 HEAD/SHA 前移不会自动 stale。checkpoint/finalize 只在存在未审查的实质代码/配置/验收变化、scope/provenance 不可判断或真实冲突时阻塞。
+- **仍然严格的 identity**：正确 stage/worktree/task、completed execution 幂等、`.ai-bridge/**` zero tracked paths、真实 formal evidence/hidden-test isolation、24GB operator boundary、**实际 target handoff commit**、tracked `run.sh` SHA、received operator-evidence SHA、target runtime identity、`command_rc/postcheck_rc/gate_status` 与 required artifact/metadata hashes 继续 fail closed。普通 parent/source commit 等式不能替代这些真实执行 identity，也不能反过来成为无关 blocker。
+- **WP9 scientific guard**：本 amendment 不改变 `PROJECT_SPEC_GRPO_Refresh.md` 的 SFT/GRPO overlap、k=8、zero-variance、Public/Hidden pairing、evaluation leakage、real calibration/pilot/formal evidence 或 WP9 dependency order。用户可以改变实现路径，但不能用 workflow override 降低这些规范性 acceptance。
+- **Current routing**：本次 maintenance 不创建 active stage，不改变已 finalized `WP9-a`。**下一 dependency-ready stage 仍为 `WP9-b` development**；planner 必须同时读取主规格、Refresh addendum、最新 proceedings 与当前 canonical workflow policy。

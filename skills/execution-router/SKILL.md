@@ -1,11 +1,21 @@
 ---
 name: execution-router
-description: Routed execution 控制面。消费 stage-lifecycle seal 的 plan execution_routing 或 checkpoint 的最新 review repair_routing，结合 Git/provenance 状态阻止重复、stale 或 incomplete execution，并按运行时 backend=local|web 选择 Local Codex 或当前 Web GPT + CodexPro 执行。只做状态推导与执行调度，不自行重判 routing、不做 review/finalization。
+description: Routed execution 控制面。默认消费 sealed plan / latest review routing，但允许用户明确指令覆盖执行方式；结合 Git/provenance 与当前项目状态由 LLM 判断 continuation/resume 是否安全，并按运行时 backend=local|web 调度。只保留必要的身份/完整性校验，不把普通 commit/SHA 漂移当作机械阻塞。
 ---
 
 # Execution Router
 
 Routing compatibility marker: `execution-routing-v2`。
+
+## Workflow precedence 与宽松 provenance 原则
+
+本 workflow 的目标是可靠推进项目，而不是维护一个不可变的 Git 状态机。发生冲突时按以下优先级处理：
+
+1. **用户当前明确指令**最高。用户在 execution、repair、resume 或其它阶段明确指定新的实现、顺序、routing、范围或恢复方式时，只要不违反仓库安全边界和不可伪造的 evidence contract，就以用户指令为准；sealed plan/review 只作为默认基线。
+2. 用户没有覆盖时，严格按 sealed plan / latest committed review 执行，避免 agent 自行扩大 scope。
+3. commit/SHA/provenance 字段主要用于定位和审计。除跨机器 operator script/evidence 内容完整性、stage/worktree 身份、防止重复消费已完成 execution、以及 `.ai-bridge` 不得 tracked 等必要边界外，不因普通 HEAD 前移、parent 不完全相等、workflow runtime commit 漂移或缺少某个历史 hash 就机械拒绝。
+4. 遇到 partial/incomplete execution 时，router 必须先由 LLM 结合 plan/review、Git history/diff、execution report、测试结果和当前 working tree 判断是否可安全继续。**可恢复是默认方向**；只要没有明确不可修复冲突、不可判定的数据损坏或用户要求放弃，就允许 resume/continue，并记录判断依据。
+5. 若采用用户 override 或 LLM continuation judgment 与 sealed artifact 不完全一致，把偏差、原因、受影响 scope 和采用的 provenance anchor 写入 execution report；不要为了满足旧 hash guard 制造无意义 commit 或强迫 retire/replan。
 
 ## 入口与 backend
 
@@ -26,7 +36,7 @@ runtime 判定遵循 common-case capability guard：
 
 backend 不是 plan/review routing 字段，不写回 sealed plan/review，不影响 plan 的 `mode/complexity/parallelizability/multi_benefit`，也不参与 provenance 合法性判断。implementation 与每轮 repair 可以分别选择不同 backend。
 
-Router 还接受一个**显式恢复意图**：`resume`（例如 `$execution-router resume` 或等价明确指令）。`resume` 不是 routing 字段，也不能选择任意历史 commit；它只允许消费**当前 HEAD 对应的最新合法 resumable execution checkpoint**，即 `interruption_class=environment` 或 `interruption_class=operator`。普通调用遇到 environment checkpoint 时返回 `ROUTING_RESUME_AVAILABLE`；遇到 operator checkpoint 时返回 `ROUTING_OPERATOR_ACTION_REQUIRED` 并报告 exact script/status/log/expected artifacts；两者都不自动续跑。只有用户明确 resume 后才 dispatch，且继续消费原 plan/review 的 sealed routing，不重新规划、不改变 mode/backend。
+Router 接受显式 `resume`，但 resume 不再要求存在某个完全匹配当前 HEAD 的 formal checkpoint。checkpoint 是恢复提示和审计材料，不是唯一入口。router 应结合 execution report、Git history/diff、测试结果和当前 workspace 状态判断 continuation：若已完成范围可识别、剩余范围可继续、没有不可修复冲突，则允许 resume/continue 并记录依据；只有明确不可继续时才进入 retire/replan。operator handoff 仍必须等待用户完成外部 command/evidence，不得由 router 越权执行。
 
 真正的 Web GPT + CodexPro 环境请求 `backend=local`（或未指定 backend）时返回 `ROUTING_LOCAL_BACKEND_REQUIRES_LOCAL_CODEX`。Local Codex 的 MULTI execution 若缺少 execution-agent 能力则返回 `ROUTING_LOCAL_AGENT_CAPABILITY_UNAVAILABLE`；这不改变 runtime/backend 判定。若显式 `backend=web` 但当前环境不是 Web GPT + CodexPro，或没有可写 CodexPro workspace、Git、所需验证命令能力，则返回 `ROUTING_WEB_BACKEND_UNAVAILABLE`。以上情况都不得自动切 backend。
 
@@ -45,9 +55,9 @@ Open-R1 artifact：
 - execution：`ai-work/executor/{stage_id}-executor.md`
 - review：`ai-work/reviewer/{stage_id}-review.md`
 
-plan 必须已经由 `stage-lifecycle bootstrap_plan` commit；router 通过 Git 历史推导 `plan_commit`。未提交、dirty 或 seal 后又修改 plan → `ROUTING_PLAN_NOT_SEALED`。同时解析 `stage_profile / control_plane_hardware / target_hardware / evidence_class / development_terminal`；`control_plane_hardware` 固定 `GTX 1660 Ti (6GB)`。development 只允许 target=GTX 1660 Ti + engineering；validation 固定 real-training/numerical + terminal=false，但 target 可为 GTX 1660 Ti（formal-evidence-only analysis）或 24GB GPU（含新的 target-GPU execution）。validation target=24GB 时 sealed plan 必须有覆盖全部 24GB gates 的 operator block；target=GTX 1660 Ti 时不得隐含需要 24GB execution。违反返回 `ROUTING_PLAN_PROFILE_INVALID`。target hardware 不决定当前 Web/Local backend 或 router 所在机器。
+正常 stage 应存在由 `stage-lifecycle bootstrap_plan` 提交的 plan baseline；router 从 Git 推导 `plan_commit` 作为 provenance anchor。当前 plan/HEAD 与 seal 不同不自动等于 `ROUTING_PLAN_NOT_SEALED`：若差异来自用户明确 override、合法 amendment 或可解释 continuation，可形成 effective contract 并记录；只有无法找到可信 baseline、stage identity 不明或未经授权的 plan 漂移会让执行范围不可判定时才报该错误。同时从 plan/user/current state 推导 effective profile/hardware/evidence contract；真正 target-GPU 与 formal evidence 安全边界仍必须满足。
 
-**已封存旧 stage 的迁移兼容**：本 control-plane workflow 上线前已经存在 completed execution 或 committed review 的 active stage，其 sealed plan 可能没有 `control_plane_hardware`。这类 stage 不得为了采用新 workflow 改写 plan。router 仅在“同一 `plan_commit` 已有 committed completed execution 或 committed review”这一窄条件成立时，把缺失字段运行时解释为 `GTX 1660 Ti (6GB)`，并向 executor 传 `legacy_control_plane_default=true` 与当前 clean maintenance runtime 的 exact `workflow_runtime_commit`；其它 metadata 仍逐项严格校验。没有 execution/review 的纯 PLANNED stage 缺字段仍返回 `ROUTING_PLAN_PROFILE_INVALID`，应走 pre-execution replan，而不是静默补字段。
+**旧 stage / workflow migration 兼容**：sealed plan 缺少后来新增的 metadata 时，router 不要求为了采用新 workflow 重写历史 plan。优先从 proceedings、已有 execution/review、当前代码与用户意图推导 effective metadata，并记录 `workflow_runtime_commit` 等实际 runtime anchors（如可得）。这些普通 commit SHA 用于审计，不要求与旧 plan/review 逐项精确匹配；只有 profile/hardware/evidence 语义无法可靠确定或会突破安全边界时才返回 `ROUTING_PLAN_PROFILE_INVALID`。
 
 ## Control-plane dispatch 与 target-GPU boundary
 
@@ -76,37 +86,37 @@ Router 默认只调度 **control-plane execution**。无论 `stage_profile=devel
 
 ## 状态推导与 source precedence
 
-任何 dispatch 前 stage worktree 必须干净：
+dispatch 前必须先检查 working tree，但 **dirty 不再自动等于不可执行**：
 
-- 只有 review 文件存在 staged/unstaged/untracked 修改 → `ROUTING_REVIEW_NOT_COMMITTED`
-- 其它 tracked 或非忽略 untracked 改动 → `ROUTING_STAGE_DIRTY`
+- 未提交 review 文件仍不直接交给 router 消费；默认返回 `ROUTING_REVIEW_NOT_COMMITTED`，除非用户明确要求基于该草稿执行并且来源/round 可可靠判断。
+- 其它 tracked 或非忽略 untracked 改动由 LLM 判断归属。若它们明显属于当前 partial execution、用户刚指定的实现调整或可安全纳入的 continuation，可继续并在 report 记录 baseline；只有来源不明、与当前 stage 冲突、可能覆盖他人工作或无法判断时返回 `ROUTING_STAGE_DIRTY`。
 
-不得在未知 dirty baseline 上启动 execution。
+不得在**无法解释**的 dirty baseline 上执行；可解释且可恢复的 dirty state 不应被机械阻塞。
 
 ### Resumable execution checkpoint
 
-Router 只把 execution report 中**最新 committed**、且提交该 checkpoint 的 provenance commit 恰好等于当前 stage HEAD 的 `execution_checkpoint` 视为 resumable。所有 class 共同要求：
+Router 优先使用 execution report 中最新可信的 `execution_checkpoint` 作为恢复 anchor，但 checkpoint commit **不必恰好等于 current HEAD**。恢复判断分两层：
 
-- `version: 1`、非空唯一 `checkpoint_id`、`resume_allowed: true`；
-- `stage_id/task_kind/source_plan_commit` 与当前 stage 精确一致；implementation 的 `source_review_round/source_review_commit` 必须为 null、`repair_issue_ids=[]`；repair 必须精确绑定 latest committed review round/commit/issues；
-- `result_code_commit` 必须是 checkpoint provenance commit 的 parent HEAD；environment checkpoint commit 只允许改 execution report，portable operator checkpoint commit 只允许改 execution report + 新增 record 指定的 tracked operator script；
-- `completed_scope` 与非空 `remaining_scope` 可解析；当前不存在同一 source 的 completed execution，也不存在 checkpoint 之后的其它 commit。
+- 必要身份：stage_id/task_kind 能归属于当前 stage、没有同一 source 的 completed execution、completed/remaining scope 或实际 Git diff 可以被可靠推导。
+- 审计线索：source_plan/review commit、result_code_commit、checkpoint parent、checkpoint 后 commits 等用于判断历史，不要求逐项 SHA 完全相等。若它们有漂移，LLM 检查 diff/commit 内容并记录采用的 anchor。
+
+只有 operator checkpoint 的 tracked script SHA/evidence SHA、跨机器 artifact identity 等内容完整性继续按 strict contract 校验，因为这些 hash 用于证明实际执行对象而非维护状态机形式。
 
 然后按 `interruption_class` 分支校验：
 
 - **environment**：`status: interrupted`；`failed_command`、`blocker` 非空。仅用于已有有效部分业务 commit 后的外部环境/基础设施故障。普通 router 调用返回 `ROUTING_RESUME_AVAILABLE`，报告 failed command/blocker/remaining scope，提示修复环境后显式 resume。
-- **operator**：只允许 `stage_profile=validation,target_hardware=24GB GPU` 且 sealed plan 存在匹配 `operator_terminal_execution.gates[].gate_id`；restart policy 合法，SFT/GRPO=`trainer_checkpoint`；`status: awaiting_operator`。正常新 target-GPU checkpoint 使用 `operator_handoff_mode=portable_target`：必须有唯一 gate id、repo-relative `operator_script=ai-work/executor/operator/.../run.sh`、64-hex SHA256、target status/log/evidence templates、control-plane evidence directory 与非空 `expected_artifacts`。router 必须从当前 checkpoint commit 的 Git tree 读取 script，确认该 path 是本 commit 新增、无其它 operator script diff、SHA 匹配且 `.ai-bridge/**` 未 tracked；不依赖 control-plane 外部文件。另有一个**仅 active-stage migration repair 可用**的 `operator_handoff_mode=control_plane_manual`：必须同时满足 `task_kind=repair`、`legacy_control_plane_default=true`、checkpoint 记录 exact `workflow_runtime_commit`、latest committed reviewer finding 明确要求为迁移前 operator gate 补 operator-owned provenance、且该 repair command 本身不执行任何 24GB GPU training/inference。它同样使用本 checkpoint 新增的 repo-relative tracked script + SHA，但 status/log/evidence 位于 stage worktree 外的 control-plane persistent path；script 在 GTX 1660 Ti 手工运行，必须绑定 frozen generation/data/code/dependency/Piston/formal namespace identity、使用 fresh non-overwriting repair output、原子 status、append-only terminal log 与 versioned evidence。`control_plane_manual` 不能用于新 plan、implementation、普通 convenience offload 或绕过真实 target-GPU gate。旧版没有 `operator_handoff_mode` 且记录 absolute persistent-root script/status/log 的 checkpoint 继续按 legacy v1。普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`；portable_target 报告 Git handoff 到 4090，control_plane_manual 报告当前 control-plane exact script/status/log/evidence 与手工执行要求；两者都不得自动 push或执行 script。
+- **operator**：用于 effective validation contract 中确实需要 target-GPU/manual operator action 的 gate。`portable_target` 必须能唯一识别 gate、实际 handoff checkpoint commit、repo-relative tracked script 与 script SHA、expected artifacts/evidence destination；router 从 handoff commit 的 Git tree 读取并重算 script SHA，确认 `.ai-bridge/**` 未 tracked。是否该 script“恰好由本 commit 新增”、checkpoint parent/result-code/source-plan SHA 等只作审计，不是硬门槛。`control_plane_manual` 仅用于明确的 control-plane-only repair，latest review 或用户明确指令必须说明该 path，且不得执行新的 24GB GPU training/inference；workflow/review/source commit 只作 audit anchors，tracked script/frozen inputs/outputs/evidence identity 仍严格。普通调用返回 operator action，router 不自动 push或执行 script。
 
-只有显式 resume 才继续；若用户还指定 checkpoint_id，它必须等于当前 HEAD 的 latest checkpoint，不能选择 stale checkpoint。用户显式要求 resume 但当前 HEAD 不存在合法 checkpoint、checkpoint provenance/class 字段不匹配、operator script hash 漂移或 checkpoint 之后又有其它 commit 时返回 `ROUTING_RESUME_INVALID`，不得猜断点或自动 retire。Web GPT + CodexPro 的显式 resume 仍必须带 `backend=web`；仅写 `resume` 不改变 Web backend 的显式选择规则。
+显式 `resume` 表示用户希望优先继续当前 stage。若用户指定 checkpoint_id，优先以它作为恢复 anchor；即使它不是 current HEAD 的 latest checkpoint，也可在确认后续 commits 与该恢复路径兼容时继续。缺失 formal checkpoint、普通 provenance 字段不匹配或 checkpoint 后存在额外 commits 都不单独触发 `ROUTING_RESUME_INVALID`；LLM 先做 continuation assessment。只有 stage/source 无法唯一归属、存在不可调和的状态冲突/损坏，或 operator script/evidence 内容 hash 失败时才判 resume invalid。不得因此自动 retire。
 
-显式 resume 时先重新执行 Stage environment preflight；validation 在 control plane 不重新执行本机 4090 machine/GPU preflight。`portable_target` operator resume 传 tracked script path/SHA、operator checkpoint commit、target templates/evidence directory/expected artifacts；executor 计算 received `operator-evidence.json` SHA256，并严格验证 versioned fields 与 current plan/checkpoint/script/target contract一致：至少 `command_rc=0`、`postcheck_rc=0`、`gate_status=passed`，machine/GPU/roots/Piston（如 required）匹配，formal run/expected-artifact inventory满足 sealed acceptance；同步回来的 identity/metadata artifacts必须重算 hash。证据不足以证明 required large-artifact property 时，保持 checkpoint 不变并要求短时只读 target check，而不是猜 PASS。`control_plane_manual` resume 同样重算本地 evidence SHA，并严格验证 current plan/review/workflow-runtime/checkpoint/script、frozen generation/data/verifier/Open-R1/dependency/Piston/formal namespace、fresh output inventory、`command_rc=0/postcheck_rc=0/gate_status=passed`；它不得要求或伪造 4090 machine/GPU fields。通过后从 remaining_scope 继续，并在最终 completed execution record 以固定字段 `operator_evidence_sha256`（同时记录 gate/checkpoint id 与 handoff mode）绑定 evidence bytes。legacy operator 继续按原 absolute fields。不得替用户重跑任何 operator command。
+显式 resume 时重新执行当前任务必要的 stage-environment preflight；validation 在 control plane 不伪造 4090 preflight。operator resume 传 handoff checkpoint/script/evidence context，executor 计算 received evidence SHA256。严格校验只保留证明实际运行对象和结果所需的 identity：handoff checkpoint、tracked script SHA、evidence bytes、target machine/runtime（如适用）、`command_rc/postcheck_rc/gate_status`、formal run 与 required artifact hashes/inventory。plan/review/workflow-runtime/result-code 等普通 commit SHA 只作审计 anchors；漂移时检查 lineage/diff。证据不足以证明 required large-artifact property 时才要求短时只读 target check。通过后从 effective remaining scope 继续，并把 received evidence hash 以固定字段 `operator_evidence_sha256` 写入 completed execution record；不得替用户重跑任何 operator command。
 
 ### A. 尚无 committed review
 
-- 已有 `task_kind=implementation,status=completed,source_plan_commit=<plan_commit>` → `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED`，等待 reviewer-ex。
-- 无 completed E0 且 `HEAD == plan_commit` → `task_kind=implementation`，消费 plan `execution_routing`。
-- 无 completed E0、`HEAD != plan_commit`，但当前 HEAD 是合法 implementation resumable checkpoint → environment 普通调用返回 `ROUTING_RESUME_AVAILABLE`，operator 普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`；显式 resume 后 `task_kind=implementation`，消费原 plan `execution_routing` 并传完整 resume context。
-- 无 completed E0 且 `HEAD != plan_commit`，又不存在合法 current-head checkpoint → `ROUTING_INCOMPLETE_IMPLEMENTATION` / `INCOMPLETE_UNKNOWN`；不得自动重跑整份 plan。只有用户明确放弃当前半截 stage 时才提示 `$stage-lifecycle retire_incomplete stage_id/reason`，archive 后重新 planner-ex。
+- 已有 matching `task_kind=implementation,status=completed` → `ROUTING_IMPLEMENTATION_ALREADY_EXECUTED`，避免重复消费；普通 source_plan SHA 漂移不掩盖一个事实上已完成的 E0。
+- 无 completed E0 时，以 plan 为默认基线，检查 current HEAD/partial commits/checkpoint/working tree。若尚未开始则正常 implementation；若已有可识别部分工作则进入 continuation/resume assessment。
+- environment/operator checkpoint 存在时优先利用其 scope；operator 未完成外部 action 时仍返回 `ROUTING_OPERATOR_ACTION_REQUIRED`。
+- 没有 formal checkpoint 但当前状态仍可可靠恢复时，也允许 `task_kind=implementation` continue。只有 LLM 明确认定状态不可恢复或 provenance 无法归属时才返回 `ROUTING_INCOMPLETE_IMPLEMENTATION`；此时再由用户决定修复、replan 或 retire。
 
 ### B. 已有 committed review
 
@@ -121,13 +131,13 @@ Router 只把 execution report 中**最新 committed**、且提交该 checkpoint
 
 - required=false → `ROUTING_NO_REPAIR_REQUIRED`
 - required=true：
-  1. 从 Git 推导 latest `review_commit`；
-  2. `HEAD == review_commit` 且尚无 matching completed repair (`source_review_round` + `source_review_commit`) → `task_kind=repair`；
-  3. 已有 matching completed repair → `ROUTING_REPAIR_ALREADY_EXECUTED`；
-  4. 尚无 matching completed repair，且当前 HEAD 是精确绑定该 latest review 的合法 repair resumable checkpoint → environment 普通调用返回 `ROUTING_RESUME_AVAILABLE`，operator 普通调用返回 `ROUTING_OPERATOR_ACTION_REQUIRED`；显式 resume 后 `task_kind=repair`，消费原 `repair_routing` 并传完整 resume context；
-  5. 其它不可解释状态 → `ROUTING_STAGE_STATE_INVALID`。
+  1. 从 Git 定位 latest review 作为默认 repair baseline；
+  2. 已有 matching completed repair → `ROUTING_REPAIR_ALREADY_EXECUTED`；
+  3. 否则检查 review 后 commits/checkpoint/working tree，推导已完成与剩余 repair scope；`HEAD != review_commit` 本身不是错误。
+  4. environment/operator checkpoint 存在时优先利用；没有 formal checkpoint但状态可可靠归因时，也允许 repair continuation。用户明确改变 repair 方式/scope 时以用户指令形成 effective repair contract。
+  5. 只有无法确认当前变化属于哪轮 review/repair、存在互斥状态或不可恢复损坏时才返回 `ROUTING_STAGE_STATE_INVALID`。
 
-Router 永不消费未 checkpoint review。
+Router 默认消费 latest committed review。若用户明确要求基于未 checkpoint 的 review 草稿执行，且 stage/round/issues 可可靠归属，可将其作为临时 effective repair contract；必须在 execution report 记录来源，不能把草稿伪装成 committed provenance。
 
 ## Routing contract
 
@@ -141,9 +151,9 @@ Router 永不消费未 checkpoint review。
 - repair required=true：repair_issue_ids 非空唯一；MULTI candidate 使用 `issue_ids` + tracked `write_scope`，issue_ids/write_scope 不重叠且 issue_ids 并集恰好等于 repair_issue_ids
 - required=false 的 null/empty schema 只产生 NO_REPAIR，不执行
 
-错误分别使用 `ROUTING_CONTRACT_MISSING/INVALID`、`ROUTING_REPAIR_CONTRACT_MISSING/INVALID`。
+这些 schema 是默认 planning/review contract。字段缺失或内部不完全一致时，先判断是否能从 plan/review/代码和用户指令唯一推导 effective routing；能可靠恢复时继续并记录 normalization，只有 stage/task/scope 无法确定时才使用 `ROUTING_CONTRACT_MISSING/INVALID` 或 `ROUTING_REPAIR_CONTRACT_MISSING/INVALID`。
 
-**Router 不得重新计算、降级或改写 source routing。** backend 只改变执行拓扑。
+**用户未覆盖时优先保留 source routing；用户明确指令或真实代码依赖表明原 routing 不再合适时，router/LLM 可以调整 effective mode、lane 划分或顺序。** sealed routing 保留为审计 baseline，不必回写 plan/review。
 
 ## backend=local
 
@@ -164,13 +174,13 @@ Router 永不消费未 checkpoint review。
 3. 传：stage_id、绝对 worktree、stage branch、plan path、plan_commit、task_kind、`backend=local`、`source_mode=single`、single_class，以及 `stage_profile/control_plane_hardware/target_hardware/evidence_class/development_terminal`。普通 validation control-plane dispatch **不传 4090 `artifact_root/hf_home/formal_data_root`**；operator gate 使用 sealed target-runtime templates，并由 4090 script 解析真实 roots。
 4. repair 再传 review path、source_review_round、review_commit、repair_issue_ids；resume 再传 `resume=true`、resume_checkpoint_id/commit、resume_from_code_commit、completed_scope、remaining_scope。
 5. agent 必须先进入 stage worktree；不得 subagent。
-6. single 实际无法可靠完成时返回证据；router 不自动改 MULTI。
+6. single 实际无法可靠完成时，LLM 可根据当前代码状态和用户指令升级为更合适的 effective execution topology；若改变 source routing，记录原因和 effective mode，不必为了维持 sealed SINGLE 强行继续。
 
 ### MULTI
 
 1. 目标 worktree `skills/executor/SKILL.md` 必须含 v2 marker。
 2. 调用 `$executor`，传 stage/provenance、`backend=local`、`source_mode=multi`、`stage_profile/control_plane_hardware/target_hardware/evidence_class/development_terminal`；validation 的普通 control-plane dispatch 不要求/传入 4090 roots，operator target roots由 portable script 在 4090 解析；repair 同样传 review provenance/issues；resume 同样传 resume checkpoint context。
-3. coordinator 必须基于真实代码复核 ≥2 个独立 subplans；不足 → `ROUTING_MISMATCH`，不得假并行或退化单 worker。
+3. coordinator 基于真实代码复核 effective subplans。若不足 2 个独立 lane，可退化为 single/serialized execution 并记录理由；只有无法形成完整安全的执行方案时才返回 `ROUTING_MISMATCH`。
 4. multi 模型/effort 继续由 executor 管理。
 
 ## backend=web
@@ -193,12 +203,9 @@ router **不 spawn execution agent**。它把 stage/provenance 和完整 source 
 - repair 时：review path、source_review_round、review_commit、repair_issue_ids
 - resume 时：`resume=true`、resume_checkpoint_id、resume_checkpoint_commit、resume_from_code_commit、completed_scope、remaining_scope
 
-运行时 effective mode：
+运行时 effective mode 默认映射为：source SINGLE → `single`，source MULTI → `serialized_multi`。但这只是默认 topology；用户明确指定或 executor 根据真实依赖判断需要调整时，可以记录不同的 `effective_execution_mode`，只要 stage/task scope 可追踪且执行完整。
 
-- source `mode=single` → `effective_execution_mode=single`
-- source `mode=multi` → `effective_execution_mode=serialized_multi`
-
-**`backend=web + source MULTI` 的串行化是正式执行语义，不是 fallback。** sealed plan/review 仍保持 `mode=multi` 及原 candidates；router 不改成 single，也不因无法并行而报 `ROUTING_MISMATCH`。executor-web 必须按原 workstreams/repair lanes 串行覆盖全部范围后统一验收。
+`backend=web + source MULTI` 默认串行化原 workstreams；不要求为了保留 sealed MULTI 形式覆盖已经失效或人为拆分的 lane。effective topology 改变时记录 override/judgment，sealed plan/review 保留为历史 baseline。
 
 Web execution 完成并提交 execution report 后，本次 execution 对话必须停止在 execution 边界；**不得在同一 GPT conversation/context 中继续调用 reviewer-ex 审查自己刚完成的 execution**。下一步应在新的 Web GPT conversation 中连接同一 repo 并调用 `$reviewer-ex`；可显式提供 stage_id，若只有一个 active stage 也可省略。review 所需状态全部从 Git/sealed artifacts 重建，不依赖 execution 对话上下文。
 
@@ -239,8 +246,8 @@ effective_execution_mode: single    # single | multi | serialized_multi
 
 ## 禁止事项
 
-- 不修改 routing/plan/review。
+- router 不回写 sealed plan/review artifact；effective routing 可因用户明确指令或真实代码依赖调整，并记录在 execution report。
 - router 自身不写业务代码；Web implementation 必须进入 executor-web 协议。
 - 不做 review/proceedings/finalize/cleanup。
-- 不重复消费已 completed source，不消费 uncommitted/stale review。
-- 不静默切 backend；只有调用方选择 `backend=web` 时才使用 serialized_multi。
+- 不重复消费事实上已 completed 的 effective source。默认不消费 uncommitted/stale review；用户明确要求且 stage/round/issues 可可靠归属时可使用其内容，但必须保留其草稿/stale 身份并记录依据。
+- 不静默切 backend；backend 仍由实际 runtime/capability 决定。effective SINGLE/MULTI/serialized topology 可独立于 backend 调整。

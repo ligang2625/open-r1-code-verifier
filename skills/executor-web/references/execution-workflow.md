@@ -2,18 +2,18 @@
 
 ## Dispatch
 
-Only consume a complete router dispatch with `backend=web`.
+Use a router dispatch with `backend=web`; stage/worktree/task identity and actual backend are required, while ordinary plan/review/checkpoint commit fields may be recovered from repo state.
 
-- source SINGLE → `effective_execution_mode=single`
-- source MULTI → `effective_execution_mode=serialized_multi`
+- source SINGLE → default `effective_execution_mode=single`
+- source MULTI → default `effective_execution_mode=serialized_multi`
 
-Source routing is immutable. The current Web GPT + CodexPro is the executor; it does not invoke Local Codex execution agents.
+Source routing is a default baseline, not immutable. User instructions or real dependencies may change effective topology; record the override/judgment. The current Web GPT + CodexPro is the executor and does not invoke Local Codex execution agents.
 
 ## Serialized MULTI
 
-Implementation：依次执行每个 sealed `workstream_candidate`，每 lane 完成定向验证与显式 commit 后再进入下一 lane。默认按 plan 顺序；必要依赖可以调整执行顺序，但不能改 routing/candidate，且必须记录原因。
+Implementation：用户未覆盖时按 sealed candidates 作为默认 lane 清单；resume/continue 跳过已完成 scope。用户指令或真实依赖可以调整顺序、合并/拆分 lane 或改变 effective mode，记录原因即可，不为 sealed candidate 形式制造假工作。
 
-Repair：依次执行每个 repair candidate；candidate issue_ids 必须完整且仅覆盖 router `repair_issue_ids`。全局 regression 只验证结果，不扩大 repair scope。
+Repair：默认按 router repair candidates/issues；用户明确重定义 repair scope 时按 effective issues 执行并记录。全局 regression 只验证结果，不自动扩大业务修改范围。
 
 ## Commit ordering
 

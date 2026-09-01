@@ -2,7 +2,7 @@
 
 ## Core rule
 
-`task_kind=implementation` 与 `task_kind=repair` 严格互斥。任何 routed repair 的工作范围只由 `repair_issue_ids` 决定；plan 的全局测试/验收只用于 regression verification，不会把其它 review findings 或 plan steps 拉回 scope。
+`task_kind=implementation` 与 `task_kind=repair` 互斥。用户未覆盖时，repair 默认按 `repair_issue_ids`；用户明确增加、替换或重定义 scope 时，以用户指令形成 effective repair contract。plan 的全局测试/验收只用于 regression verification，不会自动扩大业务修改范围。
 
 ## Failure table
 
@@ -10,9 +10,9 @@
 |---|---|
 | 实现错误 | 修实现，不改测试预期迁就实现 |
 | 测试预期与规格冲突 | 停止并记录规格/测试证据 |
-| plan/review provenance 不一致 | 停止，不猜测 |
-| 外部环境缺失 | 如实记录；plan 有替代路径才继续 |
-| routed repair 遇到 routing 外问题 | 不顺手修改；在报告遗留/风险中记录，交 reviewer 下一轮决定 |
+| plan/review/commit provenance 漂移 | 先用 Git/report/diff 判断是否可可靠归属；普通 SHA 不一致不单独停止 |
+| 外部环境缺失 | 如实记录；可修复则 resume/continue，只有明确 blocker 才停止 |
+| repair 遇到默认 routing 外问题 | 用户未覆盖时不顺手扩大；用户明确要求纳入则按 effective scope 处理并记录 |
 
 ## Report protocol
 

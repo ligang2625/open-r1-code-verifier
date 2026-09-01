@@ -1,18 +1,18 @@
 ---
 name: stage-lifecycle
-description: Git stage lifecycle control plane。可由 Local Codex 或 Web GPT + CodexPro 共用；负责 bootstrap_plan、checkpoint_review、finalize、retire_incomplete 的同一套 Git/provenance contract。无 backend 参数，不调用 execution agent、不实现业务代码、不做 routing/review。
+description: Git stage lifecycle control plane。负责 bootstrap_plan、checkpoint_review、finalize、retire_incomplete，但把普通 commit/SHA 视为审计 anchors 而非不可变状态锁；main/stage 漂移先由 LLM判断语义兼容性，partial stage 优先 continuation，只有明确放弃或不可恢复才 retire。保留 stage identity、review coverage、operator evidence 等必要完整性边界。
 ---
 
 # Stage Lifecycle
 
 ## 目标
 
-本 skill 是 execution-environment-agnostic 的 Git lifecycle 控制面。只要当前环境能够读写仓库并执行所需 Git/worktree 操作，就可以由 Local Codex 或 Web GPT + CodexPro 运行；**不需要也不接受 backend/environment 参数**。支持四个互斥操作：
+本 skill 是 execution-environment-agnostic 的 Git lifecycle 控制面。只要当前环境能够读写仓库并执行所需 Git/worktree 操作，就可以由 Local Codex 或 Web GPT + CodexPro 运行；**不需要也不接受 backend/environment 参数**。生命周期默认遵循 sealed plan，但 sealed plan 是执行基线而不是不可修改协议：用户明确指定的新方案、实现方式或恢复策略优先于旧 plan。支持四个互斥操作：
 
 1. `bootstrap_plan`：把 planner-ex 已完成的计划 handoff 封存为阶段分支上的最终 plan；
 2. `checkpoint_review`：把 reviewer-ex 已写好的最新审查轮次做 stale-check 后提交到阶段分支；
 3. `finalize`：仅在最新 review 通过后合并到 `main`、更新 proceedings/finalization record，最后清理 worktree/branch；若 plan 是终结型 development stage，同时写 Development Complete Record；
-4. `retire_incomplete`：只处理“plan seal 后已有部分提交、但从未产生 completed E0/review”的常见半截 stage，保留完整历史到 archive branch 后退出 active stage，使 planner 可以重新规划。
+4. `retire_incomplete`：只作为明确 abandon path；先由 LLM 根据当前代码/history/tests 判断 continuation 是否仍可行，只有用户明确放弃或确认状态不可恢复时才归档退出 active stage。
 
 本 skill **不实现业务代码、不修改 routing 决策、不执行 review、不创建 execution agent、不自动 push**。四个 operation 在 Web/Local 环境中的输入、校验、Git mutation、错误码与输出必须完全相同。
 
@@ -58,16 +58,16 @@ Environment checkpoint 至少记录 `version/stage_id/checkpoint_id/task_kind/so
 
 #### Operator terminal handoff
 
-当 sealed **validation** plan 的 `target_hardware=24GB GPU` 时，`operator_terminal_execution` 必须覆盖该 stage 的全部 target-GPU acceptance gates（包括短时 4090-only smoke，不只长任务）。control-plane executor 在完成 gate 前所有 tracked code/config/test、Execution preflight 与 1660 Ti 可完成的短测试后必须暂停，不得自己启动 target-GPU command。每个 gate 必须有 `restart_policy=exact_rerun|trainer_checkpoint`；SFT/GRPO 必须是 `trainer_checkpoint`。executor 生成唯一 tracked、immutable、无密钥 `ai-work/executor/operator/{stage_id}/{gate_id}/{checkpoint_id}/run.sh`，记录 repo-relative path/SHA256、target-runtime templates、expected artifacts 与 evidence contract，并用同一个 operator checkpoint commit 只提交 execution report + 这份新 script；4090 persistent roots 仍只在 script 真正启动时解析。
+当 effective validation contract 的 `target_hardware=24GB GPU` 时，全部 target-GPU acceptance gates 必须经过 operator boundary；这是硬件/证据安全边界，不因 sealed plan override 而绕过。control-plane executor 不得自己启动 target-GPU command。每个 gate 需要明确 restart policy；SFT/GRPO 默认使用 trainer checkpoint。executor 生成 tracked、immutable、无密钥的 operator script，记录 repo-relative path/SHA256、target templates、expected artifacts 与 evidence contract。checkpoint commit 应尽量窄，但不要求为了“只含 report+script”的形式拒绝可解释且不改变待运行业务代码的 provenance/docs 变化。
 
-新生成的 portable target Operator checkpoint 至少记录公共 provenance 字段以及 `interruption_class=operator`、`resume_allowed=true`、唯一 `operator_gate_id`、`operator_handoff_mode=portable_target`、**repo-relative tracked** `operator_script`、64-hex `operator_script_sha256`、target status/log/evidence templates、非空 `expected_artifacts`、control-plane evidence 接收目录、`completed_scope`、非空 `remaining_scope`、`status=awaiting_operator`。checkpoint commit 的 parent 必须等于 `result_code_commit`，且该 commit 只能修改本 stage execution report并新增记录的那一份 script；script 不得含 secret/credential。4090 上 script 允许 detached HEAD，但必须验证 working tree clean、current HEAD 是包含 latest checkpoint+script 的 commit、parent/result_code/script SHA/paths 全部一致，再解析 target-local `.ai-bridge/validation-machine.json`。
+新生成的 portable target Operator checkpoint 至少记录公共 provenance 字段以及 `interruption_class=operator`、`resume_allowed=true`、唯一 `operator_gate_id`、`operator_handoff_mode=portable_target`、**repo-relative tracked** `operator_script`、64-hex `operator_script_sha256`、target status/log/evidence templates、非空 `expected_artifacts`、control-plane evidence 接收目录、`completed_scope`、非空 `remaining_scope`、`status=awaiting_operator`。`result_code_commit` 是代码 provenance anchor；不要求 checkpoint commit 的 parent 机械等于它，只要 lifecycle/LLM 能确认 checkpoint 所运行的 tree 包含预期代码且没有未说明的业务漂移。4090 上仍必须验证 working tree clean、current HEAD 是被 handoff 的 checkpoint+script commit，并重算 tracked script SHA；这些是跨机器执行完整性的必要校验。
 
-active-stage migration 的 reviewer-authorized repair 另允许 `operator_handoff_mode=control_plane_manual`，但只允许 `task_kind=repair` + `legacy_control_plane_default=true` + exact `workflow_runtime_commit`，且 latest committed reviewer finding 明确要求为迁移前 operator gate 补 operator-owned provenance、命令本身不需要新的 24GB GPU execution。它与 portable target 一样使用本 checkpoint 新增的 repo-relative tracked script、script SHA、parent=result_code_commit 和“report + 单一 script”提交范围；status/log/evidence 必须位于 stage worktree 外的 control-plane persistent namespace，并记录 frozen generation/data/verifier/Open-R1/dependency/Piston/formal namespace identity、command/postcheck/gate status。它不得修改 sealed plan、不得用于 implementation/新 plan，也不得替真正 target-GPU gate。旧版已提交的 absolute persistent-root operator checkpoint 继续按 legacy v1 读取。若 gate 前没有 tracked 业务修改，`result_code_commit` 可等于 plan_commit（repair 可等于 review_commit）。
+active-stage migration 的 reviewer-authorized repair 另允许 `operator_handoff_mode=control_plane_manual`，但只允许 task_kind=repair、命令本身不需要新的 24GB GPU execution，并且 review/用户意图能明确证明这是所需 repair path。它仍使用 tracked script + script SHA 和独立 evidence；workflow_runtime/review/result_code commit 用作审计 anchor，不要求普通 parent SHA 关系机械相等。它不得替真正 target-GPU gate，也不得伪造历史 formal evidence。
 
-`portable_target` 的 4090 script 必须执行 start preflight → target command → sealed post-run acceptance，并为每次 attempt 写 versioned secret-free `operator-evidence.json`。evidence 至少绑定 stage/plan/operator-checkpoint/result-code/checkpoint/gate/script path+SHA、target machine-record SHA、GPU identity/VRAM、resolved roots、Piston identity（如 required）、timestamps、`command_rc/postcheck_rc/gate_status`、formal run identity 与 expected-artifact inventory；`gate_status=passed` 只允许 command/postcheck 均为 0。用户把 evidence 与必要小型 status/log/manifest/metrics byte-for-byte 同步回 checkpoint 指定的 control-plane evidence 目录后显式 resume。`control_plane_manual` 的 evidence schema 不包含伪造的 target machine/GPU fields，而是必须绑定 exact workflow runtime/review、frozen generation/data/verifier/Open-R1/dependency/Piston identities、repair output inventory、timestamps 与同样的 command/postcheck/gate status。resume 对两种模式都计算 evidence SHA256、严格匹配 current checkpoint，并在最终 completed execution record 中记录 handoff mode 与该 SHA；portable target 的大型 checkpoint 不默认复制，若 evidence/postcheck 不能证明 required large-artifact property，则 PASS 前做短时只读 target check。`exact_rerun`/`trainer_checkpoint` same-checkpoint resume 与 quarantine/no-overwrite 语义保持不变。
+`portable_target` 的 target script 必须执行 start preflight → target command → post-run acceptance，并写 versioned secret-free `operator-evidence.json`。严格 identity 只保留证明**实际运行对象和结果**所需的字段：handoff checkpoint commit、stage/gate/script path + script SHA、target machine/runtime identity、`command_rc/postcheck_rc/gate_status`、formal run identity 与 required artifact hashes/inventory。plan/review/result-code/workflow-runtime 等普通 commit SHA 可保留为审计 anchors；有漂移时检查 lineage/diff，不要求逐字段机械相等。resume 计算 received evidence SHA 并验证 gate 仍适用于当前 effective contract；大型 checkpoint 不默认复制，证据不足时才做短时只读 target check。
 
-- `INTERRUPTED_ENV` 与 `AWAITING_OPERATOR` 都可以显式 `execution-router resume` 恢复，也可以由用户明确放弃后 `retire_incomplete`；retire 是可选 abandon path，不是合法 checkpoint 的默认恢复方式。
-- checkpoint commit 本身由 Git 历史推导，不在 record 内自引用；parent 必须等于 `result_code_commit`。environment checkpoint commit 只允许修改 execution report；`portable_target` 与 `control_plane_manual` operator checkpoint commit 都只允许修改 execution report + 新增 record 指定的 tracked operator script。
+- `INTERRUPTED_ENV` 与 `AWAITING_OPERATOR` 都可以显式 `execution-router resume` 恢复。其它 partial/incomplete 状态也应先由 LLM 根据当前代码、execution report、测试和用户意图判断是否可继续；retire 是明确放弃或确认不可修复时的 abandon path，不是未知状态的默认恢复方式。
+- checkpoint commit 本身由 Git 历史推导，不在 record 内自引用。`result_code_commit`/parent 关系主要用于审计；environment checkpoint 不因普通 parent 漂移失效。operator checkpoint 仍要求 checkpoint tree 中的 tracked script/evidence contract 可唯一识别且 script SHA 正确，但不把 parent SHA 等式本身当成必要完整性条件。
 
 ## 通用 stage identity
 
@@ -88,7 +88,7 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 `checkpoint_review` 与 `finalize` 使用与 execution-router/reviewer-ex 相同的 stage resolution：调用方显式提供 `stage_id` 时精确使用；未提供时，只在尚未合并的 active stage worktree **恰好 1 个**时自动采用。0 个候选返回 `STAGE_NOT_FOUND`；多个候选返回 `STAGE_AMBIGUOUS`。不得按最大编号、mtime、最近创建或文件排序猜 stage。`bootstrap_plan` 不使用这条自动解析规则，它始终以 handoff/plan payload 内的 stage metadata 为准。
 
-**Active-stage workflow migration**：若 workflow maintenance 在一个已经有 completed execution/committed review 的 stage 期间落地，不得为了加载新 lifecycle 把 primary `main` 前移，也不得把 workflow 文件提交到 active stage；这样会分别破坏 `planning_base_commit` 与 review-HEAD guard。允许在同一 repository 中建立指向 exact workflow-maintenance commit 的 clean maintenance worktree，并从那里加载 lifecycle/router/executor/reviewer，同时所有 stage artifact/Git mutation 仍发生在原 stage worktree。新 execution/review 必须记录该 exact `workflow_runtime_commit`。旧 sealed plan 缺 `control_plane_hardware` 时，只有同 plan 已有 completed execution 或 committed review 才可运行时解释为 GTX 1660 Ti；`bootstrap_plan` 对新/纯 PLANNED stage 仍严格要求显式字段。`checkpoint_review`/`finalize` 不因此改写 plan，且 finalize 的 `main HEAD == planning_base_commit` guard 完全保留。stage finalize 后再把已验证 workflow-maintenance commits 集成到该 clone 的 main。
+**Active-stage workflow migration**：workflow maintenance 可以在 active stage 期间落地。优先用 clean maintenance worktree 加载新 runtime，避免无谓污染 stage；但 primary main 前移或 workflow_runtime_commit 变化不再因 SHA guard 自动破坏 stage。新 execution/review 应记录实际 workflow runtime anchor；若 main/stage 同时变化，LLM 检查这些变化是否与当前业务 scope 冲突。只有会改变被执行/审查代码语义、导致 provenance 无法归属时才阻塞。
 
 ## Operation A: bootstrap_plan
 
@@ -107,9 +107,9 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 2. 若 `stage_profile=validation`，在创建 branch/worktree 前仍严格解析 `proceedings.md` 的 `## Development Complete Record` machine-readable block；不存在合法 completion marker 返回 `STAGE_DEVELOPMENT_NOT_COMPLETE`。**到此为止即可在 GTX 1660 Ti control plane 创建/seal validation stage**：bootstrap 不读取本机 `.ai-bridge/validation-machine.json`，不探测 4090 CUDA/VRAM，也不要求 target artifact/HF/data roots 已挂载。只有 `target_hardware=24GB GPU` 的 operator gate 才在 4090 target-start 时 fail closed 验证 READY record、>=22528 MiB GPU、persistent roots、exact model/data/cache；需要 Piston 时验证由 1660 Ti control plane 预先建立的 canonical reverse-forward loopback endpoint 与 exact runtime，不在 4090 启动旧 tunnel helper。control-plane-only validation 不制造这些要求。这样只移动机器验收时点，不放宽 formal evidence 要求。
 3. 在当前 primary checkout 校验 v2 skill/discovery：`skills/execution-router`、`executor`、`executor-ex`、`executor-web`、`reviewer-ex`、`stage-lifecycle` 均存在且 marker 可解析；对应 `.agents/skills/` entry 必须可解析。`skills/stage-lifecycle/scripts/bootstrap_stage_env.py` 也必须存在。缺失返回 `STAGE_SKILL_VERSION_MISMATCH`。
 4. 校验 control-plane primary execution environment：`<primary>/.venv/bin/python` 必须存在且 `uv` 可执行。缺失返回 `STAGE_PRIMARY_ENV_UNAVAILABLE`；不得先创建 stage worktree。这里不做 target 4090/24GB hardware check。
-5. 按 **Transport-state policy** 确认 primary 没有 tracked `.ai-bridge/**`，主仓库 `main` working tree 对所有非 ignored repository artifact 干净，且 `main HEAD == planning_base_commit`；否则返回 `STAGE_TRANSPORT_TRACKED`、`STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。ignored transport state 不阻塞 bootstrap；不 stash、不自动换基线。
+5. 按 **Transport-state policy** 确认 primary 没有 tracked `.ai-bridge/**`，并检查 main working tree / current HEAD 相对 `planning_base_commit` 的变化。planning_base 是 provenance anchor，不要求 current main 机械相等；若 main 已前移但变化与 plan scope/依赖兼容，可采用 current main 作为 effective base 并记录两者。只有 dirty/advanced 状态来源不明、与 stage 冲突或会使 plan 失效时返回 `STAGE_PRIMARY_DIRTY` / `STAGE_PRIMARY_ADVANCED`。
 6. 枚举未合并阶段 worktree。若已有其它 active stage，返回 `STAGE_ACTIVE_EXISTS`。若正是同一 stage，仅允许**显式 pre-execution replan**且它仍处于纯 PLANNED 状态：没有 completed E0/review，stage tracked/untracked 状态干净，并且 `HEAD` 恰好等于当前 plan seal commit；plan seal 后已有其它 commit 时返回 `STAGE_REPLAN_NOT_CLEAN`。当新的 `planning_base_commit` 已前移时，这个窄场景允许 lifecycle 在确认 stage 与 `third_party/open-r1` submodule 都无本地修改后先执行 `git submodule deinit --all`，再使用 `git worktree remove --force <worktree>` 删除旧 worktree；这里的 `--force` 仅用于 Git 对“包含过 submodule 的 clean worktree”强制要求的删除语义，不允许跳过 cleanliness guard。仅在再次确认旧 branch HEAD 就是旧 plan seal、没有其它提交后删除旧 stage branch，再从新 base 重建。这不是 incomplete-stage rollback，也不得用于已有 execution/review 的 stage。
-7. preflight 全部通过后，才从 `planning_base_commit` 对应的当前 `main` 创建 plan 指定的 branch/worktree；不得在 `main` 上写阶段文件。worktree 的绝对路径必须落在主仓库 `.worktrees/` 下且与 plan metadata 完全一致。
+7. preflight 通过后，从经上一步确认兼容的 **effective base** 创建 plan 指定的 branch/worktree；通常是 current main。`planning_base_commit` 保留为规划时审计 anchor，不要求为了它回退 main。不得在 `main` 上写阶段文件，worktree 身份仍必须唯一且正确。
 8. **在写 plan/commit plan seal 之前**创建 stage environment：使用 primary `.venv/bin/python` 执行 `skills/stage-lifecycle/scripts/bootstrap_stage_env.py --primary-root <primary> --stage-worktree <stage> --mode overlay`。必须成功初始化 pinned submodule、创建 worktree-local `.venv/bin/python`，验证 `code_verifier` / `open_r1` source path 都位于 stage worktree，并确认 stage-local `ruff` executable 以及 `python -m ruff/mypy/pytest` 均可启动。失败返回 `STAGE_ENV_BOOTSTRAP_FAILED`，不得写 plan seal；若 branch/worktree 是本次调用新建且仍无 tracked stage artifact/commit，先尽力正常 deinit 已初始化 submodule，再在确认 worktree 仍无 tracked stage 修改后使用 `git worktree remove --force` 清理这个临时 worktree，并删除尚未承载 stage history 的临时 branch，避免留下半初始化 active stage。
 9. 只把上面解析出的 plan payload 写入阶段 worktree的 `ai-work/planner/{stage_id}-plan.md`，并快速确认 worktree 中上述 v2 skill/discovery 仍可解析；异常则停止，不继续 commit。
 10. 仅暂存最终 plan 文件并提交：`docs: add {stage_id} plan`。该提交是 router 后续推导 `source_plan_commit` 的唯一 plan seal。
@@ -131,11 +131,11 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
    - `reviewed_head_commit`
    - `conclusion`
    - 同轮 `repair_routing.version: 1`
-4. reviewer 开始审查时记录的 `reviewed_head_commit` 必须等于**当前阶段 HEAD（提交 review 前）**。若不相等，说明审查期间代码/报告发生变化，返回 `STAGE_REVIEW_STALE`；不得提交该 review。
-5. 除 review 文件外不得存在其它 tracked 修改或非忽略 untracked 文件；若存在返回 `STAGE_REVIEW_DIRTY_SCOPE`。reviewer 的一次性验证应放仓库外临时目录，不能把临时脚本/产物混入 stage。
-6. `source_execution_id` 必须等于 execution report 最新 completed record 的 execution_id，且 `reviewed_head_commit` 必须等于提交该 record 的 `execution_report_commit`。
-7. 完整校验同轮 repair contract：`repair_routing.source_review_round == review_round`；`conclusion=pass ⇔ required=false`，`conclusion=needs_repair ⇔ required=true`。required=false 时 routing 维度必须为 null、workstreams=0、issues/candidates=[]；required=true 时 `repair_issue_ids` 非空唯一，且 SINGLE/MULTI schema 满足 execution-router contract。否则返回 `STAGE_REVIEW_CONTRACT_INVALID`。
-8. `review_round` 必须比已提交的上一轮恰好 +1；R2+ 的最新 execution 必须是 completed repair，且其 `source_review_round/source_review_commit` 精确指向上一轮 review。否则返回 `STAGE_REVIEW_SEQUENCE_INVALID`。
+4. 比较 `reviewed_head_commit` 与提交 review 前的 current HEAD。相等是最清晰情况；若不相等，先检查中间 commits 是否只是已知 provenance/docs 或 reviewer 已明确纳入的用户 continuation。只有存在未审查的实质代码/配置变化或无法判断时才返回 `STAGE_REVIEW_STALE`。
+5. 除 review 文件外原则上不应有未提交 repository artifact；若存在，只有能证明这些变化已被本轮 review 覆盖且会在 finalize 前形成可审计 commit 时才可继续，否则返回 `STAGE_REVIEW_DIRTY_SCOPE`。
+6. `source_execution_id` 应能定位本轮的 execution provenance anchor；`reviewed_head_commit` 可以是该 execution report commit 的后续 descendant/current effective code HEAD，不要求二者 SHA 相等。无法确认 lineage/scope 时才视为 provenance invalid。
+7. 校验 conclusion/required 和 repair scope 的语义一致性。routing 维度/schema 有缺失或形式差异时，可按 execution-router 的宽松规则 normalization；只有无法确定是否需要 repair、issue scope 或执行方式时才返回 `STAGE_REVIEW_CONTRACT_INVALID`。
+8. review_round 默认单调递增，R2+ 默认关联上一轮 repair。source_review_round/commit SHA 有普通漂移时检查实际 issue/commit lineage；能唯一确认 repair 来源即可继续，只有 round/source 混淆时返回 `STAGE_REVIEW_SEQUENCE_INVALID`。
 9. 仅暂存 review 文件并提交：`docs: add {stage_id} review round r{review_round}`。
 10. 记录/报告 `review_commit=HEAD`。不要把 `review_commit` 自引用写回同一个 review record；router 通过 Git 历史推导它。
 11. `repair_routing.required=true` → 状态 `REPAIR_REQUIRED`；`required=false` 且 conclusion=pass → 状态 `PASSED`。
@@ -146,8 +146,8 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 仅在最新**已提交** review 同时满足 `conclusion=pass` **且** `repair_routing.required=false` 时执行；二者不一致时返回 `STAGE_REVIEW_CONTRACT_INVALID`。
 
-1. 阶段 worktree 必须干净，且当前 stage HEAD 必须恰好等于 latest `review_commit`；其父提交必须等于该 review record 的 `reviewed_head_commit`。任何 review 后的新提交都返回 `STAGE_FINALIZE_STALE`。
-2. 按 **Transport-state policy** 确认 primary/stage 都没有 tracked `.ai-bridge/**`；主仓库 `main` 对所有非 ignored repository artifact 必须干净，且 `main HEAD` 必须仍等于 plan 中的 `planning_base_commit`；否则返回 `STAGE_TRANSPORT_TRACKED`、`STAGE_PRIMARY_DIRTY` 或 `STAGE_PRIMARY_ADVANCED`。ignored transport state 不阻塞 finalize；不 stash、不自动 rebase/换基线。
+1. 阶段 worktree 在 finalize 时必须没有未审查的实质业务变化。latest review_commit / reviewed_head_commit 用于定位审查边界；若 review 后有额外 commits，LLM 检查它们是否仅为 review/provenance/docs 或已被 review 明确覆盖。只有存在未审查的代码/配置/验收变化时返回 `STAGE_FINALIZE_STALE`，不要求 parent/HEAD SHA 机械相等。
+2. 按 **Transport-state policy** 确认 primary/stage 都没有 tracked `.ai-bridge/**`；检查 current main 相对 planning_base 的变化。main 前移本身不阻塞 finalize：若这些变化与 stage 可安全合并、不会使 review 结论失效，则在 current main 上 merge 并记录 original planning_base/effective merge base。只有冲突、语义失效或 provenance 无法判断时返回 `STAGE_PRIMARY_DIRTY` / `STAGE_PRIMARY_ADVANCED`。
 3. 在主仓库执行 `git merge --no-ff <stage-branch> -m "feat: complete {stage_id} <标题>"`，捕获 `merge_commit`。
 4. 合并后恢复 primary runtime 可直接执行的环境状态：
    - 若 stage 相对 `planning_base_commit` 改变了 `third_party/open-r1` gitlink，先在 primary 执行 `git submodule update --init --recursive third_party/open-r1`；
@@ -189,14 +189,14 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 ## 状态守卫
 
-- `PLANNED`：plan 已由 `bootstrap_plan` commit，尚无 completed implementation execution，且 HEAD 仍等于 plan_commit。
-- `INTERRUPTED_ENV`：尚无对应 completed execution/review，最新 committed execution artifact 是合法 `execution_checkpoint(status=interrupted, interruption_class=environment, resume_allowed=true)`，当前 HEAD 恰好等于提交该 checkpoint 的 docs commit；可由用户修复环境后显式 `$execution-router resume` 继续，也可显式 `retire_incomplete` 放弃。
-- `AWAITING_OPERATOR`：尚无对应 completed execution/review，最新 committed execution artifact 是合法 `execution_checkpoint(status=awaiting_operator, interruption_class=operator, resume_allowed=true)`，当前 HEAD 恰好等于其 docs commit；普通 router 只返回 exact script/status/log/expected artifacts/restart policy，用户运行脚本后显式 resume（Web GPT + CodexPro：`$execution-router resume backend=web`；Local Codex：`$execution-router resume`/`backend=local`），不得由 agent 自动越过该 gate。
-- `INCOMPLETE_UNKNOWN`：无 completed E0/review，HEAD 已超过 plan/review baseline，但不存在可证明当前 HEAD 的合法 resumable checkpoint；router 不自动继续，只能人工确认后 retire/replan。
-- `IMPLEMENTED`：execution report 已有 completed implementation record，等待 reviewer-ex。
-- `REPAIR_REQUIRED`：最新 review 已 checkpoint，required=true，且该 review 尚未被 repair execution 消费。
-- `REPAIR_EXECUTED`：execution report 已有 completed repair record，其 `source_review_commit` 指向上一轮 review commit，等待下一轮 reviewer-ex。
-- `PASSED`：最新 review 已 checkpoint，`conclusion=pass` 且 `required=false`，stage HEAD 仍等于该 review commit。
+- `PLANNED`：plan 已由 `bootstrap_plan` commit，尚无 completed implementation；plan_commit 是默认 baseline，current HEAD 有可解释的非业务变化时仍可视为 planned/ready。
+- `INTERRUPTED_ENV`：存在可识别的 environment interruption/checkpoint 或等价 partial state；current HEAD 不必恰好等于 checkpoint commit。环境修复后优先 resume/continue。
+- `AWAITING_OPERATOR`：存在尚未完成的 operator handoff。用于实际 target run 的 checkpoint commit/script 必须可唯一识别且 script SHA 正确；stage 当前 HEAD 可以因后续可解释 control-plane commits 前移，由 LLM 判断该 gate 是否仍适用。
+- `INCOMPLETE_UNKNOWN`：无 completed E0/review，且 partial state 暂时不能直接由 formal checkpoint解释。router 必须先做 LLM continuation assessment；可恢复则 resume/continue，只有确认不可恢复或用户放弃才 retire/replan。
+- `IMPLEMENTED`：execution report 已有 completed implementation record，等待 reviewer-ex；普通 provenance SHA 漂移不改变事实状态。
+- `REPAIR_REQUIRED`：latest effective review requires repair，且尚无 completed repair 覆盖该 effective issue scope。
+- `REPAIR_EXECUTED`：已有 completed repair，等待 reviewer 根据实际代码/issue lineage审查，不要求 source_review_commit SHA 机械相等。
+- `PASSED`：latest review 结论为 pass 且没有未审查的实质 stage 变化；HEAD 不要求机械等于 review_commit。
 - `FINALIZED`：已 merge + proceedings/finalization commit + cleanup。
 
 任何操作只能执行与当前状态匹配的转移；不允许通过删除/覆盖报告来“重置”同一 stage。
@@ -205,8 +205,8 @@ Open-R1 使用完整 `stage_id` 作为所有阶段 artifact 的唯一键：
 
 - 不在 main 上实现阶段代码。
 - 不允许任何 branch track 或 commit `.ai-bridge/**`；发现即返回 `STAGE_TRANSPORT_TRACKED`，不要通过 merge strategy、stash 或 reset 隐藏它。
-- 不修改 plan/review 的 routing 内容。
-- 不把未 checkpoint 的 review 交给 router。
-- 不在 PASS review 后有新 stage commit 的情况下继续 finalize。
+- lifecycle 自身不擅自改写 plan/review routing；用户明确 override 由 execution/review 形成 effective contract 并记录，不要求回写 sealed artifact。
+- 默认把 committed review 交给 router；用户明确要求使用 review 草稿时，必须保留其未 committed 身份并确保 stage/round/issues 可归属。
+- PASS review 后若有新 stage commit，先判断是否包含未审查的实质变化；只有会影响 review 结论的变化才阻塞 finalize。
 - 不自动 stash、rebase、`--no-verify` 或 push；仅 `bootstrap_plan` 已证明为纯 PLANNED、无 execution/review 的显式 pre-execution replan 可以删除旧 plan-only stage branch，其它场景仍禁止 force-delete。
 - 不通过文件时间戳、最大编号或“最近创建”猜 stage；有多个候选必须报歧义。

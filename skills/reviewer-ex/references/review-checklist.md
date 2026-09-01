@@ -1,6 +1,6 @@
 # Reviewer Ex checklist / report template
 
-本文件是 `{stage_id}` 的 append-only review artifact 模板。不同 stage 使用不同文件：`ai-work/reviewer/{stage_id}-review.md`。不得因为“重跑同一 stage”清空历史。
+本文件是 `{stage_id}` 的 append-only review artifact 模板。不同 stage 使用不同文件：`ai-work/reviewer/{stage_id}-review.md`。不得因为“重跑同一 stage”清空历史。审查对象是 **effective execution contract**：用户未覆盖部分按 sealed plan，用户明确改变的实现/scope/order按用户指令 + spec + 实际可验证结果审查；普通 commit/SHA 漂移只作 provenance 线索。
 
 ## 审查记录 {N}
 
