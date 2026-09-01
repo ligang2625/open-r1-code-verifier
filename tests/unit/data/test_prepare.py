@@ -167,12 +167,14 @@ def test_write_jsonl_is_deterministic_and_round_trippable(tmp_path: Path) -> Non
     first = tmp_path / "first.jsonl"
     second = tmp_path / "second.jsonl"
     third = tmp_path / "third.jsonl"
+    trusted = tmp_path / "trusted.jsonl"
     assert write_jsonl(records, first) == 2
     assert write_jsonl(records, second) == 2
     rows, digest = write_jsonl_with_stats(records, third)
-    assert rows == 2
-    assert first.read_bytes() == second.read_bytes() == third.read_bytes()
-    assert digest == hashlib.sha256(third.read_bytes()).hexdigest()
+    trusted_rows, trusted_digest = write_jsonl_with_stats(records, trusted, validate_records=False)
+    assert rows == trusted_rows == 2
+    assert first.read_bytes() == second.read_bytes() == third.read_bytes() == trusted.read_bytes()
+    assert digest == trusted_digest == hashlib.sha256(third.read_bytes()).hexdigest()
     assert [json.loads(line) for line in first.read_text(encoding="utf-8").splitlines()] == records
 
 

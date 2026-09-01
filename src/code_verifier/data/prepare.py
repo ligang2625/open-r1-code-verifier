@@ -145,7 +145,12 @@ def load_data_preparation_config(path: Path) -> DataPreparationConfig:
     return data_config_from_mapping(load_yaml_mapping(path), config_path=path)
 
 
-def write_jsonl_with_stats(records: Iterable[Mapping[str, JsonValue]], path: Path) -> tuple[int, str]:
+def write_jsonl_with_stats(
+    records: Iterable[Mapping[str, JsonValue]],
+    path: Path,
+    *,
+    validate_records: bool = True,
+) -> tuple[int, str]:
     """Atomically write deterministic UTF-8 JSONL and return row count plus exact SHA256."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -163,10 +168,14 @@ def write_jsonl_with_stats(records: Iterable[Mapping[str, JsonValue]], path: Pat
         ) as handle:
             temporary = Path(handle.name)
             for record in records:
-                validated = json_value_to_mutable(dict(record), field_path=f"{path} record {count + 1}")
+                value = (
+                    json_value_to_mutable(dict(record), field_path=f"{path} record {count + 1}")
+                    if validate_records
+                    else dict(record)
+                )
                 line = (
                     json.dumps(
-                        validated,
+                        value,
                         ensure_ascii=False,
                         sort_keys=True,
                         separators=(",", ":"),

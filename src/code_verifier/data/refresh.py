@@ -26,7 +26,6 @@ from code_verifier.data.json_strict import json_values_equal, loads_strict
 from code_verifier.data.leakage_checks import (
     TrainingArtifactKind,
     _build_training_record_unchecked,
-    build_training_record,
     load_training_artifact,
 )
 from code_verifier.data.prepare import DataPreparationError, load_canonical_jsonl, write_jsonl_with_stats
@@ -470,9 +469,7 @@ def _checked_selected_test_fingerprint(problem: CodeProblem) -> str:
     try:
         return refresh_problem_test_set_fingerprint(problem)
     except DuplicateDataError as error:
-        raise RefreshDataError(
-            f"canonical selected problem {problem.problem_id} repeats a normalized test"
-        ) from error
+        raise RefreshDataError(f"canonical selected problem {problem.problem_id} repeats a normalized test") from error
 
 
 def _selected_sft_fingerprint(problem: CodeProblem, *, policy: RefreshDedupPolicy) -> RefreshFingerprint:
@@ -756,6 +753,7 @@ def _attach_selection_fingerprints(
     selected_external: Mapping[str, RefreshCandidate],
     *,
     policy: RefreshDedupPolicy,
+    external_fingerprints: Mapping[str, RefreshFingerprint] | None = None,
 ) -> None:
     for problem, record in zip(problems, selection, strict=True):
         if record["overlap_origin"] == "sft_reuse":
@@ -764,7 +762,14 @@ def _attach_selection_fingerprints(
             candidate = selected_external.get(problem.problem_id)
             if candidate is None:
                 raise RefreshDataError(f"missing selected external candidate {problem.problem_id}")
-            fingerprint = candidate_fingerprint(candidate, policy=policy)
+            cached_fingerprint = (
+                None if external_fingerprints is None else external_fingerprints.get(problem.problem_id)
+            )
+            fingerprint = (
+                cached_fingerprint
+                if cached_fingerprint is not None
+                else candidate_fingerprint(candidate, policy=policy)
+            )
         record["fingerprint"] = _fingerprint_to_mapping(fingerprint)
 
 
@@ -968,14 +973,6 @@ def _check_training_views(problems: Sequence[CodeProblem], dataset_dir: Path) ->
     for index, (actual, expected) in enumerate(zip(hidden, expected_hidden, strict=True)):
         if not json_values_equal(actual, expected):
             raise RefreshDataError(f"Hidden GRPO row {index} does not match the canonical whitelist view")
-    public_bytes = public_path.read_bytes()
-    hidden_bytes = hidden_path.read_bytes()
-    forbidden_keys = (b'"eval_hidden_tests"', b'"reference_solution"', b'"sft_response"', b'"starter_code"')
-    for forbidden in forbidden_keys:
-        if forbidden in public_bytes or forbidden in hidden_bytes:
-            raise RefreshDataError(f"training view contains forbidden key bytes {forbidden!r}")
-    if b'"train_hidden_tests"' in public_bytes:
-        raise RefreshDataError("Public GRPO view contains train-hidden tests")
 
 
 def check_refresh_data(
@@ -1322,9 +1319,12 @@ def prepare_refresh_data(
     for snapshot, candidates in _load_refresh_source_projections(config.sources, cache_dir=source_cache_dir):
         source_snapshots.append(snapshot)
         all_candidates.extend(candidates)
+    del candidates
     if len({candidate.candidate_id for candidate in all_candidates}) != len(all_candidates):
         raise RefreshDataError("source ingestion produced duplicate candidate IDs")
     candidate_by_id = {candidate.candidate_id: candidate for candidate in all_candidates}
+    candidate_fingerprints = [candidate_fingerprint(candidate, policy=policy) for candidate in all_candidates]
+    candidate_fingerprint_by_id = {fingerprint.record_id: fingerprint for fingerprint in candidate_fingerprints}
     decisions = classify_refresh_candidates(
         all_candidates,
         sft_references=sft_references,
@@ -1332,6 +1332,7 @@ def prepare_refresh_data(
         project_test_references=project_test_references,
         external_eval_references=external_eval_references,
         policy=policy,
+        candidate_fingerprints=candidate_fingerprints,
     )
     retained_ids = {decision.candidate_id for decision in decisions if decision.retained}
     retained_candidates = [candidate for candidate in all_candidates if candidate.candidate_id in retained_ids]
@@ -1356,7 +1357,13 @@ def prepare_refresh_data(
         for candidate in retained_candidates
         if candidate.candidate_id in selected_external_ids
     }
-    _attach_selection_fingerprints(problems, selection, selected_external, policy=policy)
+    _attach_selection_fingerprints(
+        problems,
+        selection,
+        selected_external,
+        policy=policy,
+        external_fingerprints=candidate_fingerprint_by_id,
+    )
     reference_sets: dict[str, Sequence[OverlapReference]] = {
         "sft": sft_references,
         "validation": validation_references,
@@ -1383,26 +1390,32 @@ def prepare_refresh_data(
         precomputed_jsonl["manifest/dedup_decisions.jsonl"] = write_jsonl_with_stats(
             (_decision_to_mapping(decision, candidate_by_id[decision.candidate_id]) for decision in decisions),
             temporary / "manifest" / "dedup_decisions.jsonl",
+            validate_records=False,
         )
         precomputed_jsonl["manifest/selection.jsonl"] = write_jsonl_with_stats(
             selection,
             temporary / "manifest" / "selection.jsonl",
+            validate_records=False,
         )
         precomputed_jsonl["manifest/problem_order.jsonl"] = write_jsonl_with_stats(
             ({"ordinal": index, "problem_id": problem.problem_id} for index, problem in enumerate(problems)),
             temporary / "manifest" / "problem_order.jsonl",
+            validate_records=False,
         )
         precomputed_jsonl["canonical/problems.jsonl"] = write_jsonl_with_stats(
             (problem_to_mapping(problem) for problem in problems),
             temporary / "canonical" / "problems.jsonl",
+            validate_records=False,
         )
         precomputed_jsonl["training/public_grpo.jsonl"] = write_jsonl_with_stats(
-            (build_training_record(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in problems),
+            (_build_training_record_unchecked(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in problems),
             temporary / "training" / "public_grpo.jsonl",
+            validate_records=False,
         )
         precomputed_jsonl["training/hidden_grpo.jsonl"] = write_jsonl_with_stats(
-            (build_training_record(problem, kind=TrainingArtifactKind.HIDDEN_GRPO) for problem in problems),
+            (_build_training_record_unchecked(problem, kind=TrainingArtifactKind.HIDDEN_GRPO) for problem in problems),
             temporary / "training" / "hidden_grpo.jsonl",
+            validate_records=False,
         )
         rejection_counts = Counter(decision.rejection_reason for decision in decisions if not decision.retained)
         _write_json(
@@ -1503,6 +1516,8 @@ def prepare_refresh_data(
         # full candidate/test payload in memory on the control-plane machine.
         del all_candidates
         del candidate_by_id
+        del candidate_fingerprints
+        del candidate_fingerprint_by_id
         del decisions
         del retained_candidates
         del sft_problems

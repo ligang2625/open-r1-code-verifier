@@ -29,7 +29,13 @@ from code_verifier.data.refresh import (
     check_refresh_data,
     prepare_refresh_data,
 )
-from code_verifier.data.refresh_sources import RefreshSourceSpec
+from code_verifier.data.refresh_dedup import (
+    RefreshDedupPolicy,
+    build_refresh_fingerprint,
+    find_exact_duplicate_matches,
+    reference_fingerprint,
+)
+from code_verifier.data.refresh_sources import RefreshSourceSpec, refresh_problem_test_set_fingerprint
 from code_verifier.data.schema import problem_to_mapping
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "wp9a"
@@ -447,23 +453,23 @@ def test_wp9a_strict_readback_rebuilds_formal_reference_fingerprints(
 
     tampered_problems = load_canonical_jsonl(canonical_path)
     tampered_problem = next(problem for problem in tampered_problems if problem.problem_id == selected_id)
-    rebuilt_selected = refresh_module.build_refresh_fingerprint(
+    rebuilt_selected = build_refresh_fingerprint(
         record_id=tampered_problem.problem_id,
         record_class="candidate",
         prompt=validation.prompt,
         function_signature=tampered_problem.function_signature,
         source_url_hash=tampered_problem.metadata.source_url_hash,
         reference_solution_hash=None,
-        test_fingerprint=refresh_module.refresh_problem_test_set_fingerprint(tampered_problem),
-        policy=refresh_module.RefreshDedupPolicy(5, 0.90),
+        test_fingerprint=refresh_problem_test_set_fingerprint(tampered_problem),
+        policy=RefreshDedupPolicy(5, 0.90),
     )
     selected_record["fingerprint"] = refresh_module._fingerprint_to_mapping(rebuilt_selected)
     _write_jsonl_records(selection_path, selection)
-    validation_fingerprint = refresh_module.reference_fingerprint(
+    validation_fingerprint = reference_fingerprint(
         refresh_module._problem_reference(validation, "validation"),
-        policy=refresh_module.RefreshDedupPolicy(5, 0.90),
+        policy=RefreshDedupPolicy(5, 0.90),
     )
-    assert selected_id in refresh_module.find_exact_duplicate_matches([rebuilt_selected], [validation_fingerprint])
+    assert selected_id in find_exact_duplicate_matches([rebuilt_selected], [validation_fingerprint])
 
     write_jsonl(
         (build_training_record(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in tampered_problems),
@@ -555,7 +561,7 @@ def test_wp9a_strict_readback_rejects_actual_selected_overlap_above_fifteen_perc
     changed["fingerprint"] = refresh_module._fingerprint_to_mapping(
         refresh_module._selected_sft_fingerprint(
             changed_problem,
-            policy=refresh_module.RefreshDedupPolicy(5, 0.90),
+            policy=RefreshDedupPolicy(5, 0.90),
         )
     )
     _write_jsonl_records(selection_path, selection)

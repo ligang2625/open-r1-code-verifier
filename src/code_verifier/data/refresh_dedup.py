@@ -460,11 +460,20 @@ def classify_refresh_candidates(
     project_test_references: Sequence[OverlapReference],
     external_eval_references: Sequence[OverlapReference],
     policy: RefreshDedupPolicy,
+    candidate_fingerprints: Sequence[RefreshFingerprint] | None = None,
 ) -> list[RefreshDedupDecision]:
     """Apply hard evaluation exclusion, incidental-SFT exclusion, then deterministic external dedup."""
     validate_refresh_dedup_policy(policy)
-    candidate_fingerprints = [candidate_fingerprint(candidate, policy=policy) for candidate in candidates]
-    fingerprint_by_id = {fingerprint.record_id: fingerprint for fingerprint in candidate_fingerprints}
+    resolved_fingerprints = (
+        [candidate_fingerprint(candidate, policy=policy) for candidate in candidates]
+        if candidate_fingerprints is None
+        else list(candidate_fingerprints)
+    )
+    fingerprint_ids = [fingerprint.record_id for fingerprint in resolved_fingerprints]
+    candidate_ids = [candidate.candidate_id for candidate in candidates]
+    if fingerprint_ids != candidate_ids:
+        raise ValueError("candidate fingerprints must match refresh candidate IDs and order")
+    fingerprint_by_id = {fingerprint.record_id: fingerprint for fingerprint in resolved_fingerprints}
     if len(fingerprint_by_id) != len(candidates):
         raise ValueError("refresh candidates must have unique candidate_id values")
 
@@ -475,7 +484,7 @@ def classify_refresh_candidates(
     evaluation_groups = [validation_fingerprints, project_test_fingerprints, external_eval_fingerprints]
     near_context = _build_near_index_context(
         [
-            *candidate_fingerprints,
+            *resolved_fingerprints,
             *validation_fingerprints,
             *project_test_fingerprints,
             *external_eval_fingerprints,
@@ -484,11 +493,11 @@ def classify_refresh_candidates(
         threshold=policy.near_jaccard_threshold,
     )
     evaluation_matches = [
-        _reference_match_map(candidate_fingerprints, references, policy=policy, context=near_context)
+        _reference_match_map(resolved_fingerprints, references, policy=policy, context=near_context)
         for references in evaluation_groups
     ]
     sft_matches = _reference_match_map(
-        candidate_fingerprints,
+        resolved_fingerprints,
         sft_fingerprints,
         policy=policy,
         context=near_context,
@@ -496,7 +505,7 @@ def classify_refresh_candidates(
     excluded_ids = {candidate_id for matches in [*evaluation_matches, sft_matches] for candidate_id in matches}
     external_candidates = [candidate for candidate in candidates if candidate.candidate_id not in excluded_ids]
     external_fingerprints = [
-        fingerprint for fingerprint in candidate_fingerprints if fingerprint.record_id not in excluded_ids
+        fingerprint for fingerprint in resolved_fingerprints if fingerprint.record_id not in excluded_ids
     ]
     external_matches = _external_duplicate_matches(
         external_candidates,
