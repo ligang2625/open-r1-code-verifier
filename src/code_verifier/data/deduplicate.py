@@ -22,10 +22,9 @@ class DuplicateDataError(ValueError):
 
 
 def normalize_text(value: str) -> str:
-    """Normalize Unicode, newlines, trailing spaces, and ordinary whitespace deterministically."""
-    normalized = unicodedata.normalize("NFKC", value).replace("\r\n", "\n").replace("\r", "\n")
-    without_trailing = "\n".join(line.rstrip() for line in normalized.split("\n"))
-    return " ".join(without_trailing.split())
+    """Normalize Unicode plus all whitespace deterministically."""
+    normalized = value if value.isascii() else unicodedata.normalize("NFKC", value)
+    return " ".join(normalized.split())
 
 
 def _normalize_json(value: object) -> JsonValue:
@@ -55,6 +54,11 @@ def stable_json_hash(value: object) -> str:
 
 def test_case_hash(test_case: TestCase) -> str:
     """Hash one test's normalized input and expected value."""
+    if isinstance(test_case.input, str) and isinstance(test_case.expected, str):
+        normalized_input = json.encoder.encode_basestring(normalize_text(test_case.input))
+        normalized_expected = json.encoder.encode_basestring(normalize_text(test_case.expected))
+        payload = f'{{"expected":{normalized_expected},"input":{normalized_input}}}'
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
     value: JsonValue = {
         "input": _normalize_json(test_case.input),
         "expected": _normalize_json(test_case.expected),
@@ -107,9 +111,10 @@ def problem_content_hash(problem: CodeProblem) -> str:
     return stable_json_hash(value)
 
 
-def ensure_unique_test_cases(test_cases: Sequence[TestCase], *, context: str) -> None:
-    """Reject duplicate normalized test cases in one input collection."""
+def unique_test_case_hashes(test_cases: Sequence[TestCase], *, context: str) -> tuple[str, ...]:
+    """Return normalized test hashes while rejecting duplicates in one pass."""
     first_index: dict[str, int] = {}
+    hashes: list[str] = []
     for index, test_case in enumerate(test_cases):
         digest = test_case_hash(test_case)
         if digest in first_index:
@@ -117,6 +122,13 @@ def ensure_unique_test_cases(test_cases: Sequence[TestCase], *, context: str) ->
                 f"{context} contains duplicate normalized tests at indexes {first_index[digest]} and {index}"
             )
         first_index[digest] = index
+        hashes.append(digest)
+    return tuple(hashes)
+
+
+def ensure_unique_test_cases(test_cases: Sequence[TestCase], *, context: str) -> None:
+    """Reject duplicate normalized test cases in one input collection."""
+    unique_test_case_hashes(test_cases, context=context)
 
 
 def ensure_unique_problem_ids(problems: Sequence[CodeProblem]) -> None:

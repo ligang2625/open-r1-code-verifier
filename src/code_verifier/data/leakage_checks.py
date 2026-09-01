@@ -10,6 +10,7 @@ from code_verifier.data.deduplicate import (
     DuplicateDataError,
     ensure_no_problem_overlap_across_splits,
     ensure_unique_problem_ids,
+    normalize_text,
     test_case_hash,
 )
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
@@ -67,7 +68,7 @@ _ALLOWED_FIELDS = {
 
 def check_no_test_layer_overlap(problem: CodeProblem) -> None:
     """Reject normalized test reuse within or across the three layers."""
-    seen: dict[str, tuple[str, int]] = {}
+    seen: dict[object, tuple[str, int]] = {}
     layers = (
         ("visible_tests", problem.visible_tests),
         ("train_hidden_tests", problem.train_hidden_tests),
@@ -75,15 +76,18 @@ def check_no_test_layer_overlap(problem: CodeProblem) -> None:
     )
     for layer_name, tests in layers:
         for index, test_case in enumerate(tests):
-            digest = test_case_hash(test_case)
-            previous = seen.get(digest)
+            if isinstance(test_case.input, str) and isinstance(test_case.expected, str):
+                key: object = (normalize_text(test_case.input), normalize_text(test_case.expected))
+            else:
+                key = test_case_hash(test_case)
+            previous = seen.get(key)
             if previous is not None:
                 previous_layer, previous_index = previous
                 raise LeakageError(
                     f"problem {problem.problem_id} repeats a normalized test in "
                     f"{previous_layer}[{previous_index}] and {layer_name}[{index}]"
                 )
-            seen[digest] = (layer_name, index)
+            seen[key] = (layer_name, index)
 
 
 def check_dataset(problems: Sequence[CodeProblem]) -> None:
@@ -122,12 +126,12 @@ def _metadata_to_json(problem: CodeProblem) -> dict[str, JsonValue]:
     }
 
 
-def build_training_record(
+def _build_training_record_unchecked(
     problem: CodeProblem,
     *,
     kind: TrainingArtifactKind,
 ) -> dict[str, JsonValue]:
-    """Construct a training record from an explicit per-kind field whitelist."""
+    """Construct the exact whitelist view; callers must validate unless the canonical source was already validated."""
     record: dict[str, JsonValue] = {}
     record["problem_id"] = problem.problem_id
     if kind is TrainingArtifactKind.SFT:
@@ -153,6 +157,16 @@ def build_training_record(
         record["metadata"] = _metadata_to_json(problem)
     else:
         raise LeakageError(f"unsupported training artifact kind {kind!r}")
+    return record
+
+
+def build_training_record(
+    problem: CodeProblem,
+    *,
+    kind: TrainingArtifactKind,
+) -> dict[str, JsonValue]:
+    """Construct and validate a training record from an explicit per-kind field whitelist."""
+    record = _build_training_record_unchecked(problem, kind=kind)
     check_training_record(record, kind=kind)
     return record
 

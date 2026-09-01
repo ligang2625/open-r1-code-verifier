@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -144,15 +145,22 @@ def load_data_preparation_config(path: Path) -> DataPreparationConfig:
     return data_config_from_mapping(load_yaml_mapping(path), config_path=path)
 
 
-def write_jsonl(records: Iterable[Mapping[str, JsonValue]], path: Path) -> int:
-    """Atomically write deterministic UTF-8 JSONL and return the row count."""
+def write_jsonl_with_stats(
+    records: Iterable[Mapping[str, JsonValue]],
+    path: Path,
+    *,
+    validate_records: bool = True,
+) -> tuple[int, str]:
+    """Atomically write deterministic UTF-8 JSONL and return row count plus exact SHA256."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     count = 0
+    digest = hashlib.sha256()
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
+            newline="\n",
             dir=path.parent,
             prefix=f".{path.name}.",
             suffix=".tmp",
@@ -160,26 +168,38 @@ def write_jsonl(records: Iterable[Mapping[str, JsonValue]], path: Path) -> int:
         ) as handle:
             temporary = Path(handle.name)
             for record in records:
-                validated = json_value_to_mutable(dict(record), field_path=f"{path} record {count + 1}")
-                handle.write(
+                value = (
+                    json_value_to_mutable(dict(record), field_path=f"{path} record {count + 1}")
+                    if validate_records
+                    else dict(record)
+                )
+                line = (
                     json.dumps(
-                        validated,
+                        value,
                         ensure_ascii=False,
                         sort_keys=True,
                         separators=(",", ":"),
                         allow_nan=False,
                     )
+                    + "\n"
                 )
-                handle.write("\n")
+                handle.write(line)
+                digest.update(line.encode("utf-8"))
                 count += 1
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        return count
+        return count, digest.hexdigest()
     except Exception:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
         raise
+
+
+def write_jsonl(records: Iterable[Mapping[str, JsonValue]], path: Path) -> int:
+    """Atomically write deterministic UTF-8 JSONL and return the row count."""
+    count, _ = write_jsonl_with_stats(records, path)
+    return count
 
 
 def export_canonical_jsonl(problems: Sequence[CodeProblem], path: Path) -> int:
@@ -318,21 +338,25 @@ def prepare_data(
         raise DataPreparationError(f"Data preparation failed: {error}") from error
 
 
-def _load_canonical(path: Path) -> list[CodeProblem]:
+def load_canonical_jsonl(path: Path) -> list[CodeProblem]:
     """Load physical-LF canonical JSONL, accepting CRLF and ignoring blank/trailing lines."""
+    problems: list[CodeProblem] = []
     try:
-        lines = path.read_text(encoding="utf-8").split("\n")
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    value = loads_strict(line)
+                    problems.append(problem_from_mapping(value))
+                except ValueError as error:
+                    raise DataPreparationError(
+                        f"{path}, line {line_number}: invalid canonical record: {error}"
+                    ) from error
+    except DataPreparationError:
+        raise
     except (OSError, UnicodeError) as error:
         raise DataPreparationError(f"Could not read canonical JSONL {path}: {error}") from error
-    problems: list[CodeProblem] = []
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        try:
-            value = loads_strict(line)
-            problems.append(problem_from_mapping(value))
-        except ValueError as error:
-            raise DataPreparationError(f"{path}, line {line_number}: invalid canonical record: {error}") from error
     if not problems:
         raise DataPreparationError(f"canonical JSONL {path} contains no records")
     return problems
@@ -377,7 +401,7 @@ def _check_training_artifact_matches_canonical(
 def check_prepared_data(dataset_dir: Path) -> PreparationSummary:
     """Reload canonical and training artifacts and rerun all WP1 invariants."""
     canonical_path = dataset_dir / "canonical" / "problems.jsonl"
-    problems = _load_canonical(canonical_path)
+    problems = load_canonical_jsonl(canonical_path)
     check_dataset(problems)
 
     training_dir = dataset_dir / "training"

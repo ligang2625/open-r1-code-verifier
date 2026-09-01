@@ -12,6 +12,7 @@ import pytest
 from code_verifier.data.leakage_checks import (
     LeakageError,
     TrainingArtifactKind,
+    _build_training_record_unchecked,
     build_training_record,
     check_dataset,
     check_no_test_layer_overlap,
@@ -129,6 +130,12 @@ def test_hidden_record_contains_no_eval_hidden_tests() -> None:
 
 
 @pytest.mark.parametrize("kind", list(TrainingArtifactKind))
+def test_unchecked_training_builder_matches_validated_public_builder(kind: TrainingArtifactKind) -> None:
+    problem = _dataset()[0]
+    assert _build_training_record_unchecked(problem, kind=kind) == build_training_record(problem, kind=kind)
+
+
+@pytest.mark.parametrize("kind", list(TrainingArtifactKind))
 def test_training_record_rejects_deleted_required_field(kind: TrainingArtifactKind) -> None:
     record = build_training_record(_dataset()[0], kind=kind)
     del record[next(iter(record))]
@@ -169,6 +176,20 @@ def test_overlap_hashes_normalized_test_values() -> None:
     problem = _dataset()[0]
     normalized_duplicate = CodeTestCase(input=["same  value"], expected=1)
     whitespace_variant = CodeTestCase(input=["same value"], expected=1)
+    with pytest.raises(LeakageError):
+        check_no_test_layer_overlap(
+            replace(
+                problem,
+                visible_tests=(normalized_duplicate,),
+                eval_hidden_tests=(whitespace_variant,),
+            )
+        )
+
+
+def test_overlap_rejects_normalized_string_stdio_values() -> None:
+    problem = _dataset()[0]
+    normalized_duplicate = CodeTestCase(input="\uff21  B\r\nC", expected="value   out\n")
+    whitespace_variant = CodeTestCase(input="A B C", expected="value out")
     with pytest.raises(LeakageError):
         check_no_test_layer_overlap(
             replace(

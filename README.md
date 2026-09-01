@@ -226,6 +226,30 @@ The `training/` files contain only the 12 train-split problems and are built fro
 
 Preparation refuses to overwrite a non-empty output directory. Both preparation and checking validate schema completeness, duplicate IDs, independent cross-split prompt/signature, reference-solution and test-overlap signals, test-layer overlap, training-field isolation, row order, exact training-record equivalence to canonical train problems, and HF Dataset round-trip equivalence. Renaming eval-hidden content into an allowed training field therefore fails validation.
 
+## WP9-a refresh data foundation
+
+WP9-a builds the pre-calibration candidate pool for the active GRPO Refresh track from pinned DeepCoder source revisions plus the frozen project dataset and HumanEvalPlus exclusion references. Machine-specific dataset/cache paths stay on the CLI; the tracked protocol is [`configs/data/refresh.yaml`](configs/data/refresh.yaml).
+
+With the pinned Hugging Face snapshots already present locally, a cached-only run is:
+
+```bash
+HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+.venv/bin/python -m code_verifier.cli prepare-refresh-data \
+  --config configs/data/refresh.yaml \
+  --reference-dataset-dir /path/to/frozen/formal-data/prepared \
+  --source-cache-dir /path/to/huggingface-cache \
+  --seed 42 \
+  --output-dir /path/to/fresh/wp9a-refresh
+
+.venv/bin/python -m code_verifier.cli check-refresh-data \
+  --dataset /path/to/fresh/wp9a-refresh \
+  --reference-dataset-dir /path/to/frozen/formal-data/prepared
+```
+
+The output contains source/reference snapshots, dedup and overlap reports, a deterministic selection/order manifest, canonical three-layer problems, isolated `training/public_grpo.jsonl` and `training/hidden_grpo.jsonl` views, and a root manifest with artifact hashes. The tracked default selects 10,000 problems with exactly 750 explicit frozen-SFT reuses (7.5%) and 9,250 deduplicated external candidates; evaluation-reference overlap is required to be zero. Public and Hidden views use identical problem IDs/order, Public excludes train-hidden tests, and both exclude eval-hidden tests, reference solutions, SFT responses, and starter code.
+
+This WP9-a materialization is **not** the calibrated/final active pool and does not run B calibration, `num_generations=8` pilots, GRPO, C2/D2, or 400-problem refresh evaluation. Low-test 4–7-test candidates remain explicitly marked `quality_gate_required` for later WP9-c gating rather than being treated as quality-ready.
+
 ## WP2 code parser
 
 Use the deterministic Python API to select the final supported fenced code block and optionally require a module-level target function:

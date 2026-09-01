@@ -18,6 +18,13 @@ from code_verifier.cli import build_parser, main
 from code_verifier.config import ConfigError
 from code_verifier.data.leakage_checks import TrainingArtifactKind
 from code_verifier.data.prepare import DataPreparationConfig, DataPreparationError, PreparationSummary
+from code_verifier.data.refresh import (
+    RefreshDataConfig,
+    RefreshDataError,
+    RefreshPreparationSummary,
+    RefreshSelectionConfig,
+)
+from code_verifier.data.refresh_sources import RefreshSourceSpec
 from code_verifier.data.split_tests import TestSplitConfig as SplitConfig
 from code_verifier.evaluation.evaluate import EvaluationConfig, EvaluationError, EvaluationRunSummary
 from code_verifier.evaluation.generate import GenerationConfig
@@ -59,6 +66,14 @@ def test_root_help_lists_wp1_commands() -> None:
 
     assert "prepare-data" in help_text
     assert "check-data" in help_text
+
+
+def test_root_help_lists_wp9_refresh_commands() -> None:
+    """The root help exposes both WP9-a refresh data commands."""
+    help_text = build_parser().format_help()
+
+    assert "prepare-refresh-data" in help_text
+    assert "check-refresh-data" in help_text
 
 
 def test_root_help_lists_wp2_parse_command() -> None:
@@ -106,6 +121,41 @@ def test_all_subcommands_expose_common_arguments(command: str, capsys: Any) -> N
 )
 def test_prepare_data_requires_config_and_output_dir(argv: list[str]) -> None:
     """prepare-data rejects either missing required path at parse time."""
+    with pytest.raises(SystemExit) as error:
+        main(argv)
+
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [
+            "prepare-refresh-data",
+            "--reference-dataset-dir",
+            "reference",
+            "--output-dir",
+            "refresh",
+        ],
+        [
+            "prepare-refresh-data",
+            "--config",
+            "configs/data/refresh.yaml",
+            "--output-dir",
+            "refresh",
+        ],
+        [
+            "prepare-refresh-data",
+            "--config",
+            "configs/data/refresh.yaml",
+            "--reference-dataset-dir",
+            "reference",
+        ],
+        ["check-refresh-data", "--dataset", "refresh"],
+        ["check-refresh-data", "--reference-dataset-dir", "reference"],
+    ],
+)
+def test_refresh_commands_require_machine_paths_and_prepare_config(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as error:
         main(argv)
 
@@ -188,6 +238,165 @@ def test_check_data_handler_reports_summary(
     output = capsys.readouterr().out
     assert "checked 20 problems (train=12, validation=4, test=4)" in output
     assert str(dataset / "canonical" / "problems.jsonl") in output
+
+
+def _refresh_config() -> RefreshDataConfig:
+    return RefreshDataConfig(
+        sources=(
+            RefreshSourceSpec(
+                source_name="fixture-prime",
+                dataset_id="fixture/deepcoder",
+                revision="1" * 40,
+                config_name="primeintellect",
+                split="train",
+                declared_license="MIT",
+                adapter="deepcoder",
+            ),
+        ),
+        external_eval_dataset_id="fixture/humanevalplus",
+        external_eval_revision="2" * 40,
+        selection=RefreshSelectionConfig(
+            target_size=10,
+            sft_overlap_fraction=0.1,
+            sft_overlap_hard_max=0.15,
+            token_ngram_size=5,
+            near_jaccard_threshold=0.9,
+        ),
+    )
+
+
+def _refresh_summary(root: Path) -> RefreshPreparationSummary:
+    return RefreshPreparationSummary(
+        total_candidates_scanned=24,
+        external_candidates_retained=15,
+        selected_problems=10,
+        sft_overlap_count=1,
+        sft_overlap_fraction=0.1,
+        quality_gate_required_count=2,
+        canonical_jsonl=root / "canonical" / "problems.jsonl",
+        public_grpo_jsonl=root / "training" / "public_grpo.jsonl",
+        hidden_grpo_jsonl=root / "training" / "hidden_grpo.jsonl",
+        root_manifest=root / "refresh_manifest.json",
+    )
+
+
+def test_prepare_refresh_data_handler_forwards_paths_seed_and_optional_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    config_path = tmp_path / "refresh.yaml"
+    reference = tmp_path / "formal"
+    cache = tmp_path / "hf-cache"
+    output = tmp_path / "refresh-output"
+    config = _refresh_config()
+    seen: dict[str, object] = {}
+
+    def fake_load(path: Path) -> RefreshDataConfig:
+        seen["config_path"] = path
+        return config
+
+    def fake_prepare(
+        received_config: RefreshDataConfig,
+        *,
+        seed: int,
+        reference_dataset_dir: Path,
+        source_cache_dir: Path | None,
+        output_dir: Path,
+    ) -> RefreshPreparationSummary:
+        seen["config"] = received_config
+        seen["seed"] = seed
+        seen["reference"] = reference_dataset_dir
+        seen["cache"] = source_cache_dir
+        seen["output"] = output_dir
+        return _refresh_summary(output_dir)
+
+    monkeypatch.setattr("code_verifier.cli.load_refresh_data_config", fake_load)
+    monkeypatch.setattr("code_verifier.cli.prepare_refresh_data", fake_prepare)
+
+    assert (
+        main(
+            [
+                "prepare-refresh-data",
+                "--config",
+                str(config_path),
+                "--reference-dataset-dir",
+                str(reference),
+                "--source-cache-dir",
+                str(cache),
+                "--seed",
+                "17",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert seen == {
+        "config_path": config_path,
+        "config": config,
+        "seed": 17,
+        "reference": reference,
+        "cache": cache,
+        "output": output,
+    }
+    stdout = capsys.readouterr().out
+    assert "prepared refresh dataset selected=10 external_retained=15 sft_overlap=1/10" in stdout
+    assert str(output / "refresh_manifest.json") in stdout
+
+
+def test_check_refresh_data_handler_forwards_reference_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    dataset = tmp_path / "refresh-output"
+    reference = tmp_path / "formal"
+    seen: dict[str, Path] = {}
+
+    def fake_check(path: Path, *, reference_dataset_dir: Path) -> RefreshPreparationSummary:
+        seen["dataset"] = path
+        seen["reference"] = reference_dataset_dir
+        return _refresh_summary(path)
+
+    monkeypatch.setattr("code_verifier.cli.check_refresh_data", fake_check)
+    assert (
+        main(
+            [
+                "check-refresh-data",
+                "--dataset",
+                str(dataset),
+                "--reference-dataset-dir",
+                str(reference),
+            ]
+        )
+        == 0
+    )
+    assert seen == {"dataset": dataset, "reference": reference}
+    assert "checked refresh dataset selected=10" in capsys.readouterr().out
+
+
+def test_refresh_data_error_returns_two(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any) -> None:
+    dataset = tmp_path / "refresh-output"
+    reference = tmp_path / "formal"
+
+    def fail(path: Path, *, reference_dataset_dir: Path) -> RefreshPreparationSummary:
+        raise RefreshDataError("refresh manifest validation failed")
+
+    monkeypatch.setattr("code_verifier.cli.check_refresh_data", fail)
+    assert (
+        main(
+            [
+                "check-refresh-data",
+                "--dataset",
+                str(dataset),
+                "--reference-dataset-dir",
+                str(reference),
+            ]
+        )
+        == 2
+    )
+    assert "refresh manifest validation failed" in capsys.readouterr().err
 
 
 def test_data_error_returns_two_without_hidden_payload(
