@@ -462,3 +462,106 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R4, route one repair execution for `R4-M1`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
+
+## R5 — R4 repair independent review
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-a
+  review_round: 5
+  source_execution_id: E4
+  reviewed_head_commit: 453fbd423a871ff3b9e0e652c1cee1a58e81afdc
+  conclusion: needs_repair
+```
+
+### Review scope and provenance guard
+
+- Reviewer did not participate in the latest E4 repair execution. The exact stage worktree is `/home/dzy/open-r1-code-verifier/.worktrees/wp9-a`, branch `feat/wp9-a`; review began clean at `HEAD=453fbd423a871ff3b9e0e652c1cee1a58e81afdc` and that HEAD remained unchanged throughout review.
+- The sealed plan remains `72a91b652a38fe4e7e58a396c76bfd77fb46a66b`, with `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, `development_terminal=false`.
+- R4 was checkpointed at `3badd4cb0149ee6fecf9297156a7eb8642ae6b4d`. E4 code commit `c2cddff5bc947e8a0ee279b655cbbec527f02afd` has that review commit as its parent, and the E4 execution-report commit/current HEAD `453fbd423a871ff3b9e0e652c1cee1a58e81afdc` has the code commit as its parent.
+- Latest completed execution record is `E4`, `task_kind=repair`, `source_review_round=4`, `source_review_commit=3badd4cb0149ee6fecf9297156a7eb8642ae6b4d`, `repair_issue_ids=[R4-M1]`, `status=completed`.
+- `git ls-files .ai-bridge` is empty. E4 code scope is exactly `src/code_verifier/data/refresh.py`, `tests/unit/data/test_refresh.py`, and `tests/integration/test_wp9a_refresh_data_pipeline.py`; plan/review/spec/proceedings and `third_party/open-r1` were not modified by the repair.
+
+### R4 issue disposition
+
+| Previous issue | R5 disposition |
+|---|---|
+| `R4-M1` | **Resolved.** Strict readback now exact-schema parses selection and dedup-decision records, freezes per-source accepted-candidate provenance inventories, cross-binds every selected external row to its retained dedup decision, and recomputes dedup summary/root counts. Reviewer independently replayed both R4 production attacks plus a stronger self-consistent selection+decision provenance rewrite; all fail closed. |
+
+### Reviewer-owned verification
+
+- Focused sealed-plan suite: `uv run python -m pytest tests/unit/data/test_refresh_sources.py tests/unit/data/test_refresh_dedup.py tests/unit/data/test_refresh.py tests/unit/data/test_split_tests.py tests/unit/data/test_prepare.py tests/unit/test_cli.py tests/integration/test_wp9a_refresh_data_pipeline.py` → **186 passed**.
+- `make lint` → **PASS**: Ruff check, Ruff format check, strict mypy over 121 source/test files.
+- `make test` → **1109 passed, 3 skipped, 0 failed**; the three skips are the existing real-Piston opt-in cases and WP9-a does not depend on Piston.
+- Production strict readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final1` under E4 → exit 0: selected 10,000, external retained 9,565, SFT overlap 750/10,000, quality-gate-required 1,086.
+- Production strict readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final4` under E4 → the same counts and exit 0.
+- Independent deterministic comparison of final1/final4 found exactly 13/13 files in both trees, identical file sets, **0 SHA256 mismatches**, and root manifest SHA256 `98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625`.
+- **R4 selected raw-provenance replay:** reviewer changed one production `external_new` selection row to `source_record_id=forged-source-record`, `raw_record_sha256=ffff...`, updated the selection artifact hash, and production strict readback rejected it with `selected external provenance does not match its retained dedup decision`.
+- **Stronger paired provenance replay:** reviewer changed the same source-record/raw-SHA fields in both selection and its retained dedup decision and updated both artifact hashes. Production strict readback rejected it earlier at the independent PrimeIntellect accepted-candidate inventory anchor: `deepcoder-primeintellect accepted-candidate provenance does not match frozen inventory`.
+- **R4 retained-decision replay:** reviewer changed an actually selected external candidate to `retained=false / forged_rejection / evaluation_overlap`, also made `dedup_summary.json` and root retained counts self-consistent and updated affected hashes. Production strict readback still rejected it with `selected external provenance does not match its retained dedup decision`.
+- **Dedup row-order tamper (`R5-M1`)**: reviewer swapped only the first two rows of the real production `manifest/dedup_decisions.jsonl`, updated that artifact SHA in the root manifest, and changed no semantic decision fields or other artifacts. Production strict readback still returned success: `DEDUP_REORDER_PASSED 10000 9565`. The valid final1 file itself is in canonical ascending `candidate_id` order across all 13,965 decisions, exactly matching `classify_refresh_candidates()` generation order.
+- TACO anchor was independently rebuilt through the repository source loader from the pinned local cache: 7,436 scanned / 2,642 accepted, projection `d5b1242810ec37f9a524a7e2c7b3731595e269544b7add719cccfea51e2fe6de`, accepted-candidate inventory `6baac4a1e44340c13bf25c750836821d95b2b1c0c519588b8e977b75ce310701`; both match the E4 frozen identities.
+- PrimeIntellect's initial single-command loader attempts exceeded the CodexPro 180-second ceiling and are not counted as evidence. Reviewer then reran the exact pinned parquet/raw-hash/`_candidate_from_row` contract with an 8-process fork pool: all 16,252 source rows were traversed, 11,323 were independently accepted, projection SHA `6241f5c56810008cf12cb94b47d9ec8fd49f5048fa2900d77b3ce87531f2480c` matched the frozen source snapshot, and accepted-candidate inventory SHA `37c62e2a5446517974a060242eedc93af7a44c505666346f824b12085ed3bcd0` matched the E4 anchor. This is counted as successful independent source evidence; the earlier timed-out attempts are not.
+
+### Code and contract audit
+
+- `_parse_selection_records()` requires the exact `wp9a-selection-v1` field set and version, validates field types, requires external source-record/raw-SHA provenance, and requires SFT-reuse provenance fields to be null.
+- `_parse_dedup_decisions()` requires an exact decision schema, unique candidate IDs and source-record identities, exact per-source accepted-row coverage, coherent retained/rejected evidence, and production inventory hashes over deterministic `(candidate_id, source_record_id, raw_record_sha256)` tuples.
+- `check_refresh_data()` now loads the dedup manifest before overlap checking, recomputes `dedup_summary.json`, binds root scan/retained counts to parsed evidence, and for every selected external problem requires a matching retained/no-rejection/`overlap_class=none` decision with identical source name, source-record ID and raw SHA.
+- The repair is readback-only for production artifacts; existing final1/final4 bytes remain valid and deterministic, so the sealed plan's conditional regeneration rule does not require another materialization.
+- No new feature, experiment definition, training behavior, reward semantics, evaluation semantics, dependency contract, or Open-R1 gitlink change was introduced.
+
+### Finding
+
+#### R5-M1 — dedup decision row order is not fail-closed during strict readback
+
+**Severity:** Major / actionable.
+
+E4 closes R4-M1's selected-provenance trust gap, but the strengthened parser still treats `manifest/dedup_decisions.jsonl` as an order-insensitive set. `classify_refresh_candidates()` emits decisions in canonical ascending `candidate_id` order (`refresh_dedup.py:517-577`), and the valid final1 artifact has all 13,965 decision IDs in exactly that order. `_parse_dedup_decisions()` (`refresh.py:743-823`) checks exact fields, uniqueness, source coverage and provenance inventories, but stores records in a dict and deliberately sorts each source inventory before hashing; it never requires the input JSONL sequence itself to equal the generator's canonical order. No later `check_refresh_data()` step restores that order invariant.
+
+The reviewer swapped only the first two decision rows in a production-shadow copy of final1, updated the dedup-decisions artifact SHA in `refresh_manifest.json`, and changed no semantic decision fields, counts, reports, selection or canonical bytes. `check_refresh_data()` returned success: `DEDUP_REORDER_PASSED 10000 9565`. This violates the sealed plan's strict-readback requirement that any `row reorder` fail closed (`WP9-a-plan.md:381-386`) and weakens the byte-deterministic artifact contract: a non-canonical decision sequence can currently be re-hashed and certified as valid.
+
+The real final1/final4 artifacts are not affected: both remain byte-identical, their dedup decision IDs are already canonical ascending `candidate_id`, and both pass the current checker. The defect is limited to readback's ability to prove the deterministic row-order invariant.
+
+Required repair:
+
+- make strict parsing require the dedup decision input sequence to be exactly ascending by unique `candidate_id`, matching `classify_refresh_candidates()` generation order; do not silently sort the input for this check;
+- retain the existing per-source accepted-candidate provenance inventory anchors, which serve a different purpose and may remain order-normalized internally after the independent JSONL-order check;
+- add a production-shadow regression that swaps two valid dedup-decision rows, updates the root artifact SHA, and requires `check_refresh_data()` to reject the artifact specifically for non-canonical decision order;
+- re-run focused/lint/full-suite and strict-check both existing final1/final4 after the repair. Because this is readback-only and valid production bytes are already in canonical order, no rematerialization is required unless the implementation changes artifact bytes.
+
+### Executor claim audit
+
+- E4 Git provenance and changed-file scope are substantiated.
+- E4's exact-schema, selection↔dedup cross-binding, dedup-summary/root reconciliation, accepted-candidate inventory anchors, and all three R4 provenance attack-rejection claims are independently reproduced.
+- Both source-derived accepted-candidate anchors are independently reproduced from the pinned cache: TACO 7,436/2,642 with inventory `6baac4a1e44340c13bf25c750836821d95b2b1c0c519588b8e977b75ce310701`; PrimeIntellect 16,252/11,323 with projection `6241f5c56810008cf12cb94b47d9ec8fd49f5048fa2900d77b3ce87531f2480c` and inventory `37c62e2a5446517974a060242eedc93af7a44c505666346f824b12085ed3bcd0`.
+- E4's focused/lint/full-suite, real strict-readback, and deterministic-pair claims are independently reproduced.
+- E4 did not claim a dedup JSONL row-order guard; reviewer found that remaining sealed-plan strict-readback gap as new `R5-M1`.
+
+### Conclusion
+
+**NEEDS REPAIR** for `reviewed_head_commit=453fbd423a871ff3b9e0e652c1cee1a58e81afdc`.
+
+R4-M1 is closed and the real data/evidence remain correct, but WP9-a cannot PASS while strict readback certifies a self-consistently re-hashed row-reordered `dedup_decisions.jsonl`, contrary to the sealed plan's explicit fail-closed row-order requirement. The remaining repair is narrow and readback-only.
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 5
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R5-M1
+  rationale:
+    - "The only remaining actionable defect is a single strict-readback order invariant in the dedup decision parser plus one production-shadow regression."
+    - "The code and test changes touch the same refresh.py/readback contract, so splitting tracked writes has no useful parallel benefit."
+  workstream_candidates: []
+```
+
+Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R5, route one repair execution for `R5-M1`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
