@@ -17,13 +17,16 @@ from pathlib import Path
 from typing import Literal, cast
 
 from code_verifier.config import ConfigError, load_yaml_mapping
-from code_verifier.data.deduplicate import problem_reference_solution_hash, stable_json_hash
+from code_verifier.data.deduplicate import (
+    DuplicateDataError,
+    problem_reference_solution_hash,
+    stable_json_hash,
+)
 from code_verifier.data.json_strict import json_values_equal, loads_strict
 from code_verifier.data.leakage_checks import (
     TrainingArtifactKind,
     _build_training_record_unchecked,
     build_training_record,
-    check_no_test_layer_overlap,
     load_training_artifact,
 )
 from code_verifier.data.prepare import DataPreparationError, load_canonical_jsonl, write_jsonl_with_stats
@@ -462,6 +465,16 @@ def _reference_sets(
     return sft, validation, project_test
 
 
+def _checked_selected_test_fingerprint(problem: CodeProblem) -> str:
+    """Compute the selected-row test fingerprint while enforcing all-layer normalized uniqueness once."""
+    try:
+        return refresh_problem_test_set_fingerprint(problem)
+    except DuplicateDataError as error:
+        raise RefreshDataError(
+            f"canonical selected problem {problem.problem_id} repeats a normalized test"
+        ) from error
+
+
 def _selected_sft_fingerprint(problem: CodeProblem, *, policy: RefreshDedupPolicy) -> RefreshFingerprint:
     return build_refresh_fingerprint(
         record_id=problem.problem_id,
@@ -470,7 +483,7 @@ def _selected_sft_fingerprint(problem: CodeProblem, *, policy: RefreshDedupPolic
         function_signature=problem.function_signature,
         source_url_hash=problem.metadata.source_url_hash,
         reference_solution_hash=problem_reference_solution_hash(problem),
-        test_fingerprint=refresh_problem_test_set_fingerprint(problem),
+        test_fingerprint=_checked_selected_test_fingerprint(problem),
         policy=policy,
     )
 
@@ -508,7 +521,7 @@ def _canonical_selection_fingerprint(
         function_signature=problem.function_signature,
         source_url_hash=problem.metadata.source_url_hash,
         reference_solution_hash=None,
-        test_fingerprint=refresh_problem_test_set_fingerprint(problem),
+        test_fingerprint=_checked_selected_test_fingerprint(problem),
         policy=policy,
     )
     comparable_fields = (
@@ -1147,8 +1160,6 @@ def check_refresh_data(
     ids = [problem.problem_id for problem in problems]
     if len(ids) != len(set(ids)):
         raise RefreshDataError("refresh canonical contains duplicate problem IDs")
-    for problem in problems:
-        check_no_test_layer_overlap(problem)
 
     selection_records = _load_jsonl(dataset_dir / "manifest" / "selection.jsonl")
     if [record.get("problem_id") for record in selection_records] != ids:

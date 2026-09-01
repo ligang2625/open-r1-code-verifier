@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -307,6 +308,16 @@ def test_refresh_config_rejects_wp9a_selection_protocol_variants(
     }
     with pytest.raises(ConfigError, match="freezes"):
         refresh_data_config_from_mapping(config, config_path=tmp_path / "refresh.yaml")
+
+
+def test_selected_test_fingerprint_still_rejects_cross_layer_duplicates() -> None:
+    problem = _problem("duplicate-layer", "train")
+    duplicated = replace(
+        problem,
+        train_hidden_tests=(problem.visible_tests[0], *problem.train_hidden_tests[1:]),
+    )
+    with pytest.raises(RefreshDataError, match="repeats a normalized test"):
+        refresh_module._checked_selected_test_fingerprint(duplicated)
 
 
 def test_deterministic_stratified_select_is_permutation_invariant() -> None:
