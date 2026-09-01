@@ -244,3 +244,124 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R2, route a single repair execution for `R2-M1`, `R2-M2`, and `R2-M3`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
+
+## R3 — R2 repair independent review
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-a
+  review_round: 3
+  source_execution_id: E2
+  reviewed_head_commit: 65b5d74f6561ed7638726c527a35ed7552160f23
+  conclusion: needs_repair
+```
+
+### Review scope and provenance guard
+
+- Reviewer did not participate in the latest E2 repair execution. The exact stage worktree is `/home/dzy/open-r1-code-verifier/.worktrees/wp9-a`, branch `feat/wp9-a`; review began clean at `HEAD=65b5d74f6561ed7638726c527a35ed7552160f23`.
+- The sealed plan remains `72a91b652a38fe4e7e58a396c76bfd77fb46a66b`, with `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, `development_terminal=false`.
+- R2 was checkpointed at `6ce65f8f4855c2a2f5fbbd4838140e6c35508819`. The first E2 code commit `1ed56065ae35e1d41893b5cc7865b190d4bb994c` has that checkpoint as its parent; the final E2 code commit is `bee206c9ed04a5d7a18e308e0b48ffa71e0d704d`; the execution-report commit `65b5d74f6561ed7638726c527a35ed7552160f23` has `bee206c...` as its parent.
+- Latest completed execution record is `E2`, `task_kind=repair`, `source_review_round=2`, `source_review_commit=6ce65f8f4855c2a2f5fbbd4838140e6c35508819`, `repair_issue_ids=[R2-M1,R2-M2,R2-M3]`, `status=completed`. `git log` identifies the current HEAD as the commit that added that record.
+- `git ls-files .ai-bridge` is empty. E2's long-running second materialization used ignored local `.ai-bridge` runner/status/log files; they remain untracked transport state and are not part of repository history.
+
+### R2 issue disposition
+
+| Previous issue | R3 disposition |
+|---|---|
+| `R2-M1` | **Partially resolved; remains actionable.** Formal SFT/validation/project-test buckets are now rebuilt from the authoritative formal canonical and compared to the stored snapshot. However the external-eval fingerprint inventory is still only a mutable stored bucket whose dataset/revision/count/projection fields are checked for self-consistency; reviewer reproduced a real external-eval overlap that passes after replacing the HumanEvalPlus fingerprint bucket with an unrelated same-count fingerprint. |
+| `R2-M2` | **Resolved for the reported hard-cap/config bypass.** File config now freezes 10,000 / 0.075 / 0.15, runtime validation independently caps the hard max at 0.15, and strict readback rejects configured or actual overlap above 15%. Reviewer found a separate strict-checker production-identity issue recorded as `R3-M2`. |
+| `R2-M3` | **Resolved.** Reviewer independently strict-checked both repaired real outputs `final1` and `final4`, then compared all 13 files: exact file sets, zero SHA256 mismatches, and root manifest SHA256 `98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625`. Both outputs report 10,000 selected, 9,565 external retained, 750 SFT reuse, and 1,086 quality-gate-required. |
+
+### Reviewer-owned verification
+
+- Focused sealed-plan suite: `uv run python -m pytest tests/unit/data/test_refresh_sources.py tests/unit/data/test_refresh_dedup.py tests/unit/data/test_refresh.py tests/unit/data/test_split_tests.py tests/unit/data/test_prepare.py tests/unit/test_cli.py tests/integration/test_wp9a_refresh_data_pipeline.py` → **179 passed**.
+- `make lint` → **PASS**: Ruff check, Ruff format check, strict mypy over 121 files.
+- `make test` → **1102 passed, 3 skipped, 0 failed**; the three skips are the repository's existing real-Piston opt-in cases and are unrelated to WP9-a.
+- Fresh reviewer readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final1` → exit 0, selected 10,000, retained external 9,565, SFT overlap 750/10,000, quality-gate-required 1,086.
+- Fresh reviewer readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final4` → the same counts and exit 0. Independent file comparison reported `13/13` identical files, `0` mismatches, root SHA `98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625`.
+- Reviewer independently read final1's source evidence: PrimeIntellect 16,252 scanned / 11,323 accepted / projection `6241f5c56810008cf12cb94b47d9ec8fd49f5048fa2900d77b3ce87531f2480c`; TACO 7,436 / 2,642 / `d5b1242810ec37f9a524a7e2c7b3731595e269544b7add719cccfea51e2fe6de`; HumanEvalPlus count 164 / projection `d538bb58cbf89c74001c7e60b21a38552af6666da695e27182d66c97297b0314`; formal split counts 2,500/300/400 and canonical SHA `d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6`.
+- **External-eval inventory bypass (`R2-M1`)**: reviewer changed one selected external canonical/training row so its raw statement and contract exactly matched the unchanged pinned HumanEvalPlus fixture reference; rebuilt the selected fingerprint; replaced only `reference_snapshots.json.fingerprints.external_eval` with an unrelated same-count external-eval fingerprint while leaving the pinned dataset/revision/license/count/projection fingerprint and root external-eval identity unchanged; updated affected artifact hashes. `check_refresh_data()` returned success: `EXTERNAL_SNAPSHOT_BYPASS_PASSED 7 <selected-id> humanevalplus:HumanEval/fixture-0`.
+- **Source provenance bypass (`R3-M1`)**: `refresh_data_config_from_mapping()` accepted `wp9a-refresh-v1` with an arbitrary DeepCoder-style source identity (`some/other-deepcoder@111...`) while the production selection/external-eval fields were frozen. Separately, reviewer rewrote a valid artifact's `manifest/source_snapshots.json` and root `sources/source_projection_fingerprints` to `evil/replacement@ffff...`, license `UNKNOWN`, projection `eeee...`, updated the source-snapshot artifact hash, and strict readback still returned success: `SOURCE_PROVENANCE_TAMPER_PASSED 7 evil/replacement ffff...`.
+- **Non-production protocol certification (`R3-M2`)**: the same public `check_refresh_data()` used by `check-refresh-data` successfully certified a `wp9a-refresh-v1` fixture artifact with only 7 selected problems and SFT overlap `1/7 = 0.142857...`: `NONPROD_SCHEMA_CHECK_PASSED 7 0.142857... 7 0.142857...`. The prepare CLI's YAML loader freezes 10,000/0.075/0.15, but the checker receives no config and does not enforce those exact production values.
+
+### Findings
+
+#### R2-M1 — external-eval fingerprints remain a mutable trust root, so HumanEvalPlus overlap can still be hidden
+
+**Severity:** Major / actionable; previous issue remains open in narrowed form.
+
+The formal-reference portion of R2-M1 is fixed: `check_refresh_data()` reloads `reference_dataset_dir/canonical/problems.jsonl`, recomputes split counts and formal fingerprints, compares stored formal buckets, and uses rebuilt values (`refresh.py:1066-1104`). The external-eval path is different. It decodes `reference_snapshots.json.fingerprints.external_eval`, then only verifies that the adjacent snapshot claims the frozen HumanEvalPlus identity/license, that `scanned_rows == accepted_rows == len(stored_fingerprints) > 0`, that `projection_fingerprint_sha256` merely has a 64-hex shape, and that the root manifest repeats the same projection string (`refresh.py:1106-1152`). It never establishes that the stored fingerprint inventory was actually derived from the pinned HumanEvalPlus projection.
+
+The reviewer reproduction preserves every check currently implemented—including pinned dataset/revision/license, count, projection field, and root equality—but substitutes an unrelated same-count fingerprint inventory. Because overlap auditing then uses that substituted bucket, actual canonical/training content exactly matching the unchanged external evaluation reference is certified as zero overlap. This violates Refresh §6.3's hard requirement that HumanEvalPlus exact/accepted-near overlap be zero and the sealed plan's strict-readback fail-closed requirement.
+
+Required repair:
+
+- independently anchor the exact HumanEvalPlus fingerprint inventory for the frozen revision. Acceptable designs include reloading/rebuilding the pinned source during `check-refresh-data` (with an explicit cache/source input) or comparing the stored inventory to a tracked immutable expected inventory hash/count derived from the frozen source; root↔snapshot self-consistency alone is not sufficient;
+- enforce the known pinned reference count/inventory identity rather than merely `count > 0`, and fail closed if any stored external-eval fingerprint is removed/replaced/reordered contrary to the frozen inventory contract;
+- add the reviewer adversarial regression: selected canonical content overlaps the real external-eval reference while the stored same-count fingerprint bucket is replaced and all local hashes remain self-consistent; checker must reject it.
+
+#### R3-M1 — candidate-source provenance is neither frozen at the production config boundary nor semantically checked during strict readback
+
+**Severity:** Major / actionable.
+
+The sealed plan fixes the enabled source projection to the two DeepCoder configs at revision `177913a7bd43791646ef6a43645caa3c871ab3db`, MIT, and requires source revision/license/provenance/projection fingerprints to be auditable. Refresh §6.4 likewise requires each source revision, license/provenance, fingerprint and schema mapping to be frozen before formal materialization. Yet `refresh_data_config_from_mapping()` currently freezes the selection and HumanEvalPlus identity but accepts arbitrary `adapter=deepcoder` source dataset/revision/config/license values (`refresh.py:167-197,217-243`). On readback, `manifest/source_snapshots.json` is only covered by generic byte hash/row accounting; `check_refresh_data()` never loads it semantically, never validates root `sources`, and never cross-checks root `source_projection_fingerprints` against source snapshots.
+
+The reviewer demonstrated both sides: an arbitrary source config is accepted under `wp9a-refresh-v1`, and a fully prepared artifact can have its source dataset/revision/license/projection provenance rewritten in both source snapshot and root manifest while `check-refresh-data` still passes. The actual E2 final1/final4 happen to contain the correct pinned identities and hashes, but strict readback cannot prove that property and can certify falsified provenance.
+
+Required repair:
+
+- freeze the exact WP9-a production source specifications at the file/config boundary: exactly the approved DeepCoder PrimeIntellect/TACO source names, dataset id, full revision, config names, split, MIT license and adapter unless a new schema/spec amendment explicitly authorizes another source;
+- make strict readback parse `manifest/source_snapshots.json`, validate exact shape/unique source identities/count types/fingerprint format, and cross-bind every snapshot to root `sources` and `source_projection_fingerprints`;
+- provide an independent anchor for the pinned projection fingerprints (tracked expected projection hashes or source reload) so rewriting both mutable copies cannot falsify consumed-projection provenance;
+- add config and self-consistent artifact-tamper regressions matching the reviewer probes.
+
+#### R3-M2 — the production `check-refresh-data` CLI can certify non-production pools under `wp9a-refresh-v1`
+
+**Severity:** Major / actionable.
+
+E2 correctly freezes file-based preparation configs to `target_size=10000`, `sft_overlap_fraction=0.075`, and `sft_overlap_hard_max=0.15`. However `check-refresh-data` does not load that config (`cli.py:250-255`), and `check_refresh_data()` only requires `target_size > 0`, protocol arithmetic consistency, and overlap values at or below 15% (`refresh.py:1010-1059,1185-1194`). It does not require the sealed production values 10,000 / 0.075 / 0.15 / 750 / 9,250.
+
+This is observable on the repository's own internal fixture path: a 7-problem, 1/7-overlap artifact carries `schema_version=wp9a-refresh-v1` and is accepted by the same public strict checker used by the production CLI. That contradicts the sealed plan's strict-readback statement that SFT reuse is exactly 750 / 7.5% and the tracked production protocol is 10,000 / 0.075 / 0.15. A user can therefore present a self-consistent non-production artifact to `check-refresh-data` and receive a successful certification under the production schema.
+
+Required repair:
+
+- for `wp9a-refresh-v1`, strict readback must independently require `target_size=10000`, `sft_overlap_fraction=0.075`, `sft_overlap_hard_max=0.15`, `sft_overlap_count=750`, and `external_new_count=9250`, in addition to recomputing actual counts;
+- preserve small fixture coverage via a clearly separate internal/test protocol or an explicit non-production checker mode that the production `check-refresh-data` CLI cannot silently invoke; do not let test artifacts claim the production schema while relaxing its frozen pool identity;
+- add a regression that a small/self-consistent `wp9a-refresh-v1` artifact is rejected by the production checker.
+
+### Executor claim audit
+
+- E2 provenance, changed-file scope, formal-reference rebuilding, 15% hard-cap enforcement, regression counts, lint and full-suite claims are independently substantiated.
+- E2's real-data materialization/determinism claims are independently substantiated at the artifact level: both final1/final4 strict readbacks pass and all 13 files are byte-identical with the reported root SHA.
+- E2's statement that R2-M1 is fully repaired is **not substantiated** for external evaluation: the HumanEvalPlus fingerprint inventory remains replaceable without detection.
+- E2's production source/protocol artifacts are correct in the two accepted real outputs, but the checker does not independently enforce those source/protocol identities, so successful readback currently proves less than the execution report and sealed plan claim.
+
+### Conclusion
+
+**NEEDS REPAIR** for `reviewed_head_commit=65b5d74f6561ed7638726c527a35ed7552160f23`.
+
+E2 closes the real-materialization gate and the concrete 15% hard-cap bypass, and all repository tests pass. WP9-a nevertheless cannot PASS while the production checker can (1) hide a true HumanEvalPlus overlap by replacing the external-eval fingerprint inventory, (2) certify falsified candidate-source provenance, and (3) certify non-production pool sizes/overlap fractions under the production `wp9a-refresh-v1` schema.
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 3
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: medium
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R2-M1
+    - R3-M1
+    - R3-M2
+  rationale:
+    - "All remaining findings are the same strict-readback/config provenance boundary in refresh.py and overlapping unit/integration tests; splitting tracked writes would create conflicts and inconsistent schema decisions."
+    - "The repair is bounded control-plane code plus adversarial regressions; after semantics are fixed, existing real outputs can be rechecked or regenerated if the artifact schema changes, so one serial lane is the safest provenance-preserving route."
+  workstream_candidates: []
+```
+
+Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R3, route one repair execution for `R2-M1`, `R3-M1`, and `R3-M2`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
