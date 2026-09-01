@@ -276,3 +276,39 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## E5 repair summary
+
+R5 repair was executed in the same `WP9-a` worktree with `backend=web`, `source_mode=single`, and `effective_execution_mode=single`, sourced from review round 5 / commit `afe5e0866494d22a99612b3b9439e550f34ca4ec`.
+
+### Issue disposition
+
+- `R5-M1`: strict readback now rejects non-canonical `manifest/dedup_decisions.jsonl` ordering. `_parse_dedup_decisions()` verifies that input records arrive in strictly ascending `candidate_id` order instead of accepting a semantically equivalent reordered sequence. The accepted inventory hash checks remain unchanged and continue serving provenance anchoring rather than replacing the JSONL order invariant.
+
+### Repair verification
+
+- Router preflight passed: stage `HEAD` matched the latest committed R5 review baseline; plan remained sealed at `72a91b652a38fe4e7e58a396c76bfd77fb46a66b`; `.ai-bridge/**` remained untracked; stage environment resolved local `code_verifier` and `open_r1` sources.
+- Formal canonical reference preflight passed: split counts `2500/300/400`, canonical SHA256 `d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6`.
+- Pinned source probes passed from the local cache: DeepCoder schema matched both `primeintellect` and `taco`; HumanEvalPlus exclusion remained 164 references with projection SHA256 `d538bb58cbf89c74001c7e60b21a38552af6666da695e27182d66c97297b0314`.
+- R5-focused unit verification: `tests/unit/data/test_refresh.py` → `19 passed`.
+- R5 integration verification: `tests/integration/test_wp9a_refresh_data_pipeline.py` → `15 passed`.
+- `make lint` → PASS; Ruff check/format and strict mypy passed for `121` source/test files.
+- `make test` → PASS: `1109 passed, 3 skipped`; skips are the existing real-Piston opt-in cases.
+
+## Structured E5 execution record
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-a
+  execution_id: E5
+  task_kind: repair
+  source_plan_commit: 72a91b652a38fe4e7e58a396c76bfd77fb46a66b
+  source_review_round: 5
+  source_review_commit: afe5e0866494d22a99612b3b9439e550f34ca4ec
+  repair_issue_ids: [R5-M1]
+  result_code_commit: 27d9999f41f77a3e48cb6252b167cabdbe3108d3
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  status: completed
+```
