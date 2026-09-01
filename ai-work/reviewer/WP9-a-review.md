@@ -365,3 +365,100 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R3, route one repair execution for `R2-M1`, `R3-M1`, and `R3-M2`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
+
+## R4 — R3 repair independent review
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-a
+  review_round: 4
+  source_execution_id: E3
+  reviewed_head_commit: d25ec3c704ad7dd08bbea9dac209e07d9de08ff7
+  conclusion: needs_repair
+```
+
+### Review scope and provenance guard
+
+- Reviewer did not participate in the latest E3 repair execution. The exact stage worktree is `/home/dzy/open-r1-code-verifier/.worktrees/wp9-a`, branch `feat/wp9-a`; review began clean at `HEAD=d25ec3c704ad7dd08bbea9dac209e07d9de08ff7`.
+- The sealed plan remains `72a91b652a38fe4e7e58a396c76bfd77fb46a66b`, with `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, `development_terminal=false`.
+- R3 was checkpointed at `d87ae07ec3750274a2f37b9983a60b6a5e327f17`. E3 code commit `6bfd1619bf7a578b26f2195ad58ab69ef1e111e8` has that review commit as its parent, and the E3 execution-report commit `d25ec3c704ad7dd08bbea9dac209e07d9de08ff7` has the code commit as its parent.
+- Latest completed execution record is `E3`, `task_kind=repair`, `source_review_round=3`, `source_review_commit=d87ae07ec3750274a2f37b9983a60b6a5e327f17`, `repair_issue_ids=[R2-M1,R3-M1,R3-M2]`, `status=completed`.
+- `git ls-files .ai-bridge` is empty and the tracked stage remained clean throughout reviewer verification.
+
+### R3 issue disposition
+
+| Previous issue | R4 disposition |
+|---|---|
+| `R2-M1` | **Resolved.** Production readback now freezes HumanEvalPlus count/projection and an exact fingerprint-inventory SHA. Reviewer independently rebuilt the pinned 164-reference inventory from the local pinned cache and obtained projection `d538bb58cbf89c74001c7e60b21a38552af6666da695e27182d66c97297b0314` and inventory SHA `b9cf681ddf22f2195ff1a74added578b0dd58108031d93fd4c9a560fd58f5dac`, exactly matching the tracked anchors. A same-count fingerprint replacement with updated artifact hash is rejected. |
+| `R3-M1` | **Resolved for the reported source-config/source-snapshot trust roots.** `wp9a-refresh-v1` now freezes the exact two DeepCoder specs and production readback requires the exact pinned scan/accepted/projection snapshots; reviewer confirmed arbitrary source config and self-consistent root+source-snapshot replacement are rejected. A different downstream provenance gap—selected rows are not bound to retained dedup decisions/raw identities—is recorded as new `R4-M1`. |
+| `R3-M2` | **Resolved.** Production readback independently freezes 10,000 / 0.075 / 0.15 / 750 / 9,250. Small fixtures now emit `wp9a-refresh-test-v1` and require explicit `allow_test_protocol=True`; the production CLI path does not enable it. |
+
+### Reviewer-owned verification
+
+- Focused sealed-plan suite: `uv run python -m pytest tests/unit/data/test_refresh_sources.py tests/unit/data/test_refresh_dedup.py tests/unit/data/test_refresh.py tests/unit/data/test_split_tests.py tests/unit/data/test_prepare.py tests/unit/test_cli.py tests/integration/test_wp9a_refresh_data_pipeline.py` → **182 passed**.
+- `make lint` → **PASS**: Ruff check, Ruff format check, strict mypy over 121 files.
+- `make test` → **1105 passed, 3 skipped, 0 failed**; the three skips are the existing real-Piston opt-in cases and WP9-a does not depend on Piston.
+- Fresh strict readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final1` under E3 → exit 0: selected 10,000, external retained 9,565, SFT overlap 750/10,000, quality-gate-required 1,086.
+- Pinned HumanEvalPlus source reload from `/home/dzy/.cache/huggingface` independently produced 164 references and exactly matched both E3 frozen projection/inventory hashes. A production artifact with one external-eval fingerprint replaced and the reference-snapshot artifact hash updated failed closed with `external-eval fingerprints do not match the frozen inventory`.
+- An arbitrary production config source (`some/other-deepcoder@111...`) failed with `ConfigError ... freezes the two approved DeepCoder projections`. A self-consistent production source snapshot/root rewrite to `evil/replacement@ffff...` failed closed with `source snapshots do not match the frozen WP9-a production projections`.
+- A direct reviewer reload of both full DeepCoder projections from the local cache exceeded the CodexPro 180-second command limit and was terminated; it is not counted as successful evidence. This does not invalidate the repaired checker gate: the existing real output carries the previously audited pinned snapshots, current strict readback enforces those exact tracked anchors, and E3 did not modify `refresh_sources.py`.
+- Existing real artifact consistency is good: reviewer cross-joined all 9,250 `external_new` selection rows against the 13,965 dedup decisions and observed **0 mismatches** for candidate ID, `retained=true`, source name, source-record ID, and raw-record SHA.
+- **Selected raw-provenance tamper (`R4-M1`)**: on a production-shadow tree of final1, reviewer changed one external selection row's real `source_record_id/raw_record_sha256` from `primeintellect/train/5509` / `ec22cd...eb4` to `forged-source-record` / `ffff...`, updated only the selection artifact SHA in the root manifest, and `check_refresh_data()` still returned success: `SELECTED_PROVENANCE_TAMPER_PASSED 10000 ...`.
+- **Retained-decision contradiction (`R4-M1`)**: reviewer changed the same kind of selected external candidate's dedup decision from `(retained=true, rejection_reason=null, overlap_class=none)` to `(retained=false, forged_rejection, evaluation_overlap)` and updated only the dedup-decisions artifact SHA. Production strict readback still returned success: `SELECTED_REJECTED_DECISION_TAMPER_PASSED 10000 <candidate-id> ...`.
+
+### Finding
+
+#### R4-M1 — strict readback does not bind selected external rows to frozen raw-candidate provenance and retained dedup decisions
+
+**Severity:** Major / actionable.
+
+E3 correctly anchors the source-level identities: `refresh.py:1041-1136` parses `source_snapshots.json`, cross-binds root source specs/projection fields, and for production requires exact tracked DeepCoder snapshot values. However the selected-row provenance chain is still unchecked. `_canonical_selection_fingerprint()` (`refresh.py:543-590`) validates the stored fingerprint against canonical bytes plus `source`/`difficulty`/`overlap_origin`, but it never validates the selection record's `schema_version`, `source_record_id`, or `raw_record_sha256`. `SELECTION_SCHEMA_VERSION` is only used when writing records. More importantly, `check_refresh_data()` never reads `manifest/dedup_decisions.jsonl` at all, so it never proves that an `external_new` selection came from a candidate that the frozen-source classifier actually marked retained.
+
+This is a direct acceptance-contract break, not merely cosmetic provenance. The sealed plan requires every accepted candidate to carry a stable candidate identity and raw-record hash (`plan:159`), requires the 9,250 new selections to come **only** from `classify_refresh_candidates` retained external candidates (`plan:331`), and says strict readback must fail closed on self-consistent tamper (`plan:381-386`). Refresh §6.4 requires frozen source provenance/fingerprints and §6.6 requires a machine-readable candidate dedup manifest with candidate/source identity and retained/rejected status. The two reviewer attacks show the current checker can certify mutually contradictory claims: the selected artifact can claim a forged raw source record, and the dedup manifest can simultaneously say that an actually selected candidate was rejected for evaluation overlap.
+
+The real final1 artifact itself is internally correct—9,250/9,250 selected external rows currently match retained decisions and raw provenance—so this is a checker/provenance-binding defect rather than evidence that E2's real materialization selected bad data.
+
+Required repair:
+
+- add exact-schema strict parsers for `selection.jsonl` and `dedup_decisions.jsonl`; require `selection.schema_version=wp9a-selection-v1`, reject unknown/missing fields and type drift, require external `source_record_id` non-empty plus `raw_record_sha256` valid 64-hex, and require SFT-reuse provenance fields to have their defined null form;
+- during production readback, require one unique dedup decision for every accepted source candidate and cross-bind every selected `external_new` record to the decision with the same candidate/problem ID, `retained=true`, no rejection, `overlap_class=none`, and exact `source_name/source_record_id/raw_record_sha256` equality;
+- do not stop at cross-binding two mutable files. Independently anchor the accepted-candidate provenance inventory for each frozen source (for example a tracked per-source SHA over deterministic `(candidate_id, source_record_id, raw_record_sha256)` tuples produced from the pinned source) or explicitly reload the source projection during check. This must make a self-consistent selection+decision rewrite fail closed;
+- recompute and exact-check `reports/dedup_summary.json` plus root `total_candidates_scanned` / `external_candidates_retained` from the frozen source snapshots and parsed dedup decisions so the candidate/dedup evidence chain is one coherent contract;
+- add production-mode adversarial regressions matching both reviewer reproductions: forged selected raw provenance with updated hashes, and a selected external candidate changed to a rejected dedup decision with updated hashes. Both must be rejected;
+- if the repair only adds readback validation/anchors and does not change artifact bytes, re-run strict checks on existing final1/final4; if it changes production artifact schema or bytes, regenerate the same-seed deterministic real pair before claiming acceptance.
+
+### Executor claim audit
+
+- E3 provenance and changed-file scope are valid; the code commit is directly parented by the R3 review and the execution-report commit is directly parented by the E3 code commit.
+- E3's `R2-M1` claim is independently substantiated, including a fresh pinned-source recomputation of the HumanEvalPlus inventory anchor.
+- E3's `R3-M2` claim is substantiated by code inspection plus the focused suite: production exact pool values are independently enforced and test artifacts are on a distinct opt-in schema.
+- E3's `R3-M1` claim is substantiated at the source-config/source-snapshot level, but it overstates end-to-end candidate provenance: source-level anchors are not connected to per-selection raw provenance or retained dedup decisions (`R4-M1`).
+- E3's reported host-side full-suite result is independently reproduced: **1105 passed, 3 skipped**. The reviewer's attempted full DeepCoder source reload timed out under the same 180-second tool bound and is not treated as a pass or a new blocker.
+
+### Conclusion
+
+**NEEDS REPAIR** for `reviewed_head_commit=d25ec3c704ad7dd08bbea9dac209e07d9de08ff7`.
+
+E3 closes the three specific R3 trust-boundary attacks and all repository regression gates pass. WP9-a still cannot PASS because strict readback can certify an external selection whose raw source provenance has been forged and can certify a dataset where the dedup manifest explicitly says that a selected external candidate was rejected. The real final1 data is internally consistent; the remaining defect is the fail-closed provenance binding required to prove that fact during readback.
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 4
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R4-M1
+  rationale:
+    - "The remaining defect is one coherent readback/provenance chain in refresh.py: selection schema, dedup-decision parsing, source-inventory anchoring, and dedup-summary/root reconciliation must agree atomically."
+    - "The tests and production-shadow adversarial cases touch the same checker contract, so multiple tracked write lanes would add collision risk without independent throughput benefit."
+  workstream_candidates: []
+```
+
+Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R4, route one repair execution for `R4-M1`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
