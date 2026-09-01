@@ -309,6 +309,43 @@ def test_wp9a_fixture_strict_readback_rejects_tamper(
         check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
+def test_wp9a_strict_readback_rejects_rehashed_noncanonical_dedup_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "dedup-order-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+
+    decisions_path = root / "manifest" / "dedup_decisions.jsonl"
+    decisions = _read_jsonl(decisions_path)
+    assert len(decisions) >= 2
+    first_id = cast(str, decisions[0]["candidate_id"])
+    second_id = cast(str, decisions[1]["candidate_id"])
+    assert first_id < second_id
+    decisions[0], decisions[1] = decisions[1], decisions[0]
+    _write_jsonl_records(decisions_path, decisions)
+
+    manifest_path = root / "refresh_manifest.json"
+    manifest = cast(dict[str, object], json.loads(manifest_path.read_text(encoding="utf-8")))
+    artifacts = cast(dict[str, object], manifest["artifacts"])
+    dedup_artifact = cast(dict[str, object], artifacts["manifest/dedup_decisions.jsonl"])
+    dedup_artifact["sha256"] = _sha256(decisions_path)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RefreshDataError, match="canonical candidate_id order"):
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
+
+
 def test_wp9a_strict_readback_recomputes_quality_gate_from_canonical_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
