@@ -565,3 +565,89 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R5, route one repair execution for `R5-M1`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
+
+## R6 — R5 repair independent review
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-a
+  review_round: 6
+  source_execution_id: E5
+  reviewed_head_commit: 0d0a00c2f0de51142404ce88c8072494c3f89a6d
+  conclusion: needs_repair
+```
+
+### Review scope and provenance guard
+
+- Reviewer did not participate in the latest E5 repair execution. The exact stage worktree is `/home/dzy/open-r1-code-verifier/.worktrees/wp9-a`, branch `feat/wp9-a`; review began clean at `HEAD=0d0a00c2f0de51142404ce88c8072494c3f89a6d`.
+- The sealed plan remains `72a91b652a38fe4e7e58a396c76bfd77fb46a66b`, with `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, `development_terminal=false`.
+- R5 was checkpointed at `afe5e0866494d22a99612b3b9439e550f34ca4ec`. E5 repair commit `27d9999f41f77a3e48cb6252b167cabdbe3108d3` has that review commit as its parent, and the E5 execution-report commit/current reviewed HEAD `0d0a00c2f0de51142404ce88c8072494c3f89a6d` has the repair commit as its parent.
+- Latest completed execution record is `E5`, `task_kind=repair`, `source_review_round=5`, `source_review_commit=afe5e0866494d22a99612b3b9439e550f34ca4ec`, `repair_issue_ids=[R5-M1]`, `status=completed`.
+- `git ls-files .ai-bridge` remains empty and the stage had no tracked/staged/untracked repository changes before this review append.
+
+### R5 issue disposition
+
+| Previous issue | R6 disposition |
+|---|---|
+| `R5-M1` | **Code defect resolved, acceptance incomplete.** `_parse_dedup_decisions()` now rejects any input sequence that is not strictly ascending by unique `candidate_id`, matching the producer's canonical decision order. The new parser unit test verifies an ordered two-row input passes and the reversed order fails. However R5 explicitly required a tracked production-shadow end-to-end regression that swaps two valid `dedup_decisions.jsonl` rows, rewrites the root artifact SHA, and proves public `check_refresh_data()` rejects the self-consistent tamper. E5 changed only `src/code_verifier/data/refresh.py` and `tests/unit/data/test_refresh.py`; no such integration regression was added. |
+
+### Reviewer-owned verification
+
+- Code inspection confirms `_parse_dedup_decisions()` maintains `previous_candidate_id` and raises `RefreshDataError("dedup decisions are not in canonical candidate_id order")` when the JSONL input order is non-increasing; the later accepted-candidate inventory sorting remains separate and does not bypass this input-order guard.
+- Focused sealed-plan WP9-a suite: `uv run python -m pytest tests/unit/data/test_refresh_sources.py tests/unit/data/test_refresh_dedup.py tests/unit/data/test_refresh.py tests/unit/data/test_split_tests.py tests/unit/data/test_prepare.py tests/unit/test_cli.py tests/integration/test_wp9a_refresh_data_pipeline.py` → **186 passed**.
+- `make lint` → **PASS**: Ruff check, Ruff format check, strict mypy over 121 source/test files.
+- `make test` → **1109 passed, 3 skipped, 0 failed**; the three skips are the existing opt-in real-Piston cases and WP9-a does not depend on Piston.
+- Production strict readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final1` under E5 → exit 0: selected 10,000, external retained 9,565, SFT overlap 750/10,000, quality-gate-required 1,086.
+- Production strict readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final4` under E5 → the same counts and exit 0.
+- Frozen formal reference canonical independently resolves to SHA256 `d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6`, matching the accepted real artifacts' reference identity.
+- `git show --name-only` for E5 repair commit `27d9999...` contains only `src/code_verifier/data/refresh.py` and `tests/unit/data/test_refresh.py`; `tests/integration/test_wp9a_refresh_data_pipeline.py` is unchanged. The existing integration suite contains provenance/hard-cap tamper cases but no dedup-decision row-reorder tamper case.
+
+### Finding
+
+#### R6-M1 — E5 omitted the required end-to-end strict-readback row-order regression
+
+**Severity:** Major / actionable acceptance gap.
+
+R5-M1 was not only a parser implementation request. Its required repair explicitly called for a production-shadow regression that mutates a valid materialized artifact by swapping two `manifest/dedup_decisions.jsonl` rows, updates the corresponding root artifact SHA, and then asserts that `check_refresh_data()` fails specifically because the decision sequence is non-canonical. This test matters because the original defect existed at the public strict-readback boundary: a self-consistently re-hashed artifact was incorrectly certified.
+
+E5 correctly adds the parser guard and a direct unit test of `_parse_dedup_decisions()`, so the underlying implementation appears repaired. But it does not add the required public-boundary regression: the repair commit does not touch `tests/integration/test_wp9a_refresh_data_pipeline.py`, and the existing integration tests do not exercise a re-hashed row-order tamper. Under reviewer-ex's actionable issue coverage rule, an explicit required regression from the previous review remains an incomplete acceptance item and prevents PASS even when manual/code-level evidence indicates the implementation is likely correct.
+
+Required repair:
+
+- add the exact production-shadow integration regression requested by R5: materialize or shadow a valid WP9-a artifact, swap two valid dedup-decision rows without changing their semantic fields, update only the root artifact SHA for `manifest/dedup_decisions.jsonl`, and assert `check_refresh_data()` rejects it for non-canonical candidate order;
+- keep the new unit parser regression; it complements rather than replaces the end-to-end public-checker regression;
+- rerun the focused WP9-a suite, `make lint`, and `make test`; because the code fix is readback-only and existing final1/final4 already have canonical decision order, no new real materialization is required unless the repair changes production artifact bytes.
+
+### Executor claim audit
+
+- E5 provenance is valid and its implementation claim that the parser now enforces canonical decision order is substantiated by code inspection and the unit regression.
+- E5's focused/lint/full-suite verification claims are independently reproduced, and both accepted real outputs still pass production strict readback.
+- The repair execution is incomplete against the exact R5 required-repair test contract: passing the unchanged integration suite does not substitute for adding the requested production-shadow regression.
+
+### Conclusion
+
+**NEEDS REPAIR** for `reviewed_head_commit=0d0a00c2f0de51142404ce88c8072494c3f89a6d`.
+
+The row-order implementation defect itself is closed, all repository gates are green, and accepted real artifacts remain valid. WP9-a nevertheless cannot PASS until the required end-to-end strict-readback regression is committed, because that regression is part of the prior review's explicit acceptance contract and protects the public checker path where the defect was originally demonstrated.
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 6
+  mode: single
+  complexity: very_simple
+  single_class: very_simple
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R6-M1
+  rationale:
+    - "The implementation guard is already present; the only remaining actionable work is one bounded end-to-end integration regression for the public strict-readback boundary."
+    - "The repair touches a single existing integration-test file and has no independent parallel workstream or production-data regeneration requirement."
+  workstream_candidates: []
+```
+
+Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R6, route the single very-simple repair `R6-M1`. `stage-lifecycle finalize` is not permitted until a later fresh reviewer-ex round records `conclusion=pass` with `repair_routing.required=false`.
