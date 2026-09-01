@@ -7,7 +7,7 @@ import heapq
 import math
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -15,6 +15,9 @@ from code_verifier.data.deduplicate import normalize_text, stable_json_hash
 from code_verifier.data.refresh_sources import OverlapReference, RefreshCandidate, refresh_test_set_fingerprint
 
 RecordClass = Literal["candidate", "sft", "validation", "project_test", "external_eval"]
+
+WP9A_TOKEN_NGRAM_SIZE = 5
+WP9A_NEAR_JACCARD_THRESHOLD = 0.90
 
 
 @dataclass(frozen=True)
@@ -52,11 +55,15 @@ class RefreshDedupDecision:
 
 
 def validate_refresh_dedup_policy(policy: RefreshDedupPolicy) -> None:
-    """Reject thresholds that would weaken the sealed WP9-a high-threshold protocol."""
+    """Reject policies that differ from the sealed WP9-a token/Jaccard protocol."""
     if isinstance(policy.token_ngram_size, bool) or policy.token_ngram_size <= 0:
         raise ValueError("token_ngram_size must be a positive integer")
     if not math.isfinite(policy.near_jaccard_threshold) or not 0.0 < policy.near_jaccard_threshold <= 1.0:
         raise ValueError("near_jaccard_threshold must be finite and in (0, 1]")
+    if policy.token_ngram_size != WP9A_TOKEN_NGRAM_SIZE:
+        raise ValueError(f"wp9a-refresh-v1 freezes token_ngram_size={WP9A_TOKEN_NGRAM_SIZE}")
+    if policy.near_jaccard_threshold != WP9A_NEAR_JACCARD_THRESHOLD:
+        raise ValueError(f"wp9a-refresh-v1 freezes near_jaccard_threshold={WP9A_NEAR_JACCARD_THRESHOLD:.2f}")
 
 
 def _tokens(text: str) -> tuple[str, ...]:
@@ -145,17 +152,6 @@ def reference_fingerprint(reference: OverlapReference, *, policy: RefreshDedupPo
         test_fingerprint=reference.test_fingerprint,
         policy=policy,
     )
-
-
-def _exact_signal(left: RefreshFingerprint, right: RefreshFingerprint) -> str | None:
-    if left.normalized_statement_hash == right.normalized_statement_hash and left.contract_hash == right.contract_hash:
-        return "statement_contract"
-    for name in ("source_url_hash", "reference_solution_hash", "test_fingerprint"):
-        left_value = getattr(left, name)
-        right_value = getattr(right, name)
-        if left_value is not None and left_value == right_value:
-            return name.removesuffix("_hash")
-    return None
 
 
 def _jaccard(left: tuple[str, ...], right: tuple[str, ...]) -> float:
@@ -381,53 +377,20 @@ def _reference_match_map(
     return result
 
 
-class _DisjointSet:
-    def __init__(self, ids: Iterable[str]) -> None:
-        self._parent = {record_id: record_id for record_id in ids}
-
-    def find(self, record_id: str) -> str:
-        parent = self._parent[record_id]
-        if parent != record_id:
-            parent = self.find(parent)
-            self._parent[record_id] = parent
-        return parent
-
-    def union(self, left: str, right: str) -> None:
-        left_root = self.find(left)
-        right_root = self.find(right)
-        if left_root == right_root:
-            return
-        first, second = sorted((left_root, right_root))
-        self._parent[second] = first
-
-
-def _external_duplicate_components(
+def _external_duplicate_matches(
     candidates: Sequence[RefreshCandidate],
     fingerprints: Sequence[RefreshFingerprint],
     *,
     policy: RefreshDedupPolicy,
     context: _NearIndexContext | None = None,
-) -> dict[str, str]:
+) -> dict[str, tuple[str, str, float]]:
+    """Return direct duplicate evidence against deterministic retained representatives only."""
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
-    dsu = _DisjointSet(by_id)
-    exact_indexes: dict[tuple[str, str], str] = {}
-    for fingerprint in sorted(fingerprints, key=lambda item: item.record_id):
-        exact_values = [
-            ("statement_contract", f"{fingerprint.normalized_statement_hash}:{fingerprint.contract_hash}"),
-            ("source_url", fingerprint.source_url_hash),
-            ("reference_solution", fingerprint.reference_solution_hash),
-            ("test_fingerprint", fingerprint.test_fingerprint),
-        ]
-        for signal, value in exact_values:
-            if value is None:
-                continue
-            key = (signal, value)
-            previous = exact_indexes.get(key)
-            if previous is not None:
-                dsu.union(previous, fingerprint.record_id)
-            else:
-                exact_indexes[key] = fingerprint.record_id
+    fingerprint_by_id = {fingerprint.record_id: fingerprint for fingerprint in fingerprints}
+    if len(by_id) != len(candidates) or set(fingerprint_by_id) != set(by_id):
+        raise ValueError("external duplicate candidates/fingerprints must have identical unique IDs")
 
+    near_neighbors: dict[str, list[tuple[str, float]]] = defaultdict(list)
     for left_index, right_index in sorted(
         _candidate_pairs(fingerprints, fingerprints, policy=policy, context=context)
     ):
@@ -435,18 +398,58 @@ def _external_duplicate_components(
             continue
         left = fingerprints[left_index]
         right = fingerprints[right_index]
-        if _jaccard(left.token_ngrams, right.token_ngrams) >= policy.near_jaccard_threshold:
-            dsu.union(left.record_id, right.record_id)
+        similarity = _jaccard(left.token_ngrams, right.token_ngrams)
+        if similarity < policy.near_jaccard_threshold:
+            continue
+        near_neighbors[left.record_id].append((right.record_id, similarity))
+        near_neighbors[right.record_id].append((left.record_id, similarity))
 
-    components: dict[str, list[str]] = defaultdict(list)
-    for candidate_id in by_id:
-        components[dsu.find(candidate_id)].append(candidate_id)
-    representative: dict[str, str] = {}
-    for members in components.values():
-        retained = min(members, key=lambda item: (by_id[item].source_name, item))
-        for member in members:
-            representative[member] = retained
-    return representative
+    exact_indexes: dict[str, dict[object, str]] = {
+        "statement_contract": {},
+        "source_url": {},
+        "reference_solution": {},
+        "test_fingerprint": {},
+    }
+    retained_ids: set[str] = set()
+    duplicate_matches: dict[str, tuple[str, str, float]] = {}
+    for candidate in sorted(candidates, key=lambda item: (item.source_name, item.candidate_id)):
+        fingerprint = fingerprint_by_id[candidate.candidate_id]
+        exact_values: tuple[tuple[str, object | None], ...] = (
+            (
+                "statement_contract",
+                (fingerprint.normalized_statement_hash, fingerprint.contract_hash),
+            ),
+            ("source_url", fingerprint.source_url_hash),
+            ("reference_solution", fingerprint.reference_solution_hash),
+            ("test_fingerprint", fingerprint.test_fingerprint),
+        )
+        exact_matches: list[tuple[str, str]] = []
+        for signal, value in exact_values:
+            if value is None:
+                continue
+            matched_id = exact_indexes[signal].get(value)
+            if matched_id is not None:
+                exact_matches.append((matched_id, signal))
+        if exact_matches:
+            matched_id, signal = min(exact_matches)
+            duplicate_matches[candidate.candidate_id] = (matched_id, f"exact_external_{signal}", 1.0)
+            continue
+
+        direct_near_matches = [
+            (matched_id, similarity)
+            for matched_id, similarity in near_neighbors.get(candidate.candidate_id, ())
+            if matched_id in retained_ids
+        ]
+        if direct_near_matches:
+            matched_id, similarity = min(direct_near_matches, key=lambda item: (-item[1], item[0]))
+            duplicate_matches[candidate.candidate_id] = (matched_id, "near_external_duplicate", similarity)
+            continue
+
+        retained_ids.add(candidate.candidate_id)
+        for signal, value in exact_values:
+            if value is not None:
+                exact_indexes[signal].setdefault(value, candidate.candidate_id)
+    return duplicate_matches
 
 
 def classify_refresh_candidates(
@@ -490,16 +493,20 @@ def classify_refresh_candidates(
         policy=policy,
         context=near_context,
     )
-    representatives = _external_duplicate_components(
-        candidates,
-        candidate_fingerprints,
+    excluded_ids = {candidate_id for matches in [*evaluation_matches, sft_matches] for candidate_id in matches}
+    external_candidates = [candidate for candidate in candidates if candidate.candidate_id not in excluded_ids]
+    external_fingerprints = [
+        fingerprint for fingerprint in candidate_fingerprints if fingerprint.record_id not in excluded_ids
+    ]
+    external_matches = _external_duplicate_matches(
+        external_candidates,
+        external_fingerprints,
         policy=policy,
         context=near_context,
     )
 
     decisions: list[RefreshDedupDecision] = []
     for candidate in sorted(candidates, key=lambda item: item.candidate_id):
-        query = fingerprint_by_id[candidate.candidate_id]
         hard_match = next(
             (matches[candidate.candidate_id] for matches in evaluation_matches if candidate.candidate_id in matches),
             None,
@@ -533,22 +540,14 @@ def classify_refresh_candidates(
             )
             continue
 
-        representative = representatives[candidate.candidate_id]
-        if representative != candidate.candidate_id:
-            representative_fingerprint = fingerprint_by_id[representative]
-            exact_signal = _exact_signal(query, representative_fingerprint)
-            similarity = (
-                1.0
-                if exact_signal is not None
-                else _jaccard(query.token_ngrams, representative_fingerprint.token_ngrams)
-            )
+        external_match = external_matches.get(candidate.candidate_id)
+        if external_match is not None:
+            representative, reason, similarity = external_match
             decisions.append(
                 RefreshDedupDecision(
                     candidate_id=candidate.candidate_id,
                     retained=False,
-                    rejection_reason=(
-                        f"exact_external_{exact_signal}" if exact_signal is not None else "near_external_duplicate"
-                    ),
+                    rejection_reason=reason,
                     overlap_class="cross_source_duplicate",
                     matched_record_id=representative,
                     similarity=similarity,

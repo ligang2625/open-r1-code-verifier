@@ -15,7 +15,7 @@ import pytest
 
 import code_verifier.data.refresh as refresh_module
 import code_verifier.data.refresh_sources as refresh_sources_module
-from code_verifier.data.leakage_checks import LeakageError
+from code_verifier.data.leakage_checks import LeakageError, TrainingArtifactKind, build_training_record
 from code_verifier.data.prepare import (
     check_prepared_data,
     export_training_artifacts,
@@ -166,6 +166,16 @@ def _rewrite_root_artifact_hash(root: Path, relative: str) -> None:
     )
 
 
+def _write_jsonl_records(path: Path, records: list[dict[str, object]]) -> None:
+    path.write_text(
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+            for record in records
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_wp9a_fixture_prepare_check_is_deterministic_and_leakage_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -287,6 +297,121 @@ def test_wp9a_fixture_strict_readback_rejects_tamper(
         expected = LeakageError
 
     with pytest.raises(expected):
+        check_refresh_data(root, reference_dataset_dir=reference)
+
+
+def test_wp9a_strict_readback_recomputes_quality_gate_from_canonical_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "quality-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+
+    selection_path = root / "manifest" / "selection.jsonl"
+    selection = _read_jsonl(selection_path)
+    selected = next(record for record in selection if record.get("quality_gate_required") is True)
+    selected["quality_gate_required"] = False
+    _write_jsonl_records(selection_path, selection)
+    _rewrite_root_artifact_hash(root, "manifest/selection.jsonl")
+
+    leakage_path = root / "reports" / "test_layer_leakage.json"
+    leakage = cast(dict[str, object], json.loads(leakage_path.read_text(encoding="utf-8")))
+    leakage["quality_gate_required_count"] = cast(int, leakage["quality_gate_required_count"]) - 1
+    leakage_path.write_text(
+        json.dumps(leakage, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    _rewrite_root_artifact_hash(root, "reports/test_layer_leakage.json")
+
+    manifest_path = root / "refresh_manifest.json"
+    manifest = cast(dict[str, object], json.loads(manifest_path.read_text(encoding="utf-8")))
+    counts = cast(dict[str, object], manifest["counts"])
+    counts["quality_gate_required_count"] = cast(int, counts["quality_gate_required_count"]) - 1
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RefreshDataError, match="quality_gate_required"):
+        check_refresh_data(root, reference_dataset_dir=reference)
+
+
+def test_wp9a_strict_readback_binds_stored_fingerprint_to_canonical_and_training_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "canonical-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+
+    selection = _read_jsonl(root / "manifest" / "selection.jsonl")
+    external_record = next(record for record in selection if record["overlap_origin"] == "external_new")
+    external_id = cast(str, external_record["problem_id"])
+    canonical_path = root / "canonical" / "problems.jsonl"
+    canonical = _read_jsonl(canonical_path)
+    record = next(item for item in canonical if item["problem_id"] == external_id)
+    prompt = cast(str, record["prompt"])
+    suffix = f"\n\n{refresh_sources_module._REFRESH_INTERFACE_NOTE}"
+    assert prompt.endswith(suffix)
+    record["prompt"] = f"{prompt[: -len(suffix)]} semantically-tampered{suffix}"
+    _write_jsonl_records(canonical_path, canonical)
+
+    problems = load_canonical_jsonl(canonical_path)
+    write_jsonl(
+        (build_training_record(problem, kind=TrainingArtifactKind.PUBLIC_GRPO) for problem in problems),
+        root / "training" / "public_grpo.jsonl",
+    )
+    write_jsonl(
+        (build_training_record(problem, kind=TrainingArtifactKind.HIDDEN_GRPO) for problem in problems),
+        root / "training" / "hidden_grpo.jsonl",
+    )
+    for relative in (
+        "canonical/problems.jsonl",
+        "training/public_grpo.jsonl",
+        "training/hidden_grpo.jsonl",
+    ):
+        _rewrite_root_artifact_hash(root, relative)
+
+    with pytest.raises(RefreshDataError, match="stored external fingerprint"):
+        check_refresh_data(root, reference_dataset_dir=reference)
+
+
+def test_wp9a_strict_readback_recomputes_report_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference = _setup_fixture_environment(tmp_path, monkeypatch)
+    root = tmp_path / "report-tamper"
+    prepare_refresh_data(
+        config,
+        seed=42,
+        reference_dataset_dir=reference,
+        source_cache_dir=None,
+        output_dir=root,
+    )
+    report_path = root / "reports" / "evaluation_overlap.json"
+    report = cast(dict[str, object], json.loads(report_path.read_text(encoding="utf-8")))
+    report["external_eval_exact_or_near_overlap"] = 1
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    _rewrite_root_artifact_hash(root, "reports/evaluation_overlap.json")
+
+    with pytest.raises(RefreshDataError, match="evaluation_overlap.json"):
         check_refresh_data(root, reference_dataset_dir=reference)
 
 

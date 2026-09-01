@@ -8,6 +8,7 @@ import pytest
 
 from code_verifier.data.refresh_dedup import (
     RefreshDedupPolicy,
+    RefreshFingerprint,
     build_refresh_fingerprint,
     classify_refresh_candidates,
     find_near_duplicate_matches,
@@ -139,6 +140,58 @@ def test_external_duplicate_representation_is_permutation_invariant() -> None:
     assert ("a-candidate", True, None) in first
     assert ("z-candidate", False, "a-candidate") in first
     assert ("unique", True, None) in first
+
+
+def test_external_near_dedup_does_not_reject_through_transitive_only_chain() -> None:
+    import code_verifier.data.refresh_dedup as module
+
+    common = [f"common-{index}" for index in range(18)]
+    fingerprints = [
+        RefreshFingerprint(
+            record_id="a",
+            record_class="candidate",
+            normalized_statement_hash="statement-a",
+            contract_hash="contract",
+            source_url_hash=None,
+            reference_solution_hash=None,
+            test_fingerprint=None,
+            token_ngrams=tuple([*common, "a-only", "ab-link"]),
+        ),
+        RefreshFingerprint(
+            record_id="b",
+            record_class="candidate",
+            normalized_statement_hash="statement-b",
+            contract_hash="contract",
+            source_url_hash=None,
+            reference_solution_hash=None,
+            test_fingerprint=None,
+            token_ngrams=tuple([*common, "ab-link", "bc-link"]),
+        ),
+        RefreshFingerprint(
+            record_id="c",
+            record_class="candidate",
+            normalized_statement_hash="statement-c",
+            contract_hash="contract",
+            source_url_hash=None,
+            reference_solution_hash=None,
+            test_fingerprint=None,
+            token_ngrams=tuple([*common, "bc-link", "c-only"]),
+        ),
+    ]
+    candidates = [_candidate(record_id, _long_prompt(record_id)) for record_id in ("a", "b", "c")]
+
+    matches = module._external_duplicate_matches(candidates, fingerprints, policy=POLICY)
+
+    assert matches["b"][0] == "a"
+    assert matches["b"][1] == "near_external_duplicate"
+    assert matches["b"][2] >= POLICY.near_jaccard_threshold
+    assert "c" not in matches
+    assert module._jaccard(fingerprints[0].token_ngrams, fingerprints[2].token_ngrams) < POLICY.near_jaccard_threshold
+    assert all(
+        similarity >= POLICY.near_jaccard_threshold
+        for _matched_id, reason, similarity in matches.values()
+        if reason == "near_external_duplicate"
+    )
 
 
 def test_prefix_index_avoids_all_pairs_exact_jaccard(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -42,6 +42,7 @@ from code_verifier.data.refresh_dedup import (
     validate_refresh_dedup_policy,
 )
 from code_verifier.data.refresh_sources import (
+    _REFRESH_INTERFACE_NOTE,
     OverlapReference,
     RefreshCandidate,
     RefreshSourceSnapshot,
@@ -200,7 +201,10 @@ def refresh_data_config_from_mapping(value: Mapping[str, object], *, config_path
             selection["near_jaccard_threshold"], field="selection.near_jaccard_threshold"
         ),
     )
-    _validate_selection_config(selection_config)
+    try:
+        _validate_selection_config(selection_config)
+    except ValueError as error:
+        raise ConfigError(f"{config_path}.selection: {error}") from error
     return RefreshDataConfig(
         sources=tuple(sources),
         external_eval_dataset_id=_nonempty_string(external["dataset_id"], field="external_eval.dataset_id"),
@@ -439,6 +443,56 @@ def _selected_sft_fingerprint(problem: CodeProblem, *, policy: RefreshDedupPolic
     )
 
 
+def _canonical_selection_fingerprint(
+    problem: CodeProblem,
+    record: Mapping[str, object],
+    *,
+    policy: RefreshDedupPolicy,
+) -> RefreshFingerprint:
+    """Rebuild the dedup-relevant fingerprint from canonical bytes and bind it to selection provenance."""
+    stored = _fingerprint_from_mapping(record.get("fingerprint"))
+    if stored.record_id != problem.problem_id or stored.record_class != "candidate":
+        raise RefreshDataError("selection fingerprint identity does not match canonical problem")
+    if record.get("source") != problem.source or record.get("difficulty") != problem.metadata.difficulty:
+        raise RefreshDataError("selection source/difficulty does not match canonical problem")
+
+    origin = record.get("overlap_origin")
+    if origin == "sft_reuse":
+        rebuilt = _selected_sft_fingerprint(problem, policy=policy)
+        if stored != rebuilt:
+            raise RefreshDataError("stored SFT-reuse fingerprint does not match canonical problem bytes")
+        return rebuilt
+    if origin != "external_new":
+        raise RefreshDataError("selection overlap_origin must be sft_reuse or external_new")
+
+    suffix = f"\n\n{_REFRESH_INTERFACE_NOTE}"
+    if not problem.prompt.endswith(suffix):
+        raise RefreshDataError("external canonical prompt is missing the frozen solve_io interface note")
+    source_prompt = problem.prompt[: -len(suffix)]
+    rebuilt = build_refresh_fingerprint(
+        record_id=problem.problem_id,
+        record_class="candidate",
+        prompt=source_prompt,
+        function_signature=problem.function_signature,
+        source_url_hash=problem.metadata.source_url_hash,
+        reference_solution_hash=None,
+        test_fingerprint=refresh_problem_test_set_fingerprint(problem),
+        policy=policy,
+    )
+    comparable_fields = (
+        "record_id",
+        "record_class",
+        "normalized_statement_hash",
+        "contract_hash",
+        "source_url_hash",
+        "test_fingerprint",
+        "token_ngrams",
+    )
+    if any(getattr(stored, field) != getattr(rebuilt, field) for field in comparable_fields):
+        raise RefreshDataError("stored external fingerprint does not match canonical problem bytes")
+    return rebuilt
+
+
 def _eligible_sft_reuse_problems(
     problems: Sequence[CodeProblem],
     *,
@@ -572,6 +626,12 @@ def _load_json(path: Path) -> object:
         return loads_strict(text)
     except ValueError as error:
         raise RefreshDataError(f"invalid strict JSON in {path}: {error}") from error
+
+
+def _check_exact_json_report(path: Path, expected: Mapping[str, JsonValue]) -> None:
+    actual = _load_json(path)
+    if not json_values_equal(actual, expected):
+        raise RefreshDataError(f"{path.name} does not match recomputed refresh semantics")
 
 
 def _load_jsonl(path: Path) -> list[dict[str, object]]:
@@ -901,17 +961,43 @@ def check_refresh_data(
     validate_refresh_dedup_policy(policy)
 
     selection_protocol = manifest.get("selection_protocol")
-    if not isinstance(selection_protocol, Mapping):
+    expected_protocol_fields = {
+        "target_size",
+        "sft_overlap_fraction",
+        "sft_overlap_hard_max",
+        "sft_overlap_count",
+        "external_new_count",
+        "sft_namespace",
+        "external_namespace",
+        "order_namespace",
+    }
+    if not isinstance(selection_protocol, Mapping) or set(selection_protocol) != expected_protocol_fields:
         raise RefreshDataError("refresh manifest selection_protocol is invalid")
     target_size = selection_protocol.get("target_size")
+    overlap_fraction = selection_protocol.get("sft_overlap_fraction")
     expected_overlap_count = selection_protocol.get("sft_overlap_count")
+    expected_external_count = selection_protocol.get("external_new_count")
     hard_max = selection_protocol.get("sft_overlap_hard_max")
     if isinstance(target_size, bool) or not isinstance(target_size, int) or target_size <= 0:
         raise RefreshDataError("refresh manifest target_size is invalid")
+    if isinstance(overlap_fraction, bool) or not isinstance(overlap_fraction, int | float):
+        raise RefreshDataError("refresh manifest sft_overlap_fraction is invalid")
     if isinstance(expected_overlap_count, bool) or not isinstance(expected_overlap_count, int):
         raise RefreshDataError("refresh manifest sft_overlap_count is invalid")
+    if isinstance(expected_external_count, bool) or not isinstance(expected_external_count, int):
+        raise RefreshDataError("refresh manifest external_new_count is invalid")
     if isinstance(hard_max, bool) or not isinstance(hard_max, int | float):
         raise RefreshDataError("refresh manifest sft_overlap_hard_max is invalid")
+    if selection_protocol.get("sft_namespace") != "wp9a-sft-reuse-v1":
+        raise RefreshDataError("refresh manifest sft selection namespace is invalid")
+    if selection_protocol.get("external_namespace") != "wp9a-external-new-v1":
+        raise RefreshDataError("refresh manifest external selection namespace is invalid")
+    if selection_protocol.get("order_namespace") != "wp9a-problem-order-v1":
+        raise RefreshDataError("refresh manifest problem-order namespace is invalid")
+    if expected_overlap_count != int(round(target_size * float(overlap_fraction))):
+        raise RefreshDataError("refresh manifest SFT overlap count is inconsistent with configured fraction")
+    if expected_external_count != target_size - expected_overlap_count:
+        raise RefreshDataError("refresh manifest external-new count is inconsistent")
 
     reference_snapshot = _load_json(dataset_dir / "manifest" / "reference_snapshots.json")
     if not isinstance(reference_snapshot, dict):
@@ -953,7 +1039,22 @@ def check_refresh_data(
 
     _check_training_views(problems, dataset_dir)
     typed_selection = cast(list[dict[str, JsonValue]], selection_records)
-    selected_fingerprints = [_fingerprint_from_mapping(record["fingerprint"]) for record in typed_selection]
+    selected_fingerprints: list[RefreshFingerprint] = []
+    quality_count = 0
+    overlap_count = 0
+    for problem, record in zip(problems, typed_selection, strict=True):
+        quality_required = _quality_gate_required(problem)
+        recorded_quality = record.get("quality_gate_required")
+        if not isinstance(recorded_quality, bool) or recorded_quality != quality_required:
+            raise RefreshDataError("selection quality_gate_required does not match canonical test count")
+        quality_count += int(quality_required)
+        overlap_count += int(record.get("overlap_origin") == "sft_reuse")
+        selected_fingerprints.append(_canonical_selection_fingerprint(problem, record, policy=policy))
+    if overlap_count != expected_overlap_count:
+        raise RefreshDataError("selection SFT overlap count does not match selection protocol")
+    if len(problems) - overlap_count != expected_external_count:
+        raise RefreshDataError("selection external-new count does not match selection protocol")
+
     all_reference_fingerprints = [
         fingerprint
         for reference_class in ("sft", "validation", "project_test", "external_eval")
@@ -979,7 +1080,37 @@ def check_refresh_data(
         near_context=near_context,
         selected_fingerprints=selected_fingerprints,
     )
-    quality_count = sum(record.get("quality_gate_required") is True for record in selection_records)
+    _check_exact_json_report(
+        dataset_dir / "reports" / "sft_overlap.json",
+        {
+            "selected_problems": len(problems),
+            "sft_overlap_count": overlap_count,
+            "sft_overlap_fraction": overlap_count / len(problems),
+            "sft_overlap_hard_max": float(hard_max),
+            "external_new_count": len(problems) - overlap_count,
+            "status": "passed",
+        },
+    )
+    _check_exact_json_report(
+        dataset_dir / "reports" / "evaluation_overlap.json",
+        {
+            "validation_exact_or_near_overlap": 0,
+            "project_test_exact_or_near_overlap": 0,
+            "external_eval_exact_or_near_overlap": 0,
+            "status": "passed",
+        },
+    )
+    _check_exact_json_report(
+        dataset_dir / "reports" / "test_layer_leakage.json",
+        {
+            "checked_problems": len(problems),
+            "quality_gate_required_count": quality_count,
+            "cross_layer_duplicate_count": 0,
+            "public_contains_train_hidden": False,
+            "public_or_hidden_contains_eval_hidden": False,
+            "status": "passed",
+        },
+    )
     summary = _summary_from_manifest(dataset_dir, manifest)
     if summary.selected_problems != len(problems):
         raise RefreshDataError("refresh manifest selected_problems does not match canonical")

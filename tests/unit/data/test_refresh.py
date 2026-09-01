@@ -18,6 +18,7 @@ from code_verifier.data.refresh import (
     deterministic_stratified_select,
     load_refresh_data_config,
     prepare_refresh_data,
+    refresh_data_config_from_mapping,
     select_refresh_pool,
 )
 from code_verifier.data.refresh_sources import (
@@ -224,6 +225,43 @@ def test_refresh_config_loads_exact_tracked_shape_and_rejects_unknown_keys(tmp_p
     path.write_text(path.read_text(encoding="utf-8") + "unknown: true\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="unknown"):
         load_refresh_data_config(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("token_ngram_size", 1), ("near_jaccard_threshold", 1.0)],
+)
+def test_refresh_config_rejects_wp9a_dedup_protocol_variants(
+    tmp_path: Path,
+    field: str,
+    value: int | float,
+) -> None:
+    selection: dict[str, object] = {
+        "target_size": 10000,
+        "sft_overlap_fraction": 0.075,
+        "sft_overlap_hard_max": 0.15,
+        "token_ngram_size": 5,
+        "near_jaccard_threshold": 0.90,
+    }
+    selection[field] = value
+    config: dict[str, object] = {
+        "version": "wp9a-refresh-v1",
+        "sources": [
+            {
+                "source_name": "source-a",
+                "dataset_id": "fixture/deepcoder",
+                "revision": "1" * 40,
+                "config_name": "primeintellect",
+                "split": "train",
+                "declared_license": "MIT",
+                "adapter": "deepcoder",
+            }
+        ],
+        "external_eval": {"dataset_id": "fixture/humanevalplus", "revision": "2" * 40},
+        "selection": selection,
+    }
+    with pytest.raises(ConfigError, match="freezes"):
+        refresh_data_config_from_mapping(config, config_path=tmp_path / "refresh.yaml")
 
 
 def test_deterministic_stratified_select_is_permutation_invariant() -> None:
