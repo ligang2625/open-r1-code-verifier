@@ -651,3 +651,78 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after checkpointing R6, route the single very-simple repair `R6-M1`. `stage-lifecycle finalize` is not permitted until a later fresh reviewer-ex round records `conclusion=pass` with `repair_routing.required=false`.
+
+## R7 — R6 repair independent review
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-a
+  review_round: 7
+  source_execution_id: E6
+  reviewed_head_commit: ea5ae771cee06ef0e1f626377c0dd65e1f0cca9e
+  conclusion: pass
+```
+
+### Review scope and provenance guard
+
+- Reviewer did not participate in the latest E6 repair execution. Review was performed in the exact stage worktree `/home/dzy/open-r1-code-verifier/.worktrees/wp9-a` on branch `feat/wp9-a`; the worktree was clean before the review append and `.ai-bridge/**` has zero tracked paths.
+- The sealed plan remains `72a91b652a38fe4e7e58a396c76bfd77fb46a66b`, with `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, and `development_terminal=false`.
+- R6 was checkpointed at `78b61380edcfb2e10cf701e6015c92234ce4b4e0`. E6 code/test commit `fd40e526f6ec4e0d511e24f5b34762ad648b7404` has that review commit as its parent, and the E6 execution-report commit/current reviewed HEAD `ea5ae771cee06ef0e1f626377c0dd65e1f0cca9e` has the code/test commit as its parent.
+- Latest completed execution record is `E6`, `task_kind=repair`, `source_review_round=6`, `source_review_commit=78b61380edcfb2e10cf701e6015c92234ce4b4e0`, `repair_issue_ids=[R6-M1]`, `status=completed`.
+- E6's code/test commit changes exactly `tests/integration/test_wp9a_refresh_data_pipeline.py`; production source, plan, specs, proceedings, and `third_party/open-r1` are unchanged by E6.
+
+### R6 issue disposition
+
+| Previous issue | R7 disposition |
+|---|---|
+| `R6-M1` | **Resolved.** E6 adds the exact missing public-boundary production-shadow regression: it materializes a valid refresh artifact, swaps the first two valid dedup-decision rows, rewrites only the root SHA256 entry for `manifest/dedup_decisions.jsonl`, and asserts public `check_refresh_data()` rejects the self-consistently re-hashed artifact for non-canonical `candidate_id` order. The prior parser unit regression remains in place. |
+
+### Code and contract audit
+
+- The sealed plan requires strict readback to fail closed on any artifact `row reorder` (`WP9-a-plan.md:381-386`). The new integration test exercises that contract through the public checker rather than only the private parser.
+- `_parse_dedup_decisions()` still enforces strictly ascending unique `candidate_id` input using `previous_candidate_id` and raises `RefreshDataError("dedup decisions are not in canonical candidate_id order")` on non-increasing order.
+- The producer continues to emit decisions in canonical ascending `candidate_id` order. E6 did not alter producer/readback implementation semantics; it only closes the previously missing integration-test acceptance gap.
+- The active Refresh specification keeps WP9-a within development/data-foundation scope, including deterministic dedup, overlap controls, canonical materialization, Public/Hidden views, manifests, and leakage checks. No calibration/GRPO/C2/D2/evaluation scope was added.
+
+### Reviewer-owned verification
+
+- Exact new regression: `uv run python -m pytest tests/integration/test_wp9a_refresh_data_pipeline.py::test_wp9a_strict_readback_rejects_rehashed_noncanonical_dedup_order -q` → **1 passed**.
+- Full sealed-plan WP9-a focused suite → **187 passed**.
+- `make lint` → **PASS**: Ruff check, Ruff format check, strict mypy over 121 source/test files.
+- `make test` → **1110 passed, 3 skipped, 0 failed**; the three skips are the existing opt-in real-Piston tests and are unrelated to WP9-a.
+- Production strict readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final1` under reviewed HEAD → exit 0: selected 10,000, external retained 9,565, SFT overlap 750/10,000, quality-gate-required 1,086.
+- Production strict readback of `/home/dzy/wp9a-refresh-seed42-r2e2-final4` under reviewed HEAD → exit 0 with the same counts.
+- After all reviewer-owned verification, stage HEAD remained exactly `ea5ae771cee06ef0e1f626377c0dd65e1f0cca9e` and the worktree remained clean before this append.
+
+### Executor claim audit
+
+- E6 Git provenance, source review binding, repair issue scope, and changed-file scope are substantiated.
+- The claimed production-shadow regression exists and matches the exact R6 required-repair contract.
+- E6's focused/lint/full-suite claims are independently reproduced; reviewer additionally revalidated both accepted real production outputs under the reviewed HEAD.
+- No remaining actionable plan, spec, safety, leakage, test, or execution-report discrepancy was found.
+
+### Conclusion
+
+**PASS** for `reviewed_head_commit=ea5ae771cee06ef0e1f626377c0dd65e1f0cca9e`.
+
+R6-M1 is fully closed. WP9-a's current completed execution satisfies the sealed row-order fail-closed acceptance contract, all reviewer-owned repository gates are green, and the accepted real refresh outputs remain valid under strict readback. No repair is required.
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 7
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "R6-M1 is resolved by the exact required end-to-end public strict-readback regression, and all independent reviewer verification passed."
+  workstream_candidates: []
+```
+
+Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after the PASS review is checkpointed, run `stage-lifecycle finalize`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
