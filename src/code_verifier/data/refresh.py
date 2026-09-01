@@ -62,6 +62,7 @@ from code_verifier.data.schema import (
 )
 
 REFRESH_SCHEMA_VERSION = "wp9a-refresh-v1"
+REFRESH_TEST_SCHEMA_VERSION = "wp9a-refresh-test-v1"
 REFERENCE_SNAPSHOT_SCHEMA_VERSION = "wp9a-reference-snapshots-v1"
 SELECTION_SCHEMA_VERSION = "wp9a-selection-v1"
 
@@ -71,6 +72,35 @@ _WP9A_SFT_OVERLAP_HARD_MAX = 0.15
 _WP9A_EXTERNAL_EVAL_DATASET_ID = "evalplus/humanevalplus"
 _WP9A_EXTERNAL_EVAL_REVISION = "aa0d916268b1c17e84e881e9bd460508dd2fd308"
 _WP9A_EXTERNAL_EVAL_LICENSE = "Apache-2.0"
+_WP9A_EXTERNAL_EVAL_COUNT = 164
+_WP9A_EXTERNAL_EVAL_PROJECTION_SHA256 = "d538bb58cbf89c74001c7e60b21a38552af6666da695e27182d66c97297b0314"
+_WP9A_EXTERNAL_EVAL_INVENTORY_SHA256 = "b9cf681ddf22f2195ff1a74added578b0dd58108031d93fd4c9a560fd58f5dac"
+_WP9A_DEEPCODER_DATASET_ID = "agentica-org/DeepCoder-Preview-Dataset"
+_WP9A_DEEPCODER_REVISION = "177913a7bd43791646ef6a43645caa3c871ab3db"
+_WP9A_PRODUCTION_SOURCES = (
+    RefreshSourceSpec(
+        source_name="deepcoder-primeintellect",
+        dataset_id=_WP9A_DEEPCODER_DATASET_ID,
+        revision=_WP9A_DEEPCODER_REVISION,
+        config_name="primeintellect",
+        split="train",
+        declared_license="MIT",
+        adapter="deepcoder",
+    ),
+    RefreshSourceSpec(
+        source_name="deepcoder-taco",
+        dataset_id=_WP9A_DEEPCODER_DATASET_ID,
+        revision=_WP9A_DEEPCODER_REVISION,
+        config_name="taco",
+        split="train",
+        declared_license="MIT",
+        adapter="deepcoder",
+    ),
+)
+_WP9A_PRODUCTION_SOURCE_SNAPSHOTS = {
+    "deepcoder-primeintellect": (16_252, 11_323, "6241f5c56810008cf12cb94b47d9ec8fd49f5048fa2900d77b3ce87531f2480c"),
+    "deepcoder-taco": (7_436, 2_642, "d5b1242810ec37f9a524a7e2c7b3731595e269544b7add719cccfea51e2fe6de"),
+}
 
 _REQUIRED_ARTIFACTS = (
     "manifest/source_snapshots.json",
@@ -195,6 +225,10 @@ def refresh_data_config_from_mapping(value: Mapping[str, object], *, config_path
     names = [source.source_name for source in sources]
     if len(names) != len(set(names)):
         raise ConfigError("sources.source_name values must be unique")
+    if tuple(sources) != _WP9A_PRODUCTION_SOURCES:
+        raise ConfigError(
+            f"{config_path}.sources: {REFRESH_SCHEMA_VERSION} freezes the two approved DeepCoder projections"
+        )
     external = _exact_mapping(root["external_eval"], {"dataset_id", "revision"}, field="external_eval")
     selection = _exact_mapping(
         root["selection"],
@@ -261,6 +295,27 @@ def _validate_selection_config(config: RefreshSelectionConfig) -> None:
     if config.sft_overlap_fraction > config.sft_overlap_hard_max:
         raise ValueError("sft_overlap_fraction must not exceed sft_overlap_hard_max")
     validate_refresh_dedup_policy(RefreshDedupPolicy(config.token_ngram_size, config.near_jaccard_threshold))
+
+
+def _is_production_config(config: RefreshDataConfig) -> bool:
+    return (
+        config.sources == _WP9A_PRODUCTION_SOURCES
+        and config.external_eval_dataset_id == _WP9A_EXTERNAL_EVAL_DATASET_ID
+        and config.external_eval_revision == _WP9A_EXTERNAL_EVAL_REVISION
+        and config.selection.target_size == _WP9A_PRODUCTION_TARGET_SIZE
+        and math.isclose(
+            config.selection.sft_overlap_fraction,
+            _WP9A_PRODUCTION_SFT_OVERLAP_FRACTION,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and math.isclose(
+            config.selection.sft_overlap_hard_max,
+            _WP9A_SFT_OVERLAP_HARD_MAX,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    )
 
 
 def _selection_identity(value: object) -> tuple[str, str, str]:
@@ -975,19 +1030,144 @@ def _check_training_views(problems: Sequence[CodeProblem], dataset_dir: Path) ->
             raise RefreshDataError(f"Hidden GRPO row {index} does not match the canonical whitelist view")
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value.casefold())
+    )
+
+
+def _check_source_provenance(
+    dataset_dir: Path,
+    manifest: Mapping[str, object],
+    *,
+    production: bool,
+) -> None:
+    snapshots_value = _load_json(dataset_dir / "manifest" / "source_snapshots.json")
+    if not isinstance(snapshots_value, list) or not snapshots_value:
+        raise RefreshDataError("source_snapshots.json must contain a non-empty list")
+    snapshot_fields = {
+        "source_name",
+        "dataset_id",
+        "revision",
+        "config_name",
+        "split",
+        "declared_license",
+        "scanned_rows",
+        "accepted_rows",
+        "projection_fingerprint_sha256",
+    }
+    snapshots: list[Mapping[str, object]] = []
+    for value in snapshots_value:
+        if not isinstance(value, Mapping) or set(value) != snapshot_fields:
+            raise RefreshDataError("source snapshot shape is invalid")
+        for field in ("source_name", "dataset_id", "revision", "split", "declared_license"):
+            if not isinstance(value[field], str) or not value[field].strip():
+                raise RefreshDataError(f"source snapshot {field} is invalid")
+        if value["config_name"] is not None and (
+            not isinstance(value["config_name"], str) or not value["config_name"].strip()
+        ):
+            raise RefreshDataError("source snapshot config_name is invalid")
+        scanned = value["scanned_rows"]
+        accepted = value["accepted_rows"]
+        if (
+            isinstance(scanned, bool)
+            or not isinstance(scanned, int)
+            or scanned <= 0
+            or isinstance(accepted, bool)
+            or not isinstance(accepted, int)
+            or accepted <= 0
+            or accepted > scanned
+        ):
+            raise RefreshDataError("source snapshot row counts are invalid")
+        if not _is_sha256(value["projection_fingerprint_sha256"]):
+            raise RefreshDataError("source snapshot projection fingerprint is invalid")
+        snapshots.append(value)
+    names = [cast(str, snapshot["source_name"]) for snapshot in snapshots]
+    if len(names) != len(set(names)):
+        raise RefreshDataError("source snapshot identities must be unique")
+
+    root_sources = manifest.get("sources")
+    expected_root_sources = [
+        {
+            field: snapshot[field]
+            for field in (
+                "source_name",
+                "dataset_id",
+                "revision",
+                "config_name",
+                "split",
+                "declared_license",
+            )
+        }
+        | {"adapter": "deepcoder"}
+        for snapshot in snapshots
+    ]
+    if root_sources != expected_root_sources:
+        raise RefreshDataError("root source specifications do not match source snapshots")
+    root_projections = manifest.get("source_projection_fingerprints")
+    expected_projections = {
+        cast(str, snapshot["source_name"]): snapshot["projection_fingerprint_sha256"] for snapshot in snapshots
+    }
+    if root_projections != expected_projections:
+        raise RefreshDataError("root source projection fingerprints do not match source snapshots")
+
+    if production:
+        expected_snapshots = []
+        for source in _WP9A_PRODUCTION_SOURCES:
+            scanned, accepted, projection = _WP9A_PRODUCTION_SOURCE_SNAPSHOTS[source.source_name]
+            expected_snapshots.append(
+                _snapshot_mapping(
+                    RefreshSourceSnapshot(
+                        source_name=source.source_name,
+                        dataset_id=source.dataset_id,
+                        revision=source.revision,
+                        config_name=source.config_name,
+                        split=source.split,
+                        declared_license=source.declared_license,
+                        scanned_rows=scanned,
+                        accepted_rows=accepted,
+                        projection_fingerprint_sha256=projection,
+                    )
+                )
+            )
+        if snapshots_value != expected_snapshots:
+            raise RefreshDataError("source snapshots do not match the frozen WP9-a production projections")
+
+
+def _check_frozen_fingerprint_inventory(
+    fingerprints: Sequence[RefreshFingerprint],
+    *,
+    expected_count: int,
+    expected_sha256: str,
+    label: str,
+) -> None:
+    inventory_sha256 = stable_json_hash([_fingerprint_to_mapping(fingerprint) for fingerprint in fingerprints])
+    if len(fingerprints) != expected_count or inventory_sha256 != expected_sha256:
+        raise RefreshDataError(f"{label} fingerprints do not match the frozen inventory")
+
+
 def check_refresh_data(
     dataset_dir: Path,
     *,
     reference_dataset_dir: Path,
+    allow_test_protocol: bool = False,
 ) -> RefreshPreparationSummary:
     """Strictly reload and recompute every deterministic WP9-a artifact invariant."""
     manifest_value = _load_json(dataset_dir / "refresh_manifest.json")
     if not isinstance(manifest_value, dict):
         raise RefreshDataError("refresh_manifest.json must contain an object")
     manifest = cast(dict[str, object], manifest_value)
-    if manifest.get("schema_version") != REFRESH_SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if schema_version == REFRESH_SCHEMA_VERSION:
+        production = True
+    elif schema_version == REFRESH_TEST_SCHEMA_VERSION and allow_test_protocol:
+        production = False
+    else:
         raise RefreshDataError("refresh manifest schema_version is invalid")
     _check_artifact_hashes(dataset_dir, manifest)
+    _check_source_provenance(dataset_dir, manifest, production=production)
 
     policy_value = manifest.get("dedup_policy")
     if not isinstance(policy_value, Mapping) or set(policy_value) != {
@@ -1057,6 +1237,19 @@ def check_refresh_data(
         raise RefreshDataError("refresh manifest SFT overlap count is inconsistent with configured fraction")
     if expected_external_count != target_size - expected_overlap_count:
         raise RefreshDataError("refresh manifest external-new count is inconsistent")
+    if production and (
+        target_size != _WP9A_PRODUCTION_TARGET_SIZE
+        or not math.isclose(
+            overlap_fraction_value,
+            _WP9A_PRODUCTION_SFT_OVERLAP_FRACTION,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(hard_max_value, _WP9A_SFT_OVERLAP_HARD_MAX, rel_tol=0.0, abs_tol=1e-12)
+        or expected_overlap_count != 750
+        or expected_external_count != 9_250
+    ):
+        raise RefreshDataError("refresh manifest does not match the frozen WP9-a production pool protocol")
 
     reference_snapshot = _load_json(dataset_dir / "manifest" / "reference_snapshots.json")
     if not isinstance(reference_snapshot, dict):
@@ -1131,12 +1324,17 @@ def check_refresh_data(
     ):
         raise RefreshDataError("reference snapshot external-eval contract is invalid")
     external_projection = external_snapshot.get("projection_fingerprint_sha256")
-    if (
-        not isinstance(external_projection, str)
-        or len(external_projection) != 64
-        or any(character not in "0123456789abcdef" for character in external_projection.casefold())
-    ):
+    if not _is_sha256(external_projection):
         raise RefreshDataError("reference snapshot external-eval projection fingerprint is invalid")
+    if production:
+        if external_projection != _WP9A_EXTERNAL_EVAL_PROJECTION_SHA256:
+            raise RefreshDataError("external-eval projection does not match frozen HumanEvalPlus provenance")
+        _check_frozen_fingerprint_inventory(
+            reference_fingerprints["external_eval"],
+            expected_count=_WP9A_EXTERNAL_EVAL_COUNT,
+            expected_sha256=_WP9A_EXTERNAL_EVAL_INVENTORY_SHA256,
+            label="external-eval",
+        )
     root_external = manifest.get("external_eval")
     if not isinstance(root_external, Mapping) or set(root_external) != {
         "dataset_id",
@@ -1292,6 +1490,7 @@ def prepare_refresh_data(
 ) -> RefreshPreparationSummary:
     """Build the complete WP9-a artifact tree and publish it atomically after strict readback."""
     _validate_selection_config(config.selection)
+    production = _is_production_config(config)
     if output_dir.exists():
         raise RefreshDataError(f"refresh output directory must not already exist: {output_dir}")
     try:
@@ -1469,7 +1668,7 @@ def prepare_refresh_data(
         )
         artifacts = _artifact_inventory(temporary, precomputed_jsonl=precomputed_jsonl)
         root_manifest: dict[str, JsonValue] = {
-            "schema_version": REFRESH_SCHEMA_VERSION,
+            "schema_version": REFRESH_SCHEMA_VERSION if production else REFRESH_TEST_SCHEMA_VERSION,
             "seed": seed,
             "sources": [
                 cast(dict[str, JsonValue], json_value_to_mutable(asdict(source), field_path="source"))
@@ -1533,7 +1732,11 @@ def prepare_refresh_data(
         del formal_problems
         gc.collect()
 
-        check_refresh_data(temporary, reference_dataset_dir=reference_dataset_dir)
+        check_refresh_data(
+            temporary,
+            reference_dataset_dir=reference_dataset_dir,
+            allow_test_protocol=not production,
+        )
         os.replace(temporary, output_dir)
         return _summary_from_manifest(output_dir, root_manifest)
     except Exception as error:

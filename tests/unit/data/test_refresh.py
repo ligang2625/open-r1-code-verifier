@@ -11,6 +11,7 @@ import pytest
 
 import code_verifier.data.refresh as refresh_module
 from code_verifier.config import ConfigError
+from code_verifier.data.deduplicate import stable_json_hash
 from code_verifier.data.prepare import write_jsonl
 from code_verifier.data.refresh import (
     RefreshDataConfig,
@@ -22,6 +23,7 @@ from code_verifier.data.refresh import (
     refresh_data_config_from_mapping,
     select_refresh_pool,
 )
+from code_verifier.data.refresh_dedup import RefreshFingerprint
 from code_verifier.data.refresh_sources import (
     OverlapReference,
     RefreshCandidate,
@@ -33,6 +35,30 @@ from code_verifier.data.schema import TestCase as CodeTestCase
 
 HUMANEVAL_DATASET_ID = "evalplus/humanevalplus"
 HUMANEVAL_REVISION = "aa0d916268b1c17e84e881e9bd460508dd2fd308"
+
+
+def _production_source_mappings() -> list[dict[str, object]]:
+    revision = "177913a7bd43791646ef6a43645caa3c871ab3db"
+    return [
+        {
+            "source_name": "deepcoder-primeintellect",
+            "dataset_id": "agentica-org/DeepCoder-Preview-Dataset",
+            "revision": revision,
+            "config_name": "primeintellect",
+            "split": "train",
+            "declared_license": "MIT",
+            "adapter": "deepcoder",
+        },
+        {
+            "source_name": "deepcoder-taco",
+            "dataset_id": "agentica-org/DeepCoder-Preview-Dataset",
+            "revision": revision,
+            "config_name": "taco",
+            "split": "train",
+            "declared_license": "MIT",
+            "adapter": "deepcoder",
+        },
+    ]
 
 
 def _metadata(*, difficulty: str = "easy") -> ProblemMetadata:
@@ -195,36 +221,12 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
 
 def test_refresh_config_loads_exact_tracked_shape_and_rejects_unknown_keys(tmp_path: Path) -> None:
     path = tmp_path / "refresh.yaml"
-    path.write_text(
-        "\n".join(
-            [
-                "version: wp9a-refresh-v1",
-                "sources:",
-                "  - source_name: source-a",
-                "    dataset_id: fixture/deepcoder",
-                f'    revision: "{"1" * 40}"',
-                "    config_name: primeintellect",
-                "    split: train",
-                "    declared_license: MIT",
-                "    adapter: deepcoder",
-                "external_eval:",
-                f"  dataset_id: {HUMANEVAL_DATASET_ID}",
-                f'  revision: "{HUMANEVAL_REVISION}"',
-                "selection:",
-                "  target_size: 10000",
-                "  sft_overlap_fraction: 0.075",
-                "  sft_overlap_hard_max: 0.15",
-                "  token_ngram_size: 5",
-                "  near_jaccard_threshold: 0.90",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    tracked_config = Path(__file__).resolve().parents[3] / "configs" / "data" / "refresh.yaml"
+    path.write_text(tracked_config.read_text(encoding="utf-8"), encoding="utf-8")
     config = load_refresh_data_config(path)
     assert config.selection.target_size == 10000
     assert config.selection.sft_overlap_fraction == 0.075
-    assert config.sources[0].revision == "1" * 40
+    assert config.sources[0].revision == "177913a7bd43791646ef6a43645caa3c871ab3db"
 
     path.write_text(path.read_text(encoding="utf-8") + "unknown: true\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="unknown"):
@@ -250,17 +252,7 @@ def test_refresh_config_rejects_wp9a_dedup_protocol_variants(
     selection[field] = value
     config: dict[str, object] = {
         "version": "wp9a-refresh-v1",
-        "sources": [
-            {
-                "source_name": "source-a",
-                "dataset_id": "fixture/deepcoder",
-                "revision": "1" * 40,
-                "config_name": "primeintellect",
-                "split": "train",
-                "declared_license": "MIT",
-                "adapter": "deepcoder",
-            }
-        ],
+        "sources": _production_source_mappings(),
         "external_eval": {"dataset_id": HUMANEVAL_DATASET_ID, "revision": HUMANEVAL_REVISION},
         "selection": selection,
     }
@@ -292,22 +284,91 @@ def test_refresh_config_rejects_wp9a_selection_protocol_variants(
     selection[field] = value
     config: dict[str, object] = {
         "version": "wp9a-refresh-v1",
-        "sources": [
-            {
-                "source_name": "source-a",
-                "dataset_id": "fixture/deepcoder",
-                "revision": "1" * 40,
-                "config_name": "primeintellect",
-                "split": "train",
-                "declared_license": "MIT",
-                "adapter": "deepcoder",
-            }
-        ],
+        "sources": _production_source_mappings(),
         "external_eval": {"dataset_id": HUMANEVAL_DATASET_ID, "revision": HUMANEVAL_REVISION},
         "selection": selection,
     }
     with pytest.raises(ConfigError, match="freezes"):
         refresh_data_config_from_mapping(config, config_path=tmp_path / "refresh.yaml")
+
+
+def test_refresh_config_rejects_unapproved_source_projection(tmp_path: Path) -> None:
+    sources = _production_source_mappings()
+    sources[0]["dataset_id"] = "some/other-deepcoder"
+    config: dict[str, object] = {
+        "version": "wp9a-refresh-v1",
+        "sources": sources,
+        "external_eval": {"dataset_id": HUMANEVAL_DATASET_ID, "revision": HUMANEVAL_REVISION},
+        "selection": {
+            "target_size": 10000,
+            "sft_overlap_fraction": 0.075,
+            "sft_overlap_hard_max": 0.15,
+            "token_ngram_size": 5,
+            "near_jaccard_threshold": 0.90,
+        },
+    }
+    with pytest.raises(ConfigError, match="approved DeepCoder projections"):
+        refresh_data_config_from_mapping(config, config_path=tmp_path / "refresh.yaml")
+
+
+def test_strict_source_provenance_rejects_self_consistent_replacement(tmp_path: Path) -> None:
+    snapshots: list[dict[str, object]] = []
+    projections: dict[str, object] = {}
+    for source in refresh_module._WP9A_PRODUCTION_SOURCES:
+        scanned, accepted, projection = refresh_module._WP9A_PRODUCTION_SOURCE_SNAPSHOTS[source.source_name]
+        snapshots.append(
+            {
+                "source_name": source.source_name,
+                "dataset_id": source.dataset_id,
+                "revision": source.revision,
+                "config_name": source.config_name,
+                "split": source.split,
+                "declared_license": source.declared_license,
+                "scanned_rows": scanned,
+                "accepted_rows": accepted,
+                "projection_fingerprint_sha256": projection,
+            }
+        )
+        projections[source.source_name] = projection
+    snapshot_path = tmp_path / "manifest" / "source_snapshots.json"
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text(json.dumps(snapshots), encoding="utf-8")
+    manifest: dict[str, object] = {
+        "sources": _production_source_mappings(),
+        "source_projection_fingerprints": projections,
+    }
+    refresh_module._check_source_provenance(tmp_path, manifest, production=True)
+
+    snapshots[0]["dataset_id"] = "evil/replacement"
+    snapshots[0]["projection_fingerprint_sha256"] = "e" * 64
+    cast(list[dict[str, object]], manifest["sources"])[0]["dataset_id"] = "evil/replacement"
+    source_name = cast(str, snapshots[0]["source_name"])
+    cast(dict[str, object], manifest["source_projection_fingerprints"])[source_name] = "e" * 64
+    snapshot_path.write_text(json.dumps(snapshots), encoding="utf-8")
+    with pytest.raises(RefreshDataError, match="frozen WP9-a production projections"):
+        refresh_module._check_source_provenance(tmp_path, manifest, production=True)
+
+
+def test_frozen_inventory_anchor_rejects_same_count_fingerprint_replacement() -> None:
+    original = RefreshFingerprint(
+        record_id="external-1",
+        record_class="external_eval",
+        normalized_statement_hash="a" * 64,
+        contract_hash="b" * 64,
+        source_url_hash=None,
+        reference_solution_hash=None,
+        test_fingerprint=None,
+        token_ngrams=("one two three four five",),
+    )
+    expected_sha256 = stable_json_hash([refresh_module._fingerprint_to_mapping(original)])
+    refresh_module._check_frozen_fingerprint_inventory(
+        [original], expected_count=1, expected_sha256=expected_sha256, label="fixture"
+    )
+    replacement = replace(original, record_id="replacement", normalized_statement_hash="c" * 64)
+    with pytest.raises(RefreshDataError, match="frozen inventory"):
+        refresh_module._check_frozen_fingerprint_inventory(
+            [replacement], expected_count=1, expected_sha256=expected_sha256, label="fixture"
+        )
 
 
 def test_selected_test_fingerprint_still_rejects_cross_layer_duplicates() -> None:
@@ -432,7 +493,7 @@ def test_check_refresh_data_rejects_tampered_selection_manifest(
     records.reverse()
     selection.write_text("".join(json.dumps(record, sort_keys=True) + "\n" for record in records), encoding="utf-8")
     with pytest.raises(RefreshDataError, match="hash/row-count mismatch"):
-        refresh_module.check_refresh_data(output, reference_dataset_dir=reference)
+        refresh_module.check_refresh_data(output, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 def test_failed_prepare_does_not_publish_partial_output(

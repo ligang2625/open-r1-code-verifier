@@ -213,7 +213,9 @@ def test_wp9a_fixture_prepare_check_is_deterministic_and_leakage_safe(
     assert first_summary.sft_overlap_fraction == second_summary.sft_overlap_fraction == 1 / 7
     assert first_summary.quality_gate_required_count == second_summary.quality_gate_required_count == 2
     assert _tree_bytes(first) == _tree_bytes(second)
-    assert check_refresh_data(first, reference_dataset_dir=reference).selected_problems == 7
+    assert check_refresh_data(first, reference_dataset_dir=reference, allow_test_protocol=True).selected_problems == 7
+    with pytest.raises(RefreshDataError, match="schema_version"):
+        check_refresh_data(first, reference_dataset_dir=reference)
 
     decisions = _read_jsonl(first / "manifest" / "dedup_decisions.jsonl")
     overlap_counts = Counter(str(record["overlap_class"]) for record in decisions)
@@ -304,7 +306,7 @@ def test_wp9a_fixture_strict_readback_rejects_tamper(
         expected = LeakageError
 
     with pytest.raises(expected):
-        check_refresh_data(root, reference_dataset_dir=reference)
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 def test_wp9a_strict_readback_recomputes_quality_gate_from_canonical_bytes(
@@ -347,7 +349,7 @@ def test_wp9a_strict_readback_recomputes_quality_gate_from_canonical_bytes(
     )
 
     with pytest.raises(RefreshDataError, match="quality_gate_required"):
-        check_refresh_data(root, reference_dataset_dir=reference)
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 def test_wp9a_strict_readback_binds_stored_fingerprint_to_canonical_and_training_bytes(
@@ -393,7 +395,7 @@ def test_wp9a_strict_readback_binds_stored_fingerprint_to_canonical_and_training
         _rewrite_root_artifact_hash(root, relative)
 
     with pytest.raises(RefreshDataError, match="stored external fingerprint"):
-        check_refresh_data(root, reference_dataset_dir=reference)
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 def test_wp9a_strict_readback_recomputes_report_semantics(
@@ -419,7 +421,7 @@ def test_wp9a_strict_readback_recomputes_report_semantics(
     _rewrite_root_artifact_hash(root, "reports/evaluation_overlap.json")
 
     with pytest.raises(RefreshDataError, match="evaluation_overlap.json"):
-        check_refresh_data(root, reference_dataset_dir=reference)
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 def test_wp9a_strict_readback_rebuilds_formal_reference_fingerprints(
@@ -498,7 +500,7 @@ def test_wp9a_strict_readback_rebuilds_formal_reference_fingerprints(
     _rewrite_root_artifact_hash(root, "manifest/reference_snapshots.json")
 
     with pytest.raises(RefreshDataError, match="validation fingerprints do not match authoritative formal canonical"):
-        check_refresh_data(root, reference_dataset_dir=reference)
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 @pytest.mark.parametrize("hard_max", [0.20, 0.50])
@@ -534,7 +536,7 @@ def test_wp9a_strict_readback_rejects_manifest_hard_max_above_fifteen_percent(
     )
 
     with pytest.raises(RefreshDataError, match="hard max exceeds frozen 0.15 ceiling"):
-        check_refresh_data(root, reference_dataset_dir=reference)
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 def test_wp9a_strict_readback_rejects_actual_selected_overlap_above_fifteen_percent(
@@ -568,7 +570,7 @@ def test_wp9a_strict_readback_rejects_actual_selected_overlap_above_fifteen_perc
     _rewrite_root_artifact_hash(root, "manifest/selection.jsonl")
 
     with pytest.raises(RefreshDataError, match="actual selected SFT overlap .* exceeds frozen 0.15 ceiling"):
-        check_refresh_data(root, reference_dataset_dir=reference)
+        check_refresh_data(root, reference_dataset_dir=reference, allow_test_protocol=True)
 
 
 def test_wp9a_fixture_failed_atomic_write_leaves_no_output(
