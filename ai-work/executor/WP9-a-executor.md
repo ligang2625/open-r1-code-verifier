@@ -138,3 +138,45 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## E2 repair summary
+
+R2 repair was executed in the same `WP9-a` worktree with `backend=web`, `source_mode=single`, and `effective_execution_mode=single`, sourced from review round 2 / commit `6ce65f8f4855c2a2f5fbbd4838140e6c35508819`. The final repair code HEAD is `bee206c9ed04a5d7a18e308e0b48ffa71e0d704d`; the principal repair commits are `1ed5606` (`fix(wp9-a): harden refresh reference readback`), `7e6582b` (`perf(wp9-a): avoid duplicate refresh test scans`), and `bee206c` (`perf(wp9-a): complete repaired refresh materialization`).
+
+### Issue disposition
+
+- `R2-M1`: strict readback now treats `reference_dataset_dir/canonical/problems.jsonl` as authoritative for the formal SFT/validation/project-test reference sets. It reloads the formal canonical, recomputes actual train/validation/test split counts, rebuilds the three formal fingerprint buckets with the active frozen dedup policy, requires the stored snapshot buckets to equal those rebuilt values, and uses the rebuilt fingerprints for overlap auditing. The root formal-canonical SHA is cross-bound to the same authoritative bytes. The external-eval snapshot is also fail-closed checked for the frozen HumanEvalPlus dataset/revision/license, non-empty count consistency, projection fingerprint shape, and equality with the root manifest identity. The reviewer-style adversarial regression now rewrites a selected canonical row to overlap unchanged formal validation while deleting the stored validation fingerprint bucket and updating root hashes; strict readback rejects the snapshot mismatch.
+- `R2-M2`: `wp9a-refresh-v1` file/config loading freezes the production selection values to target `10,000`, SFT overlap `0.075`, and hard max `0.15`, while the runtime validator independently rejects any hard max above `0.15`. Strict readback independently rejects a manifest hard max above `0.15`, a configured overlap above `0.15`, or an actual selected SFT overlap above `0.15`, so caller-provided manifest values cannot redefine the safety ceiling. Regression coverage includes `0.20` and `0.50` hard-max variants plus a self-consistent selected-overlap tamper above 15%.
+- `R2-M3`: the repaired producer was made reliably runnable without changing the frozen data protocol by removing duplicate selected test-layer scans, reusing already-computed external candidate fingerprints through classification/selection manifest attachment, avoiding repeated generic JSON-value validation for trusted already-canonical artifact mappings, and removing redundant raw training-view byte scans after exact-schema loading plus semantic canonical-view comparison. The generic JSONL writer keeps its prior validating default; the non-validating path is explicit and only used for trusted internal mappings. A unit regression confirms the combined selected-test fingerprint path still rejects normalized cross-layer test duplicates.
+
+### Repair verification
+
+- Review-focused affected set during repair: `69 passed` after the final performance/static-typing changes.
+- Sealed-plan WP9-a focused acceptance set: `179 passed`.
+- `make lint`: PASS; Ruff check, Ruff format check, and strict mypy all passed for `121` source/test files.
+- `make test`: `1102 passed, 3 skipped`; the three skips are the existing opt-in real-Piston cases and are unrelated to WP9-a.
+- Final repaired real materialization `wp9a-refresh-seed42-r2e2-final1`, executed offline with tracked `configs/data/refresh.yaml`, frozen formal reference root, local pinned HF cache, and seed `42`: exit `0` in `173.022s`. A separate `check-refresh-data` against final1 returned exit `0` in `49.019s` with selected `10,000`, external retained `9,565`, SFT reuse `750/10,000`, and quality-gate-required `1,086`.
+- A direct second-run attempt at `wp9a-refresh-seed42-r2e2-final2` hit the CodexPro `180s` command timeout and was SIGTERM'd before atomic publish; its temporary sibling was removed and it is not counted as acceptance evidence. A further direct retry (`final3`) likewise produced no final output and no retained temporary sibling and is not counted.
+- To obtain a completed attributable result rather than count a timed-out background process, the second accepted same-seed run used an ignored, untracked `.ai-bridge` runner that executed the exact same offline `prepare-refresh-data` CLI while recording commit, command, terminal return code, duration, and log. It bound `bee206c9ed04a5d7a18e308e0b48ffa71e0d704d`, returned code `0` after `198.474s`, and published `wp9a-refresh-seed42-r2e2-final4`. `.ai-bridge/**` remained untracked and is not part of repository provenance.
+- Determinism comparison between final1 and final4: exact file sets matched (`13/13`) and every corresponding file was byte-for-byte/SHA256 identical; mismatches `0`. Root manifest SHA256 is `98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625`; selected IDs/order SHA256 is `355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001`.
+- Final real-source counts: `23,688` source rows scanned, `13,965` adapter-accepted candidates, `9,565` dedup-retained external candidates, `10,000` selected problems, `750` SFT reuse (`0.075`), `9,250` external-new selected, and `1,086` quality-gate-required. Dedup rejections were exact reference-solution `117`, exact statement/contract `409`, exact test fingerprint `3,598`, and direct near-external duplicate `276`.
+- Source projection fingerprints remained pinned and deterministic: DeepCoder PrimeIntellect `6241f5c56810008cf12cb94b47d9ec8fd49f5048fa2900d77b3ce87531f2480c`, DeepCoder TACO `d5b1242810ec37f9a524a7e2c7b3731595e269544b7add719cccfea51e2fe6de`, HumanEvalPlus `d538bb58cbf89c74001c7e60b21a38552af6666da695e27182d66c97297b0314`; frozen formal canonical SHA256 remained `d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6`.
+- Protected plan/review/spec/proceedings/`third_party/open-r1` paths were not modified by E2.
+
+## Structured E2 execution record
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-a
+  execution_id: E2
+  task_kind: repair
+  source_plan_commit: 72a91b652a38fe4e7e58a396c76bfd77fb46a66b
+  source_review_round: 2
+  source_review_commit: 6ce65f8f4855c2a2f5fbbd4838140e6c35508819
+  repair_issue_ids: [R2-M1, R2-M2, R2-M3]
+  result_code_commit: bee206c9ed04a5d7a18e308e0b48ffa71e0d704d
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  status: completed
+```
