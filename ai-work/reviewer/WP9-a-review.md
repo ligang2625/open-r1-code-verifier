@@ -726,3 +726,16 @@ repair_routing:
 ```
 
 Next lifecycle action: run `stage-lifecycle checkpoint_review` for `WP9-a`; after the PASS review is checkpointed, run `stage-lifecycle finalize`. Reviewer-ex does not commit, merge, update proceedings, finalize, or clean up the stage.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP9-a
+  review_round: 7
+  review_commit: 782f322c36544228462fc99c291cb7023cd8582f
+  merge_commit: 6f6a125290b806ea87444486e8f00176980e55f4
+  finalized_at: "2026-09-01T14:39:50+02:00"
+  status: finalized
+```

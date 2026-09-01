@@ -839,3 +839,31 @@ WP8-a 已完成 formal A–D automated analysis、paired bootstrap、cost 与 de
 - **Next dependency-ready stage**：**`WP9-a`**。其范围限定为新 candidate source ingestion/provenance、cross-source + SFT/eval dedup、SFT/GRPO overlap control、canonical three-test-layer materialization 与 Public/Hidden training views；本阶段不运行真实 B calibration、不启动 GRPO、不产生 C2/D2 数值。
 - **Planner routing rule**：新对话若被要求“继续项目 / 检查现状 / 规划下一 stage”，必须识别本 decision record，并以 `WP9-a` 为下一阶段调用 planner；在本 record 被后续 finalized proceedings 明确更新前，不得把旧 second-seed replication 作为默认 next stage。
 - **Original Development Complete Record**：仍然只证明原 WP0–WP8 development track 已完成且保持 immutable。WP9 是新的 post-completion research extension；WP9-a/WP9-b 中新增工程工作仍属于 `stage_profile: development`，不能因为旧 completion record 已存在就跳过工程 stage 或直接在 validation 里修改功能。
+
+---
+
+## WP9-a — Refresh data foundation
+
+- **完成日期**：2026-09-01
+- **阶段状态**：已完成 / finalized
+- **验收结论**：PASS（依据 `ai-work/reviewer/WP9-a-review.md` R7）
+- **执行计划**：`ai-work/planner/WP9-a-plan.md`
+- **Review commit**：`782f322c36544228462fc99c291cb7023cd8582f`
+- **Merge commit**：`6f6a125290b806ea87444486e8f00176980e55f4`
+
+### 数据基础交付
+
+- 完成 pinned external-source ingestion/provenance、source revision/license/schema identity、deterministic exact/near dedup、SFT/evaluation overlap audit、canonical three-layer test materialization，以及同 ID/同顺序的 Public/Hidden GRPO training views。
+- 生产协议冻结为 10,000 个 train problems：750 个 frozen-SFT explicit reuse（7.5%，低于 15% hard max）+ 9,250 个新 external problems；当前 accepted real artifacts 的 external dedup retained count 为 9,565，`quality_gate_required=true` 为 1,086。
+- strict readback 对 canonical/training views、source/reference snapshots、selection/dedup provenance、artifact/root SHA、overlap/quality reports 和 deterministic row order 全部 fail closed；R5/R6 修复最终补齐了 `dedup_decisions.jsonl` 非 canonical row reorder 的 public-checker 端到端 regression。
+- 两份已接受 real pinned-source outputs `wp9a-refresh-seed42-r2e2-final1` / `final4` 在最终 reviewed HEAD 下均通过 strict readback：selected 10,000、external retained 9,565、SFT overlap 750/10,000、quality-gate-required 1,086。WP9-a 不运行真实 B calibration、GRPO、正式 C2/D2 或 400-problem re-evaluation。
+
+### 验收与生命周期结论
+
+- Reviewer R7 独立通过新增 row-order regression（1 passed）、完整 WP9-a focused suite（187 passed）、`make lint`，以及 `make test`（1110 passed, 3 skipped；skip 仅为既有 real-Piston opt-in tests）。
+- WP9-a 相对 planning base 未修改 `pyproject.toml`、`uv.lock` 或 `third_party/open-r1` gitlink，因此 finalize 无需 dependency sync 或 submodule update；merge 后 primary `.venv` 已确认 `code_verifier` 与 `open_r1` editable imports 均绑定主 checkout。
+- 本 stage 为 `development_terminal=false`，因此不会写新的 Development Complete Record；原 WP0–WP8 completion marker 保持 immutable。
+
+### WP9 后续路由
+
+WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next dependency-ready stage 是 `WP9-b`（Calibration / k=8 / throughput engineering，development）**。原 second-seed/full-rerun robustness item 继续保持 deferred, not cancelled，不覆盖当前 WP9 routing。
