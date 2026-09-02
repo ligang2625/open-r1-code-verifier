@@ -124,3 +124,138 @@ repair_routing:
 ### Conclusion
 
 `needs_repair`. The implementation is broadly coherent and all independent gates are green, but the active-pool selection protocol, formal refresh binding provenance, fail-before-side-effect concurrency contract, and benchmark scientific identity checks are not yet strong enough to satisfy the sealed WP9-b contract. Next lifecycle action is `stage-lifecycle checkpoint_review`; only after that checkpoint should the repair execution be routed.
+
+## Review Round 2
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-b
+  review_round: 2
+  source_execution_id: E1
+  reviewed_head_commit: ad47d6b37bae10c842d607f5d7f22458e9982977
+  conclusion: needs_repair
+```
+
+### Effective contract / provenance
+
+- Effective stage contract remains `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, `development_terminal=false`. WP9-b still does not require or permit real frozen-B calibration, optimizer C2/D2, 24GB scientific execution, or formal 400-problem refresh results.
+- Review ran in the plan-declared `feat/wp9-b` worktree `/home/dzy/open-r1-code-verifier/.worktrees/wp9-b`. Before the review artifact was edited, the worktree was clean and `git ls-files .ai-bridge` was empty.
+- Latest completed execution is `E1`. The commit that submits the E1 execution report is `ad47d6b37bae10c842d607f5d7f22458e9982977`, equal to the reviewed HEAD, so there is no unreviewed post-report implementation continuation to attribute.
+- The active WP9 requirements were checked against both `PROJECT_SPEC_Open-R1_CodeVerifier.md` and `PROJECT_SPEC_GRPO_Refresh.md`, plus the latest `proceedings.md` routing record. The project remains on WP9-b development; lack of 24GB/formal evidence is not a defect in this round.
+
+### Independent verification
+
+- Exact sealed-plan focused suite from WP9-b plan §6.1: `322 passed`.
+- Additional R1-repair regression set (`rewards/test_common`, refresh binding, GRPO throughput, verification throughput): `49 passed`.
+- `make lint`: PASS — Ruff check, Ruff format check, and strict mypy all pass for `134` source/test files.
+- `make test`: PASS — `1162 passed, 3 skipped` in `114.56s`; all three skips are the existing opt-in real-Piston cases requiring `CODE_VERIFIER_RUN_PISTON=1`.
+- Reviewer mixed-class selector probe: with external population `A/hard=16 dual`, `B/easy=2 public-only + 2 hidden-only` and external quota `18`, `_select_active_records()` selects `A=16, B=2`. Whole-bucket source+difficulty largest-remainder for that population is `A=14, B=4`; this demonstrates that the repaired selector still lets calibration class suppress a valid stratum allocation.
+- Reviewer GRPO-source probe: `throughput._grpo_probe()` accepts a bare four-file self-authored benchmark directory built by the unit fixture, while `load_completed_grpo_checkpoint()` rejects the exact same directory with `completed GRPO run does not match the strict artifact layout`. Therefore benchmark report reconstruction is still only as trustworthy as the shallow GRPO probe input contract.
+
+### Execution report declaration verification
+
+- E1 claim that the sealed focused suite is `322 passed`: independently reproduced.
+- E1 claim that the review-specific repair regressions are `49 passed`: independently reproduced.
+- E1 claims for `make lint` and full `make test` (`1162 passed, 3 skipped`): independently reproduced.
+- E1 claim that `R1-M2` is closed by strict calibration checking plus benchmark report reconstruction: verified for the binding layer itself; the loader now invokes `check_calibrated_active_pool()` and `check_refresh_benchmark_report()`, rejects the old minimal manifests, and binds the selected worker to the checked report.
+- E1 claim that `R1-M3` is closed by whole-batch verifier-input prevalidation before executor creation: functionally verified by code and regression (`factory=0`, `execute=0` for a late invalid item). The chosen repair introduces a separate layer-boundary defect recorded below as `R2-M1`.
+- E1 claim that `R1-M1` is closed: not verified; the selector stratifies separately inside already-separated calibration classes rather than preserving source+difficulty quotas across the whole overlap bucket.
+- E1 claim that `R1-M4` is closed: not verified; eval-generation resolved-config identity is repaired and parent B config/dependency fields were added, but GRPO benchmark inputs remain shallow self-declared directories rather than strict source artifacts.
+
+### Previous-round issue verification
+
+| issue_id | R1 severity | status | evidence |
+|---|---|---|---|
+| `R1-M1` | major | 修复不完整 | `src/code_verifier/training/calibration.py:1305-1373` applies largest-remainder independently to dual/public-only/hidden-only subsets; reviewer mixed-class probe selects external A/B=`16/2` instead of whole-bucket largest-remainder `14/4`. Existing new regression `tests/unit/training/test_calibration.py:257-299` uses only dual-informative rows and cannot expose this interaction. |
+| `R1-M2` | major | 已修复 | `src/code_verifier/training/grpo.py:1507-1583` now calls the strict active-pool checker and benchmark-report checker; `tests/unit/training/test_grpo_refresh_binding.py:138-175` rejects the previous unchecked minimal calibration and hand-crafted benchmark recommendation. |
+| `R1-M3` | major | 已修复 | `src/code_verifier/rewards/common.py:315-346` completes whole-batch prevalidation before `executor_factory`; `tests/unit/rewards/test_common.py:592-628` proves a late invalid item causes zero factory/execute side effects. The repair's cross-layer parsing is a new issue `R2-M1`. |
+| `R1-M4` | major | 修复不完整 | Eval bundle identity is strengthened in `src/code_verifier/throughput.py:173-265`, and parent B config/dependency fields are in `_grpo_probe()` at `422-449`; however `_grpo_probe()` at `367-478` still trusts a minimal `run.json`/`resolved_config.yaml`/reward/group directory. The reviewer probe proves it accepts a directory that the strict completed-GRPO loader (`src/code_verifier/training/grpo.py:391-464`) rejects. |
+
+### Findings
+
+#### R1-M1 — Active selector still stratifies inside calibration classes instead of the whole overlap bucket
+
+The sealed selector contract requires overlap/non-overlap quotas, class priority, and then source+difficulty largest-remainder allocation, with single-arm rows used when dual rows cannot fill the applicable strata/target (`ai-work/planner/WP9-b-plan.md:354-358`). The repair first takes `dual_count=min(quota, len(dual))` across the whole overlap bucket and performs source+difficulty allocation only within the dual subset (`src/code_verifier/training/calibration.py:1305-1318`). It later performs separate largest-remainder allocations inside the public-only and hidden-only subsets (`1348-1373`). That is not equivalent when class and stratum are correlated: a source+difficulty stratum with no dual rows can be starved even though a valid constrained allocation exists using permitted single-arm rows.
+
+The independent mixed-class probe demonstrates the defect with a valid 20-problem test configuration: the external bucket has 16 dual rows in stratum A and four single-arm rows in stratum B, quota 18. A whole-bucket largest-remainder allocation reserves 14 A + 4 B, satisfying the >=70% dual and both <=15% single-arm caps; current code instead maximizes dual globally and returns 16 A + 2 B. The added unequal-strata unit regression does not catch this because every row in that test is `dual_informative` (`tests/unit/training/test_calibration.py:257-295`).
+
+Impact: active-pool source/difficulty composition can still drift as a function of Public/Hidden informativeness class rather than the frozen stratification protocol. This affects the scientific dataset definition consumed by C2/D2 and leaves the original R1 finding materially open.
+
+Required repair: compute source+difficulty quota targets from the entire eligible population of each overlap bucket first (or implement an equivalent constrained allocator), then fill each stratum with dual rows preferentially and use public/hidden single-arm rows only as needed while enforcing the global class caps/minimum. Producer and checker must share/recompute that algorithm. Add mixed-class/unequal-stratum regressions where some strata contain only single-arm rows and prove deterministic selection plus tamper rejection.
+
+#### R1-M4 — GRPO throughput candidates are still not derived from strict source artifacts
+
+The R1 repair added `parent_sft_config_hash` and `parent_sft_dependency_lock_hash` to the GRPO scientific identity (`src/code_verifier/throughput.py:422-449`), which closes the narrow missing-field bug. But `_grpo_probe()` still treats `run.json`, `resolved_config.yaml`, `rewards.jsonl`, and `group_metrics.jsonl` as sufficient proof of a completed GRPO benchmark (`367-478`). It does not revalidate a completed GRPO/checkpoint/parent chain, recompute the parent B identity from the actual completed SFT artifact, verify current-run config/dependency/runtime-package identity, or bind the dataset/pool/calibration artifacts from an independently checked source contract.
+
+This is directly observable in the repository's own benchmark fixture: `tests/unit/throughput_fixture.py:10-99` writes only four shallow files and is accepted by `_grpo_probe()`. The reviewer independently passed the same directory to `load_completed_grpo_checkpoint()`, which correctly rejected it because it does not match the strict completed-GRPO artifact layout. `check_refresh_benchmark_report()` rebuilds the report from the source manifest, but reconstruction through the same shallow probe cannot turn self-authored source metadata into strict evidence. Refresh addendum §12 also requires each formal benchmark to record and preserve model/checkpoint, runtime/package, config, count, timing/resource/error and selection evidence (`PROJECT_SPEC_GRPO_Refresh.md:758-784`).
+
+Impact: a later formal benchmark report can be internally reconstructable while still being grounded in fabricated or scientifically incomplete GRPO source directories. The selected verifier worker could therefore be admitted to the formal refresh binding without proving the actual k=8 pool/B/runtime identity required by the experiment.
+
+Required repair: make GRPO throughput source loading strict. Reuse `load_completed_grpo_checkpoint()` where benchmark candidates are completed GRPO runs, or define an equally strict benchmark-run artifact checker that independently recomputes the current GRPO config/dependency/runtime identity, parent B identity, pool/calibration binding, relevant dataset hashes, paired definition, counts and reward/group artifact hashes. Keep an explicitly engineering-only fixture path if needed, but formal report reconstruction must reject the current bare fixture contract. Add a negative regression showing self-consistent forged parent/config/runtime fields cannot become a formal benchmark source.
+
+#### R2-M1 — Concurrent reward prevalidation now parses candidate code inside the Reward layer
+
+The side-effect ordering repair imports verifier-private `_normalize_tests`, `_resource_limits_from_metadata`, `_validate_function_name` plus `extract_python_code` directly into `rewards/common.py` (`src/code_verifier/rewards/common.py:11-23`) and calls the parser itself during `_prevalidate_verification_inputs()` (`87-101`). This does achieve fail-before-executor behavior, but it violates the repository's layer contract: `AGENTS.md:160` requires Parsing, Verification, and Reward responsibilities to stay separated; `AGENTS.md:164` explicitly tells reviewers to treat cross-layer responsibility leakage as a design defect; and `AGENTS.md:216` requires reward code to flow through `verify_completion()` rather than parse candidate code independently.
+
+Impact: verification input semantics are now duplicated across Reward and Verification. A future parser/verifier contract change can diverge between prevalidation and the actual `verify_completion()` call, and Reward has acquired direct knowledge of parser internals solely to make concurrency atomic.
+
+Required repair: expose a side-effect-free verification-layer preflight primitive (for example a public `prevalidate_verification_input()` or normalized request builder) and have both concurrent reward prevalidation and `verify_completion()` use that single implementation. Reward should depend on the verification API, not on parsing or verifier-private helpers. Preserve the R1-M3 regression proving all items are prevalidated before any executor factory/execute side effect.
+
+### Acceptance status
+
+- `R1-M2` and the original fail-before-side-effect behavior of `R1-M3` are closed and independently verified.
+- `R1-M1` remains materially incomplete, `R1-M4` remains materially incomplete on the GRPO source-artifact side, and the R1-M3 repair introduces the new cross-layer defect `R2-M1`.
+- All independent test/lint gates are green, but those gates do not cover the mixed-class stratification or strict-GRPO-source counterexamples above. Green tests therefore do not satisfy the effective contract by themselves.
+- No real frozen-B/4090/C2-D2/400-eval evidence is required in WP9-b development, and its absence is not a finding.
+
+### Repair Routing
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 2
+  mode: multi
+  complexity: normal
+  single_class: null
+  parallelizability: high
+  multi_benefit: high
+  independent_workstreams: 3
+  repair_issue_ids:
+    - R1-M1
+    - R1-M4
+    - R2-M1
+  rationale:
+    - "The remaining selector, strict-throughput-source, and verification-layer-preflight defects have disjoint production ownership and can be repaired independently without sharing a new schema."
+    - "Parallel repair has high benefit because each lane has a focused regression target; final integration only needs the existing WP9-b focused/full gates plus cross-checking the strict evidence chain."
+  workstream_candidates:
+    - id: calibration-strata
+      issue_ids:
+        - R1-M1
+      write_scope:
+        - src/code_verifier/training/calibration.py
+        - tests/unit/training/test_calibration.py
+        - tests/integration/test_wp9b_refresh_engineering.py
+    - id: strict-grpo-benchmark-source
+      issue_ids:
+        - R1-M4
+      write_scope:
+        - src/code_verifier/throughput.py
+        - tests/unit/test_throughput.py
+        - tests/unit/test_throughput_grpo.py
+        - tests/unit/throughput_fixture.py
+    - id: verification-preflight-boundary
+      issue_ids:
+        - R2-M1
+      write_scope:
+        - src/code_verifier/verification/verifier.py
+        - src/code_verifier/verification/__init__.py
+        - src/code_verifier/rewards/common.py
+        - tests/unit/verification/test_verifier.py
+        - tests/unit/rewards/test_common.py
+```
+
+### Conclusion
+
+`needs_repair`. E1 successfully closes the strict binding-layer issue (`R1-M2`) and the original concurrent fail-before-side-effect issue (`R1-M3`), and its reported test/lint evidence is independently reproducible. However, the active-pool repair still loses source+difficulty strata when class and stratum are correlated (`R1-M1`), GRPO throughput evidence still trusts shallow self-declared source directories rather than strict artifacts (`R1-M4`), and the concurrency repair introduces Reward→Parsing/Verifier-internal responsibility leakage (`R2-M1`). Next lifecycle action is `stage-lifecycle checkpoint_review`; only after that checkpoint should the three repair lanes be routed.
