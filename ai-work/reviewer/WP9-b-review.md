@@ -499,3 +499,73 @@ review_reconciliation:
 - R4 was authored and consumed as a user-authorized **uncommitted review draft**. E3 already records that exceptional provenance explicitly, including `source_review_round: 4` and `source_review_commit: null`; those fields remain correct and are not rewritten.
 - The R4 findings/routing are preserved verbatim above as the historical contract input that E3 repaired. This reconciliation commit is a provenance repair, not a normal `checkpoint_review` of the current post-E3 HEAD.
 - The authoritative next independent review is therefore **R5**, which must review E3 and the current actual code tree. Normal `stage-lifecycle checkpoint_review` semantics resume with that R5 record.
+
+## Review Round 5
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-b
+  review_round: 5
+  source_execution_id: E3
+  reviewed_head_commit: 719964a
+  conclusion: needs_repair
+```
+
+### Effective contract / provenance
+
+- This is the first independent review after E3. R4 is treated only as the historical uncheckpointed repair input reconciled above.
+- E3 result-code commit `e3f9b97aa331714f11ff6f96b2065bc68a7da7f1` is the implementation provenance anchor.
+- The current code tree includes E3 plus the lifecycle provenance reconciliation commit; no business-code change occurred in the reconciliation step.
+
+### Independent verification
+
+- Targeted benchmark/binding regression set: `28 passed`.
+- `make lint`: PASS.
+- `make test`: PASS, `1184 passed, 3 skipped`.
+- `.ai-bridge` tracked paths: none.
+
+### Findings
+
+#### R5-M1 — Final refresh binding does not cryptographically couple benchmark report identity to calibration/active-pool identity
+
+Status: **open, major**.
+
+The E3 repair correctly introduced `GRPOBenchmarkBinding` for pre-freeze candidates and strict k4/k8 diagnostic roles. However, the final `load_grpo_refresh_binding()` path still only checks that the benchmark report validates and that the selected worker count matches. It does not require the benchmark report's source manifest to carry the same calibration manifest hash, active order hash, and Public/Hidden training artifact identities as the calibration manifest supplied to the final refresh run.
+
+Impact: two individually valid formal artifacts from different active pools can be combined into one refresh binding if their worker selection agrees. The final C2/D2 run would then consume a calibration identity different from the benchmark evidence that justified the runtime choice.
+
+Required repair:
+
+- add canonical benchmark source identity fields covering calibration manifest SHA, active order SHA, Public training SHA, and Hidden training SHA;
+- require `load_grpo_refresh_binding()` to compare benchmark identity with calibration identity before producing `GRPORefreshBinding`;
+- add negative regression using two valid but different calibration/benchmark artifact sets with the same worker selection.
+
+### Acceptance status
+
+- E3 closes the previous `R1-M4` bootstrap-cycle and narrowed `R3-M1` implementation gaps.
+- R5-M1 remains the blocking evidence-lineage defect.
+
+### Repair Routing
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 5
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R5-M1
+  rationale:
+    - "The remaining defect is one evidence identity contract spanning benchmark report reconstruction and final refresh binding."
+  workstream_candidates: []
+```
+
+### Conclusion
+
+`needs_repair`. E3 is a substantial repair and passes the executable verification gates, but final benchmark evidence is not yet guaranteed to describe the same calibration/active-pool identity consumed by refresh training. Next lifecycle action is `stage-lifecycle checkpoint_review`.
