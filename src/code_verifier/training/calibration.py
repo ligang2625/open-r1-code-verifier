@@ -1091,6 +1091,327 @@ def _selection_hash(seed: int, problem_id: str) -> str:
     return hashlib.sha256(f"wp9b-active-pool-v1|{seed}|{problem_id}".encode()).hexdigest()
 
 
+def _active_selection_hash(seed: int, namespace: str, problem_id: str) -> str:
+    return stable_json_hash({"namespace": namespace, "seed": seed, "problem_id": problem_id})
+
+
+def _source_difficulty_stratified_select(
+    records: Sequence[dict[str, object]],
+    *,
+    count: int,
+    seed: int,
+    namespace: str,
+) -> list[dict[str, object]]:
+    """Select an exact proportional source+difficulty sample with deterministic largest remainder."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0 or count > len(records):
+        raise CalibrationError("active-pool stratified selection count is invalid")
+    if count == 0:
+        return []
+    groups: dict[tuple[str, str], list[dict[str, object]]] = {}
+    seen_ids: set[str] = set()
+    for record in records:
+        problem_id = record.get("problem_id")
+        source_name = record.get("source_name")
+        difficulty = record.get("difficulty")
+        if (
+            not isinstance(problem_id, str)
+            or not problem_id
+            or problem_id in seen_ids
+            or not isinstance(source_name, str)
+            or not source_name
+            or not isinstance(difficulty, str)
+            or not difficulty
+        ):
+            raise CalibrationError("active-pool stratified population identity is invalid")
+        seen_ids.add(problem_id)
+        groups.setdefault((source_name, difficulty), []).append(record)
+
+    allocations: dict[tuple[str, str], int] = {}
+    remainders: list[tuple[float, tuple[str, str]]] = []
+    total = len(records)
+    for stratum in sorted(groups):
+        exact = count * len(groups[stratum]) / total
+        base = math.floor(exact)
+        allocations[stratum] = base
+        remainders.append((exact - base, stratum))
+    remaining = count - sum(allocations.values())
+    for _remainder, stratum in sorted(remainders, key=lambda item: (-item[0], item[1]))[:remaining]:
+        allocations[stratum] += 1
+
+    selected: list[dict[str, object]] = []
+    for stratum in sorted(groups):
+        ordered = sorted(
+            groups[stratum],
+            key=lambda record: (
+                _active_selection_hash(seed, namespace, cast(str, record["problem_id"])),
+                cast(str, record["problem_id"]),
+            ),
+        )
+        selected.extend(ordered[: allocations[stratum]])
+    return selected
+
+
+def _active_selection_diagnostics(
+    eligible: Sequence[dict[str, object]],
+    *,
+    quotas: Mapping[str, int],
+    config: CalibrationConfig,
+) -> str:
+    populations = Counter(
+        (
+            "sft_reuse" if record.get("overlap_origin") == "sft_reuse" else "external_new",
+            cast(str, record.get("calibration_class")),
+            cast(str, record.get("source_name")),
+            cast(str, record.get("difficulty")),
+        )
+        for record in eligible
+    )
+    payload = {
+        "requested_overlap_quotas": dict(quotas),
+        "requested_class_constraints": {
+            "dual_informative_min": math.ceil(config.active_pool_size * config.dual_informative_min_fraction),
+            "public_only_max": math.floor(config.active_pool_size * config.public_only_max_fraction),
+            "hidden_only_max": math.floor(config.active_pool_size * config.hidden_only_max_fraction),
+            "dual_uninformative_max": 0,
+        },
+        "population": [
+            {
+                "overlap_bucket": bucket,
+                "calibration_class": calibration_class,
+                "source_name": source_name,
+                "difficulty": difficulty,
+                "count": count,
+            }
+            for (bucket, calibration_class, source_name, difficulty), count in sorted(populations.items())
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _raise_active_selection_error(
+    message: str,
+    *,
+    eligible: Sequence[dict[str, object]],
+    quotas: Mapping[str, int],
+    config: CalibrationConfig,
+) -> None:
+    diagnostics = _active_selection_diagnostics(eligible, quotas=quotas, config=config)
+    raise CalibrationError(f"{message}; population_diagnostics={diagnostics}")
+
+
+def _allocate_public_single_slots(
+    single_needs: Mapping[str, int],
+    public_available: Mapping[str, int],
+    hidden_available: Mapping[str, int],
+    *,
+    public_cap: int,
+    hidden_cap: int,
+    eligible: Sequence[dict[str, object]],
+    quotas: Mapping[str, int],
+    config: CalibrationConfig,
+) -> dict[str, int]:
+    total_single = sum(single_needs.values())
+    lower: dict[str, int] = {}
+    upper: dict[str, int] = {}
+    for bucket in sorted(single_needs):
+        need = single_needs[bucket]
+        public_count = public_available[bucket]
+        hidden_count = hidden_available[bucket]
+        lower[bucket] = max(0, need - hidden_count)
+        upper[bucket] = min(need, public_count)
+        if lower[bucket] > upper[bucket]:
+            _raise_active_selection_error(
+                f"{bucket} source population cannot fill its single-arm quota",
+                eligible=eligible,
+                quotas=quotas,
+                config=config,
+            )
+    global_lower = max(sum(lower.values()), total_single - hidden_cap)
+    global_upper = min(sum(upper.values()), public_cap)
+    if global_lower > global_upper:
+        _raise_active_selection_error(
+            "single-arm caps cannot satisfy the requested overlap/source populations",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    if total_single == 0:
+        return {bucket: 0 for bucket in single_needs}
+    total_available = sum(public_available.values()) + sum(hidden_available.values())
+    ideal_public = (
+        0
+        if total_available == 0
+        else math.floor(total_single * sum(public_available.values()) / total_available + 0.5)
+    )
+    target_public = min(max(ideal_public, global_lower), global_upper)
+    allocations = dict(lower)
+    remaining = target_public - sum(allocations.values())
+    if remaining <= 0:
+        return allocations
+    headroom = {bucket: upper[bucket] - lower[bucket] for bucket in single_needs}
+    total_headroom = sum(headroom.values())
+    remainders: list[tuple[float, str]] = []
+    assigned = 0
+    for bucket in sorted(headroom):
+        if headroom[bucket] == 0:
+            continue
+        exact = remaining * headroom[bucket] / total_headroom
+        base = math.floor(exact)
+        allocations[bucket] += base
+        assigned += base
+        remainders.append((exact - base, bucket))
+    for _remainder, bucket in sorted(remainders, key=lambda item: (-item[0], item[1]))[: remaining - assigned]:
+        allocations[bucket] += 1
+    return allocations
+
+
+def _select_active_records(
+    eligible: Sequence[dict[str, object]],
+    *,
+    config: CalibrationConfig,
+    seed: int,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Apply overlap quotas, class priority, then deterministic source+difficulty stratification."""
+    overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    quotas = {
+        "sft_reuse": overlap_target,
+        "external_new": config.active_pool_size - overlap_target,
+    }
+    if overlap_target / config.active_pool_size > config.sft_overlap_hard_max + 1e-12:
+        _raise_active_selection_error(
+            "selected SFT overlap target exceeds the frozen hard maximum",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    buckets = {
+        "sft_reuse": [record for record in eligible if record.get("overlap_origin") == "sft_reuse"],
+        "external_new": [record for record in eligible if record.get("overlap_origin") != "sft_reuse"],
+    }
+    selected: list[dict[str, object]] = []
+    single_needs: dict[str, int] = {}
+    public_available: dict[str, int] = {}
+    hidden_available: dict[str, int] = {}
+    for bucket_name in ("sft_reuse", "external_new"):
+        population = buckets[bucket_name]
+        quota = quotas[bucket_name]
+        if len(population) < quota:
+            _raise_active_selection_error(
+                f"insufficient {bucket_name} calibrated population for frozen quota",
+                eligible=eligible,
+                quotas=quotas,
+                config=config,
+            )
+        dual = [
+            record
+            for record in population
+            if record.get("calibration_class") == CalibrationClass.DUAL_INFORMATIVE.value
+        ]
+        dual_count = min(quota, len(dual))
+        selected.extend(
+            _source_difficulty_stratified_select(
+                dual,
+                count=dual_count,
+                seed=seed,
+                namespace=f"{bucket_name}|dual",
+            )
+        )
+        single_needs[bucket_name] = quota - dual_count
+        public_available[bucket_name] = sum(
+            record.get("calibration_class") == CalibrationClass.PUBLIC_ONLY.value for record in population
+        )
+        hidden_available[bucket_name] = sum(
+            record.get("calibration_class") == CalibrationClass.HIDDEN_ONLY.value for record in population
+        )
+
+    dual_min = math.ceil(config.active_pool_size * config.dual_informative_min_fraction)
+    if len(selected) < dual_min:
+        _raise_active_selection_error(
+            "selected pool cannot satisfy the dual-informative minimum",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    public_cap = math.floor(config.active_pool_size * config.public_only_max_fraction)
+    hidden_cap = math.floor(config.active_pool_size * config.hidden_only_max_fraction)
+    public_targets = _allocate_public_single_slots(
+        single_needs,
+        public_available,
+        hidden_available,
+        public_cap=public_cap,
+        hidden_cap=hidden_cap,
+        eligible=eligible,
+        quotas=quotas,
+        config=config,
+    )
+
+    for bucket_name in ("sft_reuse", "external_new"):
+        population = buckets[bucket_name]
+        public_candidates = [
+            record
+            for record in population
+            if record.get("calibration_class") == CalibrationClass.PUBLIC_ONLY.value
+        ]
+        hidden_candidates = [
+            record
+            for record in population
+            if record.get("calibration_class") == CalibrationClass.HIDDEN_ONLY.value
+        ]
+        public_count = public_targets[bucket_name]
+        hidden_count = single_needs[bucket_name] - public_count
+        selected.extend(
+            _source_difficulty_stratified_select(
+                public_candidates,
+                count=public_count,
+                seed=seed,
+                namespace=f"{bucket_name}|public-only",
+            )
+        )
+        selected.extend(
+            _source_difficulty_stratified_select(
+                hidden_candidates,
+                count=hidden_count,
+                seed=seed,
+                namespace=f"{bucket_name}|hidden-only",
+            )
+        )
+
+    counts = Counter(cast(str, record.get("calibration_class")) for record in selected)
+    if len(selected) != config.active_pool_size:
+        _raise_active_selection_error(
+            "active-pool selector did not produce the exact requested target",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    if counts[CalibrationClass.DUAL_INFORMATIVE.value] < dual_min:
+        _raise_active_selection_error(
+            "selected pool cannot satisfy the dual-informative minimum",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    if (
+        counts[CalibrationClass.PUBLIC_ONLY.value] > public_cap
+        or counts[CalibrationClass.HIDDEN_ONLY.value] > hidden_cap
+    ):
+        _raise_active_selection_error(
+            "selected pool cannot satisfy the single-arm informative caps",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    selected_ids = {cast(str, record["problem_id"]) for record in selected}
+    if len(selected_ids) != len(selected):
+        raise CalibrationError("active-pool selector produced duplicate problem IDs")
+    reserve: list[dict[str, object]] = [
+        {"problem_id": cast(str, record["problem_id"]), "reason": "informative_not_selected"}
+        for record in eligible
+        if cast(str, record["problem_id"]) not in selected_ids
+    ]
+    return selected, reserve
+
+
 def build_calibrated_active_pool(
     *,
     config: CalibrationConfig,
@@ -1208,47 +1529,14 @@ def build_calibrated_active_pool(
             reserve.append({"problem_id": problem_id, "reason": disposition})
         else:
             eligible.append(record)
+    selected, informative_reserve = _select_active_records(
+        eligible,
+        config=config,
+        seed=seed,
+    )
+    reserve.extend(informative_reserve)
     overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
-    overlap_fraction = overlap_target / config.active_pool_size
-    if overlap_fraction > config.sft_overlap_hard_max + 1e-12:
-        raise CalibrationError("selected SFT overlap target exceeds the frozen hard maximum")
-    buckets = {
-        "sft_reuse": [record for record in eligible if record["overlap_origin"] == "sft_reuse"],
-        "external_new": [record for record in eligible if record["overlap_origin"] != "sft_reuse"],
-    }
-    quotas = {"sft_reuse": overlap_target, "external_new": config.active_pool_size - overlap_target}
-    selected: list[dict[str, object]] = []
-    for bucket_name in ("sft_reuse", "external_new"):
-        population = buckets[bucket_name]
-        class_rank = {
-            CalibrationClass.DUAL_INFORMATIVE.value: 0,
-            CalibrationClass.PUBLIC_ONLY.value: 1,
-            CalibrationClass.HIDDEN_ONLY.value: 1,
-        }
-        population.sort(
-            key=lambda record: (
-                class_rank[cast(str, record["calibration_class"])],
-                _selection_hash(seed, cast(str, record["problem_id"])),
-            )
-        )
-        if len(population) < quotas[bucket_name]:
-            raise CalibrationError(f"insufficient {bucket_name} calibrated population for frozen quota")
-        selected.extend(population[: quotas[bucket_name]])
-        reserve.extend(
-            {"problem_id": cast(str, record["problem_id"]), "reason": "informative_not_selected"}
-            for record in population[quotas[bucket_name] :]
-        )
     counts = Counter(cast(str, record["calibration_class"]) for record in selected)
-    if counts[CalibrationClass.DUAL_INFORMATIVE.value] < math.ceil(
-        config.active_pool_size * config.dual_informative_min_fraction
-    ):
-        raise CalibrationError("selected pool cannot satisfy the dual-informative minimum")
-    if counts[CalibrationClass.PUBLIC_ONLY.value] > math.floor(
-        config.active_pool_size * config.public_only_max_fraction
-    ) or counts[CalibrationClass.HIDDEN_ONLY.value] > math.floor(
-        config.active_pool_size * config.hidden_only_max_fraction
-    ):
-        raise CalibrationError("selected pool cannot satisfy the single-arm informative caps")
     selected.sort(key=lambda record: _selection_hash(seed + 1, cast(str, record["problem_id"])))
     selected_ids = [cast(str, record["problem_id"]) for record in selected]
     active_order_sha = stable_json_hash(selected_ids)
@@ -1575,49 +1863,14 @@ def check_calibrated_active_pool(
         else:
             eligible.append(record)
 
+    selected_records, informative_reserve = _select_active_records(
+        eligible,
+        config=config,
+        seed=seed,
+    )
+    reserve = [*base_reserve, *informative_reserve]
     overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
-    overlap_fraction = overlap_target / config.active_pool_size
-    if overlap_fraction > config.sft_overlap_hard_max + 1e-12:
-        raise CalibrationError("calibrated SFT overlap target exceeds the frozen hard maximum")
-    buckets = {
-        "sft_reuse": [record for record in eligible if record["overlap_origin"] == "sft_reuse"],
-        "external_new": [record for record in eligible if record["overlap_origin"] != "sft_reuse"],
-    }
-    quotas = {"sft_reuse": overlap_target, "external_new": config.active_pool_size - overlap_target}
-    class_rank = {
-        CalibrationClass.DUAL_INFORMATIVE.value: 0,
-        CalibrationClass.PUBLIC_ONLY.value: 1,
-        CalibrationClass.HIDDEN_ONLY.value: 1,
-    }
-    selected_records: list[dict[str, object]] = []
-    reserve = list(base_reserve)
-    for bucket_name in ("sft_reuse", "external_new"):
-        population = buckets[bucket_name]
-        population.sort(
-            key=lambda record: (
-                class_rank[cast(str, record["calibration_class"])],
-                _selection_hash(seed, cast(str, record["problem_id"])),
-            )
-        )
-        quota = quotas[bucket_name]
-        if len(population) < quota:
-            raise CalibrationError(f"insufficient {bucket_name} calibrated population for frozen quota")
-        selected_records.extend(population[:quota])
-        reserve.extend(
-            {"problem_id": cast(str, record["problem_id"]), "reason": "informative_not_selected"}
-            for record in population[quota:]
-        )
     selected_counts = Counter(cast(str, record["calibration_class"]) for record in selected_records)
-    if selected_counts[CalibrationClass.DUAL_INFORMATIVE.value] < math.ceil(
-        config.active_pool_size * config.dual_informative_min_fraction
-    ):
-        raise CalibrationError("calibrated active pool violates the dual-informative minimum")
-    if selected_counts[CalibrationClass.PUBLIC_ONLY.value] > math.floor(
-        config.active_pool_size * config.public_only_max_fraction
-    ) or selected_counts[CalibrationClass.HIDDEN_ONLY.value] > math.floor(
-        config.active_pool_size * config.hidden_only_max_fraction
-    ):
-        raise CalibrationError("calibrated active pool violates the single-arm caps")
     if selected_counts[CalibrationClass.DUAL_UNINFORMATIVE.value] != 0:
         raise CalibrationError("calibrated active pool contains dual-uninformative problems")
     selected_records.sort(key=lambda record: _selection_hash(seed + 1, cast(str, record["problem_id"])))

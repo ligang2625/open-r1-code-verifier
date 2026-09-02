@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import cast
 
@@ -251,3 +252,73 @@ def test_retry_and_disposition_rules_cover_hard_easy_and_quality_priority() -> N
 
     quality = {**easy, "quality_gate_required": True}
     assert calibration._calibration_disposition(quality, retried=True) == "quality_gate_required"
+
+
+def test_active_selection_stratifies_unequal_source_difficulty_in_both_overlap_buckets() -> None:
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 20, 0.10, 0.15, 0.70, 0.15, 0.15)
+    records: list[dict[str, object]] = []
+    for prefix, count, source_name, difficulty, overlap_origin in (
+        ("sft-a", 3, "source-a", "easy", "sft_reuse"),
+        ("sft-b", 2, "source-b", "hard", "sft_reuse"),
+        ("ext-c", 15, "source-c", "easy", "external_new"),
+        ("ext-d", 7, "source-d", "hard", "external_new"),
+    ):
+        records.extend(
+            {
+                "problem_id": f"{prefix}-{index}",
+                "source_name": source_name,
+                "difficulty": difficulty,
+                "overlap_origin": overlap_origin,
+                "calibration_class": CalibrationClass.DUAL_INFORMATIVE.value,
+            }
+            for index in range(count)
+        )
+
+    selected, reserve = calibration._select_active_records(records, config=config, seed=42)
+    strata = Counter(
+        (
+            cast(str, record["overlap_origin"]),
+            cast(str, record["source_name"]),
+            cast(str, record["difficulty"]),
+        )
+        for record in selected
+    )
+    assert len(selected) == 20
+    assert len(reserve) == 7
+    assert strata == Counter(
+        {
+            ("sft_reuse", "source-a", "easy"): 1,
+            ("sft_reuse", "source-b", "hard"): 1,
+            ("external_new", "source-c", "easy"): 12,
+            ("external_new", "source-d", "hard"): 6,
+        }
+    )
+
+    selected_again, _ = calibration._select_active_records(records, config=config, seed=42)
+    assert [record["problem_id"] for record in selected_again] == [record["problem_id"] for record in selected]
+
+
+def test_active_selection_error_reports_requested_constraints_and_stratified_population() -> None:
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 10, 0.10, 0.15, 0.70, 0.15, 0.15)
+    records: list[dict[str, object]] = [
+        {
+            "problem_id": f"p-{index}",
+            "source_name": "only-source",
+            "difficulty": "hard",
+            "overlap_origin": "external_new",
+            "calibration_class": CalibrationClass.DUAL_INFORMATIVE.value,
+        }
+        for index in range(10)
+    ]
+
+    with pytest.raises(CalibrationError, match="population_diagnostics=") as error:
+        calibration._select_active_records(records, config=config, seed=42)
+
+    message = str(error.value)
+    for expected in (
+        '"requested_class_constraints"',
+        '"overlap_bucket":"external_new"',
+        '"source_name":"only-source"',
+        '"difficulty":"hard"',
+    ):
+        assert expected in message

@@ -332,6 +332,44 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
             allow_test_protocol=True,
         )
 
+    selection_tamper = tmp_path / "selection-tamper"
+    shutil.copytree(active_dir, selection_tamper)
+    selection_path = selection_tamper / "manifest" / "active_selection.jsonl"
+    selection_rows = [json.loads(line) for line in selection_path.read_text(encoding="utf-8").splitlines()]
+    selection_rows.reverse()
+    for ordinal, row in enumerate(selection_rows):
+        row["ordinal"] = ordinal
+    order_rows = [{"ordinal": index, "problem_id": row["problem_id"]} for index, row in enumerate(selection_rows)]
+    public_path = selection_tamper / "training" / "public_grpo.jsonl"
+    hidden_path = selection_tamper / "training" / "hidden_grpo.jsonl"
+    public_rows = [json.loads(line) for line in public_path.read_text(encoding="utf-8").splitlines()]
+    hidden_rows = [json.loads(line) for line in hidden_path.read_text(encoding="utf-8").splitlines()]
+    public_rows.reverse()
+    hidden_rows.reverse()
+    manifest_path = selection_tamper / "calibration_manifest.json"
+    selection_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    selection_manifest["active_order_sha256"] = stable_json_hash([row["problem_id"] for row in selection_rows])
+    selection_manifest["artifacts"]["manifest/active_selection.jsonl"] = calibration_module._write_jsonl(
+        selection_path, selection_rows
+    )
+    selection_manifest["artifacts"]["manifest/problem_order.jsonl"] = calibration_module._write_jsonl(
+        selection_tamper / "manifest" / "problem_order.jsonl", order_rows
+    )
+    selection_manifest["artifacts"]["training/public_grpo.jsonl"] = calibration_module._write_jsonl(
+        public_path, public_rows
+    )
+    selection_manifest["artifacts"]["training/hidden_grpo.jsonl"] = calibration_module._write_jsonl(
+        hidden_path, hidden_rows
+    )
+    calibration_module._write_json(manifest_path, selection_manifest)
+    with pytest.raises(CalibrationError, match="order does not recompute"):
+        check_calibrated_active_pool(
+            selection_tamper,
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            allow_test_protocol=True,
+        )
+
     derived_tamper = tmp_path / "derived-tamper"
     shutil.copytree(active_dir, derived_tamper)
     records_path = derived_tamper / "records" / "calibration.jsonl"
