@@ -26,6 +26,7 @@ def write_grpo_probe(
     dataset_hash = ("2" if reward_mode == "public" else "3") * 64
     metadata = {
         "status": "completed",
+        "evidence_class": "engineering_fixture",
         "start_time": start.isoformat(),
         "end_time": end.isoformat(),
         "reward_mode": reward_mode,

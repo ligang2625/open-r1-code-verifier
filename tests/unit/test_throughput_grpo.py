@@ -171,3 +171,25 @@ def test_formal_grpo_probe_requires_available_runtime_utilization(tmp_path: Path
     probe = throughput._grpo_probe(run, require_formal_telemetry=True)
     assert probe.runtime_utilization is not None
     assert probe.runtime_utilization["gpu_utilization_mean_percent"] == 55.0
+
+
+def test_formal_grpo_probe_rejects_forged_engineering_source(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 2, 0, 0, tzinfo=timezone.utc)
+    run = write_grpo_probe(
+        tmp_path,
+        name="forged-formal-grpo",
+        reward_mode="public",
+        workers=16,
+        start=start,
+        duration_seconds=4.0,
+    )
+
+    with pytest.raises(ThroughputError, match="engineering GRPO fixture.*formal"):
+        throughput._grpo_probe(run, strict_source=True)
+
+    metadata = json.loads((run / "run.json").read_text(encoding="utf-8"))
+    metadata.pop("evidence_class")
+    (run / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ThroughputError, match="strict artifact layout"):
+        throughput._grpo_probe(run, strict_source=True)
