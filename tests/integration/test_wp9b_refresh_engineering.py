@@ -29,7 +29,7 @@ from code_verifier.training.calibration import (
     run_calibration_generation,
     score_calibration_generation,
 )
-from code_verifier.training.grpo import load_grpo_refresh_binding, load_grpo_training_config
+from code_verifier.training.grpo import GRPOTrainingError, load_grpo_refresh_binding, load_grpo_training_config
 from code_verifier.training.sft import SFTCheckpointIdentity
 from tests.integration.test_wp9a_refresh_data_pipeline import _setup_fixture_environment
 from tests.unit.throughput_fixture import write_grpo_probe
@@ -115,13 +115,28 @@ def _generation_bundle(root: Path, *, name: str, batch_size: int, latency_ms: fl
     run = root / name
     samples = run / "samples"
     samples.mkdir(parents=True)
+    resolved = {
+        "schema_version": 2,
+        "run_id": name,
+        "model_id": "fixture/model",
+        "model_revision": "a" * 40,
+        "checkpoint": "fixture-b",
+        "seed": 42,
+        "split": "test",
+        "device": "cuda",
+        "generation": {"do_sample": False, "max_new_tokens": 512},
+        "dataset_hash": "e" * 64,
+        "piston_config_sha256": "9" * 64,
+        "batch_size": batch_size,
+    }
+    contract_sha256 = stable_json_hash(resolved)
     rows = [
         {
             "run_id": name,
             "model_id": "fixture/model",
             "checkpoint": "fixture-b",
             "dataset_hash": "e" * 64,
-            "evaluation_contract_sha256": "f" * 64,
+            "evaluation_contract_sha256": contract_sha256,
             "problem_id": f"eval-{index}",
             "prompt_hash": ("1" if index == 0 else "2") * 64,
             "completion": "same deterministic completion",
@@ -136,18 +151,24 @@ def _generation_bundle(root: Path, *, name: str, batch_size: int, latency_ms: fl
         "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
         encoding="utf-8",
     )
+    resolved_path = run / "resolved_config.yaml"
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=True), encoding="utf-8")
     (run / "run.json").write_text(
         json.dumps(
             {
                 "schema_version": 2,
                 "artifact_type": "evaluation_generation_bundle",
                 "status": "completed",
+                "run_id": name,
                 "model_id": "fixture/model",
                 "model_revision": "a" * 40,
                 "checkpoint": "fixture-b",
                 "dataset_hash": "e" * 64,
                 "seed": 42,
                 "batch_size": batch_size,
+                "evaluation_contract_sha256": contract_sha256,
+                "ordered_problem_ids_sha256": stable_json_hash([row["problem_id"] for row in rows]),
+                "resolved_config_sha256": hashlib.sha256(resolved_path.read_bytes()).hexdigest(),
                 "completed_records": len(rows),
                 "total_problems": len(rows),
                 "records_sha256": hashlib.sha256(records_path.read_bytes()).hexdigest(),
@@ -306,6 +327,8 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
 
     binding = load_grpo_refresh_binding(
         calibration_manifest_path=checked.calibration_manifest,
+        refresh_dataset_dir=refresh_dir,
+        reference_dataset_dir=reference_dir,
         benchmark_report_path=benchmark.report_path,
         verification_workers=16,
         allow_engineering=True,
@@ -389,6 +412,15 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
             refresh_dataset_dir=refresh_dir,
             reference_dataset_dir=reference_dir,
             allow_test_protocol=True,
+        )
+    with pytest.raises(GRPOTrainingError, match="calibration artifact failed strict check"):
+        load_grpo_refresh_binding(
+            calibration_manifest_path=derived_manifest_path,
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            benchmark_report_path=benchmark.report_path,
+            verification_workers=16,
+            allow_engineering=True,
         )
 
     training_tamper = tmp_path / "training-view-tamper"

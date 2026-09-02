@@ -33,6 +33,7 @@ from code_verifier.data.leakage_checks import (
     check_training_record,
     load_training_artifact,
 )
+from code_verifier.data.refresh import RefreshDataError
 from code_verifier.environment import collect_environment
 from code_verifier.execution.base import (
     CodeExecutor,
@@ -43,6 +44,8 @@ from code_verifier.execution.base import (
 from code_verifier.execution.piston import classify_piston_retryable_infrastructure_failure
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards, compute_code_rewards_concurrent
 from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
+from code_verifier.throughput import ThroughputError, check_refresh_benchmark_report
+from code_verifier.training.calibration import CalibrationError, check_calibrated_active_pool
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.grpo_telemetry import GRPORollingTelemetry
 from code_verifier.training.open_r1_adapter import import_open_r1_module
@@ -1504,6 +1507,8 @@ def _strict_json_object(path: Path, *, description: str) -> dict[str, object]:
 def load_grpo_refresh_binding(
     *,
     calibration_manifest_path: Path,
+    refresh_dataset_dir: Path,
+    reference_dataset_dir: Path,
     benchmark_report_path: Path,
     verification_workers: int,
     allow_engineering: bool = False,
@@ -1515,6 +1520,17 @@ def load_grpo_refresh_binding(
         or not 1 <= verification_workers <= 64
     ):
         raise GRPOTrainingError("verification_workers must be an integer in [1, 64]")
+    try:
+        checked_pool = check_calibrated_active_pool(
+            calibration_manifest_path.parent,
+            refresh_dataset_dir=refresh_dataset_dir,
+            reference_dataset_dir=reference_dataset_dir,
+            allow_test_protocol=allow_engineering,
+        )
+    except (CalibrationError, RefreshDataError) as error:
+        raise GRPOTrainingError(f"calibration artifact failed strict check: {error}") from None
+    if checked_pool.calibration_manifest.resolve(strict=False) != calibration_manifest_path.resolve(strict=False):
+        raise GRPOTrainingError("calibration manifest path is not the strict checked pool manifest")
     calibration = _strict_json_object(calibration_manifest_path, description="calibration manifest")
     if calibration.get("status") != "completed" or calibration.get("schema_version") not in {
         "wp9b-calibration-v1",
@@ -1539,6 +1555,15 @@ def load_grpo_refresh_binding(
         raise GRPOTrainingError("calibrated Public dataset hash mismatch")
     if _file_hash(root / "training" / "hidden_grpo.jsonl", description="calibrated Hidden dataset") != hidden_sha:
         raise GRPOTrainingError("calibrated Hidden dataset hash mismatch")
+    try:
+        checked_benchmark = check_refresh_benchmark_report(
+            benchmark_report_path,
+            allow_engineering=allow_engineering,
+        )
+    except ThroughputError as error:
+        raise GRPOTrainingError(f"refresh benchmark artifact failed strict check: {error}") from None
+    if checked_benchmark.selected_grpo_verification_workers != verification_workers:
+        raise GRPOTrainingError("verification_workers differs from the benchmark selection")
     benchmark = _strict_json_object(benchmark_report_path, description="refresh benchmark report")
     if benchmark.get("version") != "wp9b-refresh-benchmark-v1":
         raise GRPOTrainingError("refresh benchmark report version is invalid")

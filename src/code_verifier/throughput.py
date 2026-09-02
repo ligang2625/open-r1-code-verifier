@@ -130,6 +130,16 @@ def _jsonl(path: Path) -> list[dict[str, object]]:
     return rows
 
 
+def _yaml_mapping(path: Path, *, field_name: str) -> dict[str, object]:
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise ThroughputError(f"benchmark {field_name} is invalid") from error
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ThroughputError(f"benchmark {field_name} must be a string-keyed mapping")
+    return cast(dict[str, object], value)
+
+
 def _p95(values: list[float], *, field_name: str) -> float:
     if not values or any(not math.isfinite(value) or value < 0.0 for value in values):
         raise ThroughputError(f"{field_name} values must be finite, non-negative, and non-empty")
@@ -160,25 +170,84 @@ def _completed_duration(metadata: dict[str, object]) -> tuple[datetime, datetime
     return start, end, duration
 
 
-def _completed_bundle(run_dir: Path) -> tuple[dict[str, object], Path]:
+def _completed_bundle(run_dir: Path) -> tuple[dict[str, object], Path, str]:
     metadata = _json(run_dir / "run.json")
     records_path = run_dir / "samples" / "generations.jsonl"
-    if metadata.get("status") != "completed" or metadata.get("artifact_type") != "evaluation_generation_bundle":
-        raise ThroughputError("benchmark generation bundle must be completed")
+    resolved_path = run_dir / "resolved_config.yaml"
+    if (
+        metadata.get("schema_version") != 2
+        or metadata.get("status") != "completed"
+        or metadata.get("artifact_type") != "evaluation_generation_bundle"
+    ):
+        raise ThroughputError("benchmark generation bundle must be a completed v2 artifact")
     if metadata.get("records_sha256") != _sha256(records_path):
         raise ThroughputError("benchmark generation bundle records hash mismatch")
+    resolved = _yaml_mapping(resolved_path, field_name="generation resolved config")
+    expected_resolved_fields = {
+        "schema_version",
+        "run_id",
+        "model_id",
+        "model_revision",
+        "checkpoint",
+        "seed",
+        "split",
+        "device",
+        "generation",
+        "dataset_hash",
+        "piston_config_sha256",
+        "batch_size",
+    }
+    if set(resolved) != expected_resolved_fields:
+        raise ThroughputError("benchmark generation resolved config schema is invalid")
+    for field in (
+        "schema_version",
+        "run_id",
+        "model_id",
+        "model_revision",
+        "checkpoint",
+        "seed",
+        "dataset_hash",
+        "batch_size",
+    ):
+        if metadata.get(field) != resolved.get(field):
+            raise ThroughputError(f"benchmark generation run/resolved config mismatch for {field}")
+    if metadata.get("resolved_config_sha256") != _sha256(resolved_path):
+        raise ThroughputError("benchmark generation resolved config hash mismatch")
+    if metadata.get("evaluation_contract_sha256") != _stable_hash(resolved):
+        raise ThroughputError("benchmark generation contract hash does not recompute")
     records = load_generation_bundle_records(records_path)
     if metadata.get("completed_records") != len(records) or metadata.get("total_problems") != len(records):
         raise ThroughputError("benchmark generation bundle is incomplete")
-    return metadata, records_path
+    ordered_ids_sha256 = _stable_hash([record.problem_id for record in records])
+    if metadata.get("ordered_problem_ids_sha256") != ordered_ids_sha256:
+        raise ThroughputError("benchmark generation problem-order hash does not recompute")
+    for record in records:
+        expected_record_identity = {
+            "run_id": metadata.get("run_id"),
+            "model_id": metadata.get("model_id"),
+            "checkpoint": metadata.get("checkpoint"),
+            "dataset_hash": metadata.get("dataset_hash"),
+            "evaluation_contract_sha256": metadata.get("evaluation_contract_sha256"),
+        }
+        if any(getattr(record, field) != value for field, value in expected_record_identity.items()):
+            raise ThroughputError("benchmark generation row identity is inconsistent with run metadata")
+    scientific_config = dict(resolved)
+    scientific_config.pop("run_id")
+    scientific_config.pop("batch_size")
+    scientific_identity_sha256 = _stable_hash(
+        {
+            "resolved_scientific_config": scientific_config,
+            "ordered_problem_ids_sha256": ordered_ids_sha256,
+        }
+    )
+    return metadata, records_path, scientific_identity_sha256
 
 
 def compare_generation_bundle_parity(baseline_run_dir: Path, candidate_run_dir: Path) -> GenerationParity:
     """Compare exact deterministic outputs while ignoring operational run/batch identity."""
-    baseline_meta, baseline_path = _completed_bundle(baseline_run_dir)
-    candidate_meta, candidate_path = _completed_bundle(candidate_run_dir)
-    identity_fields = ("model_id", "model_revision", "checkpoint", "dataset_hash", "seed")
-    if any(baseline_meta.get(field) != candidate_meta.get(field) for field in identity_fields):
+    _baseline_meta, baseline_path, baseline_identity = _completed_bundle(baseline_run_dir)
+    _candidate_meta, candidate_path, candidate_identity = _completed_bundle(candidate_run_dir)
+    if baseline_identity != candidate_identity:
         return GenerationParity(False, "source_identity_mismatch", 0)
     baseline = load_generation_bundle_records(baseline_path)
     candidate = load_generation_bundle_records(candidate_path)
@@ -197,7 +266,7 @@ def compare_generation_bundle_parity(baseline_run_dir: Path, candidate_run_dir: 
 
 
 def _bundle_metrics(run_dir: Path, *, require_formal_telemetry: bool = False) -> dict[str, object]:
-    metadata, records_path = _completed_bundle(run_dir)
+    metadata, records_path, scientific_identity_sha256 = _completed_bundle(run_dir)
     records = load_generation_bundle_records(records_path)
     batch_size = metadata.get("batch_size", 1)
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size not in _EVAL_BATCH_SIZES:
@@ -221,6 +290,7 @@ def _bundle_metrics(run_dir: Path, *, require_formal_telemetry: bool = False) ->
         "completion_tokens": tokens,
         "generation_wall_seconds": latency_seconds,
         "tokens_per_second": tokens_per_second,
+        "scientific_identity_sha256": scientific_identity_sha256,
         "run_manifest_sha256": _sha256(run_dir / "run.json"),
         "records_sha256": _sha256(records_path),
         **({"runtime_utilization": runtime_utilization} if runtime_utilization is not None else {}),
@@ -349,6 +419,22 @@ def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False) -> _GR
     scientific_config.pop("run_name", None)
     scientific_config.pop("dataset_path", None)
     scientific_config.pop("piston_config", None)
+    parent_string_fields = (
+        "parent_sft_run_id",
+        "parent_sft_model_id",
+        "parent_sft_model_revision",
+        "parent_sft_dataset_hash",
+        "parent_sft_config_hash",
+        "parent_sft_dependency_lock_hash",
+    )
+    if any(
+        not isinstance(metadata.get(field), str) or not cast(str, metadata[field])
+        for field in parent_string_fields
+    ):
+        raise ThroughputError("GRPO benchmark parent SFT identity is incomplete")
+    parent_seed = metadata.get("parent_sft_seed")
+    if isinstance(parent_seed, bool) or not isinstance(parent_seed, int):
+        raise ThroughputError("GRPO benchmark parent SFT seed is invalid")
     identity = {
         "reward_mode": reward_mode,
         "dataset_hash": metadata.get("dataset_hash"),
@@ -357,6 +443,8 @@ def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False) -> _GR
         "parent_sft_model_id": metadata.get("parent_sft_model_id"),
         "parent_sft_model_revision": metadata.get("parent_sft_model_revision"),
         "parent_sft_dataset_hash": metadata.get("parent_sft_dataset_hash"),
+        "parent_sft_config_hash": metadata.get("parent_sft_config_hash"),
+        "parent_sft_dependency_lock_hash": metadata.get("parent_sft_dependency_lock_hash"),
         "parent_sft_seed": metadata.get("parent_sft_seed"),
         "resolved_scientific_config": scientific_config,
     }
@@ -688,6 +776,7 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
         "version": _BENCHMARK_VERSION,
         "evidence_class": evidence_class,
         "source_manifest_sha256": _sha256(manifest_path),
+        "source_manifest_artifact": "benchmark_manifest.yaml",
         "eval_generation": eval_generation_report,
         "baseline": eval_generation_report["baseline"],
         "candidates": eval_generation_report["candidates"],
@@ -705,6 +794,11 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
     if output_dir.exists():
         raise ThroughputError("benchmark output directory must not already exist")
     output_dir.mkdir(parents=True)
+    source_manifest_copy = output_dir / "benchmark_manifest.yaml"
+    try:
+        source_manifest_copy.write_bytes(manifest_path.read_bytes())
+    except OSError as error:
+        raise ThroughputError("benchmark source manifest could not be snapshotted") from error
     report_path = output_dir / "refresh_benchmark_report.json"
     encoded = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output_dir, delete=False) as handle:
@@ -721,4 +815,41 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
         selected_grpo_verification_workers=selected_grpo_workers,
         selected_eval_verification_workers=selected_eval_workers,
         paired_grpo_mode=paired_mode,
+    )
+
+
+def check_refresh_benchmark_report(
+    report_path: Path,
+    *,
+    allow_engineering: bool = False,
+) -> RefreshBenchmarkSummary:
+    """Rebuild a benchmark report from its snapshotted manifest and strict source artifacts."""
+    report = _json(report_path)
+    evidence_class = report.get("evidence_class")
+    if report.get("version") != _BENCHMARK_VERSION or evidence_class not in {"engineering", "formal"}:
+        raise ThroughputError("refresh benchmark report identity is invalid")
+    if not allow_engineering and evidence_class != "formal":
+        raise ThroughputError("refresh benchmark report is not formal evidence")
+    if report.get("source_manifest_artifact") != "benchmark_manifest.yaml":
+        raise ThroughputError("refresh benchmark report source manifest artifact is invalid")
+    source_manifest_path = report_path.parent / "benchmark_manifest.yaml"
+    if report.get("source_manifest_sha256") != _sha256(source_manifest_path):
+        raise ThroughputError("refresh benchmark report source manifest hash mismatch")
+
+    with tempfile.TemporaryDirectory(prefix="wp9b-benchmark-check-") as temporary_root:
+        rebuilt = summarize_refresh_benchmarks(
+            source_manifest_path,
+            output_dir=Path(temporary_root) / "rebuilt",
+        )
+        rebuilt_report = _json(rebuilt.report_path)
+    if rebuilt_report != report:
+        raise ThroughputError("refresh benchmark report does not recompute from source artifacts")
+    return RefreshBenchmarkSummary(
+        report_dir=report_path.parent,
+        report_path=report_path,
+        selected_eval_generation_batch_size=rebuilt.selected_eval_generation_batch_size,
+        evidence_class=rebuilt.evidence_class,
+        selected_grpo_verification_workers=rebuilt.selected_grpo_verification_workers,
+        selected_eval_verification_workers=rebuilt.selected_eval_verification_workers,
+        paired_grpo_mode=rebuilt.paired_grpo_mode,
     )

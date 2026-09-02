@@ -955,16 +955,26 @@ def _train_grpo(args: argparse.Namespace) -> int:
     selected_config = public_config if args.reward_mode == "public" else hidden_config
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = selected_config.seed if cli_seed is None else cli_seed
-    binding_args = (args.calibration_manifest, args.benchmark_report)
+    binding_args = (
+        args.calibration_manifest,
+        args.refresh_dataset_dir,
+        args.reference_dataset_dir,
+        args.benchmark_report,
+    )
     binding_present = [value is not None for value in binding_args]
     num_generations = int(getattr(selected_config, "num_generations", 4))
     if num_generations == 8 and not all(binding_present):
-        raise GRPOTrainingError("k=8 refresh runs require --calibration-manifest and --benchmark-report")
+        raise GRPOTrainingError(
+            "k=8 refresh runs require --calibration-manifest, --refresh-dataset-dir, "
+            "--reference-dataset-dir, and --benchmark-report"
+        )
     if num_generations != 8 and any(binding_present):
         raise GRPOTrainingError("refresh binding arguments are only valid for k=8 GRPO")
     refresh_binding = (
         load_grpo_refresh_binding(
             calibration_manifest_path=Path(args.calibration_manifest),
+            refresh_dataset_dir=Path(args.refresh_dataset_dir),
+            reference_dataset_dir=Path(args.reference_dataset_dir),
             benchmark_report_path=Path(args.benchmark_report),
             verification_workers=int(args.verification_workers),
         )
@@ -1514,6 +1524,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="completed calibrated active-pool manifest required by k=8 refresh runs",
+    )
+    train_grpo_parser.add_argument(
+        "--refresh-dataset-dir",
+        type=Path,
+        default=None,
+        help="WP9-a refresh artifact root required to strictly recheck the calibrated active pool",
+    )
+    train_grpo_parser.add_argument(
+        "--reference-dataset-dir",
+        type=Path,
+        default=None,
+        help="reference artifact root required to strictly recheck the calibrated active pool",
     )
     train_grpo_parser.add_argument(
         "--benchmark-report",

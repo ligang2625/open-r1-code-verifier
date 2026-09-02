@@ -17,6 +17,8 @@ def write_grpo_probe(
     duration_seconds: float,
     reward_drift: bool = False,
     infrastructure_failure: bool = False,
+    parent_config_hash: str = "7" * 64,
+    parent_dependency_lock_hash: str = "8" * 64,
 ) -> Path:
     run = root / name
     run.mkdir(parents=True)
@@ -35,6 +37,8 @@ def write_grpo_probe(
         "parent_sft_model_id": "model",
         "parent_sft_model_revision": "5" * 40,
         "parent_sft_dataset_hash": "6" * 64,
+        "parent_sft_config_hash": parent_config_hash,
+        "parent_sft_dependency_lock_hash": parent_dependency_lock_hash,
         "parent_sft_seed": 42,
         "peak_cuda_memory_reserved_bytes": 1024,
         "attempts": [

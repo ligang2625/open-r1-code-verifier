@@ -60,6 +60,44 @@ def test_grpo_verification_worker_selection_uses_reward_group_parity(tmp_path: P
     assert candidates[1]["rejection"] == "reward_parity_mismatch"
 
 
+def test_grpo_worker_selection_rejects_parent_b_identity_drift(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 2, 0, 0, tzinfo=timezone.utc)
+    baseline = write_grpo_probe(
+        tmp_path,
+        name="grpo-base-identity",
+        reward_mode="public",
+        workers=8,
+        start=start,
+        duration_seconds=10.0,
+    )
+    valid = write_grpo_probe(
+        tmp_path,
+        name="grpo-valid-identity",
+        reward_mode="public",
+        workers=16,
+        start=start,
+        duration_seconds=5.0,
+    )
+    drifted = write_grpo_probe(
+        tmp_path,
+        name="grpo-drifted-identity",
+        reward_mode="public",
+        workers=32,
+        start=start,
+        duration_seconds=1.0,
+        parent_config_hash="9" * 64,
+    )
+
+    selected, report = throughput._select_grpo_verification(
+        {"baseline": str(baseline), "candidates": [str(valid), str(drifted)]}
+    )
+
+    assert selected == 16
+    candidates = report["candidates"]
+    assert isinstance(candidates, list)
+    assert candidates[1]["rejection"] == "scientific_identity_mismatch"
+
+
 def test_paired_grpo_recommendation_uses_fifteen_percent_threshold(tmp_path: Path) -> None:
     start = datetime(2026, 9, 2, 0, 0, tzinfo=timezone.utc)
     seq_public = write_grpo_probe(

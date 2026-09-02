@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
+import code_verifier.training.grpo as grpo_module
 from code_verifier.data.deduplicate import stable_json_hash
+from code_verifier.throughput import RefreshBenchmarkSummary, check_refresh_benchmark_report
+from code_verifier.training.calibration import CalibrationPoolSummary
 from code_verifier.training.grpo import (
     GRPOTrainingError,
     _validate_refresh_active_records,
@@ -55,11 +58,72 @@ def _write_engineering_binding_artifacts(root: Path, *, workers: int = 16) -> tu
     return calibration_path, benchmark_path
 
 
-def test_refresh_binding_is_derived_from_artifact_hashes_and_worker_selection(tmp_path: Path) -> None:
+def _patch_strict_checkers(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    root: Path,
+    calibration_path: Path,
+    benchmark_path: Path,
+    workers: int = 16,
+) -> None:
+    public_path = root / "training" / "public_grpo.jsonl"
+    hidden_path = root / "training" / "hidden_grpo.jsonl"
+
+    def check_pool(
+        pool_dir: Path,
+        *,
+        refresh_dataset_dir: Path,
+        reference_dataset_dir: Path,
+        allow_test_protocol: bool = False,
+    ) -> CalibrationPoolSummary:
+        assert pool_dir == root
+        assert refresh_dataset_dir.name == "refresh"
+        assert reference_dataset_dir.name == "reference"
+        assert allow_test_protocol is True
+        return CalibrationPoolSummary(
+            pool_dir=root,
+            selected_problems=1,
+            dual_informative=1,
+            public_only=0,
+            hidden_only=0,
+            sft_overlap_count=0,
+            active_order_sha256=stable_json_hash(["p1"]),
+            calibration_manifest=calibration_path,
+            public_grpo_jsonl=public_path,
+            hidden_grpo_jsonl=hidden_path,
+        )
+
+    def check_benchmark(path: Path, *, allow_engineering: bool = False) -> RefreshBenchmarkSummary:
+        assert path == benchmark_path
+        assert allow_engineering is True
+        return RefreshBenchmarkSummary(
+            report_dir=benchmark_path.parent,
+            report_path=benchmark_path,
+            selected_eval_generation_batch_size=2,
+            evidence_class="engineering",
+            selected_grpo_verification_workers=workers,
+        )
+
+    monkeypatch.setattr(grpo_module, "check_calibrated_active_pool", check_pool)
+    monkeypatch.setattr(grpo_module, "check_refresh_benchmark_report", check_benchmark)
+
+
+def test_refresh_binding_is_derived_from_strict_checker_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path)
+    _patch_strict_checkers(
+        monkeypatch,
+        root=tmp_path,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+    )
 
     binding = load_grpo_refresh_binding(
         calibration_manifest_path=calibration_path,
+        refresh_dataset_dir=tmp_path / "refresh",
+        reference_dataset_dir=tmp_path / "reference",
         benchmark_report_path=benchmark_path,
         verification_workers=16,
         allow_engineering=True,
@@ -71,32 +135,104 @@ def test_refresh_binding_is_derived_from_artifact_hashes_and_worker_selection(tm
     assert binding.active_order_sha256 == stable_json_hash(["p1"])
 
 
-def test_refresh_binding_rejects_dataset_tamper_and_worker_drift(tmp_path: Path) -> None:
+def test_refresh_binding_rejects_unchecked_minimal_calibration(tmp_path: Path) -> None:
     calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path)
-    (tmp_path / "training" / "public_grpo.jsonl").write_text('{"problem_id":"tampered"}\n', encoding="utf-8")
+    (tmp_path / "refresh").mkdir()
+    (tmp_path / "reference").mkdir()
 
-    with pytest.raises(GRPOTrainingError, match="hash mismatch"):
+    with pytest.raises(GRPOTrainingError, match="calibration artifact failed strict check"):
         load_grpo_refresh_binding(
             calibration_manifest_path=calibration_path,
+            refresh_dataset_dir=tmp_path / "refresh",
+            reference_dataset_dir=tmp_path / "reference",
             benchmark_report_path=benchmark_path,
             verification_workers=16,
             allow_engineering=True,
         )
 
-    calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path / "workers")
+
+def test_refresh_binding_rejects_handcrafted_benchmark_recommendation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path)
+    _patch_strict_checkers(
+        monkeypatch,
+        root=tmp_path,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+    )
+    monkeypatch.setattr(grpo_module, "check_refresh_benchmark_report", check_refresh_benchmark_report)
+
+    with pytest.raises(GRPOTrainingError, match="refresh benchmark artifact failed strict check"):
+        load_grpo_refresh_binding(
+            calibration_manifest_path=calibration_path,
+            refresh_dataset_dir=tmp_path / "refresh",
+            reference_dataset_dir=tmp_path / "reference",
+            benchmark_report_path=benchmark_path,
+            verification_workers=16,
+            allow_engineering=True,
+        )
+
+
+def test_refresh_binding_rejects_dataset_tamper_and_worker_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path)
+    _patch_strict_checkers(
+        monkeypatch,
+        root=tmp_path,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+    )
+    (tmp_path / "training" / "public_grpo.jsonl").write_text('{"problem_id":"tampered"}\n', encoding="utf-8")
+
+    with pytest.raises(GRPOTrainingError, match="hash mismatch"):
+        load_grpo_refresh_binding(
+            calibration_manifest_path=calibration_path,
+            refresh_dataset_dir=tmp_path / "refresh",
+            reference_dataset_dir=tmp_path / "reference",
+            benchmark_report_path=benchmark_path,
+            verification_workers=16,
+            allow_engineering=True,
+        )
+
+    workers_root = tmp_path / "workers"
+    calibration_path, benchmark_path = _write_engineering_binding_artifacts(workers_root)
+    _patch_strict_checkers(
+        monkeypatch,
+        root=workers_root,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+        workers=16,
+    )
     with pytest.raises(GRPOTrainingError, match="differs from the benchmark selection"):
         load_grpo_refresh_binding(
             calibration_manifest_path=calibration_path,
+            refresh_dataset_dir=workers_root / "refresh",
+            reference_dataset_dir=workers_root / "reference",
             benchmark_report_path=benchmark_path,
             verification_workers=32,
             allow_engineering=True,
         )
 
 
-def test_refresh_active_records_require_bound_order_and_matching_calibration_class(tmp_path: Path) -> None:
+def test_refresh_active_records_require_bound_order_and_matching_calibration_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path)
+    _patch_strict_checkers(
+        monkeypatch,
+        root=tmp_path,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+    )
     binding = load_grpo_refresh_binding(
         calibration_manifest_path=calibration_path,
+        refresh_dataset_dir=tmp_path / "refresh",
+        reference_dataset_dir=tmp_path / "reference",
         benchmark_report_path=benchmark_path,
         verification_workers=16,
         allow_engineering=True,
