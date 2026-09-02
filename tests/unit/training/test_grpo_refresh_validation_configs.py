@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from code_verifier.training.grpo import load_grpo_training_config, validate_grpo_config_pair
+from code_verifier.training.grpo import GRPOTrainingConfig, load_grpo_training_config, validate_grpo_config_pair
 
 
-def _load(name: str):
+def _load(name: str) -> GRPOTrainingConfig:
     return load_grpo_training_config(Path("configs/grpo") / name)
 
 
