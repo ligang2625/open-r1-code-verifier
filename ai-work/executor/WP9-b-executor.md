@@ -211,3 +211,46 @@ execution_record:
   effective_execution_mode: multi
   status: completed
 ```
+
+## Review Round 4 repair execution (E3)
+
+### Routing and provenance
+
+- Task kind: `repair` for WP9-b Review Round 4, consumed as an attributable **uncommitted review draft** because the user explicitly requested execution against the latest review report. The draft identifies `source_execution_id=E2`, `reviewed_head_commit=c4cf62701c84ac2edbf32842dd85a2ffadb2b06a`, and `conclusion=needs_repair`; it is not represented as a committed review provenance anchor.
+- Effective repair scope is exactly `R1-M4` plus the user-narrowed `R3-M1`. Source routing is `mode=single`, and Web GPT + CodexPro executed the integrated repair as `effective_execution_mode=single` in the existing `feat/wp9-b` worktree.
+- The stage remains `development` / `engineering` on the GTX 1660 Ti control plane. No real frozen-B calibration, real k4/k8 measurement, 24GB/4090 training, C2/D2, or formal 400-problem evaluation was run or claimed.
+- Result code commit captured before this report: `e3f9b97aa331714f11ff6f96b2065bc68a7da7f1`.
+
+### Repair result
+
+- `R1-M4` is closed by a separate pre-freeze `GRPOBenchmarkBinding` that binds completed-B/calibration/active-pool/runtime identity without consuming the not-yet-created final benchmark report. Public and Hidden strict-source reconstruction now derive and hash the distinct Public/Hidden active-pool paths correctly, while final refresh/C2-D2 binding remains k=8-only and still requires the final benchmark report plus selected worker.
+- Formal k=8 verifier worker candidates now use explicit `k8_candidate` benchmark identity and support the frozen `[8,16,32,64]` worker sweep without binding scientific identity to the candidate worker being compared. The CLI exposes `--benchmark-role` and proves a pre-freeze k=8 candidate can bootstrap without `--benchmark-report`; ordinary final k=8 still fails closed when that report is missing.
+- Narrowed `R3-M1` is closed by an explicit strict `k4_diagnostic` role beside primary k=8 evidence. The diagnostic requires the same B/pool/order/seed/reward/runtime/sampling identity except for group size and directly attributable work counts, derives artifact-backed wall-clock/token/verifier/OOM/retry/error/zero-variance/informative-group/GPU-hour metrics, and emits reconsideration warnings without selecting k=4 as the primary protocol.
+- Positive strict-source regressions cover actual fixture-backed Public k8, Hidden k8, and k4 diagnostic runs; negative regressions reject reward-arm, worker/runtime, scientific-identity, active-order, and problem-order confounds.
+
+### Verification evidence
+
+- Focused affected regression set including CLI/bootstrap, strict-source, throughput, refresh binding, and GRPO runtime: `112 passed`.
+- Sealed-plan focused unit/integration list plus the new R4 contract regressions: `349 passed`.
+- `make lint`: PASS — Ruff check, Ruff format check, and strict mypy passed for `135` source/test files.
+- `make test`: PASS — `1184 passed, 3 skipped` in `114.15s`; all three skips are the existing opt-in real-Piston tests requiring `CODE_VERIFIER_RUN_PISTON=1`.
+- Both primary and stage transport guards reported no tracked `.ai-bridge` paths. The code commit explicitly staged only the eight implementation/test files; the pre-existing Review Round 4 draft remained unstaged and unmodified by the executor.
+- Sealed plan, both project specifications, `proceedings.md`, and `third_party/open-r1` were not modified.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-b
+  execution_id: E3
+  task_kind: repair
+  source_plan_commit: 23e43b78fd31bfe051b29d38ef9e9d0f43e20590
+  source_review_round: 4
+  source_review_commit: null
+  repair_issue_ids:
+    - R1-M4
+    - R3-M1
+  result_code_commit: e3f9b97aa331714f11ff6f96b2065bc68a7da7f1
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  status: completed
+```
