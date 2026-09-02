@@ -587,3 +587,42 @@ def test_concurrent_rewards_validate_alignment_before_factory_side_effect() -> N
             max_concurrency=2,
         )
     assert calls == 0
+
+
+def test_concurrent_rewards_validate_every_item_before_factory_or_execute_side_effect() -> None:
+    calls = {"factory": 0, "execute": 0}
+
+    class CountingExecutor:
+        def execute(
+            self,
+            code: str,
+            function_name: str,
+            tests: list[dict[str, Any]],
+            timeout_seconds: float,
+            memory_limit_mb: int,
+        ) -> ExecutionResult:
+            del code, function_name, timeout_seconds, memory_limit_mb
+            calls["execute"] += 1
+            return _execution_result(
+                status=ExecutionStatus.PASSED,
+                total_tests=len(tests),
+                returned_statuses=[ExecutionStatus.PASSED] * len(tests),
+            )
+
+    def factory() -> CountingExecutor:
+        calls["factory"] += 1
+        return CountingExecutor()
+
+    invalid_metadata = {**_metadata(), "time_limit_seconds": 0.0}
+    with pytest.raises(RewardContractError, match="verification input contract"):
+        compute_code_rewards_concurrent(
+            [_completion(), _completion("return value + 1")],
+            [_tests(), _tests()],
+            ["solve", "solve"],
+            [_metadata(), invalid_metadata],
+            executor_factory=factory,
+            mode="public",
+            max_concurrency=2,
+        )
+
+    assert calls == {"factory": 0, "execute": 0}

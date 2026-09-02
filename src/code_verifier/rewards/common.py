@@ -9,11 +9,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import cast
 
 from code_verifier.execution.base import CodeExecutor, ExecutionInfrastructureFailureKind, ExecutionStatus
+from code_verifier.parsing.code_extractor import extract_python_code
 from code_verifier.verification import (
     VerificationContractError,
     VerificationResult,
     validate_verification_result,
     verify_completion,
+)
+from code_verifier.verification.verifier import (
+    _normalize_tests,
+    _resource_limits_from_metadata,
+    _validate_function_name,
 )
 
 
@@ -76,6 +82,23 @@ def _require_executor(value: object) -> CodeExecutor:
     if not callable(execute):
         raise RewardContractError("executor must provide a callable execute method")
     return cast(CodeExecutor, value)
+
+
+def _prevalidate_verification_inputs(
+    completion_texts: Sequence[str],
+    test_values: Sequence[object],
+    function_values: Sequence[object],
+    metadata_values: Sequence[object],
+) -> None:
+    """Validate every aligned verifier input before any concurrent executor side effect."""
+    for index, completion in enumerate(completion_texts):
+        try:
+            function_name = _validate_function_name(function_values[index])
+            _normalize_tests(test_values[index])
+            _resource_limits_from_metadata(metadata_values[index])
+        except VerificationContractError:
+            raise RewardContractError("reward item violates verification input contract") from None
+        extract_python_code(completion, expected_function_name=function_name)
 
 
 _COMPONENT_FIELDS = {
@@ -296,6 +319,7 @@ def compute_code_rewards_concurrent(
     test_values = cast(Sequence[object], tests_batch)
     function_values = cast(Sequence[object], function_names)
     metadata_values = cast(Sequence[object], metadata_batch)
+    _prevalidate_verification_inputs(completion_texts, test_values, function_values, metadata_values)
 
     def score(index: int) -> tuple[float, dict[str, object]]:
         executor = _require_executor(executor_factory())
