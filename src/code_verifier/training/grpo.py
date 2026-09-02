@@ -14,10 +14,11 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
+from threading import RLock
 from types import MethodType, ModuleType
 from typing import Any, cast
 
@@ -39,7 +40,7 @@ from code_verifier.execution.base import (
     ExecutionStatus,
 )
 from code_verifier.execution.piston import classify_piston_retryable_infrastructure_failure
-from code_verifier.rewards.common import RewardContractError, compute_code_rewards
+from code_verifier.rewards.common import RewardContractError, compute_code_rewards, compute_code_rewards_concurrent
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.open_r1_adapter import import_open_r1_module
 from code_verifier.training.sft import (
@@ -585,17 +586,23 @@ class _RewardInfrastructureRetryTelemetry:
     retry_successes: int = 0
     retry_exhausted: int = 0
     recovery_prepare_failures: int = 0
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False, compare=False)
+
+    def increment(self, field_name: str) -> None:
+        with self._lock:
+            setattr(self, field_name, cast(int, getattr(self, field_name)) + 1)
 
     def to_mapping(self) -> dict[str, object]:
-        return {
-            "policy_version": _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION,
-            "max_retries_per_reward_item": len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
-            "backoff_seconds": list(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
-            "retry_attempts": self.retry_attempts,
-            "retry_successes": self.retry_successes,
-            "retry_exhausted": self.retry_exhausted,
-            "recovery_prepare_failures": self.recovery_prepare_failures,
-        }
+        with self._lock:
+            return {
+                "policy_version": _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION,
+                "max_retries_per_reward_item": len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+                "backoff_seconds": list(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+                "retry_attempts": self.retry_attempts,
+                "retry_successes": self.retry_successes,
+                "retry_exhausted": self.retry_exhausted,
+                "recovery_prepare_failures": self.recovery_prepare_failures,
+            }
 
 
 def _has_sandbox_failure(result: ExecutionResult) -> bool:
@@ -662,7 +669,7 @@ class _TrainingExecutorCircuitBreaker:
     def _prepare_retry(self, retry_index: int, *, failure_kind: ExecutionInfrastructureFailureKind) -> bool:
         prepare = getattr(self._executor, "prepare_infrastructure_retry", None)
         if not callable(prepare):
-            self._telemetry.recovery_prepare_failures += 1
+            self._telemetry.increment("recovery_prepare_failures")
             self._emit(
                 "grpo_reward_infrastructure_retry_prepare_failed",
                 retry_index=retry_index + 1,
@@ -674,7 +681,7 @@ class _TrainingExecutorCircuitBreaker:
         try:
             prepare()
         except Exception as error:
-            self._telemetry.recovery_prepare_failures += 1
+            self._telemetry.increment("recovery_prepare_failures")
             self._emit(
                 "grpo_reward_infrastructure_retry_prepare_failed",
                 retry_index=retry_index + 1,
@@ -715,7 +722,7 @@ class _TrainingExecutorCircuitBreaker:
 
         last_result = result
         for retry_index, delay in enumerate(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS):
-            self._telemetry.retry_attempts += 1
+            self._telemetry.increment("retry_attempts")
             self._emit(
                 "grpo_reward_infrastructure_retry_scheduled",
                 retry_index=retry_index + 1,
@@ -741,7 +748,7 @@ class _TrainingExecutorCircuitBreaker:
                 if _has_sandbox_failure(candidate):
                     self._tripped = True
                     return candidate
-                self._telemetry.retry_successes += 1
+                self._telemetry.increment("retry_successes")
                 self._emit(
                     "grpo_reward_infrastructure_retry_succeeded",
                     retry_index=retry_index + 1,
@@ -750,7 +757,7 @@ class _TrainingExecutorCircuitBreaker:
                 return candidate
             failure_kind = candidate_failure_kind
 
-        self._telemetry.retry_exhausted += 1
+        self._telemetry.increment("retry_exhausted")
         self._tripped = True
         self._emit(
             "grpo_reward_infrastructure_retry_exhausted",
@@ -772,6 +779,8 @@ def build_grpo_reward_callback(
     retry_telemetry: _RewardInfrastructureRetryTelemetry | None = None,
     operational_log_path: Path | None = None,
     retry_sleep: Callable[[float], None] = time.sleep,
+    executor_factory: Callable[[], CodeExecutor] | None = None,
+    verification_workers: int = 1,
 ) -> Callable[..., list[float]]:
     """Build one pinned-TRL reward function with strict alignment and sanitized logs."""
     if reward_mode not in {"public", "hidden"}:
@@ -784,27 +793,37 @@ def build_grpo_reward_callback(
         or max_completion_length <= 0
     ):
         raise GRPOTrainingError("max_completion_length must be a positive integer")
+    if (
+        isinstance(verification_workers, bool)
+        or not isinstance(verification_workers, int)
+        or not 1 <= verification_workers <= 64
+    ):
+        raise GRPOTrainingError("verification_workers must be an integer in [1, 64]")
+    if verification_workers > 1 and executor_factory is None:
+        raise GRPOTrainingError("concurrent GRPO verification requires executor_factory")
 
     expected_columns = {"problem_id", "function_name", "metadata", "visible_tests"}
     if reward_mode == "hidden":
         expected_columns.add("train_hidden_tests")
     telemetry = retry_telemetry if retry_telemetry is not None else _RewardInfrastructureRetryTelemetry()
+    operational_log_lock = RLock()
 
     def write_retry_event(value: Mapping[str, object]) -> None:
         if operational_log_path is None:
             return
-        _append_lines(
-            operational_log_path,
-            [
-                _jsonl_line(
-                    {
-                        "record_type": "reward_infrastructure_retry",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        **value,
-                    }
-                )
-            ],
-        )
+        with operational_log_lock:
+            _append_lines(
+                operational_log_path,
+                [
+                    _jsonl_line(
+                        {
+                            "record_type": "reward_infrastructure_retry",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            **value,
+                        }
+                    )
+                ],
+            )
 
     training_executor = _TrainingExecutorCircuitBreaker(
         executor,
@@ -843,17 +862,36 @@ def build_grpo_reward_callback(
 
         selected_field = "visible_tests" if reward_mode == "public" else "train_hidden_tests"
         selected_tests = _decode_test_payload_batch(columns[selected_field], field_name=selected_field)
+        verifier_started = time.perf_counter()
         try:
-            rewards, component_records = compute_code_rewards(
-                completions,
-                selected_tests,
-                columns["function_name"],
-                columns["metadata"],
-                training_executor,
-                reward_mode,
-            )
+            if verification_workers == 1:
+                rewards, component_records = compute_code_rewards(
+                    completions,
+                    selected_tests,
+                    columns["function_name"],
+                    columns["metadata"],
+                    training_executor,
+                    reward_mode,
+                )
+            else:
+                assert executor_factory is not None
+                rewards, component_records = compute_code_rewards_concurrent(
+                    completions,
+                    selected_tests,
+                    columns["function_name"],
+                    columns["metadata"],
+                    executor_factory=lambda: _TrainingExecutorCircuitBreaker(
+                        executor_factory(),
+                        telemetry=telemetry,
+                        sleep=retry_sleep,
+                        event_sink=write_retry_event,
+                    ),
+                    mode=reward_mode,
+                    max_concurrency=verification_workers,
+                )
         except RewardContractError as error:
             raise GRPOTrainingError(str(error)) from None
+        verifier_runtime_seconds = time.perf_counter() - verifier_started
         if len(rewards) != batch_size or len(component_records) != batch_size:
             raise GRPOTrainingError("GRPO reward core returned a misaligned batch")
         if any(not math.isfinite(reward) for reward in rewards):
@@ -861,9 +899,15 @@ def build_grpo_reward_callback(
         infrastructure_failure_count = sum(
             record.get("infrastructure_failure") is True for record in component_records
         )
+        if infrastructure_failure_count:
+            raise GRPOTrainingError(
+                "GRPO reward execution infrastructure failure in "
+                f"{infrastructure_failure_count}/{batch_size} completions; aborting before optimizer update"
+            )
 
         completion_values = cast(Sequence[object], completions)
         completion_id_values = cast(Sequence[object], completion_ids)
+        metadata_values = cast(Sequence[object], columns["metadata"])
         group_index_by_item: dict[int, tuple[int, int]] = {}
         group_lines: list[str] = []
         for group_index, (problem_id, item_indices) in enumerate(groups.items()):
@@ -875,6 +919,20 @@ def build_grpo_reward_callback(
                 raise GRPOTrainingError("GRPO group metrics must be finite")
             for group_item_index, item_index in enumerate(item_indices):
                 group_index_by_item[item_index] = (group_index, group_item_index)
+            test_rewards = [cast(float, component_records[item_index]["test_reward"]) for item_index in item_indices]
+            test_mean = sum(test_rewards) / len(test_rewards)
+            test_std = math.sqrt(sum((reward - test_mean) ** 2 for reward in test_rewards) / len(test_rewards))
+            verifier_seconds = (
+                sum(cast(float, component_records[item_index]["executor_runtime_ms"]) for item_index in item_indices)
+                / 1000.0
+            )
+            classes: set[str] = set()
+            for item_index in item_indices:
+                metadata = metadata_values[item_index]
+                if isinstance(metadata, Mapping) and isinstance(metadata.get("calibration_class"), str):
+                    classes.add(cast(str, metadata["calibration_class"]))
+            if len(classes) > 1:
+                raise GRPOTrainingError("one GRPO problem group has inconsistent calibration_class metadata")
             group_lines.append(
                 _jsonl_line(
                     {
@@ -885,6 +943,16 @@ def build_grpo_reward_callback(
                         "mean": mean,
                         "std": std,
                         "all_equal": all(reward == group_rewards[0] for reward in group_rewards),
+                        "calibration_class": next(iter(classes), None),
+                        "test_reward_mean": test_mean,
+                        "test_reward_std": test_std,
+                        "total_reward_mean": mean,
+                        "total_reward_std": std,
+                        "all_test_correct": all(reward == 1.0 for reward in test_rewards),
+                        "all_test_zero": all(reward == 0.0 for reward in test_rewards),
+                        "all_total_reward_equal": all(reward == group_rewards[0] for reward in group_rewards),
+                        "executor_runtime_seconds": verifier_seconds,
+                        "verifier_batch_wall_seconds": verifier_runtime_seconds,
                     }
                 )
             )
@@ -923,11 +991,6 @@ def build_grpo_reward_callback(
         _append_lines(rollout_log_path, rollout_lines)
         _append_lines(reward_log_path, reward_lines)
         _append_lines(group_metrics_log_path, group_lines)
-        if infrastructure_failure_count:
-            raise GRPOTrainingError(
-                "GRPO reward execution infrastructure failure in "
-                f"{infrastructure_failure_count}/{batch_size} completions; aborting before optimizer update"
-            )
         return rewards
 
     reward_callback.__name__ = f"{reward_mode}_code_reward"
@@ -2139,6 +2202,8 @@ def run_grpo_training(
     output_root: Path,
     seed: int,
     executor: CodeExecutor,
+    executor_factory: Callable[[], CodeExecutor] | None = None,
+    verification_workers: int = 1,
     resume_from_checkpoint: Path | None = None,
     resume_run_git_commit: str | None = None,
     resume_code_migration: str | None = None,
@@ -2146,6 +2211,14 @@ def run_grpo_training(
     """Preflight one fair C/D pair, then run the selected reward mode."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise GRPOTrainingError("seed must be an integer")
+    if (
+        isinstance(verification_workers, bool)
+        or not isinstance(verification_workers, int)
+        or not 1 <= verification_workers <= 64
+    ):
+        raise GRPOTrainingError("verification_workers must be an integer in [1, 64]")
+    if verification_workers > 1 and executor_factory is None:
+        raise GRPOTrainingError("concurrent GRPO verification requires executor_factory")
     validate_grpo_config_pair(public_config, hidden_config)
     if reward_mode not in {"public", "hidden"}:
         raise GRPOTrainingError("reward_mode must select public or hidden from the validated pair")
@@ -2295,6 +2368,8 @@ def run_grpo_training(
                 max_completion_length=config.max_completion_length,
                 retry_telemetry=retry_telemetry,
                 operational_log_path=run_dir / "stdout.log",
+                executor_factory=executor_factory,
+                verification_workers=verification_workers,
             )
             trainer = runtime.trainer_type(
                 model=model,

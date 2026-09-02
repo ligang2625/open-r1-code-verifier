@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import replace
@@ -328,17 +329,26 @@ def test_grpo_reward_callback_selects_only_configured_test_source_and_writes_san
     reward_rows = _read_jsonl(tmp_path / reward_mode / "rewards.jsonl")
     groups = _read_jsonl(tmp_path / reward_mode / "group_metrics.jsonl")
     assert [row["truncated"] for row in rollouts] == [False, True]
-    assert groups == [
-        {
-            "all_equal": False,
-            "group_index": 0,
-            "mean": pytest.approx(0.6),
-            "problem_id": "problem-1",
-            "reward_mode": reward_mode,
-            "sample_count": 2,
-            "std": pytest.approx(0.5),
-        }
-    ]
+    assert len(groups) == 1
+    assert groups[0] == {
+        "all_equal": False,
+        "all_test_correct": False,
+        "all_test_zero": False,
+        "all_total_reward_equal": False,
+        "calibration_class": None,
+        "executor_runtime_seconds": pytest.approx(0.002),
+        "group_index": 0,
+        "mean": pytest.approx(0.6),
+        "problem_id": "problem-1",
+        "reward_mode": reward_mode,
+        "sample_count": 2,
+        "std": pytest.approx(0.5),
+        "test_reward_mean": pytest.approx(0.5),
+        "test_reward_std": pytest.approx(0.5),
+        "total_reward_mean": pytest.approx(0.6),
+        "total_reward_std": pytest.approx(0.5),
+        "verifier_batch_wall_seconds": pytest.approx(groups[0]["verifier_batch_wall_seconds"]),
+    }
     component = reward_rows[0]
     assert component["executor_runtime_ms"] == 1.0
     assert component["total_reward"] == pytest.approx(
@@ -383,9 +393,47 @@ def test_grpo_unrecovered_infrastructure_failure_trips_circuit_breaker_and_abort
         )
 
     assert len(executor.calls) == 1
-    reward_rows = _read_jsonl(tmp_path / "public" / "rewards.jsonl")
-    assert len(reward_rows) == 2
-    assert all(row["infrastructure_failure"] is True for row in reward_rows)
+    assert not (tmp_path / "public" / "rewards.jsonl").exists()
+    assert not (tmp_path / "public" / "rollouts.jsonl").exists()
+
+
+def test_grpo_concurrent_reward_preserves_completion_order(tmp_path: Path) -> None:
+    class DelayedExecutor:
+        def execute(
+            self,
+            code: str,
+            function_name: str,
+            tests: list[dict[str, object]],
+            timeout_seconds: float,
+            memory_limit_mb: int,
+        ) -> ExecutionResult:
+            del function_name, tests, timeout_seconds, memory_limit_mb
+            marker = int(code.split("MARKER=")[1].splitlines()[0])
+            time.sleep((3 - marker) * 0.005)
+            return _execution_result(passed=marker % 2 == 0)
+
+    callback = build_grpo_reward_callback(
+        reward_mode="public",
+        executor=MockExecutor([]),
+        executor_factory=DelayedExecutor,
+        verification_workers=4,
+        rollout_log_path=tmp_path / "rollouts.jsonl",
+        reward_log_path=tmp_path / "rewards.jsonl",
+        group_metrics_log_path=tmp_path / "groups.jsonl",
+        num_generations=4,
+        max_completion_length=16,
+    )
+    base = _reward_columns(hidden=False)
+    columns = {key: value * 2 if isinstance(value, list) else value for key, value in base.items()}
+    columns["problem_id"] = ["problem-1"] * 4
+    rewards = callback(
+        prompts=[[]] * 4,
+        completions=[f"```python\nMARKER={index}\ndef solve(value): return value\n```" for index in range(4)],
+        completion_ids=[[1]] * 4,
+        **columns,
+    )
+    assert rewards == [1.1, 0.1, 1.1, 0.1]
+    assert [row["item_index"] for row in _read_jsonl(tmp_path / "rewards.jsonl")] == [0, 1, 2, 3]
 
 
 def test_grpo_reward_callback_restores_heterogeneous_json_test_values(tmp_path: Path) -> None:

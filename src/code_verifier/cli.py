@@ -1012,6 +1012,12 @@ def _train_grpo(args: argparse.Namespace) -> int:
             output_root=output_root,
             seed=effective_seed,
             executor=executor,
+            executor_factory=lambda: PistonExecutor(
+                piston_config,
+                transport_policy=transport_policy,
+                transport_telemetry=transport_telemetry,
+            ),
+            verification_workers=int(args.verification_workers),
             resume_from_checkpoint=resume,
             resume_run_git_commit=resume_run_git_commit,
             resume_code_migration=resume_code_migration,
@@ -1482,6 +1488,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("configs/execution/piston-transport-resilience.yaml"),
         help="operational Piston transport resilience policy; excluded from C/D scientific pair identity",
+    )
+    train_grpo_parser.add_argument(
+        "--verification-workers",
+        type=int,
+        choices=range(1, 65),
+        default=1,
+        help="bounded ordered reward-verification workers (default: 1; maximum: 64)",
     )
     train_grpo_parser.add_argument(
         "--seed",
