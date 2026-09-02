@@ -92,6 +92,18 @@ def test_build_parser_exposes_split_evaluation_commands() -> None:
     assert "aggregate-eval" in help_text
 
 
+def test_build_parser_exposes_refresh_calibration_and_benchmark_commands() -> None:
+    help_text = build_parser().format_help()
+    for command in (
+        "prepare-refresh-calibration",
+        "generate-refresh-calibration",
+        "score-refresh-calibration",
+        "build-refresh-active-pool",
+        "summarize-refresh-benchmark",
+    ):
+        assert command in help_text
+
+
 def test_no_command_prints_help(capsys: Any) -> None:
     """Invoking the CLI without a command is a successful help operation."""
     assert main([]) == 0

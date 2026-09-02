@@ -120,6 +120,20 @@ def test_checked_in_grpo_configs_match_spec_and_each_other() -> None:
     assert public.min_cuda_memory_gb == 20.0
 
 
+def test_refresh_configs_are_paired_k8_without_changing_legacy_k4() -> None:
+    legacy_public = load_grpo_training_config(Path("configs/grpo/public.yaml"))
+    legacy_hidden = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
+    public = load_grpo_training_config(Path("configs/grpo/refresh-public.yaml"))
+    hidden = load_grpo_training_config(Path("configs/grpo/refresh-hidden.yaml"))
+
+    assert legacy_public.num_generations == legacy_hidden.num_generations == 4
+    assert public.num_generations == hidden.num_generations == 8
+    assert public.temperature == hidden.temperature == 0.8
+    assert public.top_p == hidden.top_p == 0.95
+    assert public.max_completion_length == hidden.max_completion_length == 512
+    validate_grpo_config_pair(public, hidden)
+
+
 def test_checked_in_grpo_smoke_and_pilot_pairs_only_change_phase_fields() -> None:
     public_main = load_grpo_training_config(Path("configs/grpo/public.yaml"))
     hidden_main = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))

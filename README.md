@@ -743,6 +743,20 @@ Fixture and synthetic runs may exercise this pipeline during development, but th
 are engineering evidence only. Formal A-D numbers and the required human review of at least 20 unique cases are
 created only from real 4090 validation artifacts.
 
+## WP9 refresh engineering
+
+WP9 adds a strict offline calibration pipeline without changing the historical k=4 Public/Hidden configs. The new
+`configs/grpo/refresh-public.yaml` and `refresh-hidden.yaml` freeze k=8; `refresh-calibration.yaml` freezes the B-only
+8+8 sampling and active-pool constraints. The calibration commands separate Public-safe prompt preparation, frozen-B
+generation, dual Public/Hidden scoring, and paired active-pool freezing. Generation never receives hidden tests, and
+quality-gate-required problems remain excluded unless a later independent gate supplies evidence.
+
+`generate-eval --batch-size {1,2,4,8,16}` writes a v2 generation bundle with batch provenance; completed historical
+v1 bundles remain readable. `verify-eval --workers` accepts up to 64. `summarize-refresh-benchmark` derives deterministic
+generation parity and throughput only from completed bundle artifacts; fixture reports are engineering evidence and do
+not select a formal 4090 runtime. Real frozen-B calibration, C2/D2 training, and the formal 400-problem evaluation remain
+WP9 validation work and are not run on the GTX 1660 Ti development control plane.
+
 ## Current limitations
 
 WP1 normalization uses deterministic Unicode and whitespace normalization plus SHA-256 hashing. It detects exact normalized prompt/signature, reference-solution, test-set, and matching-signature test-case overlap, but does not claim semantic or AST-level equivalence. The committed fixture is for structural and pipeline validation; its reference solutions are not executed by WP1 and are not evidence of model quality.
