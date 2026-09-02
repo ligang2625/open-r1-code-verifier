@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 import code_verifier.training.calibration as calibration_module
+from code_verifier.data.deduplicate import stable_json_hash
 from code_verifier.data.refresh import prepare_refresh_data
 from code_verifier.evaluation.generate import GenerationResult
 from code_verifier.execution import ExecutionResult, ExecutionStatus
@@ -326,6 +327,66 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
     with pytest.raises(CalibrationError, match="artifact hash mismatch"):
         check_calibrated_active_pool(
             tampered,
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            allow_test_protocol=True,
+        )
+
+    derived_tamper = tmp_path / "derived-tamper"
+    shutil.copytree(active_dir, derived_tamper)
+    records_path = derived_tamper / "records" / "calibration.jsonl"
+    records = [json.loads(line) for line in records_path.read_text(encoding="utf-8").splitlines()]
+    records[0]["public_test_reward_std"] = 123.0
+    unhashed = dict(records[0])
+    unhashed.pop("calibration_record_sha256")
+    records[0]["calibration_record_sha256"] = stable_json_hash(unhashed)
+    records_sha = calibration_module._write_jsonl(records_path, records)
+    derived_manifest_path = derived_tamper / "calibration_manifest.json"
+    derived_manifest = json.loads(derived_manifest_path.read_text(encoding="utf-8"))
+    derived_manifest["artifacts"]["records/calibration.jsonl"] = records_sha
+    calibration_module._write_json(derived_manifest_path, derived_manifest)
+    with pytest.raises(CalibrationError, match="derived reward statistics"):
+        check_calibrated_active_pool(
+            derived_tamper,
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            allow_test_protocol=True,
+        )
+
+    training_tamper = tmp_path / "training-view-tamper"
+    shutil.copytree(active_dir, training_tamper)
+    public_path = training_tamper / "training" / "public_grpo.jsonl"
+    public_rows = [json.loads(line) for line in public_path.read_text(encoding="utf-8").splitlines()]
+    public_rows[0]["prompt"] = f"{public_rows[0]['prompt']} [tampered]"
+    public_sha = calibration_module._write_jsonl(public_path, public_rows)
+    training_manifest_path = training_tamper / "calibration_manifest.json"
+    training_manifest = json.loads(training_manifest_path.read_text(encoding="utf-8"))
+    training_manifest["artifacts"]["training/public_grpo.jsonl"] = public_sha
+    calibration_module._write_json(training_manifest_path, training_manifest)
+    with pytest.raises(CalibrationError, match="frozen WP9-a row"):
+        check_calibrated_active_pool(
+            training_tamper,
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            allow_test_protocol=True,
+        )
+
+    composition_tamper = tmp_path / "composition-tamper"
+    shutil.copytree(active_dir, composition_tamper)
+    composition_path = composition_tamper / "reports" / "pool_composition.json"
+    composition = json.loads(composition_path.read_text(encoding="utf-8"))
+    composition["selected_problems"] += 1
+    calibration_module._write_json(composition_path, composition)
+    composition_manifest_path = composition_tamper / "calibration_manifest.json"
+    composition_manifest = json.loads(composition_manifest_path.read_text(encoding="utf-8"))
+    composition_manifest["composition"] = composition
+    composition_manifest["artifacts"]["reports/pool_composition.json"] = hashlib.sha256(
+        composition_path.read_bytes()
+    ).hexdigest()
+    calibration_module._write_json(composition_manifest_path, composition_manifest)
+    with pytest.raises(CalibrationError, match="composition does not recompute"):
+        check_calibrated_active_pool(
+            composition_tamper,
             refresh_dataset_dir=refresh_dir,
             reference_dataset_dir=reference_dir,
             allow_test_protocol=True,

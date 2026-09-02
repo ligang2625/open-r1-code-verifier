@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from code_verifier.config import ConfigError
 from code_verifier.data.deduplicate import stable_json_hash
 from code_verifier.evaluation.generate import GenerationResult
 from code_verifier.training import calibration
@@ -82,6 +83,15 @@ def _fake_sft_identity(root: Path) -> SFTCheckpointIdentity:
 def test_tracked_calibration_config_is_frozen() -> None:
     config = load_calibration_config(Path("configs/grpo/refresh-calibration.yaml"))
     assert config == CalibrationConfig(8, 8, 0.8, 0.95, 512, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
+
+
+def test_tracked_calibration_config_rejects_protocol_drift(tmp_path: Path) -> None:
+    source = Path("configs/grpo/refresh-calibration.yaml").read_text(encoding="utf-8")
+    drifted = tmp_path / "drifted.yaml"
+    drifted.write_text(source.replace("size: 3000", "size: 2999"), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="frozen WP9 protocol"):
+        load_calibration_config(drifted)
 
 
 @pytest.mark.parametrize(
@@ -195,3 +205,49 @@ def test_merge_retry_recomputes_test_informativeness() -> None:
     assert merged["calibration_class"] == CalibrationClass.PUBLIC_ONLY.value
     assert merged["public_informative"] is True
     assert merged["hidden_informative"] is False
+
+
+def test_retry_and_disposition_rules_cover_hard_easy_and_quality_priority() -> None:
+    base: dict[str, object] = {
+        "problem_id": "p1",
+        "public_test_rewards": [0.0] * 8,
+        "hidden_test_rewards": [0.0] * 8,
+        "public_total_rewards": [0.1] * 8,
+        "hidden_total_rewards": [0.1] * 8,
+        "sample_indices": list(range(8)),
+        "completion_sha256": ["a"] * 8,
+        "parse_failure_count": 0,
+        "execution_failure_count": 0,
+        "timeout_count": 0,
+        "infrastructure_failure_count": 0,
+        "truncation_count": 0,
+        "completion_token_max": 10,
+        "completion_token_mean": 10.0,
+    }
+    retry_zero = {**base, "sample_indices": list(range(8, 16)), "completion_sha256": ["b"] * 8}
+    hard = calibration._merge_score_records(base, retry_zero)
+    assert hard["sample_indices"] == list(range(16))
+    assert hard["calibration_class"] == CalibrationClass.DUAL_UNINFORMATIVE.value
+    assert hard["public_all_test_zero"] is True
+    assert hard["hidden_all_test_zero"] is True
+    assert calibration._calibration_disposition(hard, retried=True) == "dual_uninformative_after_16"
+
+    saturated_initial = {
+        **base,
+        "public_test_rewards": [1.0] * 8,
+        "hidden_test_rewards": [1.0] * 8,
+        "public_total_rewards": [1.1] * 8,
+        "hidden_total_rewards": [1.1] * 8,
+    }
+    saturated_retry = {
+        **saturated_initial,
+        "sample_indices": list(range(8, 16)),
+        "completion_sha256": ["c"] * 8,
+    }
+    easy = calibration._merge_score_records(saturated_initial, saturated_retry)
+    assert easy["public_all_test_correct"] is True
+    assert easy["hidden_all_test_correct"] is True
+    assert calibration._calibration_disposition(easy, retried=True) == "dual_saturated"
+
+    quality = {**easy, "quality_gate_required": True}
+    assert calibration._calibration_disposition(quality, retried=True) == "quality_gate_required"

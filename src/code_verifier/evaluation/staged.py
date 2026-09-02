@@ -50,6 +50,7 @@ from code_verifier.evaluation.generate import (
     build_evaluation_prompt,
 )
 from code_verifier.execution.base import CodeExecutor
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
 
 _BUNDLE_VERSION = 2
 _SUPPORTED_BUNDLE_VERSIONS = {1, 2}
@@ -666,6 +667,7 @@ def run_generation_bundle(
     output_root: Path,
     seed: int,
     batch_size: int = 1,
+    utilization_sampler: RuntimeUtilizationSampler | None = None,
 ) -> GenerationBundleSummary:
     """Generate an exact-prefix bundle without constructing or contacting Piston."""
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -720,7 +722,12 @@ def run_generation_bundle(
     contract_identity = _evaluation_contract_sha256(
         config, run_id=run_id, model_id=model_id, seed=seed, problems=problems, batch_size=batch_size
     )
+    utilization_started = False
+    utilization_snapshot: dict[str, object] | None = None
     try:
+        if utilization_sampler is not None:
+            utilization_sampler.start()
+            utilization_started = True
         for start in range(len(records), len(problems), batch_size):
             problem_batch = problems[start : start + batch_size]
             prompts = [build_evaluation_prompt(problem) for problem in problem_batch]
@@ -748,11 +755,23 @@ def run_generation_bundle(
                 generated += 1
             _rewrite_generation_metrics(context, load_generation_bundle_records(context.records_path))
     except BaseException as error:
+        if utilization_sampler is not None and utilization_started:
+            utilization_snapshot = utilization_sampler.stop()
         _update_bundle_status(context, "failed")
+        if utilization_snapshot is not None:
+            metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
+            metadata["runtime_utilization"] = utilization_snapshot
+            _write_json(context.run_json_path, metadata)
         with context.stderr_path.open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")
         raise
+    if utilization_sampler is not None and utilization_started:
+        utilization_snapshot = utilization_sampler.stop()
     _update_bundle_status(context, "completed")
+    if utilization_snapshot is not None:
+        metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
+        metadata["runtime_utilization"] = utilization_snapshot
+        _write_json(context.run_json_path, metadata)
     with context.stdout_path.open("a", encoding="utf-8") as handle:
         handle.write(f"completed={len(problems)} generated_this_run={generated}\n")
     return GenerationBundleSummary(
@@ -1007,6 +1026,15 @@ def _verify_one(
     )
 
 
+def _record_verification_host_telemetry(run_dir: Path) -> None:
+    """Persist real host resource telemetry once without fabricating GPU utilization."""
+    metadata_path = run_dir / "run.json"
+    metadata = dict(_read_json_object(metadata_path, artifact_name="verification run.json"))
+    if "runtime_utilization" not in metadata:
+        metadata["runtime_utilization"] = RuntimeUtilizationSampler().snapshot()
+        _write_json(metadata_path, metadata)
+
+
 def run_verification_from_generation_bundle(
     *,
     config: EvaluationConfig,
@@ -1091,6 +1119,7 @@ def run_verification_from_generation_bundle(
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     _update_run_status(context, "completed")
+    _record_verification_host_telemetry(run_dir)
     with context.stdout_path.open("a", encoding="utf-8") as handle:
         handle.write(f"completed={len(problems)} verified_this_run={verified}\n")
     return EvaluationVerificationSummary(

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from code_verifier import throughput
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
+from code_verifier.throughput import ThroughputError
 from tests.unit.throughput_fixture import write_grpo_probe
 
 
@@ -50,6 +55,8 @@ def test_grpo_verification_worker_selection_uses_reward_group_parity(tmp_path: P
     assert selected == 16
     candidates = report["candidates"]
     assert isinstance(candidates, list)
+    assert candidates[0]["mean_verifier_runtime_seconds"] == 2.0
+    assert candidates[0]["p95_verifier_runtime_seconds"] == 2.0
     assert candidates[1]["rejection"] == "reward_parity_mismatch"
 
 
@@ -100,3 +107,29 @@ def test_paired_grpo_recommendation_uses_fifteen_percent_threshold(tmp_path: Pat
         )
         assert recommendation == expected
         assert report["stable"] is True
+
+
+def test_formal_grpo_probe_requires_available_runtime_utilization(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 2, 0, 0, tzinfo=timezone.utc)
+    run = write_grpo_probe(
+        tmp_path,
+        name="formal-grpo",
+        reward_mode="public",
+        workers=16,
+        start=start,
+        duration_seconds=4.0,
+    )
+
+    with pytest.raises(ThroughputError, match="formal GRPO runtime telemetry is incomplete"):
+        throughput._grpo_probe(run, require_formal_telemetry=True)
+
+    sampler = RuntimeUtilizationSampler(sample_fn=lambda: (55.0, 8192.0))
+    sampler.sample_once()
+    metadata_path = run / "run.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["runtime_utilization"] = sampler.snapshot()
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    probe = throughput._grpo_probe(run, require_formal_telemetry=True)
+    assert probe.runtime_utilization is not None
+    assert probe.runtime_utilization["gpu_utilization_mean_percent"] == 55.0

@@ -4,9 +4,12 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
-from code_verifier.throughput import compare_generation_bundle_parity, summarize_refresh_benchmarks
+from code_verifier import throughput
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
+from code_verifier.throughput import ThroughputError, compare_generation_bundle_parity, summarize_refresh_benchmarks
 
 
 def _bundle(root: Path, *, batch_size: int, latency_ms: float, completion: str = "same") -> Path:
@@ -81,3 +84,48 @@ def test_benchmark_selects_fastest_exact_artifact_and_rejects_drift(tmp_path: Pa
     assert summary.selected_eval_generation_batch_size == 2
     assert report["candidates"][1]["rejection"] == "generation_output_mismatch"
     assert report["source_manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+
+def test_formal_generation_benchmark_requires_available_runtime_utilization(tmp_path: Path) -> None:
+    baseline = _bundle(tmp_path, batch_size=1, latency_ms=4.0)
+
+    with pytest.raises(ThroughputError, match="formal generation runtime telemetry is incomplete"):
+        throughput._bundle_metrics(baseline, require_formal_telemetry=True)
+
+    sampler = RuntimeUtilizationSampler(sample_fn=lambda: (35.0, 1024.0))
+    sampler.sample_once()
+    metadata_path = baseline / "run.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["runtime_utilization"] = sampler.snapshot()
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    metrics = throughput._bundle_metrics(baseline, require_formal_telemetry=True)
+    utilization = metrics["runtime_utilization"]
+    assert isinstance(utilization, dict)
+    assert utilization["status"] == "available"
+    assert utilization["gpu_utilization_mean_percent"] == 35.0
+
+
+def test_formal_summary_does_not_close_when_generation_utilization_is_missing(tmp_path: Path) -> None:
+    baseline = _bundle(tmp_path, batch_size=1, latency_ms=4.0)
+    batch2 = _bundle(tmp_path, batch_size=2, latency_ms=2.0)
+    manifest = tmp_path / "formal-manifest.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "version": "wp9b-refresh-benchmark-v1",
+                "evidence_class": "formal",
+                "eval_generation": {"baseline": str(baseline), "candidates": [str(batch2)]},
+                "eval_verification": {"baseline": "unused", "candidates": ["unused"]},
+                "grpo_verification": {"baseline": "unused", "candidates": ["unused"]},
+                "paired_grpo": {
+                    "sequential": {"public": "unused", "hidden": "unused"},
+                    "concurrent": {"public": "unused", "hidden": "unused"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ThroughputError, match="formal generation runtime telemetry is incomplete"):
+        summarize_refresh_benchmarks(manifest, output_dir=tmp_path / "formal-report")

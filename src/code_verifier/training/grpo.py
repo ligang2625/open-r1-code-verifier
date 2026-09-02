@@ -42,6 +42,7 @@ from code_verifier.execution.base import (
 )
 from code_verifier.execution.piston import classify_piston_retryable_infrastructure_failure
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards, compute_code_rewards_concurrent
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.grpo_telemetry import GRPORollingTelemetry
 from code_verifier.training.open_r1_adapter import import_open_r1_module
@@ -2560,6 +2561,8 @@ def run_grpo_training(
         if refresh_binding is not None
         else None
     )
+    utilization_sampler = RuntimeUtilizationSampler() if refresh_binding is not None else None
+    utilization_started = False
     _begin_attempt(
         run_metadata,
         resume_source=resume_source,
@@ -2570,6 +2573,9 @@ def run_grpo_training(
     started = time.perf_counter()
     peak_reset = False
     try:
+        if utilization_sampler is not None:
+            utilization_sampler.start()
+            utilization_started = True
         if resume_path is not None:
             attempts = run_metadata.get("attempts")
             if not isinstance(attempts, list) or len(attempts) < 2:
@@ -2663,6 +2669,13 @@ def run_grpo_training(
         peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
         attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
         _set_latest_attempt_retry_telemetry(run_metadata, retry_telemetry)
+        if utilization_sampler is not None and utilization_started:
+            utilization_snapshot = utilization_sampler.stop()
+            run_metadata["runtime_utilization"] = utilization_snapshot
+            attempts = run_metadata.get("attempts")
+            if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
+                raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+            cast(dict[str, object], attempts[-1])["runtime_utilization"] = utilization_snapshot
         _finish_attempt(run_metadata, status="completed", attempt_gpu_hours=attempt_gpu_hours)
         gpu_hours = cast(float, run_metadata["gpu_hours"])
         run_metadata["global_step"] = raw_global_step
@@ -2707,6 +2720,12 @@ def run_grpo_training(
         run_metadata["peak_cuda_memory_allocated_bytes"] = peak_allocated
         run_metadata["peak_cuda_memory_reserved_bytes"] = peak_reserved
         _set_latest_attempt_retry_telemetry(run_metadata, retry_telemetry)
+        if utilization_sampler is not None and utilization_started:
+            utilization_snapshot = utilization_sampler.stop()
+            run_metadata["runtime_utilization"] = utilization_snapshot
+            attempts = run_metadata.get("attempts")
+            if isinstance(attempts, list) and attempts and isinstance(attempts[-1], dict):
+                cast(dict[str, object], attempts[-1])["runtime_utilization"] = utilization_snapshot
         _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
         _write_json(run_dir / "run.json", run_metadata)
         with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:

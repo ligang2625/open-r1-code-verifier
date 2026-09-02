@@ -254,7 +254,7 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
     }:
         raise ConfigError("refresh calibration active-pool config is invalid")
     try:
-        return CalibrationConfig(
+        config = CalibrationConfig(
             initial_generations=cast(int, sampling["initial_generations"]),
             retry_generations=cast(int, sampling["retry_generations"]),
             temperature=cast(float, sampling["temperature"]),
@@ -269,6 +269,22 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
         )
     except CalibrationError as error:
         raise ConfigError(str(error)) from error
+    frozen = CalibrationConfig(
+        initial_generations=8,
+        retry_generations=8,
+        temperature=0.8,
+        top_p=0.95,
+        max_new_tokens=512,
+        active_pool_size=3000,
+        sft_overlap_fraction=0.075,
+        sft_overlap_hard_max=0.15,
+        dual_informative_min_fraction=0.70,
+        public_only_max_fraction=0.15,
+        hidden_only_max_fraction=0.15,
+    )
+    if config != frozen:
+        raise ConfigError("tracked refresh calibration config must match the frozen WP9 protocol")
+    return config
 
 
 def calibration_problem_seed(base_seed: int, problem_id: str, block_index: int) -> int:
@@ -773,6 +789,79 @@ def _load_scores(score_dir: Path) -> tuple[dict[str, object], list[dict[str, obj
     return manifest, records
 
 
+def _is_sha256_text(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 64 or value != value.lower():
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_score_manifest_binding(
+    manifest: Mapping[str, object],
+    records: Sequence[Mapping[str, object]],
+    *,
+    expected_block: int,
+    expected_problem_ids: Sequence[str],
+    input_manifest_path: Path,
+    input_manifest: Mapping[str, object],
+    public_training_path: Path,
+    hidden_training_path: Path,
+    expected_sft_checkpoint: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    if manifest.get("block_index") != expected_block or manifest.get("problem_count") != len(records):
+        raise CalibrationError("calibration scoring manifest block/count binding is invalid")
+    record_ids = [record.get("problem_id") for record in records]
+    if record_ids != list(expected_problem_ids) or len(record_ids) != len(set(record_ids)):
+        raise CalibrationError("calibration scoring IDs/order do not match the expected calibration input")
+    expected_bindings = {
+        "input_manifest_sha256": _sha256(input_manifest_path),
+        "wp9a_manifest_sha256": input_manifest.get("wp9a_manifest_sha256"),
+        "wp9a_public_training_sha256": _sha256(public_training_path),
+        "wp9a_hidden_training_sha256": _sha256(hidden_training_path),
+    }
+    if any(manifest.get(key) != value for key, value in expected_bindings.items()):
+        raise CalibrationError("calibration scoring provenance does not match the active input/WP9-a artifacts")
+    for field in (
+        "records_sha256",
+        "retry_problem_ids_sha256",
+        "generation_run_manifest_sha256",
+        "generation_records_sha256",
+        "input_manifest_sha256",
+        "wp9a_manifest_sha256",
+        "wp9a_public_training_sha256",
+        "wp9a_hidden_training_sha256",
+    ):
+        if not _is_sha256_text(manifest.get(field)):
+            raise CalibrationError("calibration scoring manifest contains an invalid SHA256 identity")
+    sft_checkpoint = manifest.get("sft_checkpoint")
+    expected_sft_fields = {
+        "run_id",
+        "model_id",
+        "model_revision",
+        "dataset_hash",
+        "config_hash",
+        "dependency_lock_hash",
+        "seed",
+        "checkpoint_sha256",
+    }
+    if not isinstance(sft_checkpoint, Mapping) or set(sft_checkpoint) != expected_sft_fields:
+        raise CalibrationError("calibration scoring SFT checkpoint identity is invalid")
+    for field in ("run_id", "model_id", "model_revision", "dataset_hash", "config_hash", "dependency_lock_hash"):
+        if not isinstance(sft_checkpoint.get(field), str) or not sft_checkpoint[field]:
+            raise CalibrationError("calibration scoring SFT checkpoint identity is invalid")
+    if not _is_sha256_text(sft_checkpoint.get("checkpoint_sha256")):
+        raise CalibrationError("calibration scoring SFT checkpoint hash is invalid")
+    seed = sft_checkpoint.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise CalibrationError("calibration scoring SFT checkpoint seed is invalid")
+    if expected_sft_checkpoint is not None and dict(sft_checkpoint) != dict(expected_sft_checkpoint):
+        raise CalibrationError("initial/retry calibration scoring used different frozen-B identities")
+    return dict(sft_checkpoint)
+
+
 def _merge_score_records(initial: Mapping[str, object], retry: Mapping[str, object] | None) -> dict[str, object]:
     if retry is None:
         return dict(initial)
@@ -826,6 +915,178 @@ def _merge_score_records(initial: Mapping[str, object], retry: Mapping[str, obje
     return result
 
 
+def _validate_calibration_record(
+    record: Mapping[str, object],
+    *,
+    input_record: CalibrationInputRecord | None = None,
+    expected_sample_indices: Sequence[int] | None = None,
+    require_record_hash: bool = True,
+) -> None:
+    expected_fields = {
+        "problem_id",
+        "source_name",
+        "difficulty",
+        "overlap_origin",
+        "quality_gate_required",
+        "sample_indices",
+        "completion_sha256",
+        "public_test_rewards",
+        "hidden_test_rewards",
+        "public_total_rewards",
+        "hidden_total_rewards",
+        "public_test_reward_mean",
+        "public_test_reward_std",
+        "hidden_test_reward_mean",
+        "hidden_test_reward_std",
+        "public_total_reward_mean",
+        "public_total_reward_std",
+        "hidden_total_reward_mean",
+        "hidden_total_reward_std",
+        "public_informative",
+        "hidden_informative",
+        "calibration_class",
+        "public_all_test_correct",
+        "hidden_all_test_correct",
+        "public_all_test_zero",
+        "hidden_all_test_zero",
+        "public_full_pass_count",
+        "hidden_full_pass_count",
+        "parse_failure_count",
+        "execution_failure_count",
+        "timeout_count",
+        "infrastructure_failure_count",
+        "completion_token_mean",
+        "completion_token_max",
+        "truncation_count",
+    }
+    if require_record_hash:
+        expected_fields.add("calibration_record_sha256")
+    if set(record) != expected_fields:
+        raise CalibrationError("calibration record fields are invalid")
+    for field in ("problem_id", "source_name", "difficulty", "overlap_origin"):
+        if not isinstance(record.get(field), str) or not record[field]:
+            raise CalibrationError("calibration record identity metadata is invalid")
+    if record["overlap_origin"] not in {"sft_reuse", "external_new"}:
+        raise CalibrationError("calibration record overlap origin is invalid")
+    if not isinstance(record.get("quality_gate_required"), bool):
+        raise CalibrationError("calibration record quality flag is invalid")
+    if input_record is not None:
+        expected_identity = (
+            input_record.problem_id,
+            input_record.source_name,
+            input_record.difficulty,
+            input_record.overlap_origin,
+            input_record.quality_gate_required,
+        )
+        actual_identity = (
+            record["problem_id"],
+            record["source_name"],
+            record["difficulty"],
+            record["overlap_origin"],
+            record["quality_gate_required"],
+        )
+        if actual_identity != expected_identity:
+            raise CalibrationError("calibration scoring metadata differs from the frozen input bundle")
+    sample_indices = record.get("sample_indices")
+    if not isinstance(sample_indices, list) or len(sample_indices) not in {8, 16}:
+        raise CalibrationError("calibration record sample indices are invalid")
+    expected_indices = (
+        list(range(len(sample_indices))) if expected_sample_indices is None else list(expected_sample_indices)
+    )
+    if sample_indices != expected_indices:
+        raise CalibrationError("calibration record sample indices are not the expected contiguous 8/16 block")
+    completion_hashes = record.get("completion_sha256")
+    if (
+        not isinstance(completion_hashes, list)
+        or len(completion_hashes) != len(sample_indices)
+        or any(not _is_sha256_text(value) for value in completion_hashes)
+    ):
+        raise CalibrationError("calibration record completion identities are invalid")
+    reward_arrays: dict[str, list[float]] = {}
+    for prefix in ("public_test", "hidden_test", "public_total", "hidden_total"):
+        field = f"{prefix}_rewards"
+        raw = record.get(field)
+        if not isinstance(raw, list) or len(raw) != len(sample_indices):
+            raise CalibrationError("calibration record reward arrays are invalid")
+        values: list[float] = []
+        for value in raw:
+            if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(float(value)):
+                raise CalibrationError("calibration record rewards must be finite numbers")
+            values.append(float(value))
+        reward_arrays[prefix] = values
+        mean, std = _population_stats(values)
+        for suffix, expected in (("mean", mean), ("std", std)):
+            observed = record.get(f"{prefix}_reward_{suffix}")
+            if (
+                isinstance(observed, bool)
+                or not isinstance(observed, int | float)
+                or not math.isclose(float(observed), expected, rel_tol=0.0, abs_tol=1e-12)
+            ):
+                raise CalibrationError("calibration record derived reward statistics do not recompute")
+    public = reward_arrays["public_test"]
+    hidden = reward_arrays["hidden_test"]
+    public_std = statistics.pstdev(public)
+    hidden_std = statistics.pstdev(hidden)
+    expected_flags = {
+        "public_informative": public_std > 0.0,
+        "hidden_informative": hidden_std > 0.0,
+        "public_all_test_correct": all(value == 1.0 for value in public),
+        "hidden_all_test_correct": all(value == 1.0 for value in hidden),
+        "public_all_test_zero": all(value == 0.0 for value in public),
+        "hidden_all_test_zero": all(value == 0.0 for value in hidden),
+    }
+    if any(record.get(field) is not value for field, value in expected_flags.items()):
+        raise CalibrationError("calibration record derived boolean flags do not recompute")
+    if record.get("calibration_class") != _classification(public_std, hidden_std).value:
+        raise CalibrationError("calibration record class does not recompute from test-reward variance")
+    if record.get("public_full_pass_count") != sum(value == 1.0 for value in public) or record.get(
+        "hidden_full_pass_count"
+    ) != sum(value == 1.0 for value in hidden):
+        raise CalibrationError("calibration record full-pass counts do not recompute")
+    for field in (
+        "parse_failure_count",
+        "execution_failure_count",
+        "timeout_count",
+        "infrastructure_failure_count",
+        "completion_token_max",
+        "truncation_count",
+    ):
+        value = record.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CalibrationError("calibration record count telemetry is invalid")
+    if record.get("infrastructure_failure_count") != 0:
+        raise CalibrationError("calibration records may not retain infrastructure failures")
+    token_mean = record.get("completion_token_mean")
+    token_max = cast(int, record["completion_token_max"])
+    if (
+        isinstance(token_mean, bool)
+        or not isinstance(token_mean, int | float)
+        or not math.isfinite(float(token_mean))
+        or float(token_mean) < 0.0
+        or float(token_mean) > token_max
+        or cast(int, record["truncation_count"]) > len(sample_indices)
+    ):
+        raise CalibrationError("calibration completion telemetry is invalid")
+    if require_record_hash:
+        record_hash = record.get("calibration_record_sha256")
+        unhashed = dict(record)
+        unhashed.pop("calibration_record_sha256", None)
+        if not _is_sha256_text(record_hash) or record_hash != stable_json_hash(unhashed):
+            raise CalibrationError("calibration record hash does not match its raw derived fields")
+
+
+def _calibration_disposition(record: Mapping[str, object], *, retried: bool) -> str:
+    if record.get("quality_gate_required") is True:
+        return "quality_gate_required"
+    if record.get("public_all_test_correct") is True and record.get("hidden_all_test_correct") is True:
+        return "dual_saturated"
+    if retried and record.get("calibration_class") == CalibrationClass.DUAL_UNINFORMATIVE.value:
+        return "dual_uninformative_after_16"
+    if record.get("calibration_class") == CalibrationClass.DUAL_UNINFORMATIVE.value:
+        return "dual_uninformative"
+    return "eligible"
+
+
 def _selection_hash(seed: int, problem_id: str) -> str:
     return hashlib.sha256(f"wp9b-active-pool-v1|{seed}|{problem_id}".encode()).hexdigest()
 
@@ -848,25 +1109,80 @@ def build_calibrated_active_pool(
         reference_dataset_dir=reference_dataset_dir,
         allow_test_protocol=allow_test_protocol,
     )
-    input_manifest, _ = _load_input_bundle(input_bundle_dir)
+    input_manifest, input_records = _load_input_bundle(input_bundle_dir)
+    input_ids = [record.problem_id for record in input_records]
+    input_by_id = {record.problem_id: record for record in input_records}
+    refresh_manifest = _load_json(refresh.root_manifest)
+    expected_input_schema = CALIBRATION_TEST_SCHEMA_VERSION if allow_test_protocol else CALIBRATION_SCHEMA_VERSION
+    expected_input_evidence = "engineering" if allow_test_protocol else "formal_input"
+    expected_input_bindings = {
+        "schema_version": expected_input_schema,
+        "seed": seed,
+        "wp9a_manifest_sha256": _sha256(refresh.root_manifest),
+        "wp9a_selected_order_sha256": refresh_manifest.get("selected_ids_order_sha256"),
+        "wp9a_public_training_sha256": _sha256(refresh.public_grpo_jsonl),
+        "wp9a_hidden_training_sha256": _sha256(refresh.hidden_grpo_jsonl),
+        "evidence_class": expected_input_evidence,
+    }
+    if any(input_manifest.get(key) != value for key, value in expected_input_bindings.items()):
+        raise CalibrationError("calibration input bundle does not match the active WP9-a artifacts/seed")
+
     initial_manifest, initial_records = _load_scores(initial_scoring_dir)
-    if initial_manifest.get("block_index") != 0:
-        raise CalibrationError("initial scoring directory must contain block 0")
-    expected_retry_ids = [
-        cast(str, row["problem_id"])
-        for row in _load_jsonl(initial_scoring_dir / "manifest" / "retry_problem_ids.jsonl")
-    ]
+    initial_sft_checkpoint = _validate_score_manifest_binding(
+        initial_manifest,
+        initial_records,
+        expected_block=0,
+        expected_problem_ids=input_ids,
+        input_manifest_path=input_bundle_dir / "input_manifest.json",
+        input_manifest=input_manifest,
+        public_training_path=refresh.public_grpo_jsonl,
+        hidden_training_path=refresh.hidden_grpo_jsonl,
+    )
+    for record in initial_records:
+        problem_id = cast(str, record["problem_id"])
+        _validate_calibration_record(
+            record,
+            input_record=input_by_id[problem_id],
+            expected_sample_indices=range(8),
+            require_record_hash=False,
+        )
+    retry_rows = _load_jsonl(initial_scoring_dir / "manifest" / "retry_problem_ids.jsonl")
+    if any(set(row) != {"problem_id"} or not isinstance(row.get("problem_id"), str) for row in retry_rows):
+        raise CalibrationError("initial retry manifest rows are invalid")
+    expected_retry_ids = [cast(str, row["problem_id"]) for row in retry_rows]
+    derived_retry_ids = sorted(
+        cast(str, record["problem_id"])
+        for record in initial_records
+        if record["public_all_test_zero"] is True and record["hidden_all_test_zero"] is True
+    )
+    if expected_retry_ids != derived_retry_ids or expected_retry_ids != sorted(set(expected_retry_ids)):
+        raise CalibrationError("initial retry manifest does not recompute from both-zero calibration records")
+
     retry_by_id: dict[str, dict[str, object]] = {}
     retry_manifest: dict[str, object] | None = None
     if expected_retry_ids:
         if retry_scoring_dir is None:
             raise CalibrationError("both-zero initial problems require retry scoring")
         retry_manifest, retry_records = _load_scores(retry_scoring_dir)
-        if retry_manifest.get("block_index") != 1:
-            raise CalibrationError("retry scoring directory must contain block 1")
-        retry_ids = [cast(str, record["problem_id"]) for record in retry_records]
-        if retry_ids != expected_retry_ids:
-            raise CalibrationError("retry scoring IDs/order do not match the initial retry manifest")
+        _validate_score_manifest_binding(
+            retry_manifest,
+            retry_records,
+            expected_block=1,
+            expected_problem_ids=expected_retry_ids,
+            input_manifest_path=input_bundle_dir / "input_manifest.json",
+            input_manifest=input_manifest,
+            public_training_path=refresh.public_grpo_jsonl,
+            hidden_training_path=refresh.hidden_grpo_jsonl,
+            expected_sft_checkpoint=initial_sft_checkpoint,
+        )
+        for record in retry_records:
+            problem_id = cast(str, record["problem_id"])
+            _validate_calibration_record(
+                record,
+                input_record=input_by_id[problem_id],
+                expected_sample_indices=range(8, 16),
+                require_record_hash=False,
+            )
         retry_by_id = {cast(str, record["problem_id"]): record for record in retry_records}
     elif retry_scoring_dir is not None:
         raise CalibrationError("retry scoring was supplied without any eligible retry problems")
@@ -880,17 +1196,22 @@ def build_calibrated_active_pool(
     for record in final_records:
         problem_id = cast(str, record["problem_id"])
         record["calibration_record_sha256"] = stable_json_hash(record)
-        if record["quality_gate_required"] is True:
-            reserve.append({"problem_id": problem_id, "reason": "quality_gate_required"})
-        elif record["public_all_test_correct"] is True and record["hidden_all_test_correct"] is True:
-            easy.append({"problem_id": problem_id, "reason": "dual_saturated"})
-        elif problem_id in retry_by_id and record["calibration_class"] == CalibrationClass.DUAL_UNINFORMATIVE.value:
-            hard.append({"problem_id": problem_id, "reason": "dual_uninformative_after_16"})
-        elif record["calibration_class"] == CalibrationClass.DUAL_UNINFORMATIVE.value:
-            reserve.append({"problem_id": problem_id, "reason": "dual_uninformative"})
+        _validate_calibration_record(record, input_record=input_by_id[problem_id])
+        disposition = _calibration_disposition(record, retried=problem_id in retry_by_id)
+        if disposition == "quality_gate_required":
+            reserve.append({"problem_id": problem_id, "reason": disposition})
+        elif disposition == "dual_saturated":
+            easy.append({"problem_id": problem_id, "reason": disposition})
+        elif disposition == "dual_uninformative_after_16":
+            hard.append({"problem_id": problem_id, "reason": disposition})
+        elif disposition == "dual_uninformative":
+            reserve.append({"problem_id": problem_id, "reason": disposition})
         else:
             eligible.append(record)
     overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    overlap_fraction = overlap_target / config.active_pool_size
+    if overlap_fraction > config.sft_overlap_hard_max + 1e-12:
+        raise CalibrationError("selected SFT overlap target exceeds the frozen hard maximum")
     buckets = {
         "sft_reuse": [record for record in eligible if record["overlap_origin"] == "sft_reuse"],
         "external_new": [record for record in eligible if record["overlap_origin"] != "sft_reuse"],
@@ -997,11 +1318,13 @@ def build_calibrated_active_pool(
             "sft_overlap_fraction": overlap_target / len(selected_ids),
             "quality_excluded_count": sum(record["quality_gate_required"] is True for record in final_records),
         }
+        classification_report_path = temporary / "reports" / "classification_summary.json"
+        composition_report_path = temporary / "reports" / "pool_composition.json"
         _write_json(
-            temporary / "reports" / "classification_summary.json",
+            classification_report_path,
             dict(Counter(cast(str, record["calibration_class"]) for record in final_records)),
         )
-        _write_json(temporary / "reports" / "pool_composition.json", composition)
+        _write_json(composition_report_path, composition)
         artifacts = {
             "records/calibration.jsonl": records_sha,
             "manifest/retry_problem_ids.jsonl": retry_sha,
@@ -1010,6 +1333,8 @@ def build_calibrated_active_pool(
             "manifest/reserve_problem_ids.jsonl": reserve_sha,
             "manifest/hard_problem_ids.jsonl": hard_sha,
             "manifest/easy_problem_ids.jsonl": easy_sha,
+            "reports/classification_summary.json": _sha256(classification_report_path),
+            "reports/pool_composition.json": _sha256(composition_report_path),
             "training/public_grpo.jsonl": public_sha,
             "training/hidden_grpo.jsonl": hidden_sha,
         }
@@ -1051,76 +1376,335 @@ def check_calibrated_active_pool(
     reference_dataset_dir: Path,
     allow_test_protocol: bool = False,
 ) -> CalibrationPoolSummary:
-    """Recompute core active-pool identity, pairing, class, overlap, and payload invariants."""
+    """Recompute active-pool provenance, calibration statistics, selection, and training views."""
     refresh = check_refresh_data(
         refresh_dataset_dir,
         reference_dataset_dir=reference_dataset_dir,
         allow_test_protocol=allow_test_protocol,
     )
+    refresh_manifest = _load_json(refresh.root_manifest)
     manifest = _load_json(pool_dir / "calibration_manifest.json")
     expected_schema = CALIBRATION_TEST_SCHEMA_VERSION if allow_test_protocol else CALIBRATION_SCHEMA_VERSION
-    if manifest.get("schema_version") != expected_schema or manifest.get("status") != "completed":
-        raise CalibrationError("calibrated active-pool manifest is invalid")
-    artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, Mapping):
-        raise CalibrationError("calibrated active-pool artifact inventory is invalid")
-    for relative, expected_sha in artifacts.items():
-        if (
-            not isinstance(relative, str)
-            or not isinstance(expected_sha, str)
-            or _sha256(pool_dir / relative) != expected_sha
-        ):
-            raise CalibrationError("calibrated active-pool artifact hash mismatch")
-    order_rows = _load_jsonl(pool_dir / "manifest" / "problem_order.jsonl")
-    selected_ids = [row.get("problem_id") for row in order_rows]
-    if any(not isinstance(item, str) for item in selected_ids) or [row.get("ordinal") for row in order_rows] != list(
-        range(len(order_rows))
+    expected_evidence = "engineering" if allow_test_protocol else "formal_calibration"
+    expected_manifest_fields = {
+        "schema_version",
+        "status",
+        "evidence_class",
+        "seed",
+        "config",
+        "wp9a_manifest_sha256",
+        "wp9a_selected_order_sha256",
+        "input_manifest_sha256",
+        "initial_scoring_manifest_sha256",
+        "retry_scoring_manifest_sha256",
+        "sft_checkpoint",
+        "active_order_sha256",
+        "composition",
+        "artifacts",
+    }
+    if (
+        set(manifest) != expected_manifest_fields
+        or manifest.get("schema_version") != expected_schema
+        or manifest.get("status") != "completed"
+        or manifest.get("evidence_class") != expected_evidence
     ):
-        raise CalibrationError("calibrated active-pool order is invalid")
+        raise CalibrationError("calibrated active-pool manifest identity/schema is invalid")
+    seed = manifest.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise CalibrationError("calibrated active-pool seed is invalid")
+    if manifest.get("wp9a_manifest_sha256") != _sha256(refresh.root_manifest) or manifest.get(
+        "wp9a_selected_order_sha256"
+    ) != refresh_manifest.get("selected_ids_order_sha256"):
+        raise CalibrationError("calibrated active pool is not bound to the current WP9-a artifact")
+    for field in ("input_manifest_sha256", "initial_scoring_manifest_sha256"):
+        if not _is_sha256_text(manifest.get(field)):
+            raise CalibrationError("calibrated active-pool source manifest SHA is invalid")
+    retry_scoring_sha = manifest.get("retry_scoring_manifest_sha256")
+    if retry_scoring_sha is not None and not _is_sha256_text(retry_scoring_sha):
+        raise CalibrationError("calibrated active-pool retry scoring SHA is invalid")
+
+    config_mapping = manifest.get("config")
+    config_fields = {
+        "initial_generations",
+        "retry_generations",
+        "temperature",
+        "top_p",
+        "max_new_tokens",
+        "active_pool_size",
+        "sft_overlap_fraction",
+        "sft_overlap_hard_max",
+        "dual_informative_min_fraction",
+        "public_only_max_fraction",
+        "hidden_only_max_fraction",
+    }
+    if not isinstance(config_mapping, Mapping) or set(config_mapping) != config_fields:
+        raise CalibrationError("calibrated active-pool config is invalid")
+    try:
+        config = CalibrationConfig(
+            initial_generations=cast(int, config_mapping["initial_generations"]),
+            retry_generations=cast(int, config_mapping["retry_generations"]),
+            temperature=cast(float, config_mapping["temperature"]),
+            top_p=cast(float, config_mapping["top_p"]),
+            max_new_tokens=cast(int, config_mapping["max_new_tokens"]),
+            active_pool_size=cast(int, config_mapping["active_pool_size"]),
+            sft_overlap_fraction=cast(float, config_mapping["sft_overlap_fraction"]),
+            sft_overlap_hard_max=cast(float, config_mapping["sft_overlap_hard_max"]),
+            dual_informative_min_fraction=cast(float, config_mapping["dual_informative_min_fraction"]),
+            public_only_max_fraction=cast(float, config_mapping["public_only_max_fraction"]),
+            hidden_only_max_fraction=cast(float, config_mapping["hidden_only_max_fraction"]),
+        )
+    except (CalibrationError, KeyError, TypeError, ValueError) as error:
+        raise CalibrationError("calibrated active-pool config is invalid") from error
+    if not allow_test_protocol:
+        frozen = CalibrationConfig(8, 8, 0.8, 0.95, 512, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
+        if config != frozen:
+            raise CalibrationError("formal calibrated active-pool config differs from the frozen WP9 protocol")
+
+    sft_checkpoint = manifest.get("sft_checkpoint")
+    expected_sft_fields = {
+        "run_id",
+        "model_id",
+        "model_revision",
+        "dataset_hash",
+        "config_hash",
+        "dependency_lock_hash",
+        "seed",
+        "checkpoint_sha256",
+    }
+    if not isinstance(sft_checkpoint, Mapping) or set(sft_checkpoint) != expected_sft_fields:
+        raise CalibrationError("calibrated active-pool SFT checkpoint identity is invalid")
+    if any(
+        not isinstance(sft_checkpoint.get(field), str) or not cast(str, sft_checkpoint[field])
+        for field in ("run_id", "model_id", "model_revision", "dataset_hash", "config_hash", "dependency_lock_hash")
+    ):
+        raise CalibrationError("calibrated active-pool SFT checkpoint identity is invalid")
+    if not _is_sha256_text(sft_checkpoint.get("checkpoint_sha256")):
+        raise CalibrationError("calibrated active-pool SFT checkpoint hash is invalid")
+    sft_seed = sft_checkpoint.get("seed")
+    if isinstance(sft_seed, bool) or not isinstance(sft_seed, int):
+        raise CalibrationError("calibrated active-pool SFT checkpoint seed is invalid")
+
+    expected_artifacts = {
+        "records/calibration.jsonl",
+        "manifest/retry_problem_ids.jsonl",
+        "manifest/active_selection.jsonl",
+        "manifest/problem_order.jsonl",
+        "manifest/reserve_problem_ids.jsonl",
+        "manifest/hard_problem_ids.jsonl",
+        "manifest/easy_problem_ids.jsonl",
+        "reports/classification_summary.json",
+        "reports/pool_composition.json",
+        "training/public_grpo.jsonl",
+        "training/hidden_grpo.jsonl",
+    }
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
+        raise CalibrationError("calibrated active-pool artifact inventory is invalid")
+    for relative in sorted(expected_artifacts):
+        expected_sha = artifacts.get(relative)
+        if not _is_sha256_text(expected_sha) or _sha256(pool_dir / relative) != expected_sha:
+            raise CalibrationError("calibrated active-pool artifact hash mismatch")
+
+    source_public = load_training_artifact(refresh.public_grpo_jsonl, kind=TrainingArtifactKind.PUBLIC_GRPO)
+    source_hidden = load_training_artifact(refresh.hidden_grpo_jsonl, kind=TrainingArtifactKind.HIDDEN_GRPO)
+    source_public_ids = [cast(str, row["problem_id"]) for row in source_public]
+    source_hidden_ids = [cast(str, row["problem_id"]) for row in source_hidden]
+    if source_public_ids != source_hidden_ids:
+        raise CalibrationError("WP9-a Public/Hidden source training views have different IDs/order")
+    source_public_by_id = {cast(str, row["problem_id"]): row for row in source_public}
+    source_hidden_by_id = {cast(str, row["problem_id"]): row for row in source_hidden}
+    refresh_selection_rows = _load_jsonl(refresh_dataset_dir / "manifest" / "selection.jsonl")
+    refresh_selection_by_id = {cast(str, row["problem_id"]): row for row in refresh_selection_rows}
+    if [cast(str, row["problem_id"]) for row in refresh_selection_rows] != source_public_ids:
+        raise CalibrationError("WP9-a selection order differs from its Public/Hidden training views")
+
+    records = _load_jsonl(pool_dir / "records" / "calibration.jsonl")
+    record_ids = [record.get("problem_id") for record in records]
+    if record_ids != source_public_ids or len(record_ids) != len(set(record_ids)):
+        raise CalibrationError("calibration records do not cover the frozen WP9-a pool exactly once in order")
+    record_by_id: dict[str, dict[str, object]] = {}
+    for record in records:
+        problem_id = cast(str, record["problem_id"])
+        selection_source = refresh_selection_by_id[problem_id]
+        public_source = source_public_by_id[problem_id]
+        public_metadata = public_source.get("metadata")
+        if not isinstance(public_metadata, Mapping) or not isinstance(public_metadata.get("difficulty"), str):
+            raise CalibrationError("WP9-a source difficulty metadata is invalid")
+        input_identity = CalibrationInputRecord(
+            problem_id=problem_id,
+            prompt="checker-does-not-consume-prompt",
+            function_name=cast(str, public_source["function_name"]),
+            source_name=cast(str, selection_source["source"]),
+            difficulty=cast(str, public_metadata["difficulty"]),
+            overlap_origin=cast(str, selection_source["overlap_origin"]),
+            quality_gate_required=cast(bool, selection_source["quality_gate_required"]),
+        )
+        _validate_calibration_record(record, input_record=input_identity)
+        record_by_id[problem_id] = record
+
+    retry_rows = _load_jsonl(pool_dir / "manifest" / "retry_problem_ids.jsonl")
+    if any(set(row) != {"problem_id"} or not isinstance(row.get("problem_id"), str) for row in retry_rows):
+        raise CalibrationError("calibrated retry manifest rows are invalid")
+    retry_ids = [cast(str, row["problem_id"]) for row in retry_rows]
+    derived_retry_ids = sorted(
+        cast(str, record["problem_id"])
+        for record in records
+        if len(cast(list[object], record["sample_indices"])) == 16
+    )
+    if retry_ids != derived_retry_ids or retry_ids != sorted(set(retry_ids)):
+        raise CalibrationError("calibrated retry manifest does not match the 16-sample records")
+    if bool(retry_ids) != (retry_scoring_sha is not None):
+        raise CalibrationError("calibrated retry manifest and retry scoring provenance disagree")
+
+    eligible: list[dict[str, object]] = []
+    base_reserve: list[dict[str, object]] = []
+    hard: list[dict[str, object]] = []
+    easy: list[dict[str, object]] = []
+    retry_id_set = set(retry_ids)
+    for record in records:
+        problem_id = cast(str, record["problem_id"])
+        disposition = _calibration_disposition(record, retried=problem_id in retry_id_set)
+        if disposition == "quality_gate_required":
+            base_reserve.append({"problem_id": problem_id, "reason": disposition})
+        elif disposition == "dual_saturated":
+            easy.append({"problem_id": problem_id, "reason": disposition})
+        elif disposition == "dual_uninformative_after_16":
+            hard.append({"problem_id": problem_id, "reason": disposition})
+        elif disposition == "dual_uninformative":
+            base_reserve.append({"problem_id": problem_id, "reason": disposition})
+        else:
+            eligible.append(record)
+
+    overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    overlap_fraction = overlap_target / config.active_pool_size
+    if overlap_fraction > config.sft_overlap_hard_max + 1e-12:
+        raise CalibrationError("calibrated SFT overlap target exceeds the frozen hard maximum")
+    buckets = {
+        "sft_reuse": [record for record in eligible if record["overlap_origin"] == "sft_reuse"],
+        "external_new": [record for record in eligible if record["overlap_origin"] != "sft_reuse"],
+    }
+    quotas = {"sft_reuse": overlap_target, "external_new": config.active_pool_size - overlap_target}
+    class_rank = {
+        CalibrationClass.DUAL_INFORMATIVE.value: 0,
+        CalibrationClass.PUBLIC_ONLY.value: 1,
+        CalibrationClass.HIDDEN_ONLY.value: 1,
+    }
+    selected_records: list[dict[str, object]] = []
+    reserve = list(base_reserve)
+    for bucket_name in ("sft_reuse", "external_new"):
+        population = buckets[bucket_name]
+        population.sort(
+            key=lambda record: (
+                class_rank[cast(str, record["calibration_class"])],
+                _selection_hash(seed, cast(str, record["problem_id"])),
+            )
+        )
+        quota = quotas[bucket_name]
+        if len(population) < quota:
+            raise CalibrationError(f"insufficient {bucket_name} calibrated population for frozen quota")
+        selected_records.extend(population[:quota])
+        reserve.extend(
+            {"problem_id": cast(str, record["problem_id"]), "reason": "informative_not_selected"}
+            for record in population[quota:]
+        )
+    selected_counts = Counter(cast(str, record["calibration_class"]) for record in selected_records)
+    if selected_counts[CalibrationClass.DUAL_INFORMATIVE.value] < math.ceil(
+        config.active_pool_size * config.dual_informative_min_fraction
+    ):
+        raise CalibrationError("calibrated active pool violates the dual-informative minimum")
+    if selected_counts[CalibrationClass.PUBLIC_ONLY.value] > math.floor(
+        config.active_pool_size * config.public_only_max_fraction
+    ) or selected_counts[CalibrationClass.HIDDEN_ONLY.value] > math.floor(
+        config.active_pool_size * config.hidden_only_max_fraction
+    ):
+        raise CalibrationError("calibrated active pool violates the single-arm caps")
+    if selected_counts[CalibrationClass.DUAL_UNINFORMATIVE.value] != 0:
+        raise CalibrationError("calibrated active pool contains dual-uninformative problems")
+    selected_records.sort(key=lambda record: _selection_hash(seed + 1, cast(str, record["problem_id"])))
+    selected_ids = [cast(str, record["problem_id"]) for record in selected_records]
+
+    order_rows = _load_jsonl(pool_dir / "manifest" / "problem_order.jsonl")
+    expected_order_rows = [
+        {"ordinal": ordinal, "problem_id": problem_id} for ordinal, problem_id in enumerate(selected_ids)
+    ]
+    if order_rows != expected_order_rows:
+        raise CalibrationError("calibrated active-pool order does not recompute from records/config/seed")
+    selection_rows = _load_jsonl(pool_dir / "manifest" / "active_selection.jsonl")
+    expected_selection_rows = [
+        {
+            "ordinal": ordinal,
+            "problem_id": problem_id,
+            "calibration_class": record_by_id[problem_id]["calibration_class"],
+            "calibration_record_sha256": record_by_id[problem_id]["calibration_record_sha256"],
+            "overlap_origin": record_by_id[problem_id]["overlap_origin"],
+        }
+        for ordinal, problem_id in enumerate(selected_ids)
+    ]
+    if selection_rows != expected_selection_rows:
+        raise CalibrationError("active selection metadata does not recompute from calibration records")
+    expected_reserve = sorted(reserve, key=lambda row: cast(str, row["problem_id"]))
+    if _load_jsonl(pool_dir / "manifest" / "reserve_problem_ids.jsonl") != expected_reserve:
+        raise CalibrationError("calibrated reserve manifest does not recompute")
+    if _load_jsonl(pool_dir / "manifest" / "hard_problem_ids.jsonl") != hard:
+        raise CalibrationError("calibrated hard manifest does not recompute")
+    if _load_jsonl(pool_dir / "manifest" / "easy_problem_ids.jsonl") != easy:
+        raise CalibrationError("calibrated easy manifest does not recompute")
+
     public = load_training_artifact(pool_dir / "training" / "public_grpo.jsonl", kind=TrainingArtifactKind.PUBLIC_GRPO)
     hidden = load_training_artifact(pool_dir / "training" / "hidden_grpo.jsonl", kind=TrainingArtifactKind.HIDDEN_GRPO)
-    public_ids = [row["problem_id"] for row in public]
-    hidden_ids = [row["problem_id"] for row in hidden]
-    if public_ids != selected_ids or hidden_ids != selected_ids:
+    if [row["problem_id"] for row in public] != selected_ids or [row["problem_id"] for row in hidden] != selected_ids:
         raise CalibrationError("active Public/Hidden training views have different IDs/order")
-    source_public = {
-        row["problem_id"]: row
-        for row in load_training_artifact(refresh.public_grpo_jsonl, kind=TrainingArtifactKind.PUBLIC_GRPO)
-    }
-    source_hidden = {
-        row["problem_id"]: row
-        for row in load_training_artifact(refresh.hidden_grpo_jsonl, kind=TrainingArtifactKind.HIDDEN_GRPO)
-    }
-    for mode_rows, source in ((public, source_public), (hidden, source_hidden)):
+    for mode_rows, source in ((public, source_public_by_id), (hidden, source_hidden_by_id)):
         for row in mode_rows:
-            source_row = source[row["problem_id"]]
-            if row.get("prompt") != source_row.get("prompt") or row.get("function_name") != source_row.get(
-                "function_name"
-            ):
-                raise CalibrationError("active training view changed the frozen problem/prompt identity")
-    selection = _load_jsonl(pool_dir / "manifest" / "active_selection.jsonl")
-    if [row.get("problem_id") for row in selection] != selected_ids:
-        raise CalibrationError("active selection does not match active order")
-    class_counts = Counter(cast(str, row["calibration_class"]) for row in selection)
-    overlap_count = sum(row["overlap_origin"] == "sft_reuse" for row in selection)
-    composition = manifest.get("composition")
-    if not isinstance(composition, Mapping):
-        raise CalibrationError("active pool composition is invalid")
+            problem_id = cast(str, row["problem_id"])
+            expected = dict(source[problem_id])
+            metadata = expected.get("metadata")
+            if not isinstance(metadata, Mapping):
+                raise CalibrationError("WP9-a source training metadata is invalid")
+            calibrated = record_by_id[problem_id]
+            expected["metadata"] = {
+                **dict(metadata),
+                "calibration_class": cast(str, calibrated["calibration_class"]),
+                "calibration_record_sha256": cast(str, calibrated["calibration_record_sha256"]),
+                "overlap_origin": cast(str, calibrated["overlap_origin"]),
+            }
+            if row != expected:
+                raise CalibrationError(
+                    "active training view differs from the frozen WP9-a row plus calibration metadata"
+                )
+
+    class_counts = {item.value: selected_counts[item.value] for item in CalibrationClass}
+    overlap_count = sum(record["overlap_origin"] == "sft_reuse" for record in selected_records)
+    composition = {
+        "selected_problems": len(selected_ids),
+        "class_counts": class_counts,
+        "class_fractions": {key: value / len(selected_ids) for key, value in class_counts.items()},
+        "sft_overlap_count": overlap_count,
+        "sft_overlap_fraction": overlap_count / len(selected_ids),
+        "quality_excluded_count": sum(record["quality_gate_required"] is True for record in records),
+    }
     if (
-        composition.get("selected_problems") != len(selected_ids)
-        or composition.get("sft_overlap_count") != overlap_count
+        manifest.get("composition") != composition
+        or _load_json(pool_dir / "reports" / "pool_composition.json") != composition
     ):
-        raise CalibrationError("active pool composition does not match raw selection")
-    if manifest.get("active_order_sha256") != stable_json_hash(selected_ids):
+        raise CalibrationError("active-pool composition does not recompute from raw calibration records")
+    classification_summary = dict(Counter(cast(str, record["calibration_class"]) for record in records))
+    if _load_json(pool_dir / "reports" / "classification_summary.json") != classification_summary:
+        raise CalibrationError("calibration classification summary does not recompute")
+    active_order_sha = stable_json_hash(selected_ids)
+    if manifest.get("active_order_sha256") != active_order_sha:
         raise CalibrationError("active pool order hash mismatch")
+    if overlap_count != overlap_target or overlap_count / len(selected_ids) > config.sft_overlap_hard_max + 1e-12:
+        raise CalibrationError("active-pool SFT overlap does not satisfy the frozen target/hard max")
+
     return CalibrationPoolSummary(
         pool_dir=pool_dir,
         selected_problems=len(selected_ids),
-        dual_informative=class_counts[CalibrationClass.DUAL_INFORMATIVE.value],
-        public_only=class_counts[CalibrationClass.PUBLIC_ONLY.value],
-        hidden_only=class_counts[CalibrationClass.HIDDEN_ONLY.value],
+        dual_informative=selected_counts[CalibrationClass.DUAL_INFORMATIVE.value],
+        public_only=selected_counts[CalibrationClass.PUBLIC_ONLY.value],
+        hidden_only=selected_counts[CalibrationClass.HIDDEN_ONLY.value],
         sft_overlap_count=overlap_count,
-        active_order_sha256=cast(str, manifest["active_order_sha256"]),
+        active_order_sha256=active_order_sha,
         calibration_manifest=pool_dir / "calibration_manifest.json",
         public_grpo_jsonl=pool_dir / "training" / "public_grpo.jsonl",
         hidden_grpo_jsonl=pool_dir / "training" / "hidden_grpo.jsonl",

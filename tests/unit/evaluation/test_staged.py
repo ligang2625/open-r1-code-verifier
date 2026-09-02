@@ -32,6 +32,7 @@ from code_verifier.evaluation.staged import (
 )
 from code_verifier.execution.base import ExecutionResult, ExecutionStatus
 from code_verifier.execution.base import TestCaseResult as ExecutionTestCaseResult
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
 
 
 class _SequenceGenerator:
@@ -235,6 +236,37 @@ def test_two_stage_records_are_exactly_equivalent_to_single_stage(
     assert metadata["generation_bundle_records_sha256"]
     assert metadata["generation_bundle_contract_sha256"]
     assert metadata["verification_workers"] == 2
+    host_runtime = metadata["runtime_utilization"]
+    assert host_runtime["status"] == "unavailable"
+    assert host_runtime["host_cpu_count"] > 0
+    assert host_runtime["host_max_rss_mib"] >= 0.0
+    assert "gpu_utilization_mean_percent" not in host_runtime
+
+
+def test_generation_bundle_persists_runtime_utilization_when_sampler_is_supplied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problems = [_problem("p1", "ONE")]
+    _patch_problems(monkeypatch, problems)
+    config = _config(tmp_path)
+    sampler = RuntimeUtilizationSampler(interval_seconds=60.0, sample_fn=lambda: (40.0, 768.0))
+
+    summary = run_generation_bundle(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("ONE")]),
+        run_id="utilization",
+        output_root=tmp_path / "utilization-output",
+        seed=42,
+        utilization_sampler=sampler,
+    )
+
+    metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    utilization = metadata["runtime_utilization"]
+    assert utilization["status"] == "available"
+    assert utilization["sample_count"] >= 1
+    assert utilization["gpu_utilization_mean_percent"] == 40.0
+    assert utilization["gpu_memory_used_max_mib"] == 768.0
 
 
 def test_generation_resume_uses_only_the_missing_exact_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -89,6 +89,7 @@ from code_verifier.execution import (
     validate_batch_cache_policy,
 )
 from code_verifier.parsing import extract_python_code
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
 from code_verifier.throughput import ThroughputError, summarize_refresh_benchmarks
 from code_verifier.training import (
     CalibrationError,
@@ -508,6 +509,7 @@ def _generate_eval(args: argparse.Namespace) -> int:
         output_root=Path(str(args.output_dir)),
         seed=int(args.seed),
         batch_size=int(args.batch_size),
+        utilization_sampler=RuntimeUtilizationSampler(),
     )
     print(
         f"generated {summary.total_problems} evaluation prompts "

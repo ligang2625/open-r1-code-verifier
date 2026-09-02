@@ -766,10 +766,13 @@ reward verification. Refresh group evidence includes test/total reward variance,
 rolling bounded zero-variance telemetry, verifier time, and pinned-Trainer backward/optimizer/step timing.
 
 `generate-eval --batch-size {1,2,4,8,16}` writes a v2 generation bundle with batch provenance; completed historical v1
-bundles remain readable, and `verify-eval --workers` accepts up to 64. `summarize-refresh-benchmark` derives generation
-parity, GRPO verifier-worker selection, evaluation verifier-worker selection, and the optional same-GPU Public/Hidden
-scheduling recommendation only from completed artifacts. Same-GPU concurrency is recommended only when the measured
-envelope is at least 15% faster than sequential execution and scientific/reward/group parity plus infrastructure
+bundles remain readable, and `verify-eval --workers` accepts up to 64. Production generation and refresh GRPO persist an
+injectable periodic GPU-utilization/memory summary; sampling failures are recorded as unavailable rather than zero, and a
+formal throughput report fails closed when required GPU telemetry is unavailable. Evaluation verification records real
+host CPU/RSS evidence and the benchmark report derives mean/P95 verifier latency. `summarize-refresh-benchmark` derives
+generation parity, GRPO verifier-worker selection, evaluation verifier-worker selection, and the optional same-GPU
+Public/Hidden scheduling recommendation only from completed artifacts. Same-GPU concurrency is recommended only when the
+measured envelope is at least 15% faster than sequential execution and scientific/reward/group parity plus infrastructure
 stability all hold. WP9-b fixture reports remain `evidence_class=engineering`: real frozen-B calibration, formal worker
 and batching choices, C2/D2 training, and the 400-problem refresh evaluation are pending WP9-c+ validation and are not
 run on the GTX 1660 Ti development control plane.

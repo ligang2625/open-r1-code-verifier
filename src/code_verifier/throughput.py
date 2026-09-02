@@ -17,6 +17,11 @@ import yaml
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
 from code_verifier.evaluation.evaluate import load_evaluation_records
 from code_verifier.evaluation.staged import load_generation_bundle_records
+from code_verifier.runtime_telemetry import (
+    RuntimeTelemetryError,
+    validate_formal_runtime_utilization,
+    validate_host_runtime_telemetry,
+)
 
 _BENCHMARK_VERSION = "wp9b-refresh-benchmark-v1"
 _EVAL_BATCH_SIZES = frozenset({1, 2, 4, 8, 16})
@@ -51,6 +56,9 @@ class _VerificationProbe:
     workers: int
     duration_seconds: float
     throughput_per_second: float
+    mean_latency_ms: float
+    p95_latency_ms: float
+    host_runtime: dict[str, object] | None
     identity_sha256: str
     result_sha256: str
     run_manifest_sha256: str
@@ -72,6 +80,9 @@ class _GRPOProbe:
     retry_exhausted: int
     recovery_prepare_failures: int
     peak_cuda_memory_reserved_bytes: int
+    mean_verifier_runtime_seconds: float
+    p95_verifier_runtime_seconds: float
+    runtime_utilization: dict[str, object] | None
     start_time: datetime
     end_time: datetime
 
@@ -117,6 +128,13 @@ def _jsonl(path: Path) -> list[dict[str, object]]:
     if not rows:
         raise ThroughputError(f"benchmark JSONL must be non-empty: {path.name}")
     return rows
+
+
+def _p95(values: list[float], *, field_name: str) -> float:
+    if not values or any(not math.isfinite(value) or value < 0.0 for value in values):
+        raise ThroughputError(f"{field_name} values must be finite, non-negative, and non-empty")
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
 
 
 def _timestamp(value: object, *, field_name: str) -> datetime:
@@ -178,7 +196,7 @@ def compare_generation_bundle_parity(baseline_run_dir: Path, candidate_run_dir: 
     return GenerationParity(True, None, len(baseline))
 
 
-def _bundle_metrics(run_dir: Path) -> dict[str, object]:
+def _bundle_metrics(run_dir: Path, *, require_formal_telemetry: bool = False) -> dict[str, object]:
     metadata, records_path = _completed_bundle(run_dir)
     records = load_generation_bundle_records(records_path)
     batch_size = metadata.get("batch_size", 1)
@@ -191,6 +209,12 @@ def _bundle_metrics(run_dir: Path) -> dict[str, object]:
     tokens_per_second = tokens / latency_seconds
     if not math.isfinite(tokens_per_second):
         raise ThroughputError("benchmark bundle throughput is non-finite")
+    runtime_utilization: dict[str, object] | None = None
+    if require_formal_telemetry:
+        try:
+            runtime_utilization = dict(validate_formal_runtime_utilization(metadata.get("runtime_utilization")))
+        except RuntimeTelemetryError as error:
+            raise ThroughputError(f"formal generation runtime telemetry is incomplete: {error}") from None
     return {
         "batch_size": batch_size,
         "problem_count": len(records),
@@ -199,10 +223,13 @@ def _bundle_metrics(run_dir: Path) -> dict[str, object]:
         "tokens_per_second": tokens_per_second,
         "run_manifest_sha256": _sha256(run_dir / "run.json"),
         "records_sha256": _sha256(records_path),
+        **({"runtime_utilization": runtime_utilization} if runtime_utilization is not None else {}),
     }
 
 
-def _evaluation_verification_probe(run_dir: Path) -> _VerificationProbe:
+def _evaluation_verification_probe(
+    run_dir: Path, *, require_formal_host_telemetry: bool = False
+) -> _VerificationProbe:
     metadata = _json(run_dir / "run.json")
     _, _, duration = _completed_duration(metadata)
     workers = metadata.get("verification_workers")
@@ -228,11 +255,25 @@ def _evaluation_verification_probe(run_dir: Path) -> _VerificationProbe:
     throughput = len(records) / duration
     if not math.isfinite(throughput) or throughput <= 0.0:
         raise ThroughputError("evaluation verification throughput is invalid")
+    latencies = [record.runtime_ms for record in records]
+    if any(not math.isfinite(value) or value < 0.0 for value in latencies):
+        raise ThroughputError("evaluation verifier latency is invalid")
+    mean_latency = sum(latencies) / len(latencies)
+    p95_latency = _p95(latencies, field_name="evaluation verifier latency")
+    host_runtime: dict[str, object] | None = None
+    if require_formal_host_telemetry:
+        try:
+            host_runtime = dict(validate_host_runtime_telemetry(metadata.get("runtime_utilization")))
+        except RuntimeTelemetryError as error:
+            raise ThroughputError(f"formal verification host telemetry is incomplete: {error}") from None
     return _VerificationProbe(
         path=run_dir,
         workers=workers,
         duration_seconds=duration,
         throughput_per_second=throughput,
+        mean_latency_ms=mean_latency,
+        p95_latency_ms=p95_latency,
+        host_runtime=host_runtime,
         identity_sha256=_stable_hash(identity_fields),
         result_sha256=_sha256(results_path),
         run_manifest_sha256=_sha256(run_dir / "run.json"),
@@ -253,7 +294,7 @@ def _strip_operational_fields(rows: list[dict[str, object]], *, group: bool) -> 
     return [{key: value for key, value in row.items() if key not in ignored} for row in rows]
 
 
-def _grpo_probe(run_dir: Path) -> _GRPOProbe:
+def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False) -> _GRPOProbe:
     metadata = _json(run_dir / "run.json")
     start, end, duration = _completed_duration(metadata)
     reward_mode = metadata.get("reward_mode")
@@ -282,7 +323,21 @@ def _grpo_probe(run_dir: Path) -> _GRPOProbe:
     rewards_path = run_dir / "rewards.jsonl"
     groups_path = run_dir / "group_metrics.jsonl"
     rewards = _strip_operational_fields(_jsonl(rewards_path), group=False)
-    groups = _strip_operational_fields(_jsonl(groups_path), group=True)
+    raw_groups = _jsonl(groups_path)
+    verifier_runtime_values: list[float] = []
+    for row in raw_groups:
+        raw_runtime = row.get("verifier_runtime_seconds")
+        if (
+            isinstance(raw_runtime, bool)
+            or not isinstance(raw_runtime, int | float)
+            or not math.isfinite(float(raw_runtime))
+            or float(raw_runtime) < 0.0
+        ):
+            raise ThroughputError("GRPO verifier runtime telemetry is missing or invalid")
+        verifier_runtime_values.append(float(raw_runtime))
+    mean_verifier_runtime = sum(verifier_runtime_values) / len(verifier_runtime_values)
+    p95_verifier_runtime = _p95(verifier_runtime_values, field_name="GRPO verifier runtime")
+    groups = _strip_operational_fields(raw_groups, group=True)
     resolved_path = run_dir / "resolved_config.yaml"
     try:
         resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
@@ -308,6 +363,12 @@ def _grpo_probe(run_dir: Path) -> _GRPOProbe:
     throughput = len(groups) / duration
     if not math.isfinite(throughput) or throughput <= 0.0:
         raise ThroughputError("GRPO benchmark throughput is invalid")
+    runtime_utilization: dict[str, object] | None = None
+    if require_formal_telemetry:
+        try:
+            runtime_utilization = dict(validate_formal_runtime_utilization(metadata.get("runtime_utilization")))
+        except RuntimeTelemetryError as error:
+            raise ThroughputError(f"formal GRPO runtime telemetry is incomplete: {error}") from None
     return _GRPOProbe(
         path=run_dir,
         workers=workers,
@@ -322,6 +383,9 @@ def _grpo_probe(run_dir: Path) -> _GRPOProbe:
         retry_exhausted=cast(int, retry_exhausted),
         recovery_prepare_failures=cast(int, prepare_failures),
         peak_cuda_memory_reserved_bytes=peak_reserved,
+        mean_verifier_runtime_seconds=mean_verifier_runtime,
+        p95_verifier_runtime_seconds=p95_verifier_runtime,
+        runtime_utilization=runtime_utilization,
         start_time=start,
         end_time=end,
     )
@@ -339,14 +403,16 @@ def _candidate_paths(section: object, *, field_name: str) -> tuple[Path, list[Pa
     return Path(baseline), [Path(cast(str, item)) for item in candidates]
 
 
-def _select_eval_generation(section: object) -> tuple[int, dict[str, object]]:
+def _select_eval_generation(
+    section: object, *, require_formal_telemetry: bool = False
+) -> tuple[int, dict[str, object]]:
     baseline, candidate_paths = _candidate_paths(section, field_name="eval generation")
-    baseline_metrics = _bundle_metrics(baseline)
+    baseline_metrics = _bundle_metrics(baseline, require_formal_telemetry=require_formal_telemetry)
     if baseline_metrics["batch_size"] != 1:
         raise ThroughputError("eval generation baseline must use batch_size=1")
     candidates: list[dict[str, object]] = []
     for path in candidate_paths:
-        metrics = _bundle_metrics(path)
+        metrics = _bundle_metrics(path, require_formal_telemetry=require_formal_telemetry)
         parity = compare_generation_bundle_parity(baseline, path)
         candidates.append({"path": str(path), **metrics, "exact_parity": parity.exact, "rejection": parity.reason})
     baseline_rate = cast(float, baseline_metrics["tokens_per_second"])
@@ -369,13 +435,21 @@ def _select_eval_generation(section: object) -> tuple[int, dict[str, object]]:
     }
 
 
-def _select_eval_verification(section: object) -> tuple[int, dict[str, object]]:
+def _select_eval_verification(
+    section: object, *, require_formal_host_telemetry: bool = False
+) -> tuple[int, dict[str, object]]:
     baseline_path, candidate_paths = _candidate_paths(section, field_name="eval verification")
-    baseline = _evaluation_verification_probe(baseline_path)
+    baseline = _evaluation_verification_probe(
+        baseline_path,
+        require_formal_host_telemetry=require_formal_host_telemetry,
+    )
     candidates: list[dict[str, object]] = []
     eligible: list[_VerificationProbe] = []
     for path in candidate_paths:
-        probe = _evaluation_verification_probe(path)
+        probe = _evaluation_verification_probe(
+            path,
+            require_formal_host_telemetry=require_formal_host_telemetry,
+        )
         reason: str | None = None
         if probe.workers not in _VERIFICATION_WORKERS:
             reason = "unsupported_worker_candidate"
@@ -391,6 +465,9 @@ def _select_eval_verification(section: object) -> tuple[int, dict[str, object]]:
                 "workers": probe.workers,
                 "duration_seconds": probe.duration_seconds,
                 "throughput_per_second": probe.throughput_per_second,
+                "mean_verifier_latency_ms": probe.mean_latency_ms,
+                "p95_verifier_latency_ms": probe.p95_latency_ms,
+                **({"host_runtime": probe.host_runtime} if probe.host_runtime is not None else {}),
                 "result_sha256": probe.result_sha256,
                 "run_manifest_sha256": probe.run_manifest_sha256,
                 "rejection": reason,
@@ -405,6 +482,9 @@ def _select_eval_verification(section: object) -> tuple[int, dict[str, object]]:
             "workers": baseline.workers,
             "duration_seconds": baseline.duration_seconds,
             "throughput_per_second": baseline.throughput_per_second,
+            "mean_verifier_latency_ms": baseline.mean_latency_ms,
+            "p95_verifier_latency_ms": baseline.p95_latency_ms,
+            **({"host_runtime": baseline.host_runtime} if baseline.host_runtime is not None else {}),
             "result_sha256": baseline.result_sha256,
             "run_manifest_sha256": baseline.run_manifest_sha256,
         },
@@ -412,13 +492,15 @@ def _select_eval_verification(section: object) -> tuple[int, dict[str, object]]:
     }
 
 
-def _select_grpo_verification(section: object) -> tuple[int, dict[str, object]]:
+def _select_grpo_verification(
+    section: object, *, require_formal_telemetry: bool = False
+) -> tuple[int, dict[str, object]]:
     baseline_path, candidate_paths = _candidate_paths(section, field_name="GRPO verification")
-    baseline = _grpo_probe(baseline_path)
+    baseline = _grpo_probe(baseline_path, require_formal_telemetry=require_formal_telemetry)
     candidates: list[dict[str, object]] = []
     eligible: list[_GRPOProbe] = []
     for path in candidate_paths:
-        probe = _grpo_probe(path)
+        probe = _grpo_probe(path, require_formal_telemetry=require_formal_telemetry)
         reason: str | None = None
         if probe.workers not in _VERIFICATION_WORKERS:
             reason = "unsupported_worker_candidate"
@@ -442,6 +524,11 @@ def _select_grpo_verification(section: object) -> tuple[int, dict[str, object]]:
                 "reward_parity_sha256": probe.reward_parity_sha256,
                 "group_parity_sha256": probe.group_parity_sha256,
                 "peak_cuda_memory_reserved_bytes": probe.peak_cuda_memory_reserved_bytes,
+                "mean_verifier_runtime_seconds": probe.mean_verifier_runtime_seconds,
+                "p95_verifier_runtime_seconds": probe.p95_verifier_runtime_seconds,
+                **(
+                    {"runtime_utilization": probe.runtime_utilization} if probe.runtime_utilization is not None else {}
+                ),
                 "rejection": reason,
             }
         )
@@ -458,6 +545,13 @@ def _select_grpo_verification(section: object) -> tuple[int, dict[str, object]]:
             "reward_parity_sha256": baseline.reward_parity_sha256,
             "group_parity_sha256": baseline.group_parity_sha256,
             "peak_cuda_memory_reserved_bytes": baseline.peak_cuda_memory_reserved_bytes,
+            "mean_verifier_runtime_seconds": baseline.mean_verifier_runtime_seconds,
+            "p95_verifier_runtime_seconds": baseline.p95_verifier_runtime_seconds,
+            **(
+                {"runtime_utilization": baseline.runtime_utilization}
+                if baseline.runtime_utilization is not None
+                else {}
+            ),
         },
         "candidates": candidates,
     }
@@ -479,10 +573,14 @@ def _paired_paths(section: object) -> tuple[tuple[Path, Path], tuple[Path, Path]
     return pairs[0], pairs[1]
 
 
-def _paired_grpo_decision(section: object) -> tuple[str, dict[str, object]]:
+def _paired_grpo_decision(section: object, *, require_formal_telemetry: bool = False) -> tuple[str, dict[str, object]]:
     sequential_paths, concurrent_paths = _paired_paths(section)
-    seq_public, seq_hidden = (_grpo_probe(path) for path in sequential_paths)
-    con_public, con_hidden = (_grpo_probe(path) for path in concurrent_paths)
+    seq_public, seq_hidden = (
+        _grpo_probe(path, require_formal_telemetry=require_formal_telemetry) for path in sequential_paths
+    )
+    con_public, con_hidden = (
+        _grpo_probe(path, require_formal_telemetry=require_formal_telemetry) for path in concurrent_paths
+    )
     probes = (seq_public, seq_hidden, con_public, con_hidden)
     stable = True
     rejection: str | None = None
@@ -559,19 +657,32 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
     if evidence_class == "formal" and any(key not in raw for key in formal_sections):
         raise ThroughputError("formal benchmark manifest requires all refresh benchmark sections")
 
-    selected_eval_batch, eval_generation_report = _select_eval_generation(raw["eval_generation"])
+    require_formal_telemetry = evidence_class == "formal"
+    selected_eval_batch, eval_generation_report = _select_eval_generation(
+        raw["eval_generation"],
+        require_formal_telemetry=require_formal_telemetry,
+    )
     selected_eval_workers: int | None = None
     eval_verification_report: dict[str, object] | None = None
     if "eval_verification" in raw:
-        selected_eval_workers, eval_verification_report = _select_eval_verification(raw["eval_verification"])
+        selected_eval_workers, eval_verification_report = _select_eval_verification(
+            raw["eval_verification"],
+            require_formal_host_telemetry=require_formal_telemetry,
+        )
     selected_grpo_workers: int | None = None
     grpo_verification_report: dict[str, object] | None = None
     if "grpo_verification" in raw:
-        selected_grpo_workers, grpo_verification_report = _select_grpo_verification(raw["grpo_verification"])
+        selected_grpo_workers, grpo_verification_report = _select_grpo_verification(
+            raw["grpo_verification"],
+            require_formal_telemetry=require_formal_telemetry,
+        )
     paired_mode = "sequential"
     paired_report: dict[str, object] | None = None
     if "paired_grpo" in raw:
-        paired_mode, paired_report = _paired_grpo_decision(raw["paired_grpo"])
+        paired_mode, paired_report = _paired_grpo_decision(
+            raw["paired_grpo"],
+            require_formal_telemetry=require_formal_telemetry,
+        )
 
     report: dict[str, object] = {
         "version": _BENCHMARK_VERSION,
