@@ -41,6 +41,17 @@ class _FakeGenerator:
         ]
 
 
+class _InterruptingGenerator(_FakeGenerator):
+    def __init__(self, *, successful_groups: int) -> None:
+        super().__init__()
+        self._successful_groups = successful_groups
+
+    def generate_group(self, prompt: str, *, seed: int, num_generations: int) -> list[GenerationResult]:
+        if len(self.calls) >= self._successful_groups:
+            raise RuntimeError("simulated generation interruption")
+        return super().generate_group(prompt, seed=seed, num_generations=num_generations)
+
+
 def _write_input_bundle(root: Path, problem_ids: list[str]) -> None:
     rows = [
         {
@@ -146,6 +157,114 @@ def test_generation_bundle_is_k8_ordered_and_hash_checked(tmp_path: Path, monkey
     )
     with pytest.raises(CalibrationError, match="hash mismatch"):
         load_completed_calibration_generation(run_dir)
+
+
+def test_generation_resume_accepts_empty_exact_prefix_after_early_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_dir = tmp_path / "input"
+    _write_input_bundle(input_dir, ["p1", "p2"])
+    monkeypatch.setattr(calibration, "load_completed_sft_checkpoint", lambda _: _fake_sft_identity(tmp_path))
+    run_dir = tmp_path / "run"
+
+    with pytest.raises(RuntimeError, match="simulated generation interruption"):
+        run_calibration_generation(
+            input_bundle_dir=input_dir,
+            sft_run_dir=tmp_path / "sft",
+            generator=_InterruptingGenerator(successful_groups=0),
+            output_dir=run_dir,
+            block_index=0,
+        )
+
+    assert (run_dir / "run.json").is_file()
+    assert not (run_dir / "samples" / "generations.jsonl").exists()
+
+    resumed = _FakeGenerator()
+    summary = run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=resumed,
+        output_dir=run_dir,
+        block_index=0,
+    )
+
+    assert summary.record_count == 16
+    assert [call[0] for call in resumed.calls] == ["prompt p1", "prompt p2"]
+
+
+def test_generation_resume_continues_after_last_complete_k8_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_dir = tmp_path / "input"
+    _write_input_bundle(input_dir, ["p1", "p2"])
+    monkeypatch.setattr(calibration, "load_completed_sft_checkpoint", lambda _: _fake_sft_identity(tmp_path))
+    run_dir = tmp_path / "run"
+
+    with pytest.raises(RuntimeError, match="simulated generation interruption"):
+        run_calibration_generation(
+            input_bundle_dir=input_dir,
+            sft_run_dir=tmp_path / "sft",
+            generator=_InterruptingGenerator(successful_groups=1),
+            output_dir=run_dir,
+            block_index=0,
+        )
+
+    partial = (run_dir / "samples" / "generations.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(partial) == 8
+
+    resumed = _FakeGenerator()
+    summary = run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=resumed,
+        output_dir=run_dir,
+        block_index=0,
+    )
+
+    assert summary.record_count == 16
+    assert [call[0] for call in resumed.calls] == ["prompt p2"]
+
+
+def test_completed_generation_is_strictly_reused_and_cannot_be_reblessed_after_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_dir = tmp_path / "input"
+    _write_input_bundle(input_dir, ["p1"])
+    monkeypatch.setattr(calibration, "load_completed_sft_checkpoint", lambda _: _fake_sft_identity(tmp_path))
+    run_dir = tmp_path / "run"
+    initial = run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=_FakeGenerator(),
+        output_dir=run_dir,
+        block_index=0,
+    )
+
+    unused = _FakeGenerator()
+    reused = run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=unused,
+        output_dir=run_dir,
+        block_index=0,
+    )
+    assert reused.records_sha256 == initial.records_sha256
+    assert unused.calls == []
+
+    generation_path = run_dir / "samples" / "generations.jsonl"
+    rows = generation_path.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(rows[0])
+    tampered["completion"] = "tampered"
+    generation_path.write_text(json.dumps(tampered) + "\n" + "\n".join(rows[1:]) + "\n", encoding="utf-8")
+
+    with pytest.raises(CalibrationError, match="hash mismatch"):
+        run_calibration_generation(
+            input_bundle_dir=input_dir,
+            sft_run_dir=tmp_path / "sft",
+            generator=_FakeGenerator(),
+            output_dir=run_dir,
+            block_index=0,
+        )
 
 
 def test_retry_generation_requires_exact_sorted_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

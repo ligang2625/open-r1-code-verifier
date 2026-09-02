@@ -492,8 +492,14 @@ def run_calibration_generation(
     }
     records_path = output_dir / "samples" / "generations.jsonl"
     existing: list[dict[str, object]] = []
+    existing_status = "running"
+    completed_manifest: dict[str, object] | None = None
     if output_dir.exists():
         existing_manifest = _load_json(output_dir / "run.json")
+        status = existing_manifest.get("status")
+        if status not in {"running", "completed"}:
+            raise CalibrationError("calibration generation resume status is invalid")
+        existing_status = cast(str, status)
         comparable = dict(existing_manifest)
         comparable.pop("status", None)
         comparable.pop("record_count", None)
@@ -502,7 +508,14 @@ def run_calibration_generation(
         expected.pop("status")
         if comparable != expected:
             raise CalibrationError("calibration generation resume identity mismatch")
-        existing = _load_jsonl(records_path)
+        if existing_status == "completed":
+            completed_manifest, existing = load_completed_calibration_generation(output_dir)
+        elif records_path.exists():
+            existing = _load_jsonl(records_path)
+        else:
+            # The running manifest can be published before the first complete k=8 group.
+            # With no records file yet, the durable state is the empty exact prefix.
+            existing = []
     else:
         output_dir.mkdir(parents=True)
         _write_json(output_dir / "run.json", identity)
@@ -517,6 +530,20 @@ def run_calibration_generation(
     completed_problem_count = len(existing) // 8
     if len(existing) % 8:
         raise CalibrationError("calibration generation resume ends inside a problem group")
+    if existing_status == "completed":
+        if completed_manifest is None or len(existing) != len(expected_keys):
+            raise CalibrationError("completed calibration generation does not cover the full exact prefix")
+        records_sha = completed_manifest.get("records_sha256")
+        if not isinstance(records_sha, str):
+            raise CalibrationError("completed calibration generation records hash is invalid")
+        return CalibrationGenerationSummary(
+            run_dir=output_dir,
+            records_path=records_path,
+            record_count=len(existing),
+            problem_count=len(selected),
+            records_sha256=records_sha,
+            block_index=block_index,
+        )
     records = list(existing)
     base_seed = input_manifest.get("seed")
     if isinstance(base_seed, bool) or not isinstance(base_seed, int):
