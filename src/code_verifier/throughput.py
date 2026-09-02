@@ -428,8 +428,7 @@ def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False) -> _GR
         "parent_sft_dependency_lock_hash",
     )
     if any(
-        not isinstance(metadata.get(field), str) or not cast(str, metadata[field])
-        for field in parent_string_fields
+        not isinstance(metadata.get(field), str) or not cast(str, metadata[field]) for field in parent_string_fields
     ):
         raise ThroughputError("GRPO benchmark parent SFT identity is incomplete")
     parent_seed = metadata.get("parent_sft_seed")

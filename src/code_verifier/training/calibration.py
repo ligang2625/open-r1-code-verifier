@@ -1348,14 +1348,10 @@ def _select_active_records(
     for bucket_name in ("sft_reuse", "external_new"):
         population = buckets[bucket_name]
         public_candidates = [
-            record
-            for record in population
-            if record.get("calibration_class") == CalibrationClass.PUBLIC_ONLY.value
+            record for record in population if record.get("calibration_class") == CalibrationClass.PUBLIC_ONLY.value
         ]
         hidden_candidates = [
-            record
-            for record in population
-            if record.get("calibration_class") == CalibrationClass.HIDDEN_ONLY.value
+            record for record in population if record.get("calibration_class") == CalibrationClass.HIDDEN_ONLY.value
         ]
         public_count = public_targets[bucket_name]
         hidden_count = single_needs[bucket_name] - public_count
