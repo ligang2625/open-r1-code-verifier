@@ -368,3 +368,134 @@ repair_routing:
 ### Conclusion
 
 `needs_repair`. E2 closes the active-pool stratification and Verification/Reward boundary defects and independently reproduces all reported test/lint gates. Its strict-source repair is a substantial improvement, but `R1-M4` is still open because the formal Hidden source binding is arm-incorrect and the k=8 benchmark path depends on its own not-yet-created final report. The throughput harness also still omits the specification-mandated k4-versus-k8 comparison (`R3-M1`). Next lifecycle action is `stage-lifecycle checkpoint_review`; after that checkpoint, route the single integrated benchmark-contract repair.
+
+## Review Round 4
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-b
+  review_round: 4
+  source_execution_id: E2
+  reviewed_head_commit: c4cf62701c84ac2edbf32842dd85a2ffadb2b06a
+  conclusion: needs_repair
+```
+
+### User-authorized effective-contract override
+
+- This round is an attributable user-authorized contract continuation rather than a new execution. No source/test/config change occurred after the committed R3 checkpoint; `c4cf62701c84ac2edbf32842dd85a2ffadb2b06a` differs from the E2 reviewed code only by the append-only R3 review artifact.
+- The user explicitly accepts **k=8 as the primary Refresh GRPO protocol**. WP9-b/WP9-c no longer need a co-equal formal model-selection framework whose purpose is to decide between k=4 and k=8 before the project may proceed.
+- A **small controlled legacy k=4 reference is retained as a diagnostic baseline only**. Its purpose is to determine whether active-pool calibration already makes k=4 sufficiently informative, quantify the marginal systems cost/benefit of k=8, and detect nonlinear k=8 instability. It is not a second C2/D2 arm and does not require a k=4 worker sweep, k=4 Public/Hidden paired scheduling trial, or a separate k=4 formal training campaign.
+- The controlled reference should use the same completed B identity, same calibrated active pool (or the same explicitly frozen small benchmark subset), same seed/reward arm/runtime/sampling protocol, and the same problem order as its k=8 comparison, with `num_generations` as the intended protocol difference. The report must preserve raw work/cost differences rather than normalize them away.
+- The default project decision remains k=8. The k=4 diagnostic should trigger an explicit reconsideration warning only when it exposes a material reason to do so, for example: k=4 already reaches roughly <=20% zero-variance while k=8 improves by <5 percentage points; k=8 is >=15% worse in useful non-zero-variance groups/GPU-hour; k=8 causes persistent OOM/retry/verifier-starvation/step-jitter degradation; or a later fair pilot shows no learning advantage while k=4 is materially cheaper. These are diagnostic/research decision signals, not new WP9-b development evidence requirements.
+- All other WP9-b boundaries are unchanged: this remains a `development` / `engineering` stage on GTX 1660 Ti. Real frozen-B calibration, real k=4/k=8 measurements, 24GB execution, C2/D2, and held-out learning conclusions remain WP9-c+ validation work.
+
+### Scope change relative to R3
+
+- `R1-M4` is unchanged and remains mandatory. The production formal/pre-freeze GRPO benchmark path must be executable before a final benchmark report exists, and Public/Hidden active-pool identities must be derived correctly for both arms.
+- `R3-M1` remains open but is **materially narrowed**. The R3 requirement for a full formal k4-versus-k8 selection framework is superseded by the user decision above. The only remaining requirement is support for one strict, small, controlled k=4 diagnostic reference alongside the primary k=8 benchmark evidence.
+- In particular, WP9-b no longer needs to make k=4 a peer candidate in final configuration selection, prove that k=8 must beat k=4 before continuing, run k=4 through every GRPO worker candidate, or implement k=4 same-GPU paired scheduling logic.
+
+### Current-code check under the overridden contract
+
+- The new contract is still not fully satisfied by the current code. `src/code_verifier/throughput.py:588-591` rejects every strict GRPO benchmark source whose `num_generations != 8`, so a real controlled k=4 diagnostic artifact cannot use the strict actual-run identity path.
+- `summarize_refresh_benchmarks()` still has no manifest/report slot for the diagnostic k=4 reference (`src/code_verifier/throughput.py:1450-1466`). Therefore the current formal report cannot carry even the reduced baseline or derive its cost/informativeness metrics.
+- The narrower implementation does not need a large new subsystem. The preferred repair is to make the same **pre-freeze actual-run contract** support roles such as `k4_diagnostic` and `k8_candidate`, while the final frozen refresh binding remains k=8-only for C2/D2.
+- The k=4 diagnostic report only needs enough artifact-derived evidence to support the intended sanity decision: completed B/pool/config/seed/runtime identity, problem/group/sample count, wall-clock, generated tokens/tokens-per-second, verifier request/time, OOM/retry/error counts, zero-variance/informative-group counts, and useful non-zero-variance groups/GPU-hour. It does not need optimizer-quality claims or to become a final-training selection gate.
+
+### Verification evidence for this contract-only round
+
+- Stage worktree was clean before this append; `git ls-files .ai-bridge` is empty.
+- Current reviewed HEAD is the committed R3 review checkpoint `c4cf62701c84ac2edbf32842dd85a2ffadb2b06a`; there are no intervening code/config/test commits after E2.
+- Because the executable tree is unchanged from R3, the independently reproduced R3 gates remain applicable: focused `324 passed`, `make lint` PASS, and full `1169 passed, 3 skipped`.
+- A fresh targeted sanity rerun for the affected benchmark/binding surface passed: `tests/unit/test_throughput_grpo.py`, `tests/unit/test_throughput.py`, and `tests/unit/training/test_grpo_refresh_binding.py` -> `15 passed`.
+- These green tests do not close the remaining findings because the current test matrix still has no positive strict actual k=4 diagnostic source and does not exercise pre-freeze k=8 worker-sweep bootstrap.
+
+### Remaining actionable findings
+
+#### R1-M4 — Pre-freeze formal GRPO benchmark runs still cannot bootstrap correctly
+
+Status: **open, unchanged**.
+
+Required repair remains:
+
+- add an explicit pre-freeze actual-run identity for benchmark candidates that binds completed B, formal calibration/active-pool identity, exact config/seed/runtime, candidate worker count and output artifacts without requiring the not-yet-created final benchmark report or already-selected worker;
+- fix Public/Hidden active-pool path derivation so a normal Hidden run validates the distinct Public and Hidden training artifacts correctly;
+- keep final C2/D2 k=8 training strict: once the benchmark is frozen, it must consume the final benchmark report/binding and selected worker;
+- add positive strict Public and Hidden source regressions plus a k=8 worker-sweep bootstrap regression.
+
+#### R3-M1 — Retain only a small controlled k=4 diagnostic reference
+
+Status: **open with superseded/narrowed repair scope**.
+
+Required repair is now limited to:
+
+- permit one strict actual legacy k=4 benchmark source under an explicit diagnostic role without weakening the k=8-only final C2/D2 binding;
+- place that reference in the throughput manifest/report next to the primary k=8 benchmark evidence;
+- prove the k=4 and k=8 diagnostic comparison shares the frozen B/pool/subset/order/seed/reward/runtime/sampling identity except for the intended group-size difference and directly attributable work-count differences;
+- derive the minimal diagnostic telemetry listed above, including zero-variance/informative groups and useful non-zero-variance groups/GPU-hour;
+- add a positive controlled k4/k8 diagnostic regression and negative identity/confound regressions.
+
+Explicitly **not required** by this issue anymore:
+
+- a formal algorithm that chooses k=4 versus k=8 as peer primary protocols;
+- a k=4 verifier-worker sweep;
+- a k=4 paired Public/Hidden scheduling benchmark;
+- a k=4 C2/D2 training run;
+- proof during WP9-b that k=8 has superior held-out model quality.
+
+### Acceptance status
+
+- `R1-M1`, `R1-M2`, `R1-M3`, and `R2-M1` remain closed.
+- `R1-M4` remains the principal blocking production-contract defect.
+- `R3-M1` is retained only as a small implementation addition needed to make the user-requested controlled k=4 diagnostic auditable; its former heavyweight k4-versus-k8 selection scope is superseded.
+- The two remaining items should be implemented together because one parameterized pre-freeze benchmark-run contract can support both the k=8 worker candidates and the k=4 diagnostic reference without duplicating evidence schemas.
+
+### Repair Routing
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 4
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R1-M4
+    - R3-M1
+  rationale:
+    - "The user has made k=8 the primary protocol and reduced k=4 to one controlled diagnostic reference, so the previous heavyweight peer-selection requirement is superseded."
+    - "Both remaining tasks are best solved by one pre-freeze actual-run contract parameterized for a k8 primary candidate or k4 diagnostic role, while preserving a k8-only final frozen C2/D2 binding."
+  workstream_candidates: []
+```
+
+### Conclusion
+
+`needs_repair`. The user override substantially reduces the remaining WP9-b scope: k=8 is now the primary Refresh protocol, and k=4 is only a small controlled diagnostic baseline. The current implementation still needs `R1-M4` so formal k=8 candidate runs can bootstrap before the final benchmark report and Hidden source identity is correct, plus the narrowed `R3-M1` so one strict k=4 diagnostic reference can be represented and compared on artifact-derived informativeness/cost metrics. After this append, the next lifecycle action is `stage-lifecycle checkpoint_review`; only then should execution-router perform the single integrated repair.
+
+### Lifecycle Reconciliation Record
+
+This record repairs lifecycle provenance only; it does **not** retroactively claim that Review Round 4 was checkpointed before E3, and it does not revalidate R4 against the post-E3 code tree.
+
+```yaml
+review_reconciliation:
+  version: 1
+  stage_id: WP9-b
+  reconciled_review_round: 4
+  original_draft_sha256: 7299e32d9e1cba1a1c9e4f0a752b0c51f7a771ac8a9bc0a38bb8c5a37f638bf1
+  original_reviewed_head_commit: c4cf62701c84ac2edbf32842dd85a2ffadb2b06a
+  consumed_by_execution_id: E3
+  source_review_commit_at_execution: null
+  e3_result_code_commit: e3f9b97aa331714f11ff6f96b2065bc68a7da7f1
+  reconciliation_head_before_commit: 271e51a6cb5fa37a02ad80e054d8c075f0291b2b
+  status: historical_uncheckpointed_input_reconciled
+  next_review_round: 5
+```
+
+- R4 was authored and consumed as a user-authorized **uncommitted review draft**. E3 already records that exceptional provenance explicitly, including `source_review_round: 4` and `source_review_commit: null`; those fields remain correct and are not rewritten.
+- The R4 findings/routing are preserved verbatim above as the historical contract input that E3 repaired. This reconciliation commit is a provenance repair, not a normal `checkpoint_review` of the current post-E3 HEAD.
+- The authoritative next independent review is therefore **R5**, which must review E3 and the current actual code tree. Normal `stage-lifecycle checkpoint_review` semantics resume with that R5 record.
