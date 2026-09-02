@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import time
@@ -198,6 +199,38 @@ def test_completion_batch_is_fully_validated_before_any_verifier_call(monkeypatc
             MockExecutor([]),
             "public",
         )
+    assert calls == 0
+
+
+def test_reward_common_uses_only_public_verification_boundary() -> None:
+    source = inspect.getsource(common_module)
+
+    assert "extract_python_code" not in source
+    assert "_normalize_tests" not in source
+    assert "_resource_limits_from_metadata" not in source
+    assert "_validate_function_name" not in source
+
+
+def test_concurrent_parse_failure_preserves_serial_no_executor_factory_side_effect() -> None:
+    calls = 0
+
+    def factory() -> _DelayedByCodeExecutor:
+        nonlocal calls
+        calls += 1
+        return _DelayedByCodeExecutor()
+
+    rewards, records = compute_code_rewards_concurrent(
+        ["explanation only"],
+        [_tests(1)],
+        ["solve"],
+        [_metadata()],
+        executor_factory=factory,
+        mode="public",
+        max_concurrency=2,
+    )
+
+    assert rewards == [-0.1]
+    assert records[0]["status"] == ExecutionStatus.PARSE_ERROR.value
     assert calls == 0
 
 
