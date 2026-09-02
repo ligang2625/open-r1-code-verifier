@@ -157,3 +157,57 @@ execution_record:
   effective_execution_mode: serialized_multi
   status: completed
 ```
+
+## Review Round 2 repair execution (E2)
+
+### Routing and provenance
+
+- Task kind: `repair` for committed WP9-b Review Round 2 (`b0ce11835e3955427d6e4e8e9d3693b2ba4d7625`).
+- Source/effective routing was `mode=multi`: three local Codex workers owned the review-defined, mutually disjoint calibration-strata, strict-GRPO-benchmark-source, and verification-preflight-boundary lanes. Workers did not commit; the coordinator integrated, corrected, tested, and committed each lane separately.
+- Effective repair scope was exactly `R1-M1`, `R1-M4`, and `R2-M1`. There was no user scope override or routing deviation. Stage profile remained `development`, control-plane and target hardware remained `GTX 1660 Ti (6GB)`, and all evidence remained `engineering`.
+- No real frozen-B calibration, optimizer-based SFT/GRPO, C2/D2, 24GB/4090 command, or formal 400-problem evaluation was run or claimed.
+- Result code commit captured before this report: `a15622eea69aafc6374f60252c2a876b5f70b56b`.
+
+### Repair commits and issue mapping
+
+- `d08d332` `fix(wp9-b): allocate whole-bucket strata` — `R1-M1`. Each overlap/non-overlap bucket now computes source+difficulty largest-remainder targets from its complete eligible population before calibration-class preference. Each stratum selects dual-informative rows first and uses deterministic Public/Hidden single-arm fallback only within the global minimum/caps. Producer and strict checker share the allocator; correlated mixed-class strata, input-order determinism, unsatisfiable diagnostics, and checker tamper rejection are covered.
+- `aa348c8` `fix(wp9-b): centralize verifier preflight` — `R2-M1`. Verification now exposes one public, side-effect-free normalized request preflight consumed by both `verify_completion()` and concurrent rewards. Reward no longer imports Parsing or verifier-private helpers and never parses code itself. The late-invalid-item regression still proves zero executor-factory and execute side effects for the entire batch.
+- `a15622e` `fix(wp9-b): validate formal GRPO sources` — `R1-M4`. Formal GRPO throughput reconstruction now uses the canonical strict completed-GRPO loader and completed-B parent chain, then revalidates current k=8 config/dependency/runtime identity, refresh calibration/pool/binding, reward/group/rollout counts and cross-record identities, and source artifact hashes. Shallow sources are legal only when explicitly marked `engineering_fixture`; they cannot enter a formal report. The coordinator additionally corrected selected-arm Public/Hidden binding and allowed bounded benchmark subsets while retaining exact eight-sample group consistency.
+
+### Verification evidence
+
+- Calibration selector + production-shadow integration: `16 passed`.
+- Verification/reward unit and WP4 integration regression: `77 passed`.
+- Throughput/GRPO source regression: `10 passed`.
+- Combined review-repair regression set: `103 passed`.
+- Exact sealed-plan focused file list, including the two new tests: `324 passed`.
+- `make lint`: PASS — Ruff check, Ruff format check, and strict mypy passed for `134` source/test files.
+- `make test`: PASS — `1169 passed, 3 skipped` in `32.26s`; all three skips are the existing opt-in real-Piston tests requiring `CODE_VERIFIER_RUN_PISTON=1`. GPU smoke tests ran and passed.
+- `git diff --check`: PASS. Explicit staging contained only the intended lane files; `.ai-bridge/**` remained untracked and unstaged.
+- Diagnostic note: `rtk`-wrapped pytest processes could not initialize CUDA/NVML and made existing fake-GRPO tests fail at `gpu_count=0`; direct stage `.venv`/Makefile commands, which are the sealed acceptance authority, saw the GTX 1660 Ti and produced the passing results above. No repository change or test weakening was made for this wrapper behavior.
+
+### Repair result and boundary
+
+- `R1-M1` is closed by whole-bucket source+difficulty allocation followed by constrained class preference/fallback, with deterministic checker recomputation and correlated-strata regressions.
+- `R1-M4` is closed by a strict formal completed-GRPO/B/calibration/runtime/artifact source path plus an explicitly non-formal engineering fixture path and forged-source rejection.
+- `R2-M1` is closed by restoring Parsing ownership to Verification and sharing one public side-effect-free preflight with Reward concurrency.
+- No formal active-pool composition, runtime worker recommendation, throughput number, zero-variance result, C2/D2 checkpoint, or research metric is claimed. Those remain WP9-c+ validation responsibilities.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-b
+  execution_id: E2
+  task_kind: repair
+  source_plan_commit: 23e43b78fd31bfe051b29d38ef9e9d0f43e20590
+  source_review_round: 2
+  source_review_commit: b0ce11835e3955427d6e4e8e9d3693b2ba4d7625
+  repair_issue_ids:
+    - R1-M1
+    - R1-M4
+    - R2-M1
+  result_code_commit: a15622eea69aafc6374f60252c2a876b5f70b56b
+  execution_backend: local_codex
+  effective_execution_mode: multi
+  status: completed
+```
