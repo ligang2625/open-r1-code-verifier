@@ -2,6 +2,7 @@
 
 from code_verifier.training.grpo import (
     GRPOCheckpointIdentity,
+    GRPORefreshBinding,
     GRPOTrainingConfig,
     GRPOTrainingError,
     GRPOTrainingSummary,
@@ -10,6 +11,7 @@ from code_verifier.training.grpo import (
     grpo_run_directory,
     grpo_training_config_from_mapping,
     load_completed_grpo_checkpoint,
+    load_grpo_refresh_binding,
     load_grpo_training_config,
     run_grpo_training,
     validate_grpo_artifact_pair,
@@ -45,6 +47,7 @@ from code_verifier.training.sft_prevalidation import (
 __all__ = [
     "GRPOCheckpointIdentity",
     "GRPODataError",
+    "GRPORefreshBinding",
     "GRPOTrainingConfig",
     "GRPOTrainingError",
     "GRPOTrainingSummary",
@@ -66,6 +69,7 @@ __all__ = [
     "grpo_training_config_from_mapping",
     "load_completed_grpo_checkpoint",
     "load_completed_sft_checkpoint",
+    "load_grpo_refresh_binding",
     "load_grpo_training_config",
     "load_sft_training_config",
     "run_grpo_training",

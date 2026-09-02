@@ -745,17 +745,34 @@ created only from real 4090 validation artifacts.
 
 ## WP9 refresh engineering
 
-WP9 adds a strict offline calibration pipeline without changing the historical k=4 Public/Hidden configs. The new
-`configs/grpo/refresh-public.yaml` and `refresh-hidden.yaml` freeze k=8; `refresh-calibration.yaml` freezes the B-only
-8+8 sampling and active-pool constraints. The calibration commands separate Public-safe prompt preparation, frozen-B
-generation, dual Public/Hidden scoring, and paired active-pool freezing. Generation never receives hidden tests, and
-quality-gate-required problems remain excluded unless a later independent gate supplies evidence.
+WP9-b implements the development/control-plane tooling for the GRPO Refresh track without changing the historical k=4
+Public/Hidden configs. `configs/grpo/refresh-public.yaml` and `refresh-hidden.yaml` freeze k=8, while
+`refresh-calibration.yaml` freezes the B-only 8+8 sampling and active-pool constraints. The production commands keep the
+stage boundaries explicit:
 
-`generate-eval --batch-size {1,2,4,8,16}` writes a v2 generation bundle with batch provenance; completed historical
-v1 bundles remain readable. `verify-eval --workers` accepts up to 64. `summarize-refresh-benchmark` derives deterministic
-generation parity and throughput only from completed bundle artifacts; fixture reports are engineering evidence and do
-not select a formal 4090 runtime. Real frozen-B calibration, C2/D2 training, and the formal 400-problem evaluation remain
-WP9 validation work and are not run on the GTX 1660 Ti development control plane.
+```bash
+code-verifier prepare-refresh-calibration ...
+code-verifier generate-refresh-calibration ...
+code-verifier score-refresh-calibration ...
+code-verifier build-refresh-active-pool ...
+code-verifier summarize-refresh-benchmark ...
+```
+
+Calibration generation receives only the Public-safe prompt bundle. Public and Hidden scoring consume the exact same
+completion bytes, and the active-pool manifest hash-binds their shared problem order, calibration class, and isolated
+training views. A refresh `train-grpo` invocation additionally requires `--calibration-manifest`, `--benchmark-report`,
+and the benchmark-selected `--verification-workers`; legacy k=4 runs reject those refresh bindings and keep serial
+reward verification. Refresh group evidence includes test/total reward variance, zero-variance flags, calibration class,
+rolling bounded zero-variance telemetry, verifier time, and pinned-Trainer backward/optimizer/step timing.
+
+`generate-eval --batch-size {1,2,4,8,16}` writes a v2 generation bundle with batch provenance; completed historical v1
+bundles remain readable, and `verify-eval --workers` accepts up to 64. `summarize-refresh-benchmark` derives generation
+parity, GRPO verifier-worker selection, evaluation verifier-worker selection, and the optional same-GPU Public/Hidden
+scheduling recommendation only from completed artifacts. Same-GPU concurrency is recommended only when the measured
+envelope is at least 15% faster than sequential execution and scientific/reward/group parity plus infrastructure
+stability all hold. WP9-b fixture reports remain `evidence_class=engineering`: real frozen-B calibration, formal worker
+and batching choices, C2/D2 training, and the 400-problem refresh evaluation are pending WP9-c+ validation and are not
+run on the GTX 1660 Ti development control plane.
 
 ## Current limitations
 

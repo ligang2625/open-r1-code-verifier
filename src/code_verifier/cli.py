@@ -105,6 +105,7 @@ from code_verifier.training import (
     load_calibration_config,
     load_completed_grpo_checkpoint,
     load_completed_sft_checkpoint,
+    load_grpo_refresh_binding,
     load_grpo_training_config,
     load_sft_training_config,
     prepare_calibration_input_bundle,
@@ -952,6 +953,22 @@ def _train_grpo(args: argparse.Namespace) -> int:
     selected_config = public_config if args.reward_mode == "public" else hidden_config
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = selected_config.seed if cli_seed is None else cli_seed
+    binding_args = (args.calibration_manifest, args.benchmark_report)
+    binding_present = [value is not None for value in binding_args]
+    num_generations = int(getattr(selected_config, "num_generations", 4))
+    if num_generations == 8 and not all(binding_present):
+        raise GRPOTrainingError("k=8 refresh runs require --calibration-manifest and --benchmark-report")
+    if num_generations != 8 and any(binding_present):
+        raise GRPOTrainingError("refresh binding arguments are only valid for k=8 GRPO")
+    refresh_binding = (
+        load_grpo_refresh_binding(
+            calibration_manifest_path=Path(args.calibration_manifest),
+            benchmark_report_path=Path(args.benchmark_report),
+            verification_workers=int(args.verification_workers),
+        )
+        if num_generations == 8
+        else None
+    )
     if cli_seed is not None and cli_seed != selected_config.seed:
         print(f"override: seed: {selected_config.seed} -> {cli_seed}", file=sys.stderr)
     piston_config = load_piston_executor_config(selected_config.piston_config)
@@ -1018,6 +1035,7 @@ def _train_grpo(args: argparse.Namespace) -> int:
                 transport_telemetry=transport_telemetry,
             ),
             verification_workers=int(args.verification_workers),
+            refresh_binding=refresh_binding,
             resume_from_checkpoint=resume,
             resume_run_git_commit=resume_run_git_commit,
             resume_code_migration=resume_code_migration,
@@ -1488,6 +1506,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("configs/execution/piston-transport-resilience.yaml"),
         help="operational Piston transport resilience policy; excluded from C/D scientific pair identity",
+    )
+    train_grpo_parser.add_argument(
+        "--calibration-manifest",
+        type=Path,
+        default=None,
+        help="completed calibrated active-pool manifest required by k=8 refresh runs",
+    )
+    train_grpo_parser.add_argument(
+        "--benchmark-report",
+        type=Path,
+        default=None,
+        help="formal artifact-derived throughput report required by k=8 refresh runs",
     )
     train_grpo_parser.add_argument(
         "--verification-workers",
