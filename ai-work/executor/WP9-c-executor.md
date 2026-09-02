@@ -109,3 +109,69 @@ execution_checkpoint:
   blocker: manual RTX 4090 Gate A execution and evidence/artifact return are required
   status: awaiting_operator
 ```
+
+## C1 — Gate A pre-execution audit and hardened operator handoff
+
+Before any RTX 4090 execution, C0 was re-audited for fatal portability, path-binding, integrity, and restart defects. No C0 target evidence had been accepted. The audit found that the original checkpoint-parent/scope assertion would make a repaired handoff self-reject, that production resume did not accept the zero-record durable prefix, that a completed bundle could be rehashed instead of being strictly reused, and that a rerun could temporarily leave stale canonical success status/evidence visible. C0 is therefore superseded before target execution; it remains immutable history and must not be used for the formal Gate A run.
+
+The production resume implementation was hardened in `eca10bc179d65aa6600500897dd11f82ab7f27c0` (`wp9c: harden calibration generation resume`). New tests cover interruption before the first k=8 group, interruption after one complete k=8 group, idempotent completed reuse, and rejection of a tampered completed bundle. Post-fix verification: calibration unit suite `18 passed`; focused WP9-b/WP9-c suite `23 passed`; `make lint` PASS; full `make test` `1192 passed, 3 skipped` with the same three explicit opt-in real-Piston skips.
+
+C1 contains no `/home/...` or `1660` target path. Target roots are resolved only from the RTX 4090 validation-machine record (or an explicit `CODE_VERIFIER_VALIDATION_MACHINE`). The operator must provide `WP9C_HANDOFF_COMMIT=<exact final C1 handoff SHA>`; C1 proves target `HEAD` equals that SHA, proves the hardened result-code commit and target bootstrap are ancestors, keeps the sealed plan unchanged, requires a clean checkout with `.ai-bridge` untracked, verifies the tracked executable script SHA, checks RTX 4090/BF16/runtime/dependency identity, strict-loads the exact input and formal B, verifies the formal B adapter bytes and pinned base-model weights, enforces storage, and performs strict output classification before generation.
+
+Restart policy is fail-closed: a valid running output must be an exact complete k=8 prefix (including ordered IDs/indices, deterministic sample seeds, exact fields, and finite typed telemetry); a valid completed output is strict-loaded against its original record hash and reused without generation; malformed or identity-mismatched output is preserved under quarantine before a fresh run. Previous canonical C1 status/evidence/postcheck files are moved to attempt-specific history before each attempt so a killed rerun cannot expose a stale success marker.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  stage_id: WP9-c
+  checkpoint_id: C1
+  task_kind: implementation
+  source_plan_commit: 5a1f083af6bfdf2e1333bd70e95e9257b4e66b48
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  result_code_commit: eca10bc179d65aa6600500897dd11f82ab7f27c0
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  interruption_class: operator
+  operator_gate_id: wp9c-calibration-initial-generation
+  operator_handoff_mode: portable_target
+  operator_restart_policy: exact_prefix_or_strict_completed_reuse
+  operator_commit_binding: runtime_WP9C_HANDOFF_COMMIT_must_equal_target_HEAD
+  operator_script: ai-work/executor/operator/WP9-c/wp9c-calibration-initial-generation/C1/run.sh
+  operator_script_sha256: 8f52b0419a171227a6ff3b5ddcc60d65c17d33f1a7d19dc879921c23f6631c52
+  calibration_config_sha256: 4f658443d0296fbc9da206e9f75ece07c4ceb544d66a3e93eacedf89722fab0e
+  control_plane_input_bundle: /home/dzy/wp9c-calibration-input-e929e51
+  target_input_bundle: $CODE_VERIFIER_DATA_ROOT/wp9c/calibration-input
+  input_manifest_sha256: 3eeee5ffea63904e3bd714d275147cd9df438aa3332f49bfd99d7398d71571d3
+  input_records_sha256: 86f385a03836d731aa5d03b268f3880ad1e2ac9dccc7c391a8b97d6a9668b682
+  input_problem_order_sha256: 355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001
+  wp9a_manifest_sha256: 98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625
+  wp9a_selected_order_sha256: 355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001
+  formal_b_run_name: B-sft-formal-seed42
+  formal_b_adapter_model_sha256: 51042ea9c52d2d24976c2ca4e777f1a5f792e3943ff171d03e55b959463a7a67
+  formal_b_adapter_config_sha256: 3738f9ef0ac56f90a48497ab4c0a1f172770864aa61dad56e8d9751050f34344
+  expected_target_output: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial
+  expected_artifacts:
+    - $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial/run.json
+    - $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial/samples/generations.jsonl
+    - $CODE_VERIFIER_ARTIFACT_ROOT/operator/WP9-c/5a1f083af6bfdf2e1333bd70e95e9257b4e66b48/wp9c-calibration-initial-generation/C1/operator-evidence.json
+    - $CODE_VERIFIER_ARTIFACT_ROOT/operator/WP9-c/5a1f083af6bfdf2e1333bd70e95e9257b4e66b48/wp9c-calibration-initial-generation/C1/postcheck-summary.json
+  control_plane_evidence_receive_dir: /home/dzy/wp9c-operator-evidence/WP9-c/wp9c-calibration-initial-generation/C1
+  completed_scope:
+    - bounded WP9-c validation configs and static contract tests
+    - hardened calibration exact-prefix/completed reuse semantics and regression tests
+    - focused/lint/full control-plane acceptance after resume hardening
+    - strict WP9-a formal-data and Public-safe 10,000-record input readback
+    - C1 portable operator pre-execution audit and hardening
+  remaining_scope:
+    - accept C1 Gate A operator evidence and sync the complete immutable generation bundle to the control plane
+    - run initial dual-verifier Piston scoring at workers=8 and derive retry manifest
+    - conditionally execute retry generation/scoring and freeze the 3,000-problem active pool
+    - run evaluation generation/verification benchmark sweep
+    - run GRPO throughput benchmark and freeze benchmark report
+    - run k=8 Public/Hidden pilot and zero-variance gate
+    - complete WP9-c execution inventory and ready_for_wp9d decision
+  blocker: manual RTX 4090 C1 Gate A execution and evidence/artifact return are required
+  status: awaiting_operator
+```
