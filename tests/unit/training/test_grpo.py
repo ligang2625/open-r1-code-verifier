@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import replace
@@ -16,10 +17,12 @@ import pytest
 
 import code_verifier.training.grpo as grpo_module
 from code_verifier.analysis import build_cost_row, load_training_curve_rows
+from code_verifier.data.deduplicate import stable_json_hash
 from code_verifier.execution import ExecutionResult, ExecutionStatus, MockExecutor
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
 from code_verifier.training.grpo import (
     GRPOCheckpointIdentity,
+    GRPORefreshBinding,
     GRPOTrainingConfig,
     GRPOTrainingError,
     _GRPORuntime,
@@ -118,6 +121,20 @@ def test_checked_in_grpo_configs_match_spec_and_each_other() -> None:
     assert public.lora_alpha == 32
     assert public.lora_dropout == 0.05
     assert public.min_cuda_memory_gb == 20.0
+
+
+def test_refresh_configs_are_paired_k8_without_changing_legacy_k4() -> None:
+    legacy_public = load_grpo_training_config(Path("configs/grpo/public.yaml"))
+    legacy_hidden = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
+    public = load_grpo_training_config(Path("configs/grpo/refresh-public.yaml"))
+    hidden = load_grpo_training_config(Path("configs/grpo/refresh-hidden.yaml"))
+
+    assert legacy_public.num_generations == legacy_hidden.num_generations == 4
+    assert public.num_generations == hidden.num_generations == 8
+    assert public.temperature == hidden.temperature == 0.8
+    assert public.top_p == hidden.top_p == 0.95
+    assert public.max_completion_length == hidden.max_completion_length == 512
+    validate_grpo_config_pair(public, hidden)
 
 
 def test_checked_in_grpo_smoke_and_pilot_pairs_only_change_phase_fields() -> None:
@@ -314,17 +331,26 @@ def test_grpo_reward_callback_selects_only_configured_test_source_and_writes_san
     reward_rows = _read_jsonl(tmp_path / reward_mode / "rewards.jsonl")
     groups = _read_jsonl(tmp_path / reward_mode / "group_metrics.jsonl")
     assert [row["truncated"] for row in rollouts] == [False, True]
-    assert groups == [
-        {
-            "all_equal": False,
-            "group_index": 0,
-            "mean": pytest.approx(0.6),
-            "problem_id": "problem-1",
-            "reward_mode": reward_mode,
-            "sample_count": 2,
-            "std": pytest.approx(0.5),
-        }
-    ]
+    assert len(groups) == 1
+    assert groups[0] == {
+        "all_equal": False,
+        "all_test_correct": False,
+        "all_test_zero": False,
+        "all_total_reward_equal": False,
+        "calibration_class": None,
+        "executor_runtime_seconds": pytest.approx(0.002),
+        "group_index": 0,
+        "mean": pytest.approx(0.6),
+        "problem_id": "problem-1",
+        "reward_mode": reward_mode,
+        "sample_count": 2,
+        "std": pytest.approx(0.5),
+        "test_reward_mean": pytest.approx(0.5),
+        "test_reward_std": pytest.approx(0.5),
+        "total_reward_mean": pytest.approx(0.6),
+        "total_reward_std": pytest.approx(0.5),
+        "verifier_batch_wall_seconds": pytest.approx(groups[0]["verifier_batch_wall_seconds"]),
+    }
     component = reward_rows[0]
     assert component["executor_runtime_ms"] == 1.0
     assert component["total_reward"] == pytest.approx(
@@ -369,9 +395,47 @@ def test_grpo_unrecovered_infrastructure_failure_trips_circuit_breaker_and_abort
         )
 
     assert len(executor.calls) == 1
-    reward_rows = _read_jsonl(tmp_path / "public" / "rewards.jsonl")
-    assert len(reward_rows) == 2
-    assert all(row["infrastructure_failure"] is True for row in reward_rows)
+    assert not (tmp_path / "public" / "rewards.jsonl").exists()
+    assert not (tmp_path / "public" / "rollouts.jsonl").exists()
+
+
+def test_grpo_concurrent_reward_preserves_completion_order(tmp_path: Path) -> None:
+    class DelayedExecutor:
+        def execute(
+            self,
+            code: str,
+            function_name: str,
+            tests: list[dict[str, object]],
+            timeout_seconds: float,
+            memory_limit_mb: int,
+        ) -> ExecutionResult:
+            del function_name, tests, timeout_seconds, memory_limit_mb
+            marker = int(code.split("MARKER=")[1].splitlines()[0])
+            time.sleep((3 - marker) * 0.005)
+            return _execution_result(passed=marker % 2 == 0)
+
+    callback = build_grpo_reward_callback(
+        reward_mode="public",
+        executor=MockExecutor([]),
+        executor_factory=DelayedExecutor,
+        verification_workers=4,
+        rollout_log_path=tmp_path / "rollouts.jsonl",
+        reward_log_path=tmp_path / "rewards.jsonl",
+        group_metrics_log_path=tmp_path / "groups.jsonl",
+        num_generations=4,
+        max_completion_length=16,
+    )
+    base = _reward_columns(hidden=False)
+    columns = {key: value * 2 if isinstance(value, list) else value for key, value in base.items()}
+    columns["problem_id"] = ["problem-1"] * 4
+    rewards = callback(
+        prompts=[[]] * 4,
+        completions=[f"```python\nMARKER={index}\ndef solve(value): return value\n```" for index in range(4)],
+        completion_ids=[[1]] * 4,
+        **columns,
+    )
+    assert rewards == [1.1, 0.1, 1.1, 0.1]
+    assert [row["item_index"] for row in _read_jsonl(tmp_path / "rewards.jsonl")] == [0, 1, 2, 3]
 
 
 def test_grpo_reward_callback_restores_heterogeneous_json_test_values(tmp_path: Path) -> None:
@@ -982,11 +1046,13 @@ class _FakeTrainer:
         dataset = cast(Any, self.kwargs["train_dataset"])
         row = cast(dict[str, object], dataset[0])
         reward_func = cast(Callable[..., list[float]], self.kwargs["reward_funcs"])
-        columns = {key: [value] * 4 for key, value in row.items() if key != "prompt"}
+        training_args = cast(Any, self.kwargs["args"])
+        num_generations = cast(int, training_args.num_generations)
+        columns = {key: [value] * num_generations for key, value in row.items() if key != "prompt"}
         reward_func(
-            prompts=[row["prompt"]] * 4,
-            completions=["```python\ndef solve(value):\n    return value\n```"] * 4,
-            completion_ids=[[1, 2]] * 4,
+            prompts=[row["prompt"]] * num_generations,
+            completions=["```python\ndef solve(value):\n    return value\n```"] * num_generations,
+            completion_ids=[[1, 2]] * num_generations,
             **columns,
         )
         return SimpleNamespace(metrics={"train_loss": self.loss, "train_runtime": 1.5, **self.extra_metrics})
@@ -1117,6 +1183,80 @@ def _prepare_fake_grpo_run(
 
 def _passing_results(count: int) -> list[ExecutionResult]:
     return [_execution_result(passed=True) for _ in range(count)]
+
+
+def test_refresh_grpo_run_persists_runtime_utilization_in_run_and_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_config, hidden_config, sft_run_dir, output_root = _prepare_fake_grpo_run(tmp_path, monkeypatch)
+    public_config = replace(public_config, num_generations=8)
+    hidden_config = replace(hidden_config, num_generations=8)
+    for path in (public_config.dataset_path, hidden_config.dataset_path):
+        row = json.loads(path.read_text(encoding="utf-8"))
+        metadata = cast(dict[str, object], row["metadata"])
+        metadata["calibration_class"] = "dual_informative"
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    binding = GRPORefreshBinding(
+        calibration_manifest_path=tmp_path / "calibration_manifest.json",
+        calibration_manifest_sha256="e" * 64,
+        active_order_sha256=stable_json_hash(["grpo-1"]),
+        public_training_sha256=grpo_module._file_hash(public_config.dataset_path, description="fixture Public"),
+        hidden_training_sha256=grpo_module._file_hash(hidden_config.dataset_path, description="fixture Hidden"),
+        benchmark_report_path=tmp_path / "benchmark.json",
+        benchmark_report_sha256="f" * 64,
+        verification_workers=1,
+    )
+
+    utilization = {
+        "version": "wp9b-runtime-utilization-v1",
+        "status": "available",
+        "sample_interval_seconds": 1.0,
+        "sample_count": 2,
+        "sample_error_count": 0,
+        "last_error_type": None,
+        "host_cpu_count": 8,
+        "host_max_rss_mib": 256.0,
+        "gpu_utilization_mean_percent": 50.0,
+        "gpu_utilization_p95_percent": 60.0,
+        "gpu_memory_used_mean_mib": 8000.0,
+        "gpu_memory_used_p95_mib": 9000.0,
+        "gpu_memory_used_max_mib": 9000.0,
+    }
+
+    class FakeSampler:
+        def __init__(self) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> dict[str, object]:
+            assert self.started is True
+            return dict(utilization)
+
+    monkeypatch.setattr(grpo_module, "RuntimeUtilizationSampler", FakeSampler)
+    monkeypatch.setattr(grpo_module, "_install_grpo_runtime_telemetry", lambda *args, **kwargs: None)
+
+    summary = run_grpo_training(
+        public_config,
+        hidden_config,
+        reward_mode="public",
+        public_sft_run_dir=sft_run_dir,
+        hidden_sft_run_dir=sft_run_dir,
+        output_root=output_root,
+        seed=42,
+        executor=MockExecutor(_passing_results(8)),
+        refresh_binding=binding,
+    )
+
+    metadata = json.loads((summary.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert metadata["runtime_utilization"] == utilization
+    attempts = cast(list[dict[str, object]], metadata["attempts"])
+    assert attempts[-1]["runtime_utilization"] == utilization
+    assert len(_read_jsonl(summary.run_dir / "group_metrics.jsonl")) == 1
+    assert _read_jsonl(summary.run_dir / "group_metrics.jsonl")[0]["calibration_class"] == "dual_informative"
 
 
 def _create_fake_resume_checkpoint(run_dir: Path, *, step: int = 1) -> Path:

@@ -43,10 +43,18 @@ from code_verifier.evaluation.evaluate import (
     load_evaluation_problems,
     prompt_hash,
 )
-from code_verifier.evaluation.generate import CompletionGenerator, GenerationResult, build_evaluation_prompt
+from code_verifier.evaluation.generate import (
+    BatchedCompletionGenerator,
+    CompletionGenerator,
+    GenerationResult,
+    build_evaluation_prompt,
+)
 from code_verifier.execution.base import CodeExecutor
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
 
-_BUNDLE_VERSION = 1
+_BUNDLE_VERSION = 2
+_SUPPORTED_BUNDLE_VERSIONS = {1, 2}
+_GENERATION_BATCH_SIZES = {1, 2, 4, 8, 16}
 _BUNDLE_TYPE = "evaluation_generation_bundle"
 _GPU_HOURS_SEMANTICS = "persisted_generation_latency_ms_x_gpu_count_used"
 _RECORD_FIELDS = {
@@ -102,6 +110,8 @@ class GenerationBundleIdentity:
     gpu_hours: float
     start_time: str
     end_time: str
+    schema_version: int
+    batch_size: int
 
 
 @dataclass(frozen=True)
@@ -241,10 +251,12 @@ def _evaluation_contract(
     model_id: str,
     seed: int,
     problems: Sequence[CodeProblem],
+    schema_version: int = _BUNDLE_VERSION,
+    batch_size: int = 1,
 ) -> dict[str, object]:
     """Return a cross-machine evaluation identity without local absolute paths."""
-    return {
-        "schema_version": _BUNDLE_VERSION,
+    contract: dict[str, object] = {
+        "schema_version": schema_version,
         "run_id": run_id,
         "model_id": model_id,
         "model_revision": config.model_revision,
@@ -256,6 +268,9 @@ def _evaluation_contract(
         "dataset_hash": dataset_hash(problems),
         "piston_config_sha256": _file_sha(config.piston_config),
     }
+    if schema_version >= 2:
+        contract["batch_size"] = batch_size
+    return contract
 
 
 def _evaluation_contract_sha256(
@@ -265,8 +280,18 @@ def _evaluation_contract_sha256(
     model_id: str,
     seed: int,
     problems: Sequence[CodeProblem],
+    schema_version: int = _BUNDLE_VERSION,
+    batch_size: int = 1,
 ) -> str:
-    payload = _evaluation_contract(config, run_id=run_id, model_id=model_id, seed=seed, problems=problems)
+    payload = _evaluation_contract(
+        config,
+        run_id=run_id,
+        model_id=model_id,
+        seed=seed,
+        problems=problems,
+        schema_version=schema_version,
+        batch_size=batch_size,
+    )
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -358,6 +383,16 @@ def _gpu_hours(records: Sequence[GenerationBundleRecord], gpu_count_used: int) -
 
 def _rewrite_generation_metrics(context: _BundleContext, records: Sequence[GenerationBundleRecord]) -> None:
     """Atomically rebuild payload-free progress telemetry from durable generation rows."""
+    metadata = _read_json_object(context.run_json_path, artifact_name="generation run.json")
+    schema_version = metadata.get("schema_version")
+    batch_size = metadata.get("batch_size", 1)
+    if schema_version not in _SUPPORTED_BUNDLE_VERSIONS or not isinstance(batch_size, int) or batch_size < 1:
+        raise EvaluationError("generation batch provenance is invalid")
+    schema_version_int = cast(int, schema_version)
+    batch_wall_times = {
+        index: sum(record.generation_latency_ms for record in records[start : start + batch_size])
+        for index, start in enumerate(range(0, len(records), batch_size))
+    }
     content = "".join(
         json.dumps(
             {
@@ -366,6 +401,16 @@ def _rewrite_generation_metrics(context: _BundleContext, records: Sequence[Gener
                 "completion_tokens": record.completion_tokens,
                 "hit_max_new_tokens": record.hit_max_new_tokens,
                 "completed": index,
+                **(
+                    {
+                        "batch_index": (index - 1) // batch_size,
+                        "batch_start_ordinal": ((index - 1) // batch_size) * batch_size,
+                        "batch_end_ordinal": min(((index - 1) // batch_size + 1) * batch_size, len(records)),
+                        "batch_wall_latency_ms": batch_wall_times[(index - 1) // batch_size],
+                    }
+                    if schema_version_int >= 2
+                    else {}
+                ),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -401,13 +446,16 @@ def _new_bundle(
     model_id: str,
     seed: int,
     problems: Sequence[CodeProblem],
+    batch_size: int,
 ) -> _BundleContext:
     context = _context(output_root, run_id)
     environment = collect_environment()
     dataset_identity = dataset_hash(problems)
-    contract = _evaluation_contract(config, run_id=run_id, model_id=model_id, seed=seed, problems=problems)
+    contract = _evaluation_contract(
+        config, run_id=run_id, model_id=model_id, seed=seed, problems=problems, batch_size=batch_size
+    )
     contract_identity = _evaluation_contract_sha256(
-        config, run_id=run_id, model_id=model_id, seed=seed, problems=problems
+        config, run_id=run_id, model_id=model_id, seed=seed, problems=problems, batch_size=batch_size
     )
     context.run_dir.mkdir(parents=True, exist_ok=False)
     context.records_path.parent.mkdir(parents=True, exist_ok=False)
@@ -419,6 +467,7 @@ def _new_bundle(
         _write_json(environment_path, environment)
         metadata: dict[str, object] = {
             "schema_version": _BUNDLE_VERSION,
+            "batch_size": batch_size,
             "artifact_type": _BUNDLE_TYPE,
             "run_id": run_id,
             "created_at": started,
@@ -473,12 +522,20 @@ def _validate_rows(
     config: EvaluationConfig,
     seed: int,
     problems: Sequence[CodeProblem],
+    schema_version: int = _BUNDLE_VERSION,
+    batch_size: int = 1,
 ) -> None:
     if len(records) > len(problems):
         raise EvaluationError("generation bundle contains more rows than the selected split")
     dataset_identity = dataset_hash(problems)
     contract_identity = _evaluation_contract_sha256(
-        config, run_id=run_id, model_id=model_id, seed=seed, problems=problems
+        config,
+        run_id=run_id,
+        model_id=model_id,
+        seed=seed,
+        problems=problems,
+        schema_version=schema_version,
+        batch_size=batch_size,
     )
     for index, record in enumerate(records):
         problem = problems[index]
@@ -504,6 +561,7 @@ def _resume_bundle(
     model_id: str,
     seed: int,
     problems: Sequence[CodeProblem],
+    batch_size: int,
 ) -> tuple[_BundleContext, list[GenerationBundleRecord]]:
     context = _context(output_root, run_id)
     expected_names = {
@@ -519,7 +577,9 @@ def _resume_bundle(
         raise EvaluationError("existing generation directory has an unexpected artifact layout")
     if {path.name for path in (context.run_dir / "samples").iterdir()} != {"generations.jsonl"}:
         raise EvaluationError("existing generation samples directory has unexpected artifacts")
-    contract = _evaluation_contract(config, run_id=run_id, model_id=model_id, seed=seed, problems=problems)
+    contract = _evaluation_contract(
+        config, run_id=run_id, model_id=model_id, seed=seed, problems=problems, batch_size=batch_size
+    )
     resolved_path = context.run_dir / "resolved_config.yaml"
     environment_path = context.run_dir / "environment.json"
     if dict(_load_yaml_mapping(resolved_path)) != contract:
@@ -527,6 +587,7 @@ def _resume_bundle(
     metadata = _read_json_object(context.run_json_path, artifact_name="generation run.json")
     expected_identity: dict[str, object] = {
         "schema_version": _BUNDLE_VERSION,
+        "batch_size": batch_size,
         "artifact_type": _BUNDLE_TYPE,
         "run_id": run_id,
         "model_id": model_id,
@@ -534,7 +595,7 @@ def _resume_bundle(
         "checkpoint": config.checkpoint,
         "dataset_hash": dataset_hash(problems),
         "evaluation_contract_sha256": _evaluation_contract_sha256(
-            config, run_id=run_id, model_id=model_id, seed=seed, problems=problems
+            config, run_id=run_id, model_id=model_id, seed=seed, problems=problems, batch_size=batch_size
         ),
         "piston_config_sha256": _file_sha(config.piston_config),
         "seed": seed,
@@ -566,7 +627,15 @@ def _resume_bundle(
         if current.get(key) != environment.get(key):
             raise EvaluationError(f"current generation environment mismatch for {key}")
     records = load_generation_bundle_records(context.records_path)
-    _validate_rows(records, run_id=run_id, model_id=model_id, config=config, seed=seed, problems=problems)
+    _validate_rows(
+        records,
+        run_id=run_id,
+        model_id=model_id,
+        config=config,
+        seed=seed,
+        problems=problems,
+        batch_size=batch_size,
+    )
     completed = metadata.get("completed_records")
     if isinstance(completed, bool) or not isinstance(completed, int) or not 0 <= completed <= len(records):
         raise EvaluationError("generation completed_records is invalid for persisted rows")
@@ -597,10 +666,20 @@ def run_generation_bundle(
     run_id: str,
     output_root: Path,
     seed: int,
+    batch_size: int = 1,
+    utilization_sampler: RuntimeUtilizationSampler | None = None,
 ) -> GenerationBundleSummary:
     """Generate an exact-prefix bundle without constructing or contacting Piston."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise EvaluationError("seed must be an integer")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size not in _GENERATION_BATCH_SIZES:
+        raise EvaluationError("generation batch_size must be one of 1, 2, 4, 8, or 16")
+    batch_generator: BatchedCompletionGenerator | None = None
+    if batch_size > 1:
+        generate_batch = getattr(generator, "generate_batch", None)
+        if not callable(generate_batch):
+            raise EvaluationError("batched generation requires a generator with generate_batch")
+        batch_generator = cast(BatchedCompletionGenerator, generator)
     model_id = _nonempty(model_id, "model_id")
     _validate_run_id(run_id)
     problems = load_evaluation_problems(config)
@@ -615,6 +694,7 @@ def run_generation_bundle(
             model_id=model_id,
             seed=seed,
             problems=problems,
+            batch_size=batch_size,
         )
     else:
         context = _new_bundle(
@@ -624,6 +704,7 @@ def run_generation_bundle(
             model_id=model_id,
             seed=seed,
             problems=problems,
+            batch_size=batch_size,
         )
         records = []
     if len(records) == len(problems):
@@ -639,43 +720,58 @@ def run_generation_bundle(
     generated = 0
     dataset_identity = dataset_hash(problems)
     contract_identity = _evaluation_contract_sha256(
-        config, run_id=run_id, model_id=model_id, seed=seed, problems=problems
+        config, run_id=run_id, model_id=model_id, seed=seed, problems=problems, batch_size=batch_size
     )
+    utilization_started = False
+    utilization_snapshot: dict[str, object] | None = None
     try:
-        for index, problem in enumerate(problems[len(records) :], start=len(records) + 1):
-            prompt = build_evaluation_prompt(problem)
-            result = generator.generate(prompt, seed=seed)
-            record = GenerationBundleRecord(
-                run_id=run_id,
-                model_id=model_id,
-                checkpoint=config.checkpoint,
-                dataset_hash=dataset_identity,
-                evaluation_contract_sha256=contract_identity,
-                problem_id=problem.problem_id,
-                prompt_hash=prompt_hash(prompt),
-                completion=result.completion,
-                completion_tokens=result.completion_tokens,
-                generation_latency_ms=result.latency_ms,
-                hit_max_new_tokens=result.hit_max_new_tokens,
-            )
-            _append_jsonl(context.records_path, generation_bundle_record_to_mapping(record))
-            _append_jsonl(
-                context.metrics_path,
-                {
-                    "problem_id": record.problem_id,
-                    "generation_latency_ms": record.generation_latency_ms,
-                    "completion_tokens": record.completion_tokens,
-                    "hit_max_new_tokens": record.hit_max_new_tokens,
-                    "completed": index,
-                },
-            )
-            generated += 1
+        if utilization_sampler is not None:
+            utilization_sampler.start()
+            utilization_started = True
+        for start in range(len(records), len(problems), batch_size):
+            problem_batch = problems[start : start + batch_size]
+            prompts = [build_evaluation_prompt(problem) for problem in problem_batch]
+            if batch_generator is None:
+                results = [generator.generate(prompts[0], seed=seed)]
+            else:
+                results = batch_generator.generate_batch(prompts, seeds=[seed] * len(prompts))
+            if len(results) != len(problem_batch):
+                raise EvaluationError("batched generator returned a result count mismatch")
+            for problem, prompt, result in zip(problem_batch, prompts, results, strict=True):
+                record = GenerationBundleRecord(
+                    run_id=run_id,
+                    model_id=model_id,
+                    checkpoint=config.checkpoint,
+                    dataset_hash=dataset_identity,
+                    evaluation_contract_sha256=contract_identity,
+                    problem_id=problem.problem_id,
+                    prompt_hash=prompt_hash(prompt),
+                    completion=result.completion,
+                    completion_tokens=result.completion_tokens,
+                    generation_latency_ms=result.latency_ms,
+                    hit_max_new_tokens=result.hit_max_new_tokens,
+                )
+                _append_jsonl(context.records_path, generation_bundle_record_to_mapping(record))
+                generated += 1
+            _rewrite_generation_metrics(context, load_generation_bundle_records(context.records_path))
     except BaseException as error:
+        if utilization_sampler is not None and utilization_started:
+            utilization_snapshot = utilization_sampler.stop()
         _update_bundle_status(context, "failed")
+        if utilization_snapshot is not None:
+            metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
+            metadata["runtime_utilization"] = utilization_snapshot
+            _write_json(context.run_json_path, metadata)
         with context.stderr_path.open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")
         raise
+    if utilization_sampler is not None and utilization_started:
+        utilization_snapshot = utilization_sampler.stop()
     _update_bundle_status(context, "completed")
+    if utilization_snapshot is not None:
+        metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
+        metadata["runtime_utilization"] = utilization_snapshot
+        _write_json(context.run_json_path, metadata)
     with context.stdout_path.open("a", encoding="utf-8") as handle:
         handle.write(f"completed={len(problems)} generated_this_run={generated}\n")
     return GenerationBundleSummary(
@@ -695,7 +791,10 @@ def load_generation_bundle_source(run_dir: Path) -> GenerationBundleSource:
     except OSError as error:
         raise EvaluationError(f"generation bundle path is unavailable: {type(error).__name__}") from None
     metadata = _read_json_object(resolved_dir / "run.json", artifact_name="generation run.json")
-    if metadata.get("schema_version") != _BUNDLE_VERSION or metadata.get("artifact_type") != _BUNDLE_TYPE:
+    if (
+        metadata.get("schema_version") not in _SUPPORTED_BUNDLE_VERSIONS
+        or metadata.get("artifact_type") != _BUNDLE_TYPE
+    ):
         raise EvaluationError("generation bundle schema identity is invalid")
     if metadata.get("status") != "completed":
         raise EvaluationError("generation bundle must be completed before verification")
@@ -748,11 +847,35 @@ def load_completed_generation_bundle(
     if config.model_revision != source.model_revision or config.checkpoint != source.checkpoint:
         raise EvaluationError("generation model revision/checkpoint does not match verification config")
     metadata = _read_json_object(resolved_dir / "run.json", artifact_name="generation run.json")
+    schema_version = metadata.get("schema_version")
+    if schema_version not in _SUPPORTED_BUNDLE_VERSIONS:
+        raise EvaluationError("generation bundle schema identity is invalid")
+    batch_size = metadata.get("batch_size", 1)
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size not in _GENERATION_BATCH_SIZES
+        or (schema_version == 1 and batch_size != 1)
+    ):
+        raise EvaluationError("generation bundle batch provenance is invalid")
+    schema_version_int = cast(int, schema_version)
     contract = _evaluation_contract(
-        config, run_id=source.run_id, model_id=source.model_id, seed=seed, problems=problems
+        config,
+        run_id=source.run_id,
+        model_id=source.model_id,
+        seed=seed,
+        problems=problems,
+        schema_version=schema_version_int,
+        batch_size=batch_size,
     )
     contract_sha = _evaluation_contract_sha256(
-        config, run_id=source.run_id, model_id=source.model_id, seed=seed, problems=problems
+        config,
+        run_id=source.run_id,
+        model_id=source.model_id,
+        seed=seed,
+        problems=problems,
+        schema_version=schema_version_int,
+        batch_size=batch_size,
     )
     resolved_path = resolved_dir / "resolved_config.yaml"
     environment_path = resolved_dir / "environment.json"
@@ -768,6 +891,8 @@ def load_completed_generation_bundle(
         "environment_sha256": _file_sha(environment_path),
         "gpu_hours_semantics": _GPU_HOURS_SEMANTICS,
     }
+    if schema_version_int >= 2:
+        expected_identity["batch_size"] = batch_size
     for key, expected in expected_identity.items():
         if metadata.get(key) != expected:
             raise EvaluationError(f"generation bundle identity mismatch for {key}")
@@ -784,6 +909,8 @@ def load_completed_generation_bundle(
         config=config,
         seed=seed,
         problems=problems,
+        schema_version=schema_version_int,
+        batch_size=batch_size,
     )
     records_sha = _sha(metadata.get("records_sha256"), "generation records_sha256")
     if records_sha != _file_sha(records_path):
@@ -823,6 +950,8 @@ def load_completed_generation_bundle(
         gpu_hours=gpu_hours,
         start_time=start_time,
         end_time=end_time,
+        schema_version=schema_version_int,
+        batch_size=batch_size,
     )
     return identity, records
 
@@ -836,7 +965,7 @@ def _bind_generation_provenance(
 ) -> None:
     metadata = dict(_read_json_object(run_dir / "run.json", artifact_name="run.json"))
     expected = {
-        "generation_bundle_schema_version": _BUNDLE_VERSION,
+        "generation_bundle_schema_version": identity.schema_version,
         "generation_bundle_run_id": identity.run_id,
         "generation_bundle_records_sha256": identity.records_sha256,
         "generation_bundle_contract_sha256": identity.evaluation_contract_sha256,
@@ -847,6 +976,8 @@ def _bind_generation_provenance(
         "generation_end_time": identity.end_time,
         "verification_workers": workers,
     }
+    if identity.schema_version >= 2:
+        expected["generation_batch_size"] = identity.batch_size
     if fresh:
         metadata["command"] = "code-verifier verify-eval"
         metadata["gpu_count_used"] = identity.gpu_count_used
@@ -895,6 +1026,15 @@ def _verify_one(
     )
 
 
+def _record_verification_host_telemetry(run_dir: Path) -> None:
+    """Persist real host resource telemetry once without fabricating GPU utilization."""
+    metadata_path = run_dir / "run.json"
+    metadata = dict(_read_json_object(metadata_path, artifact_name="verification run.json"))
+    if "runtime_utilization" not in metadata:
+        metadata["runtime_utilization"] = RuntimeUtilizationSampler().snapshot()
+        _write_json(metadata_path, metadata)
+
+
 def run_verification_from_generation_bundle(
     *,
     config: EvaluationConfig,
@@ -908,8 +1048,8 @@ def run_verification_from_generation_bundle(
     """Verify a completed bundle with bounded concurrency and exact-prefix result ordering."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise EvaluationError("seed must be an integer")
-    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 32:
-        raise EvaluationError("verification workers must be an integer between 1 and 32")
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 64:
+        raise EvaluationError("verification workers must be an integer between 1 and 64")
     _validate_run_id(run_id)
     problems = load_evaluation_problems(config)
     identity, generations = load_completed_generation_bundle(
@@ -979,6 +1119,7 @@ def run_verification_from_generation_bundle(
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     _update_run_status(context, "completed")
+    _record_verification_host_telemetry(run_dir)
     with context.stdout_path.open("a", encoding="utf-8") as handle:
         handle.write(f"completed={len(problems)} verified_this_run={verified}\n")
     return EvaluationVerificationSummary(

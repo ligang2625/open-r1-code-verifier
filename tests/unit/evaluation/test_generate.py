@@ -18,7 +18,9 @@ from code_verifier.evaluation.generate import (
     GenerationConfig,
     GenerationError,
     GenerationResult,
+    SamplingGenerationConfig,
     TransformersCompletionGenerator,
+    TransformersSamplingCompletionGenerator,
     build_evaluation_prompt,
 )
 
@@ -85,6 +87,41 @@ class _FakeModel:
     def generate(self, **kwargs: object) -> list[list[int]]:
         self.generate_kwargs = dict(kwargs)
         return [[1, 2, 3, 9, 10]]
+
+
+class _BatchTokenizer(_FakeTokenizer):
+    def __call__(
+        self,
+        text: str | list[str],
+        *,
+        return_tensors: str,
+        add_special_tokens: bool,
+        padding: bool = False,
+    ) -> dict[str, _FakeTensor]:
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        if isinstance(text, list):
+            assert padding is True
+            return {
+                "input_ids": _FakeTensor([[1, 2, 3] for _ in text]),
+                "attention_mask": _FakeTensor([[1, 1, 1] for _ in text]),
+            }
+        return super().__call__(text, return_tensors=return_tensors, add_special_tokens=add_special_tokens)
+
+    def decode(self, token_ids: list[int], *, skip_special_tokens: bool) -> str:
+        assert skip_special_tokens is True
+        return ",".join(str(item) for item in token_ids)
+
+
+class _BatchModel(_FakeModel):
+    def generate(self, **kwargs: object) -> list[list[int]]:
+        self.generate_kwargs = dict(kwargs)
+        input_ids = kwargs["input_ids"]
+        assert isinstance(input_ids, _FakeTensor)
+        raw_count = kwargs.get("num_return_sequences", len(input_ids.rows))
+        assert isinstance(raw_count, int)
+        count = raw_count
+        return [[1, 2, 3, 10 + index] for index in range(count)]
 
 
 class _FakeLoader:
@@ -369,6 +406,13 @@ def test_build_evaluation_prompt_delegates_without_behavior_change(monkeypatch: 
 def test_generation_config_accepts_exact_pass1_defaults() -> None:
     config = GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=512)
     assert config.max_new_tokens == 512
+
+
+def test_sampling_generation_config_validates_refresh_values() -> None:
+    config = SamplingGenerationConfig(temperature=0.8, top_p=0.95, max_new_tokens=512)
+    assert config.temperature == 0.8
+    with pytest.raises(GenerationError):
+        SamplingGenerationConfig(temperature=0.0, top_p=0.95, max_new_tokens=512)
 
 
 @pytest.mark.parametrize(
@@ -756,6 +800,63 @@ def test_transformers_generator_calls_eval_and_inference_path(monkeypatch: pytes
     assert model.generate_kwargs[token_key] == 512
     assert "temperature" not in model.generate_kwargs
     assert "top_p" not in model.generate_kwargs
+
+
+def test_transformers_generator_generate_batch_preserves_order_and_apportions_latency() -> None:
+    tokenizer = _BatchTokenizer()
+    model = _BatchModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    generator = TransformersCompletionGenerator(
+        tokenizer=tokenizer,
+        model=model,
+        torch_runtime=_FakeTorch(),
+        transformers_runtime=runtime,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+    )
+
+    results = generator.generate_batch(["first", "second"], seeds=[7, 8])
+
+    assert [result.completion for result in results] == ["10", "11"]
+    assert [result.completion_tokens for result in results] == [1, 1]
+    assert sum(result.latency_ms for result in results) >= 0.0
+    assert runtime.seeds == [7]
+    assert model.generate_kwargs is not None
+    assert model.generate_kwargs["do_sample"] is False
+
+
+def test_transformers_generator_generate_batch_rejects_bad_alignment() -> None:
+    generator, _, _, _ = _backend()
+    with pytest.raises(GenerationError, match="non-empty"):
+        generator.generate_batch([], seeds=[])
+    with pytest.raises(GenerationError, match="equal lengths"):
+        generator.generate_batch(["one"], seeds=[])
+
+
+def test_sampling_generator_emits_exact_ordered_k8_group() -> None:
+    tokenizer = _BatchTokenizer()
+    model = _BatchModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    generator = TransformersSamplingCompletionGenerator(
+        tokenizer=tokenizer,
+        model=model,
+        torch_runtime=_FakeTorch(),
+        transformers_runtime=runtime,
+        device="cpu",
+        config=SamplingGenerationConfig(temperature=0.8, top_p=0.95, max_new_tokens=512),
+    )
+
+    results = generator.generate_group("prompt", seed=42, num_generations=8)
+
+    assert [result.completion for result in results] == [str(10 + index) for index in range(8)]
+    assert runtime.seeds == [42]
+    assert model.generate_kwargs is not None
+    assert model.generate_kwargs["do_sample"] is True
+    assert model.generate_kwargs["temperature"] == 0.8
+    assert model.generate_kwargs["top_p"] == 0.95
+    assert model.generate_kwargs["num_return_sequences"] == 8
+    with pytest.raises(GenerationError, match="must equal 8"):
+        generator.generate_group("prompt", seed=42, num_generations=4)
 
 
 def test_generation_config_rejects_unsupported_dtype() -> None:

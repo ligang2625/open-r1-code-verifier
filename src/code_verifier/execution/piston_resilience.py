@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any, cast
 
 from code_verifier.config import ConfigError, load_yaml_mapping
@@ -124,23 +125,25 @@ class PistonTransportTelemetry:
     tunnel_total_outage_seconds: float = 0.0
     tunnel_max_outage_seconds: float = 0.0
     _on_change: Callable[[Mapping[str, int | float]], None] | None = field(default=None, repr=False, compare=False)
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False, compare=False)
 
     def to_mapping(self) -> dict[str, int | float]:
-        counters = {
-            "transport_requests": self.transport_requests,
-            "transport_connect_failures": self.transport_connect_failures,
-            "transport_safe_retries": self.transport_safe_retries,
-            "transport_retry_successes": self.transport_retry_successes,
-            "transport_retry_exhausted": self.transport_retry_exhausted,
-            "transport_ambiguous_failures": self.transport_ambiguous_failures,
-            "tunnel_reconnect_count": self.tunnel_reconnect_count,
-        }
+        with self._lock:
+            counters = {
+                "transport_requests": self.transport_requests,
+                "transport_connect_failures": self.transport_connect_failures,
+                "transport_safe_retries": self.transport_safe_retries,
+                "transport_retry_successes": self.transport_retry_successes,
+                "transport_retry_exhausted": self.transport_retry_exhausted,
+                "transport_ambiguous_failures": self.transport_ambiguous_failures,
+                "tunnel_reconnect_count": self.tunnel_reconnect_count,
+            }
+            durations = {
+                "tunnel_total_outage_seconds": self.tunnel_total_outage_seconds,
+                "tunnel_max_outage_seconds": self.tunnel_max_outage_seconds,
+            }
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counters.values()):
             raise ValueError("transport telemetry counters must be nonnegative integers")
-        durations = {
-            "tunnel_total_outage_seconds": self.tunnel_total_outage_seconds,
-            "tunnel_max_outage_seconds": self.tunnel_max_outage_seconds,
-        }
         normalized_durations: dict[str, float] = {}
         for field_name, value in durations.items():
             if isinstance(value, bool) or not isinstance(value, int | float):
@@ -156,67 +159,73 @@ class PistonTransportTelemetry:
 
     def set_on_change(self, callback: Callable[[Mapping[str, int | float]], None] | None) -> None:
         """Install a durable snapshot callback without changing counter values."""
-        self._on_change = callback
+        with self._lock:
+            self._on_change = callback
 
     def restore(self, mapping: object) -> None:
         """Restore cumulative counters from strict run telemetry during resume."""
-        expected = set(self.to_mapping())
-        if not isinstance(mapping, dict) or set(mapping) != expected:
-            raise ValueError("transport telemetry mapping does not match the required schema")
-        restored = PistonTransportTelemetry(**cast(Any, mapping))
-        restored_mapping = restored.to_mapping()
-        for field_name, value in restored_mapping.items():
-            setattr(self, field_name, value)
+        with self._lock:
+            expected = set(self.to_mapping())
+            if not isinstance(mapping, dict) or set(mapping) != expected:
+                raise ValueError("transport telemetry mapping does not match the required schema")
+            restored = PistonTransportTelemetry(**cast(Any, mapping))
+            restored_mapping = restored.to_mapping()
+            for field_name, value in restored_mapping.items():
+                setattr(self, field_name, value)
 
     def record_transport_request(self) -> None:
-        self.transport_requests += 1
-        self._changed()
+        self._increment("transport_requests")
 
     def record_connect_failure(self) -> None:
-        self.transport_connect_failures += 1
-        self._changed()
+        self._increment("transport_connect_failures")
 
     def record_safe_retry(self) -> None:
-        self.transport_safe_retries += 1
-        self._changed()
+        self._increment("transport_safe_retries")
 
     def record_retry_success(self) -> None:
-        self.transport_retry_successes += 1
-        self._changed()
+        self._increment("transport_retry_successes")
 
     def record_retry_exhausted(self) -> None:
-        self.transport_retry_exhausted += 1
-        self._changed()
+        self._increment("transport_retry_exhausted")
 
     def record_ambiguous_failure(self) -> None:
-        self.transport_ambiguous_failures += 1
-        self._changed()
+        self._increment("transport_ambiguous_failures")
 
     def record_tunnel_reconnect(self) -> None:
-        self.tunnel_reconnect_count += 1
-        self._changed()
+        self._increment("tunnel_reconnect_count")
 
     def record_tunnel_outage(self, duration_seconds: float) -> None:
         if isinstance(duration_seconds, bool) or not isinstance(duration_seconds, int | float):
             raise ValueError("tunnel outage duration must be finite and nonnegative")
-        try:
-            converted = float(duration_seconds)
-            total = float(self.tunnel_total_outage_seconds) + converted
-        except OverflowError:
-            raise ValueError("tunnel outage duration must be finite and nonnegative") from None
-        if not math.isfinite(converted) or converted < 0 or not math.isfinite(total):
-            raise ValueError("tunnel outage duration must be finite and nonnegative")
-        self.tunnel_total_outage_seconds = total
-        self.tunnel_max_outage_seconds = max(float(self.tunnel_max_outage_seconds), converted)
-        self._changed()
+        with self._lock:
+            try:
+                converted = float(duration_seconds)
+                total = float(self.tunnel_total_outage_seconds) + converted
+            except OverflowError:
+                raise ValueError("tunnel outage duration must be finite and nonnegative") from None
+            if not math.isfinite(converted) or converted < 0 or not math.isfinite(total):
+                raise ValueError("tunnel outage duration must be finite and nonnegative")
+            self.tunnel_total_outage_seconds = total
+            self.tunnel_max_outage_seconds = max(float(self.tunnel_max_outage_seconds), converted)
+            self._changed_locked()
 
     def flush(self) -> None:
         self._changed()
 
     def _changed(self) -> None:
+        with self._lock:
+            self._changed_locked()
+
+    def _increment(self, field_name: str) -> None:
+        with self._lock:
+            setattr(self, field_name, cast(int, getattr(self, field_name)) + 1)
+            self._changed_locked()
+
+    def _changed_locked(self) -> None:
         mapping = self.to_mapping()
-        if self._on_change is not None:
-            self._on_change(mapping)
+        callback = self._on_change
+        if callback is not None:
+            callback(mapping)
 
 
 def _require_exact_mapping(value: object, fields: set[str], *, context: str) -> dict[str, object]:

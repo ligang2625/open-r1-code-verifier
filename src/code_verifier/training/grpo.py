@@ -14,23 +14,26 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
+from threading import RLock
 from types import MethodType, ModuleType
 from typing import Any, cast
 
 import yaml
 
 from code_verifier.config import ConfigError, load_yaml_mapping
-from code_verifier.data.json_strict import json_values_equal
+from code_verifier.data.deduplicate import stable_json_hash
+from code_verifier.data.json_strict import StrictJsonError, json_values_equal, loads_strict
 from code_verifier.data.leakage_checks import (
     LeakageError,
     TrainingArtifactKind,
     check_training_record,
     load_training_artifact,
 )
+from code_verifier.data.refresh import RefreshDataError
 from code_verifier.environment import collect_environment
 from code_verifier.execution.base import (
     CodeExecutor,
@@ -39,8 +42,12 @@ from code_verifier.execution.base import (
     ExecutionStatus,
 )
 from code_verifier.execution.piston import classify_piston_retryable_infrastructure_failure
-from code_verifier.rewards.common import RewardContractError, compute_code_rewards
+from code_verifier.rewards.common import RewardContractError, compute_code_rewards, compute_code_rewards_concurrent
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
+from code_verifier.throughput import ThroughputError, check_refresh_benchmark_report
+from code_verifier.training.calibration import CalibrationError, check_calibrated_active_pool
 from code_verifier.training.grpo_data import build_grpo_dataset
+from code_verifier.training.grpo_telemetry import GRPORollingTelemetry
 from code_verifier.training.open_r1_adapter import import_open_r1_module
 from code_verifier.training.sft import (
     SFTCheckpointIdentity,
@@ -110,6 +117,33 @@ class GRPOCheckpointIdentity:
     dependency_lock_hash: str
     seed: int
     parent_sft: SFTCheckpointIdentity
+
+
+@dataclass(frozen=True)
+class GRPORefreshBinding:
+    """Hash-bound calibration/benchmark identity required by refresh k=8 runs."""
+
+    calibration_manifest_path: Path
+    calibration_manifest_sha256: str
+    active_order_sha256: str
+    public_training_sha256: str
+    hidden_training_sha256: str
+    benchmark_report_path: Path
+    benchmark_report_sha256: str
+    verification_workers: int
+
+
+@dataclass(frozen=True)
+class GRPOBenchmarkBinding:
+    """Pre-freeze active-pool identity for strict GRPO throughput benchmark runs."""
+
+    calibration_manifest_path: Path
+    calibration_manifest_sha256: str
+    active_order_sha256: str
+    public_training_sha256: str
+    hidden_training_sha256: str
+    verification_workers: int
+    role: str
 
 
 class GRPOTrainingError(RuntimeError):
@@ -195,6 +229,9 @@ _GRPO_TRAINER_RESUME_FILES = (
     "training_args.bin",
 )
 _PAIR_SCHEMA_VERSION = 2
+_BENCHMARK_PAIR_SCHEMA_VERSION = 4
+_GRPO_BENCHMARK_ROLE_GROUP_SIZES = {"k8_candidate": 8, "k4_diagnostic": 4}
+_GRPO_BENCHMARK_WORKERS = frozenset({8, 16, 32, 64})
 GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE = "operational_reward_resilience_v1"
 _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION = "grpo-reward-infra-retry-v2"
 _GRPO_REWARD_INFRA_RETRY_LEGACY_POLICY_VERSIONS = frozenset({"grpo-reward-infra-retry-v1"})
@@ -202,6 +239,8 @@ _GRPO_REWARD_INFRA_RETRY_ACCEPTED_POLICY_VERSIONS = frozenset(
     (*_GRPO_REWARD_INFRA_RETRY_LEGACY_POLICY_VERSIONS, _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION)
 )
 _GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+_GRPO_ROLLING_TELEMETRY_WINDOW_GROUPS = 128
+_GRPO_CALIBRATION_CLASSES = frozenset({"dual_informative", "public_only", "hidden_only", "dual_uninformative"})
 _GPU_HOURS_SEMANTICS = (
     "attempt wall time in hours multiplied by gpu_count_used; includes in-process paired data validation, "
     "model load, train, and save"
@@ -585,17 +624,23 @@ class _RewardInfrastructureRetryTelemetry:
     retry_successes: int = 0
     retry_exhausted: int = 0
     recovery_prepare_failures: int = 0
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False, compare=False)
+
+    def increment(self, field_name: str) -> None:
+        with self._lock:
+            setattr(self, field_name, cast(int, getattr(self, field_name)) + 1)
 
     def to_mapping(self) -> dict[str, object]:
-        return {
-            "policy_version": _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION,
-            "max_retries_per_reward_item": len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
-            "backoff_seconds": list(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
-            "retry_attempts": self.retry_attempts,
-            "retry_successes": self.retry_successes,
-            "retry_exhausted": self.retry_exhausted,
-            "recovery_prepare_failures": self.recovery_prepare_failures,
-        }
+        with self._lock:
+            return {
+                "policy_version": _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION,
+                "max_retries_per_reward_item": len(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+                "backoff_seconds": list(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS),
+                "retry_attempts": self.retry_attempts,
+                "retry_successes": self.retry_successes,
+                "retry_exhausted": self.retry_exhausted,
+                "recovery_prepare_failures": self.recovery_prepare_failures,
+            }
 
 
 def _has_sandbox_failure(result: ExecutionResult) -> bool:
@@ -662,7 +707,7 @@ class _TrainingExecutorCircuitBreaker:
     def _prepare_retry(self, retry_index: int, *, failure_kind: ExecutionInfrastructureFailureKind) -> bool:
         prepare = getattr(self._executor, "prepare_infrastructure_retry", None)
         if not callable(prepare):
-            self._telemetry.recovery_prepare_failures += 1
+            self._telemetry.increment("recovery_prepare_failures")
             self._emit(
                 "grpo_reward_infrastructure_retry_prepare_failed",
                 retry_index=retry_index + 1,
@@ -674,7 +719,7 @@ class _TrainingExecutorCircuitBreaker:
         try:
             prepare()
         except Exception as error:
-            self._telemetry.recovery_prepare_failures += 1
+            self._telemetry.increment("recovery_prepare_failures")
             self._emit(
                 "grpo_reward_infrastructure_retry_prepare_failed",
                 retry_index=retry_index + 1,
@@ -715,7 +760,7 @@ class _TrainingExecutorCircuitBreaker:
 
         last_result = result
         for retry_index, delay in enumerate(_GRPO_REWARD_INFRA_RETRY_BACKOFF_SECONDS):
-            self._telemetry.retry_attempts += 1
+            self._telemetry.increment("retry_attempts")
             self._emit(
                 "grpo_reward_infrastructure_retry_scheduled",
                 retry_index=retry_index + 1,
@@ -741,7 +786,7 @@ class _TrainingExecutorCircuitBreaker:
                 if _has_sandbox_failure(candidate):
                     self._tripped = True
                     return candidate
-                self._telemetry.retry_successes += 1
+                self._telemetry.increment("retry_successes")
                 self._emit(
                     "grpo_reward_infrastructure_retry_succeeded",
                     retry_index=retry_index + 1,
@@ -750,7 +795,7 @@ class _TrainingExecutorCircuitBreaker:
                 return candidate
             failure_kind = candidate_failure_kind
 
-        self._telemetry.retry_exhausted += 1
+        self._telemetry.increment("retry_exhausted")
         self._tripped = True
         self._emit(
             "grpo_reward_infrastructure_retry_exhausted",
@@ -770,8 +815,12 @@ def build_grpo_reward_callback(
     num_generations: int,
     max_completion_length: int,
     retry_telemetry: _RewardInfrastructureRetryTelemetry | None = None,
+    rolling_telemetry: GRPORollingTelemetry | None = None,
+    require_calibration_class: bool = False,
     operational_log_path: Path | None = None,
     retry_sleep: Callable[[float], None] = time.sleep,
+    executor_factory: Callable[[], CodeExecutor] | None = None,
+    verification_workers: int = 1,
 ) -> Callable[..., list[float]]:
     """Build one pinned-TRL reward function with strict alignment and sanitized logs."""
     if reward_mode not in {"public", "hidden"}:
@@ -784,27 +833,37 @@ def build_grpo_reward_callback(
         or max_completion_length <= 0
     ):
         raise GRPOTrainingError("max_completion_length must be a positive integer")
+    if (
+        isinstance(verification_workers, bool)
+        or not isinstance(verification_workers, int)
+        or not 1 <= verification_workers <= 64
+    ):
+        raise GRPOTrainingError("verification_workers must be an integer in [1, 64]")
+    if verification_workers > 1 and executor_factory is None:
+        raise GRPOTrainingError("concurrent GRPO verification requires executor_factory")
 
     expected_columns = {"problem_id", "function_name", "metadata", "visible_tests"}
     if reward_mode == "hidden":
         expected_columns.add("train_hidden_tests")
     telemetry = retry_telemetry if retry_telemetry is not None else _RewardInfrastructureRetryTelemetry()
+    operational_log_lock = RLock()
 
     def write_retry_event(value: Mapping[str, object]) -> None:
         if operational_log_path is None:
             return
-        _append_lines(
-            operational_log_path,
-            [
-                _jsonl_line(
-                    {
-                        "record_type": "reward_infrastructure_retry",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        **value,
-                    }
-                )
-            ],
-        )
+        with operational_log_lock:
+            _append_lines(
+                operational_log_path,
+                [
+                    _jsonl_line(
+                        {
+                            "record_type": "reward_infrastructure_retry",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            **value,
+                        }
+                    )
+                ],
+            )
 
     training_executor = _TrainingExecutorCircuitBreaker(
         executor,
@@ -843,17 +902,36 @@ def build_grpo_reward_callback(
 
         selected_field = "visible_tests" if reward_mode == "public" else "train_hidden_tests"
         selected_tests = _decode_test_payload_batch(columns[selected_field], field_name=selected_field)
+        verifier_started = time.perf_counter()
         try:
-            rewards, component_records = compute_code_rewards(
-                completions,
-                selected_tests,
-                columns["function_name"],
-                columns["metadata"],
-                training_executor,
-                reward_mode,
-            )
+            if verification_workers == 1:
+                rewards, component_records = compute_code_rewards(
+                    completions,
+                    selected_tests,
+                    columns["function_name"],
+                    columns["metadata"],
+                    training_executor,
+                    reward_mode,
+                )
+            else:
+                assert executor_factory is not None
+                rewards, component_records = compute_code_rewards_concurrent(
+                    completions,
+                    selected_tests,
+                    columns["function_name"],
+                    columns["metadata"],
+                    executor_factory=lambda: _TrainingExecutorCircuitBreaker(
+                        executor_factory(),
+                        telemetry=telemetry,
+                        sleep=retry_sleep,
+                        event_sink=write_retry_event,
+                    ),
+                    mode=reward_mode,
+                    max_concurrency=verification_workers,
+                )
         except RewardContractError as error:
             raise GRPOTrainingError(str(error)) from None
+        verifier_runtime_seconds = time.perf_counter() - verifier_started
         if len(rewards) != batch_size or len(component_records) != batch_size:
             raise GRPOTrainingError("GRPO reward core returned a misaligned batch")
         if any(not math.isfinite(reward) for reward in rewards):
@@ -861,9 +939,15 @@ def build_grpo_reward_callback(
         infrastructure_failure_count = sum(
             record.get("infrastructure_failure") is True for record in component_records
         )
+        if infrastructure_failure_count:
+            raise GRPOTrainingError(
+                "GRPO reward execution infrastructure failure in "
+                f"{infrastructure_failure_count}/{batch_size} completions; aborting before optimizer update"
+            )
 
         completion_values = cast(Sequence[object], completions)
         completion_id_values = cast(Sequence[object], completion_ids)
+        metadata_values = cast(Sequence[object], columns["metadata"])
         group_index_by_item: dict[int, tuple[int, int]] = {}
         group_lines: list[str] = []
         for group_index, (problem_id, item_indices) in enumerate(groups.items()):
@@ -875,6 +959,36 @@ def build_grpo_reward_callback(
                 raise GRPOTrainingError("GRPO group metrics must be finite")
             for group_item_index, item_index in enumerate(item_indices):
                 group_index_by_item[item_index] = (group_index, group_item_index)
+            test_rewards = [cast(float, component_records[item_index]["test_reward"]) for item_index in item_indices]
+            test_mean = sum(test_rewards) / len(test_rewards)
+            test_std = math.sqrt(sum((reward - test_mean) ** 2 for reward in test_rewards) / len(test_rewards))
+            verifier_seconds = (
+                sum(cast(float, component_records[item_index]["executor_runtime_ms"]) for item_index in item_indices)
+                / 1000.0
+            )
+            classes: set[str] = set()
+            for item_index in item_indices:
+                metadata = metadata_values[item_index]
+                if isinstance(metadata, Mapping) and isinstance(metadata.get("calibration_class"), str):
+                    classes.add(cast(str, metadata["calibration_class"]))
+            if len(classes) > 1:
+                raise GRPOTrainingError("one GRPO problem group has inconsistent calibration_class metadata")
+            calibration_class = next(iter(classes), None)
+            if require_calibration_class and calibration_class not in _GRPO_CALIBRATION_CLASSES:
+                raise GRPOTrainingError("refresh GRPO requires one valid calibration_class per problem group")
+            all_test_correct = all(reward == 1.0 for reward in test_rewards)
+            all_test_zero = all(reward == 0.0 for reward in test_rewards)
+            all_total_reward_equal = all(reward == group_rewards[0] for reward in group_rewards)
+            if rolling_telemetry is not None:
+                try:
+                    rolling_telemetry.observe(
+                        all_test_correct=all_test_correct,
+                        all_test_zero=all_test_zero,
+                        total_reward_std=std,
+                        verifier_runtime_seconds=verifier_seconds,
+                    )
+                except ValueError as error:
+                    raise GRPOTrainingError(str(error)) from None
             group_lines.append(
                 _jsonl_line(
                     {
@@ -884,7 +998,25 @@ def build_grpo_reward_callback(
                         "sample_count": len(group_rewards),
                         "mean": mean,
                         "std": std,
-                        "all_equal": all(reward == group_rewards[0] for reward in group_rewards),
+                        "all_equal": all_total_reward_equal,
+                        "calibration_class": calibration_class,
+                        "test_reward_mean": test_mean,
+                        "test_reward_std": test_std,
+                        "total_reward_mean": mean,
+                        "total_reward_std": std,
+                        "all_test_correct": all_test_correct,
+                        "all_test_zero": all_test_zero,
+                        "all_total_reward_equal": all_total_reward_equal,
+                        **(
+                            {
+                                "total_reward_zero_variance": std == 0.0,
+                                "verifier_runtime_seconds": verifier_seconds,
+                            }
+                            if require_calibration_class
+                            else {}
+                        ),
+                        "executor_runtime_seconds": verifier_seconds,
+                        "verifier_batch_wall_seconds": verifier_runtime_seconds,
                     }
                 )
             )
@@ -923,11 +1055,6 @@ def build_grpo_reward_callback(
         _append_lines(rollout_log_path, rollout_lines)
         _append_lines(reward_log_path, reward_lines)
         _append_lines(group_metrics_log_path, group_lines)
-        if infrastructure_failure_count:
-            raise GRPOTrainingError(
-                "GRPO reward execution infrastructure failure in "
-                f"{infrastructure_failure_count}/{batch_size} completions; aborting before optimizer update"
-            )
         return rewards
 
     reward_callback.__name__ = f"{reward_mode}_code_reward"
@@ -989,7 +1116,12 @@ def _load_grpo_runtime() -> _GRPORuntime:
         raise GRPOTrainingError(f"pinned GRPO runtime contract is unavailable: {type(error).__name__}") from None
 
 
-def _install_grpo_runtime_telemetry(trainer: Any) -> None:
+def _install_grpo_runtime_telemetry(
+    trainer: Any,
+    *,
+    rolling_telemetry: GRPORollingTelemetry | None = None,
+    require_optimizer_breakdown: bool = False,
+) -> None:
     """Install timing hooks and disable checkpointing only for inference-only GRPO work."""
     required = (
         "_generate_and_score_completions",
@@ -1003,13 +1135,22 @@ def _install_grpo_runtime_telemetry(trainer: Any) -> None:
         "args",
         "state",
     )
-    if any(not hasattr(trainer, name) for name in required):
+    missing = [name for name in required if not hasattr(trainer, name)]
+    if missing:
+        if require_optimizer_breakdown:
+            raise GRPOTrainingError("pinned GRPO trainer is missing required runtime telemetry hooks")
         return
 
     original_rollout = trainer._generate_and_score_completions
     original_logps = trainer._get_per_token_logps
     original_training_step = trainer.training_step
     original_maybe_log = trainer._maybe_log_save_evaluate
+    original_backward = getattr(trainer.accelerator, "backward", None)
+    original_create_optimizer_and_scheduler = getattr(trainer, "create_optimizer_and_scheduler", None)
+    if require_optimizer_breakdown and (
+        not callable(original_backward) or not callable(original_create_optimizer_and_scheduler)
+    ):
+        raise GRPOTrainingError("pinned GRPO trainer cannot provide backward/optimizer timing telemetry")
     torch_runtime = _load_torch_runtime()
     step_started_at: float | None = None
     last_timed_global_step = int(getattr(trainer.state, "global_step", 0) or 0)
@@ -1112,15 +1253,70 @@ def _install_grpo_runtime_telemetry(trainer: Any) -> None:
             self._metrics["train"]["step_runtime_seconds"].append(elapsed)
             self._metrics["train"]["no_grad_logps_runtime_seconds"].append(no_grad_logps_runtime_seconds)
             self._metrics["train"]["no_grad_logps_calls"].append(float(no_grad_logps_calls))
+            if rolling_telemetry is not None:
+                try:
+                    rolling_snapshot = rolling_telemetry.snapshot()
+                except ValueError as error:
+                    raise GRPOTrainingError(str(error)) from None
+                for metric_name, metric_value in rolling_snapshot.items():
+                    self._metrics["train"][metric_name].append(metric_value)
             no_grad_logps_runtime_seconds = 0.0
             no_grad_logps_calls = 0
             last_timed_global_step = raw_global_step
         return original_maybe_log(*args, **kwargs)
 
+    def timed_backward(*args: object, **kwargs: object) -> object:
+        if not callable(original_backward):
+            raise GRPOTrainingError("pinned GRPO accelerator backward hook is unavailable")
+        started = time.perf_counter()
+        try:
+            return original_backward(*args, **kwargs)
+        finally:
+            elapsed = time.perf_counter() - started
+            if not math.isfinite(elapsed) or elapsed < 0.0:
+                raise GRPOTrainingError("GRPO backward runtime must be finite and non-negative")
+            trainer._metrics["train"]["backward_runtime_seconds"].append(elapsed)
+
+    def install_optimizer_step_hook() -> None:
+        optimizer = getattr(trainer, "optimizer", None)
+        if optimizer is None or bool(getattr(optimizer, "_code_verifier_timed_step", False)):
+            return
+        original_step = getattr(optimizer, "step", None)
+        if not callable(original_step):
+            if require_optimizer_breakdown:
+                raise GRPOTrainingError("pinned GRPO optimizer does not provide a callable step")
+            return
+
+        def timed_optimizer_step(*args: object, **kwargs: object) -> object:
+            started = time.perf_counter()
+            try:
+                return original_step(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - started
+                if not math.isfinite(elapsed) or elapsed < 0.0:
+                    raise GRPOTrainingError("GRPO optimizer runtime must be finite and non-negative")
+                trainer._metrics["train"]["optimizer_runtime_seconds"].append(elapsed)
+
+        optimizer.step = timed_optimizer_step
+        optimizer._code_verifier_timed_step = True
+
+    def timed_create_optimizer_and_scheduler(self: Any, *args: object, **kwargs: object) -> object:
+        if not callable(original_create_optimizer_and_scheduler):
+            raise GRPOTrainingError("pinned GRPO optimizer creation hook is unavailable")
+        result = original_create_optimizer_and_scheduler(*args, **kwargs)
+        install_optimizer_step_hook()
+        return result
+
     trainer._generate_and_score_completions = MethodType(timed_rollout, trainer)
     trainer._get_per_token_logps = MethodType(timed_logps, trainer)
     trainer.training_step = MethodType(timed_training_step, trainer)
     trainer._maybe_log_save_evaluate = MethodType(timed_maybe_log, trainer)
+    if require_optimizer_breakdown:
+        assert callable(original_backward)
+        assert callable(original_create_optimizer_and_scheduler)
+        trainer.accelerator.backward = timed_backward
+        trainer.create_optimizer_and_scheduler = MethodType(timed_create_optimizer_and_scheduler, trainer)
+        install_optimizer_step_hook()
 
 
 def _install_grpo_checkpoint_log_snapshots(trainer: Any, *, run_dir: Path, code_commit: str) -> None:
@@ -1312,6 +1508,191 @@ def _file_hash(path: Path, *, description: str) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as error:
         raise GRPOTrainingError(f"could not read {description}: {type(error).__name__}") from None
+
+
+def _strict_json_object(path: Path, *, description: str) -> dict[str, object]:
+    try:
+        value = loads_strict(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, StrictJsonError) as error:
+        raise GRPOTrainingError(f"could not read {description}: {type(error).__name__}") from None
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise GRPOTrainingError(f"{description} must contain one JSON object")
+    return cast(dict[str, object], value)
+
+
+def load_grpo_benchmark_binding(
+    *,
+    calibration_manifest_path: Path,
+    refresh_dataset_dir: Path,
+    reference_dataset_dir: Path,
+    verification_workers: int,
+    role: str,
+    allow_engineering: bool = False,
+) -> GRPOBenchmarkBinding:
+    """Build a pre-freeze benchmark binding without requiring the final benchmark report."""
+    if role not in _GRPO_BENCHMARK_ROLE_GROUP_SIZES:
+        raise GRPOTrainingError("benchmark role is invalid")
+    if (
+        isinstance(verification_workers, bool)
+        or not isinstance(verification_workers, int)
+        or verification_workers not in _GRPO_BENCHMARK_WORKERS
+    ):
+        raise GRPOTrainingError("benchmark verification_workers must be one of 8, 16, 32, or 64")
+    try:
+        checked_pool = check_calibrated_active_pool(
+            calibration_manifest_path.parent,
+            refresh_dataset_dir=refresh_dataset_dir,
+            reference_dataset_dir=reference_dataset_dir,
+            allow_test_protocol=allow_engineering,
+        )
+    except (CalibrationError, RefreshDataError) as error:
+        raise GRPOTrainingError(f"calibration artifact failed strict check: {error}") from None
+    if checked_pool.calibration_manifest.resolve(strict=False) != calibration_manifest_path.resolve(strict=False):
+        raise GRPOTrainingError("calibration manifest path is not the strict checked pool manifest")
+    calibration = _strict_json_object(calibration_manifest_path, description="calibration manifest")
+    if calibration.get("status") != "completed" or calibration.get("schema_version") not in {
+        "wp9b-calibration-v1",
+        "wp9b-calibration-test-v1",
+    }:
+        raise GRPOTrainingError("calibration manifest identity/status is invalid")
+    if not allow_engineering and calibration.get("evidence_class") != "formal_calibration":
+        raise GRPOTrainingError("GRPO benchmark requires a formal calibration manifest")
+    return GRPOBenchmarkBinding(
+        calibration_manifest_path=calibration_manifest_path,
+        calibration_manifest_sha256=_file_hash(calibration_manifest_path, description="calibration manifest"),
+        active_order_sha256=checked_pool.active_order_sha256,
+        public_training_sha256=_file_hash(checked_pool.public_grpo_jsonl, description="calibrated Public dataset"),
+        hidden_training_sha256=_file_hash(checked_pool.hidden_grpo_jsonl, description="calibrated Hidden dataset"),
+        verification_workers=verification_workers,
+        role=role,
+    )
+
+
+def load_grpo_refresh_binding(
+    *,
+    calibration_manifest_path: Path,
+    refresh_dataset_dir: Path,
+    reference_dataset_dir: Path,
+    benchmark_report_path: Path,
+    verification_workers: int,
+    allow_engineering: bool = False,
+) -> GRPORefreshBinding:
+    """Load trusted hashes from completed calibration/benchmark artifacts, never caller-supplied digests."""
+    if (
+        isinstance(verification_workers, bool)
+        or not isinstance(verification_workers, int)
+        or not 1 <= verification_workers <= 64
+    ):
+        raise GRPOTrainingError("verification_workers must be an integer in [1, 64]")
+    try:
+        checked_pool = check_calibrated_active_pool(
+            calibration_manifest_path.parent,
+            refresh_dataset_dir=refresh_dataset_dir,
+            reference_dataset_dir=reference_dataset_dir,
+            allow_test_protocol=allow_engineering,
+        )
+    except (CalibrationError, RefreshDataError) as error:
+        raise GRPOTrainingError(f"calibration artifact failed strict check: {error}") from None
+    if checked_pool.calibration_manifest.resolve(strict=False) != calibration_manifest_path.resolve(strict=False):
+        raise GRPOTrainingError("calibration manifest path is not the strict checked pool manifest")
+    calibration = _strict_json_object(calibration_manifest_path, description="calibration manifest")
+    if calibration.get("status") != "completed" or calibration.get("schema_version") not in {
+        "wp9b-calibration-v1",
+        "wp9b-calibration-test-v1",
+    }:
+        raise GRPOTrainingError("calibration manifest identity/status is invalid")
+    if not allow_engineering and calibration.get("evidence_class") != "formal_calibration":
+        raise GRPOTrainingError("refresh training requires a formal calibration manifest")
+    artifacts = calibration.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        raise GRPOTrainingError("calibration artifact inventory is invalid")
+    public_sha = artifacts.get("training/public_grpo.jsonl")
+    hidden_sha = artifacts.get("training/hidden_grpo.jsonl")
+    active_order_sha = calibration.get("active_order_sha256")
+    if any(
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+        for value in (public_sha, hidden_sha, active_order_sha)
+    ):
+        raise GRPOTrainingError("calibration training/order hashes are invalid")
+    root = calibration_manifest_path.parent
+    if _file_hash(root / "training" / "public_grpo.jsonl", description="calibrated Public dataset") != public_sha:
+        raise GRPOTrainingError("calibrated Public dataset hash mismatch")
+    if _file_hash(root / "training" / "hidden_grpo.jsonl", description="calibrated Hidden dataset") != hidden_sha:
+        raise GRPOTrainingError("calibrated Hidden dataset hash mismatch")
+    try:
+        checked_benchmark = check_refresh_benchmark_report(
+            benchmark_report_path,
+            allow_engineering=allow_engineering,
+        )
+    except ThroughputError as error:
+        raise GRPOTrainingError(f"refresh benchmark artifact failed strict check: {error}") from None
+    if checked_benchmark.selected_grpo_verification_workers != verification_workers:
+        raise GRPOTrainingError("verification_workers differs from the benchmark selection")
+    benchmark_calibration_identity = (
+        checked_benchmark.calibration_manifest_sha256,
+        checked_benchmark.active_order_sha256,
+        checked_benchmark.active_public_training_sha256,
+        checked_benchmark.active_hidden_training_sha256,
+    )
+    calibration_identity = (
+        _file_hash(calibration_manifest_path, description="calibration manifest"),
+        active_order_sha,
+        public_sha,
+        hidden_sha,
+    )
+    if benchmark_calibration_identity != calibration_identity:
+        raise GRPOTrainingError("benchmark calibration identity differs from the calibrated active pool")
+    benchmark = _strict_json_object(benchmark_report_path, description="refresh benchmark report")
+    if benchmark.get("version") != "wp9b-refresh-benchmark-v1":
+        raise GRPOTrainingError("refresh benchmark report version is invalid")
+    if not allow_engineering and benchmark.get("evidence_class") != "formal":
+        raise GRPOTrainingError("refresh training requires a formal throughput benchmark")
+    if benchmark.get("selected_grpo_verification_workers") != verification_workers:
+        raise GRPOTrainingError("verification_workers differs from the benchmark selection")
+    return GRPORefreshBinding(
+        calibration_manifest_path=calibration_manifest_path,
+        calibration_manifest_sha256=_file_hash(calibration_manifest_path, description="calibration manifest"),
+        active_order_sha256=cast(str, active_order_sha),
+        public_training_sha256=cast(str, public_sha),
+        hidden_training_sha256=cast(str, hidden_sha),
+        benchmark_report_path=benchmark_report_path,
+        benchmark_report_sha256=_file_hash(benchmark_report_path, description="refresh benchmark report"),
+        verification_workers=verification_workers,
+    )
+
+
+def _refresh_binding_mapping(binding: GRPORefreshBinding) -> dict[str, object]:
+    return {
+        "refresh_binding_version": 1,
+        "calibration_manifest_sha256": binding.calibration_manifest_sha256,
+        "active_order_sha256": binding.active_order_sha256,
+        "active_public_training_sha256": binding.public_training_sha256,
+        "active_hidden_training_sha256": binding.hidden_training_sha256,
+        "benchmark_report_sha256": binding.benchmark_report_sha256,
+        "verification_workers": binding.verification_workers,
+        "rolling_telemetry_window_groups": _GRPO_ROLLING_TELEMETRY_WINDOW_GROUPS,
+    }
+
+
+def _validate_refresh_active_records(
+    public_records: Sequence[Mapping[str, object]],
+    hidden_records: Sequence[Mapping[str, object]],
+    binding: GRPORefreshBinding | GRPOBenchmarkBinding,
+) -> None:
+    problem_ids = [cast(str, record["problem_id"]) for record in public_records]
+    if stable_json_hash(problem_ids) != binding.active_order_sha256:
+        raise GRPOTrainingError("refresh GRPO active-pool order differs from the calibration manifest")
+    for public_record, hidden_record in zip(public_records, hidden_records, strict=True):
+        public_metadata = public_record.get("metadata")
+        hidden_metadata = hidden_record.get("metadata")
+        if not isinstance(public_metadata, Mapping) or not isinstance(hidden_metadata, Mapping):
+            raise GRPOTrainingError("refresh GRPO active-pool metadata is invalid")
+        public_class = public_metadata.get("calibration_class")
+        hidden_class = hidden_metadata.get("calibration_class")
+        if public_class not in _GRPO_CALIBRATION_CLASSES or hidden_class not in _GRPO_CALIBRATION_CLASSES:
+            raise GRPOTrainingError("refresh GRPO active-pool calibration_class is missing or invalid")
+        if public_class != hidden_class:
+            raise GRPOTrainingError("refresh Public/Hidden active-pool calibration_class metadata differs")
 
 
 def _stream_log_file_state(path: Path, *, limit_bytes: int | None = None) -> dict[str, object]:
@@ -1733,15 +2114,40 @@ def _paired_definition(
     *,
     seed: int,
     parent_sft: SFTCheckpointIdentity,
+    refresh_binding: GRPORefreshBinding | None = None,
+    benchmark_binding: GRPOBenchmarkBinding | None = None,
 ) -> tuple[str, dict[str, object]]:
     """Build one payload-free canonical identity for the complete C/D definition pair."""
+    if refresh_binding is not None and benchmark_binding is not None:
+        raise GRPOTrainingError("refresh and benchmark bindings are mutually exclusive")
+    if benchmark_binding is not None:
+        pair_version = _BENCHMARK_PAIR_SCHEMA_VERSION
+    elif refresh_binding is not None:
+        pair_version = 3
+    else:
+        pair_version = _PAIR_SCHEMA_VERSION
     components: dict[str, object] = {
-        "paired_definition_version": _PAIR_SCHEMA_VERSION,
+        "paired_definition_version": pair_version,
         "paired_public_config_hash": _paired_config_hash(public_config, seed=seed),
         "paired_hidden_config_hash": _paired_config_hash(hidden_config, seed=seed),
         "paired_public_dataset_hash": _file_hash(public_config.dataset_path, description="Public GRPO dataset"),
         "paired_hidden_dataset_hash": _file_hash(hidden_config.dataset_path, description="Hidden GRPO dataset"),
     }
+    if refresh_binding is not None:
+        components.update(_refresh_binding_mapping(refresh_binding))
+    elif benchmark_binding is not None:
+        components.update(
+            {
+                "benchmark_source_version": 1,
+                "benchmark_role": benchmark_binding.role,
+                "calibration_manifest_sha256": benchmark_binding.calibration_manifest_sha256,
+                "active_order_sha256": benchmark_binding.active_order_sha256,
+                "active_public_training_sha256": benchmark_binding.public_training_sha256,
+                "active_hidden_training_sha256": benchmark_binding.hidden_training_sha256,
+                "verification_workers": benchmark_binding.verification_workers,
+                "rolling_telemetry_window_groups": _GRPO_ROLLING_TELEMETRY_WINDOW_GROUPS,
+            }
+        )
     canonical = {**components, "seed": seed, "parent_sft": _portable_parent_identity_mapping(parent_sft)}
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), components
@@ -1858,6 +2264,7 @@ def _begin_attempt(
         "resume_from_checkpoint": resume_source,
         "code_commit": code_commit,
         "gpu_hours": 0.0,
+        "failure_kind": None,
         "reward_infrastructure_retry": _RewardInfrastructureRetryTelemetry().to_mapping(),
     }
     if code_migration is not None:
@@ -1877,9 +2284,19 @@ def _set_latest_attempt_retry_telemetry(
     cast(dict[str, object], attempts[-1])["reward_infrastructure_retry"] = telemetry.to_mapping()
 
 
-def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu_hours: float) -> None:
+def _finish_attempt(
+    run_metadata: dict[str, object],
+    *,
+    status: str,
+    attempt_gpu_hours: float,
+    failure_kind: str | None = None,
+) -> None:
     if status not in {"completed", "failed"} or not math.isfinite(attempt_gpu_hours) or attempt_gpu_hours < 0.0:
         raise GRPOTrainingError("GRPO attempt telemetry is invalid")
+    if (status == "completed" and failure_kind is not None) or (
+        status == "failed" and failure_kind not in {"cuda_out_of_memory", "other"}
+    ):
+        raise GRPOTrainingError("GRPO attempt failure telemetry is invalid")
     attempts = run_metadata.get("attempts")
     if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
         raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
@@ -1887,10 +2304,18 @@ def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu
     latest["status"] = status
     latest["end_time"] = datetime.now(timezone.utc).isoformat()
     latest["gpu_hours"] = attempt_gpu_hours
+    latest["failure_kind"] = failure_kind
     cumulative = _attempt_gpu_hours_total(attempts)
     run_metadata["gpu_hours"] = cumulative
     run_metadata["status"] = status
     run_metadata["end_time"] = latest["end_time"]
+
+
+def _attempt_failure_kind(error: BaseException) -> str:
+    text = f"{type(error).__name__}: {error}".casefold()
+    if "outofmemoryerror" in text or ("cuda" in text and "out of memory" in text):
+        return "cuda_out_of_memory"
+    return "other"
 
 
 def _reset_cuda_peak_memory() -> None:
@@ -2139,6 +2564,10 @@ def run_grpo_training(
     output_root: Path,
     seed: int,
     executor: CodeExecutor,
+    executor_factory: Callable[[], CodeExecutor] | None = None,
+    verification_workers: int = 1,
+    refresh_binding: GRPORefreshBinding | None = None,
+    benchmark_binding: GRPOBenchmarkBinding | None = None,
     resume_from_checkpoint: Path | None = None,
     resume_run_git_commit: str | None = None,
     resume_code_migration: str | None = None,
@@ -2146,10 +2575,39 @@ def run_grpo_training(
     """Preflight one fair C/D pair, then run the selected reward mode."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise GRPOTrainingError("seed must be an integer")
+    if (
+        isinstance(verification_workers, bool)
+        or not isinstance(verification_workers, int)
+        or not 1 <= verification_workers <= 64
+    ):
+        raise GRPOTrainingError("verification_workers must be an integer in [1, 64]")
+    if verification_workers > 1 and executor_factory is None:
+        raise GRPOTrainingError("concurrent GRPO verification requires executor_factory")
     validate_grpo_config_pair(public_config, hidden_config)
     if reward_mode not in {"public", "hidden"}:
         raise GRPOTrainingError("reward_mode must select public or hidden from the validated pair")
     config = public_config if reward_mode == "public" else hidden_config
+    if refresh_binding is not None and benchmark_binding is not None:
+        raise GRPOTrainingError("refresh and benchmark bindings are mutually exclusive")
+    evidence_binding = benchmark_binding if benchmark_binding is not None else refresh_binding
+    if benchmark_binding is not None:
+        expected_group_size = _GRPO_BENCHMARK_ROLE_GROUP_SIZES.get(benchmark_binding.role)
+        if expected_group_size is None or config.num_generations != expected_group_size:
+            raise GRPOTrainingError("benchmark role does not match num_generations")
+        if verification_workers not in _GRPO_BENCHMARK_WORKERS:
+            raise GRPOTrainingError("benchmark verification_workers must be one of 8, 16, 32, or 64")
+        if benchmark_binding.verification_workers != verification_workers:
+            raise GRPOTrainingError("runtime verification_workers differs from the benchmark binding")
+    elif refresh_binding is not None:
+        if config.num_generations != 8:
+            raise GRPOTrainingError("refresh binding is only valid for k=8 GRPO")
+        if refresh_binding.verification_workers != verification_workers:
+            raise GRPOTrainingError("runtime verification_workers differs from the refresh binding")
+    else:
+        if config.num_generations == 8:
+            raise GRPOTrainingError("k=8 refresh GRPO requires calibration and benchmark binding")
+        if verification_workers != 1:
+            raise GRPOTrainingError("legacy GRPO keeps serial reward verification")
     validate_grpo_training_hardware(config)
     public_parent_sft = load_completed_sft_checkpoint(public_sft_run_dir)
     hidden_parent_sft = load_completed_sft_checkpoint(hidden_sft_run_dir)
@@ -2158,9 +2616,23 @@ def run_grpo_training(
     public_records = load_training_artifact(public_config.dataset_path, kind=TrainingArtifactKind.PUBLIC_GRPO)
     hidden_records = load_training_artifact(hidden_config.dataset_path, kind=TrainingArtifactKind.HIDDEN_GRPO)
     validate_grpo_artifact_pair(public_records, hidden_records)
+    if evidence_binding is not None and (
+        _file_hash(public_config.dataset_path, description="Public GRPO dataset")
+        != evidence_binding.public_training_sha256
+        or _file_hash(hidden_config.dataset_path, description="Hidden GRPO dataset")
+        != evidence_binding.hidden_training_sha256
+    ):
+        raise GRPOTrainingError("refresh GRPO datasets differ from the calibrated active pool")
+    if evidence_binding is not None:
+        _validate_refresh_active_records(public_records, hidden_records, evidence_binding)
     parent_sft = public_parent_sft
     paired_definition_sha256, paired_components = _paired_definition(
-        public_config, hidden_config, seed=seed, parent_sft=parent_sft
+        public_config,
+        hidden_config,
+        seed=seed,
+        parent_sft=parent_sft,
+        refresh_binding=refresh_binding,
+        benchmark_binding=benchmark_binding,
     )
     records = public_records if reward_mode == "public" else hidden_records
     run_dir = grpo_run_directory(output_root, config.run_name)
@@ -2243,6 +2715,13 @@ def run_grpo_training(
 
     gpu_count_used = cast(int, run_metadata["gpu_count_used"])
     retry_telemetry = _RewardInfrastructureRetryTelemetry()
+    rolling_telemetry = (
+        GRPORollingTelemetry(window_size=_GRPO_ROLLING_TELEMETRY_WINDOW_GROUPS)
+        if evidence_binding is not None
+        else None
+    )
+    utilization_sampler = RuntimeUtilizationSampler() if evidence_binding is not None else None
+    utilization_started = False
     _begin_attempt(
         run_metadata,
         resume_source=resume_source,
@@ -2253,6 +2732,9 @@ def run_grpo_training(
     started = time.perf_counter()
     peak_reset = False
     try:
+        if utilization_sampler is not None:
+            utilization_sampler.start()
+            utilization_started = True
         if resume_path is not None:
             attempts = run_metadata.get("attempts")
             if not isinstance(attempts, list) or len(attempts) < 2:
@@ -2294,7 +2776,11 @@ def run_grpo_training(
                 num_generations=config.num_generations,
                 max_completion_length=config.max_completion_length,
                 retry_telemetry=retry_telemetry,
+                rolling_telemetry=rolling_telemetry,
+                require_calibration_class=evidence_binding is not None,
                 operational_log_path=run_dir / "stdout.log",
+                executor_factory=executor_factory,
+                verification_workers=verification_workers,
             )
             trainer = runtime.trainer_type(
                 model=model,
@@ -2305,7 +2791,11 @@ def run_grpo_training(
                 processing_class=tokenizer,
                 peft_config=runtime.get_peft_config(model_args),
             )
-            _install_grpo_runtime_telemetry(trainer)
+            _install_grpo_runtime_telemetry(
+                trainer,
+                rolling_telemetry=rolling_telemetry,
+                require_optimizer_breakdown=evidence_binding is not None,
+            )
             _install_grpo_checkpoint_log_snapshots(
                 trainer,
                 run_dir=run_dir,
@@ -2338,6 +2828,13 @@ def run_grpo_training(
         peak_allocated, peak_reserved = _peak_cuda_memory_bytes()
         attempt_gpu_hours = (time.perf_counter() - started) * gpu_count_used / 3600.0
         _set_latest_attempt_retry_telemetry(run_metadata, retry_telemetry)
+        if utilization_sampler is not None and utilization_started:
+            utilization_snapshot = utilization_sampler.stop()
+            run_metadata["runtime_utilization"] = utilization_snapshot
+            attempts = run_metadata.get("attempts")
+            if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
+                raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
+            cast(dict[str, object], attempts[-1])["runtime_utilization"] = utilization_snapshot
         _finish_attempt(run_metadata, status="completed", attempt_gpu_hours=attempt_gpu_hours)
         gpu_hours = cast(float, run_metadata["gpu_hours"])
         run_metadata["global_step"] = raw_global_step
@@ -2382,7 +2879,18 @@ def run_grpo_training(
         run_metadata["peak_cuda_memory_allocated_bytes"] = peak_allocated
         run_metadata["peak_cuda_memory_reserved_bytes"] = peak_reserved
         _set_latest_attempt_retry_telemetry(run_metadata, retry_telemetry)
-        _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
+        if utilization_sampler is not None and utilization_started:
+            utilization_snapshot = utilization_sampler.stop()
+            run_metadata["runtime_utilization"] = utilization_snapshot
+            attempts = run_metadata.get("attempts")
+            if isinstance(attempts, list) and attempts and isinstance(attempts[-1], dict):
+                cast(dict[str, object], attempts[-1])["runtime_utilization"] = utilization_snapshot
+        _finish_attempt(
+            run_metadata,
+            status="failed",
+            attempt_gpu_hours=attempt_gpu_hours,
+            failure_kind=_attempt_failure_kind(error),
+        )
         _write_json(run_dir / "run.json", run_metadata)
         with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")

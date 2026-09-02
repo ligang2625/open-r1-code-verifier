@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -18,6 +20,7 @@ from code_verifier.rewards.common import (
     _require_executor,
     _validate_batch_alignment,
     compute_code_rewards,
+    compute_code_rewards_concurrent,
 )
 
 
@@ -36,6 +39,22 @@ class _RaisingExecutor:
         memory_limit_mb: int,
     ) -> ExecutionResult:
         raise RuntimeError("EXECUTOR_SECRET")
+
+
+class _DelayedByCodeExecutor:
+    def execute(
+        self,
+        code: str,
+        function_name: str,
+        tests: list[dict[str, Any]],
+        timeout_seconds: float,
+        memory_limit_mb: int,
+    ) -> ExecutionResult:
+        del function_name, timeout_seconds, memory_limit_mb
+        if "+ 1" not in code:
+            time.sleep(0.01)
+        status = ExecutionStatus.WRONG_ANSWER if "+ 1" in code else ExecutionStatus.PASSED
+        return _execution_result(status=status, total_tests=len(tests), returned_statuses=[status] * len(tests))
 
 
 def _test_result(status: ExecutionStatus) -> ExecutionTestCaseResult:
@@ -180,6 +199,38 @@ def test_completion_batch_is_fully_validated_before_any_verifier_call(monkeypatc
             MockExecutor([]),
             "public",
         )
+    assert calls == 0
+
+
+def test_reward_common_uses_only_public_verification_boundary() -> None:
+    source = inspect.getsource(common_module)
+
+    assert "extract_python_code" not in source
+    assert "_normalize_tests" not in source
+    assert "_resource_limits_from_metadata" not in source
+    assert "_validate_function_name" not in source
+
+
+def test_concurrent_parse_failure_preserves_serial_no_executor_factory_side_effect() -> None:
+    calls = 0
+
+    def factory() -> _DelayedByCodeExecutor:
+        nonlocal calls
+        calls += 1
+        return _DelayedByCodeExecutor()
+
+    rewards, records = compute_code_rewards_concurrent(
+        ["explanation only"],
+        [_tests(1)],
+        ["solve"],
+        [_metadata()],
+        executor_factory=factory,
+        mode="public",
+        max_concurrency=2,
+    )
+
+    assert rewards == [-0.1]
+    assert records[0]["status"] == ExecutionStatus.PARSE_ERROR.value
     assert calls == 0
 
 
@@ -509,3 +560,102 @@ def test_compute_uses_indexing_not_silent_zip_truncation() -> None:
             "public",
         )
     assert executor.calls == ()
+
+
+def test_concurrent_rewards_match_serial_and_preserve_input_order() -> None:
+    completions = [_completion(), _completion("return value + 1")]
+    tests_batch = [_tests(1), _tests(1)]
+    functions = ["solve", "solve"]
+    metadata = [_metadata(), _metadata()]
+    concurrent_rewards, concurrent_records = compute_code_rewards_concurrent(
+        completions,
+        tests_batch,
+        functions,
+        metadata,
+        executor_factory=_DelayedByCodeExecutor,
+        mode="public",
+        max_concurrency=2,
+    )
+    serial_rewards, serial_records = compute_code_rewards(
+        completions,
+        tests_batch,
+        functions,
+        metadata,
+        MockExecutor(
+            [
+                _execution_result(
+                    status=ExecutionStatus.PASSED,
+                    total_tests=1,
+                    returned_statuses=[ExecutionStatus.PASSED],
+                ),
+                _execution_result(
+                    status=ExecutionStatus.WRONG_ANSWER,
+                    total_tests=1,
+                    returned_statuses=[ExecutionStatus.WRONG_ANSWER],
+                ),
+            ]
+        ),
+        "public",
+    )
+    assert concurrent_rewards == serial_rewards
+    assert concurrent_records == serial_records
+
+
+def test_concurrent_rewards_validate_alignment_before_factory_side_effect() -> None:
+    calls = 0
+
+    def factory() -> _DelayedByCodeExecutor:
+        nonlocal calls
+        calls += 1
+        return _DelayedByCodeExecutor()
+
+    with pytest.raises(RewardContractError, match="lengths must match"):
+        compute_code_rewards_concurrent(
+            [_completion()],
+            [],
+            ["solve"],
+            [_metadata()],
+            executor_factory=factory,
+            mode="public",
+            max_concurrency=2,
+        )
+    assert calls == 0
+
+
+def test_concurrent_rewards_validate_every_item_before_factory_or_execute_side_effect() -> None:
+    calls = {"factory": 0, "execute": 0}
+
+    class CountingExecutor:
+        def execute(
+            self,
+            code: str,
+            function_name: str,
+            tests: list[dict[str, Any]],
+            timeout_seconds: float,
+            memory_limit_mb: int,
+        ) -> ExecutionResult:
+            del code, function_name, timeout_seconds, memory_limit_mb
+            calls["execute"] += 1
+            return _execution_result(
+                status=ExecutionStatus.PASSED,
+                total_tests=len(tests),
+                returned_statuses=[ExecutionStatus.PASSED] * len(tests),
+            )
+
+    def factory() -> CountingExecutor:
+        calls["factory"] += 1
+        return CountingExecutor()
+
+    invalid_metadata = {**_metadata(), "time_limit_seconds": 0.0}
+    with pytest.raises(RewardContractError, match="verification input contract"):
+        compute_code_rewards_concurrent(
+            [_completion(), _completion("return value + 1")],
+            [_tests(), _tests()],
+            ["solve", "solve"],
+            [_metadata(), invalid_metadata],
+            executor_factory=factory,
+            mode="public",
+            max_concurrency=2,
+        )
+
+    assert calls == {"factory": 0, "execute": 0}

@@ -1,7 +1,9 @@
 """Training integration contracts for CodeVerifier."""
 
 from code_verifier.training.grpo import (
+    GRPOBenchmarkBinding,
     GRPOCheckpointIdentity,
+    GRPORefreshBinding,
     GRPOTrainingConfig,
     GRPOTrainingError,
     GRPOTrainingSummary,
@@ -10,6 +12,8 @@ from code_verifier.training.grpo import (
     grpo_run_directory,
     grpo_training_config_from_mapping,
     load_completed_grpo_checkpoint,
+    load_grpo_benchmark_binding,
+    load_grpo_refresh_binding,
     load_grpo_training_config,
     run_grpo_training,
     validate_grpo_artifact_pair,
@@ -43,8 +47,10 @@ from code_verifier.training.sft_prevalidation import (
 )
 
 __all__ = [
+    "GRPOBenchmarkBinding",
     "GRPOCheckpointIdentity",
     "GRPODataError",
+    "GRPORefreshBinding",
     "GRPOTrainingConfig",
     "GRPOTrainingError",
     "GRPOTrainingSummary",
@@ -66,6 +72,8 @@ __all__ = [
     "grpo_training_config_from_mapping",
     "load_completed_grpo_checkpoint",
     "load_completed_sft_checkpoint",
+    "load_grpo_benchmark_binding",
+    "load_grpo_refresh_binding",
     "load_grpo_training_config",
     "load_sft_training_config",
     "run_grpo_training",
@@ -77,4 +85,39 @@ __all__ = [
     "validate_sft_prevalidation_manifest",
     "validate_sft_record",
     "validate_sft_training_hardware",
+]
+from code_verifier.training.calibration import (
+    CalibrationClass,
+    CalibrationConfig,
+    CalibrationError,
+    CalibrationGenerationRecord,
+    CalibrationGenerationSummary,
+    CalibrationInputRecord,
+    CalibrationPoolSummary,
+    build_calibrated_active_pool,
+    calibration_problem_seed,
+    check_calibrated_active_pool,
+    load_calibration_config,
+    load_completed_calibration_generation,
+    prepare_calibration_input_bundle,
+    run_calibration_generation,
+    score_calibration_generation,
+)
+
+__all__ += [
+    "CalibrationClass",
+    "CalibrationConfig",
+    "CalibrationError",
+    "CalibrationGenerationRecord",
+    "CalibrationGenerationSummary",
+    "CalibrationInputRecord",
+    "CalibrationPoolSummary",
+    "build_calibrated_active_pool",
+    "calibration_problem_seed",
+    "check_calibrated_active_pool",
+    "load_calibration_config",
+    "load_completed_calibration_generation",
+    "prepare_calibration_input_bundle",
+    "run_calibration_generation",
+    "score_calibration_generation",
 ]

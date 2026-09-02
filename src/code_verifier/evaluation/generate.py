@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import math
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,6 +33,32 @@ class GenerationConfig:
 
     def __post_init__(self) -> None:
         validate_generation_config(self)
+
+
+@dataclass(frozen=True)
+class SamplingGenerationConfig:
+    """Frozen sampled-generation settings used by WP9 offline calibration."""
+
+    temperature: float
+    top_p: float
+    max_new_tokens: int
+    dtype: str = "auto"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.temperature, bool) or not isinstance(self.temperature, int | float):
+            raise GenerationError("sampling temperature must be a finite positive number")
+        if not math.isfinite(float(self.temperature)) or float(self.temperature) <= 0.0:
+            raise GenerationError("sampling temperature must be a finite positive number")
+        if isinstance(self.top_p, bool) or not isinstance(self.top_p, int | float):
+            raise GenerationError("sampling top_p must be in (0, 1]")
+        if not math.isfinite(float(self.top_p)) or not 0.0 < float(self.top_p) <= 1.0:
+            raise GenerationError("sampling top_p must be in (0, 1]")
+        if isinstance(self.max_new_tokens, bool) or not isinstance(self.max_new_tokens, int):
+            raise GenerationError("sampling max_new_tokens must be a positive integer")
+        if not 1 <= self.max_new_tokens <= 4096:
+            raise GenerationError("sampling max_new_tokens must be between 1 and 4096")
+        if not isinstance(self.dtype, str) or self.dtype not in SUPPORTED_DTYPES:
+            raise GenerationError("sampling dtype must be one of auto, float16, bfloat16, float32")
 
 
 @dataclass(frozen=True)
@@ -72,6 +99,22 @@ class CompletionGenerator(Protocol):
 
     def generate(self, prompt: str, *, seed: int) -> GenerationResult:
         """Generate exactly one completion for one prompt and deterministic seed."""
+        ...
+
+
+class BatchedCompletionGenerator(Protocol):
+    """Deterministic ordered batch generation interface."""
+
+    def generate_batch(self, prompts: Sequence[str], *, seeds: Sequence[int]) -> list[GenerationResult]:
+        """Generate one completion per prompt while preserving input order."""
+        ...
+
+
+class GroupSamplingGenerator(Protocol):
+    """Sample one ordered completion group for a calibration problem."""
+
+    def generate_group(self, prompt: str, *, seed: int, num_generations: int) -> list[GenerationResult]:
+        """Generate one sampled group using a deterministic group seed."""
         ...
 
 
@@ -168,7 +211,7 @@ def _load_base_transformers_model(
     model_id: str,
     model_revision: str | None,
     device: str,
-    config: GenerationConfig,
+    config: GenerationConfig | SamplingGenerationConfig,
     local_files_only: bool,
 ) -> tuple[Any, Any]:
     tokenizer_loader = getattr(transformers_runtime.AutoTokenizer, "from_" + "pretrained")
@@ -520,3 +563,230 @@ class TransformersCompletionGenerator:
             latency_ms=latency_ms,
             hit_max_new_tokens=len(new_token_ids) >= self._config.max_new_tokens,
         )
+
+    def generate_batch(self, prompts: Sequence[str], *, seeds: Sequence[int]) -> list[GenerationResult]:
+        """Generate an ordered deterministic batch without changing pass@1 decoding semantics."""
+        if isinstance(prompts, str | bytes | bytearray) or not isinstance(prompts, Sequence) or not prompts:
+            raise GenerationError("prompts must be a non-empty sequence")
+        if isinstance(seeds, str | bytes | bytearray) or not isinstance(seeds, Sequence):
+            raise GenerationError("seeds must be a sequence")
+        if len(prompts) != len(seeds):
+            raise GenerationError("prompts and seeds must have equal lengths")
+        normalized_prompts: list[str] = []
+        normalized_seeds: list[int] = []
+        rendered: list[str] = []
+        chat_template = getattr(self._tokenizer, "chat_template", None)
+        if not isinstance(chat_template, str) or not chat_template:
+            raise GenerationError("tokenizer does not provide a chat template")
+        for prompt, seed in zip(prompts, seeds, strict=True):
+            if not isinstance(prompt, str):
+                raise GenerationError("prompt must be a string")
+            try:
+                prompt.encode("utf-8")
+            except UnicodeEncodeError:
+                raise GenerationError("prompt must contain valid UTF-8 text") from None
+            if isinstance(seed, bool) or not isinstance(seed, int):
+                raise GenerationError("seed must be an integer")
+            message: dict[str, str] = {"role": "user", "content": prompt}
+            try:
+                rendered_prompt = self._tokenizer.apply_chat_template(
+                    [message],
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+            except Exception as error:
+                raise GenerationError(f"could not encode configured chat prompt: {type(error).__name__}") from None
+            normalized_prompts.append(prompt)
+            normalized_seeds.append(seed)
+            rendered.append(rendered_prompt)
+        del normalized_prompts
+        try:
+            encoded = self._tokenizer(
+                rendered,
+                return_tensors="pt",
+                add_special_tokens=False,
+                padding=True,
+            )
+            input_ids = encoded["input_ids"]
+            prompt_width = len(input_ids[0])
+        except Exception as error:
+            raise GenerationError(f"could not encode configured chat prompt batch: {type(error).__name__}") from None
+        if self._device != "auto":
+            encoded = {key: value.to(self._device) for key, value in encoded.items()}
+        elif hasattr(self._model, "device"):
+            encoded = {key: value.to(self._model.device) for key, value in encoded.items()}
+        self._transformers.set_seed(normalized_seeds[0])
+        options: dict[str, object] = {
+            "do_sample": False,
+            "max_new_tokens": self._config.max_new_tokens,
+        }
+        started = time.perf_counter()
+        try:
+            with self._torch.inference_mode():
+                generated = self._model.generate(**encoded, **options)
+        except Exception as error:
+            raise GenerationError(f"model batch generation failed: {type(error).__name__}") from None
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        if len(generated) != len(rendered):
+            raise GenerationError("model batch generation returned an unexpected number of sequences")
+        attributed_latency = latency_ms / len(rendered)
+        results: list[GenerationResult] = []
+        for row in generated:
+            new_token_ids = row[prompt_width:]
+            try:
+                completion = self._tokenizer.decode(new_token_ids, skip_special_tokens=True)
+            except Exception as error:
+                raise GenerationError(f"model decode failed: {type(error).__name__}") from None
+            results.append(
+                GenerationResult(
+                    completion=completion,
+                    completion_tokens=len(new_token_ids),
+                    latency_ms=attributed_latency,
+                    hit_max_new_tokens=len(new_token_ids) >= self._config.max_new_tokens,
+                )
+            )
+        return results
+
+
+class TransformersSamplingCompletionGenerator:
+    """Read-only completed-SFT generator for WP9 B-only sampled calibration."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer: Any,
+        model: Any,
+        torch_runtime: Any,
+        transformers_runtime: Any,
+        device: str,
+        config: SamplingGenerationConfig,
+    ) -> None:
+        self._tokenizer = tokenizer
+        self._model = model
+        self._torch = torch_runtime
+        self._transformers = transformers_runtime
+        self._device = device
+        self._config = config
+
+    @classmethod
+    def from_peft_checkpoint(
+        cls,
+        *,
+        base_model_id: str,
+        base_model_revision: str | None,
+        adapter_dir: Path,
+        device: str,
+        config: SamplingGenerationConfig,
+        local_files_only: bool = False,
+    ) -> TransformersSamplingCompletionGenerator:
+        """Load one identity-checked completed-B adapter for sampled inference."""
+        if not isinstance(base_model_id, str) or not base_model_id.strip():
+            raise GenerationError("model_id must be a non-empty string")
+        if base_model_revision is not None and (
+            not isinstance(base_model_revision, str) or not base_model_revision.strip()
+        ):
+            raise GenerationError("model_revision must be a non-empty string or null")
+        if device not in {"cpu", "cuda", "auto"}:
+            raise GenerationError("device must be cpu, cuda, or auto")
+        if not isinstance(local_files_only, bool):
+            raise GenerationError("local_files_only must be a boolean")
+        torch_runtime, transformers_runtime = _load_transformers_runtime()
+        peft_config_type, peft_model_type = _load_peft_runtime()
+        resolved_adapter_dir, adapter_config, adapter_options = _load_identity_checked_peft_config(
+            peft_config_type=peft_config_type,
+            adapter_dir=adapter_dir,
+            base_model_id=base_model_id,
+            base_model_revision=base_model_revision,
+            local_files_only=local_files_only,
+            role="completed SFT",
+        )
+        tokenizer, base_model = _load_base_transformers_model(
+            torch_runtime=torch_runtime,
+            transformers_runtime=transformers_runtime,
+            model_id=base_model_id,
+            model_revision=base_model_revision,
+            device=device,
+            config=config,
+            local_files_only=local_files_only,
+        )
+        model = _attach_peft_adapter(
+            base_model=base_model,
+            peft_model_type=peft_model_type,
+            adapter_dir=resolved_adapter_dir,
+            adapter_config=adapter_config,
+            adapter_options=adapter_options,
+            role="completed SFT",
+        )
+        model = _initialize_inference_model(model, device=device)
+        return cls(
+            tokenizer=tokenizer,
+            model=model,
+            torch_runtime=torch_runtime,
+            transformers_runtime=transformers_runtime,
+            device=device,
+            config=config,
+        )
+
+    def generate_group(self, prompt: str, *, seed: int, num_generations: int) -> list[GenerationResult]:
+        """Generate exactly one ordered k=8 calibration block from a shared prompt."""
+        if not isinstance(prompt, str):
+            raise GenerationError("prompt must be a string")
+        try:
+            prompt.encode("utf-8")
+        except UnicodeEncodeError:
+            raise GenerationError("prompt must contain valid UTF-8 text") from None
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise GenerationError("seed must be an integer")
+        if num_generations != 8:
+            raise GenerationError("calibration num_generations must equal 8")
+        chat_template = getattr(self._tokenizer, "chat_template", None)
+        if not isinstance(chat_template, str) or not chat_template:
+            raise GenerationError("tokenizer does not provide a chat template")
+        try:
+            rendered_prompt = self._tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            encoded = self._tokenizer(rendered_prompt, return_tensors="pt", add_special_tokens=False)
+            prompt_width = len(encoded["input_ids"][0])
+        except Exception as error:
+            raise GenerationError(f"could not encode configured chat prompt: {type(error).__name__}") from None
+        if self._device != "auto":
+            encoded = {key: value.to(self._device) for key, value in encoded.items()}
+        elif hasattr(self._model, "device"):
+            encoded = {key: value.to(self._model.device) for key, value in encoded.items()}
+        self._transformers.set_seed(seed)
+        started = time.perf_counter()
+        try:
+            with self._torch.inference_mode():
+                generated = self._model.generate(
+                    **encoded,
+                    do_sample=True,
+                    temperature=float(self._config.temperature),
+                    top_p=float(self._config.top_p),
+                    max_new_tokens=self._config.max_new_tokens,
+                    num_return_sequences=num_generations,
+                )
+        except Exception as error:
+            raise GenerationError(f"model sampled generation failed: {type(error).__name__}") from None
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        if len(generated) != num_generations:
+            raise GenerationError("model sampled generation returned an unexpected number of sequences")
+        attributed_latency = latency_ms / num_generations
+        results: list[GenerationResult] = []
+        for row in generated:
+            new_token_ids = row[prompt_width:]
+            try:
+                completion = self._tokenizer.decode(new_token_ids, skip_special_tokens=True)
+            except Exception as error:
+                raise GenerationError(f"model decode failed: {type(error).__name__}") from None
+            results.append(
+                GenerationResult(
+                    completion=completion,
+                    completion_tokens=len(new_token_ids),
+                    latency_ms=attributed_latency,
+                    hit_max_new_tokens=len(new_token_ids) >= self._config.max_new_tokens,
+                )
+            )
+        return results

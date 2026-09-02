@@ -51,7 +51,12 @@ from code_verifier.evaluation.evaluate import (
     load_evaluation_config,
     run_pass1_evaluation,
 )
-from code_verifier.evaluation.generate import GenerationError, TransformersCompletionGenerator
+from code_verifier.evaluation.generate import (
+    GenerationError,
+    SamplingGenerationConfig,
+    TransformersCompletionGenerator,
+    TransformersSamplingCompletionGenerator,
+)
 from code_verifier.evaluation.metrics import MetricsError, aggregate_evaluation_run
 from code_verifier.evaluation.staged import (
     load_generation_bundle_source,
@@ -84,7 +89,10 @@ from code_verifier.execution import (
     validate_batch_cache_policy,
 )
 from code_verifier.parsing import extract_python_code
+from code_verifier.runtime_telemetry import RuntimeUtilizationSampler
+from code_verifier.throughput import ThroughputError, summarize_refresh_benchmarks
 from code_verifier.training import (
+    CalibrationError,
     GRPOCheckpointIdentity,
     GRPODataError,
     GRPOTrainingError,
@@ -92,15 +100,22 @@ from code_verifier.training import (
     SFTDataError,
     SFTPrevalidationError,
     SFTTrainingError,
+    build_calibrated_active_pool,
     grpo_evaluation_checkpoint_id,
     grpo_run_directory,
+    load_calibration_config,
     load_completed_grpo_checkpoint,
     load_completed_sft_checkpoint,
+    load_grpo_benchmark_binding,
+    load_grpo_refresh_binding,
     load_grpo_training_config,
     load_sft_training_config,
+    prepare_calibration_input_bundle,
+    run_calibration_generation,
     run_grpo_training,
     run_sft_prevalidation,
     run_sft_training,
+    score_calibration_generation,
 )
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -124,7 +139,15 @@ EXECUTION_ERRORS = (
     UnicodeError,
 )
 EVALUATION_ERRORS = (EvaluationError, GenerationError, MetricsError)
-TRAINING_ERRORS = (SFTDataError, SFTPrevalidationError, SFTTrainingError, GRPODataError, GRPOTrainingError)
+TRAINING_ERRORS = (
+    SFTDataError,
+    SFTPrevalidationError,
+    SFTTrainingError,
+    GRPODataError,
+    GRPOTrainingError,
+    CalibrationError,
+    ThroughputError,
+)
 ANALYSIS_ERRORS = (AnalysisError,)
 ARTIFACT_ROOT_ENV = "CODE_VERIFIER_ARTIFACT_ROOT"
 
@@ -486,6 +509,8 @@ def _generate_eval(args: argparse.Namespace) -> int:
         run_id=str(args.run_name),
         output_root=Path(str(args.output_dir)),
         seed=int(args.seed),
+        batch_size=int(args.batch_size),
+        utilization_sampler=RuntimeUtilizationSampler(),
     )
     print(
         f"generated {summary.total_problems} evaluation prompts "
@@ -526,6 +551,82 @@ def _verify_eval(args: argparse.Namespace) -> int:
         f"(resumed={summary.completed_before_run}, verified={summary.verified_this_run})"
     )
     print(f"results={summary.results_path}")
+    return 0
+
+
+def _prepare_refresh_calibration(args: argparse.Namespace) -> int:
+    load_calibration_config(Path(args.config))
+    output = prepare_calibration_input_bundle(
+        refresh_dataset_dir=Path(args.dataset_dir),
+        reference_dataset_dir=Path(args.reference_dataset_dir),
+        output_dir=Path(args.output_dir),
+        seed=int(args.seed),
+    )
+    print(f"calibration_input={output}")
+    return 0
+
+
+def _generate_refresh_calibration(args: argparse.Namespace) -> int:
+    config = load_calibration_config(Path(args.config))
+    sft = load_completed_sft_checkpoint(Path(args.sft_run_dir))
+    generator = TransformersSamplingCompletionGenerator.from_peft_checkpoint(
+        base_model_id=sft.model_id,
+        base_model_revision=sft.model_revision,
+        adapter_dir=sft.checkpoint_dir,
+        device="cuda",
+        config=SamplingGenerationConfig(
+            temperature=config.temperature,
+            top_p=config.top_p,
+            max_new_tokens=config.max_new_tokens,
+        ),
+    )
+    block_index = 0 if args.block == "initial" else 1
+    summary = run_calibration_generation(
+        input_bundle_dir=Path(args.input_bundle_dir),
+        sft_run_dir=Path(args.sft_run_dir),
+        generator=generator,
+        output_dir=Path(args.output_dir),
+        block_index=block_index,
+        retry_manifest=None if args.retry_manifest is None else Path(args.retry_manifest),
+    )
+    print(f"calibration_generation={summary.run_dir}")
+    return 0
+
+
+def _score_refresh_calibration(args: argparse.Namespace) -> int:
+    piston_config = load_piston_executor_config(Path(args.piston_config))
+    output = score_calibration_generation(
+        refresh_dataset_dir=Path(args.dataset_dir),
+        reference_dataset_dir=Path(args.reference_dataset_dir),
+        input_bundle_dir=Path(args.input_bundle_dir),
+        generation_run_dir=Path(args.generation_run_dir),
+        output_dir=Path(args.output_dir),
+        executor_factory=lambda: PistonExecutor(piston_config),
+        workers=int(args.workers),
+    )
+    print(f"calibration_scoring={output}")
+    return 0
+
+
+def _build_refresh_active_pool(args: argparse.Namespace) -> int:
+    config = load_calibration_config(Path(args.config))
+    summary = build_calibrated_active_pool(
+        config=config,
+        refresh_dataset_dir=Path(args.dataset_dir),
+        reference_dataset_dir=Path(args.reference_dataset_dir),
+        input_bundle_dir=Path(args.input_bundle_dir),
+        initial_scoring_dir=Path(args.initial_scoring_dir),
+        retry_scoring_dir=None if args.retry_scoring_dir is None else Path(args.retry_scoring_dir),
+        output_dir=Path(args.output_dir),
+        seed=int(args.seed),
+    )
+    print(f"calibration_pool={summary.pool_dir}")
+    return 0
+
+
+def _summarize_refresh_benchmark(args: argparse.Namespace) -> int:
+    summary = summarize_refresh_benchmarks(Path(args.manifest), output_dir=Path(args.output_dir))
+    print(f"refresh_benchmark={summary.report_path}")
     return 0
 
 
@@ -855,6 +956,45 @@ def _train_grpo(args: argparse.Namespace) -> int:
     selected_config = public_config if args.reward_mode == "public" else hidden_config
     cli_seed = None if args.seed is None else int(args.seed)
     effective_seed = selected_config.seed if cli_seed is None else cli_seed
+    binding_args = (
+        args.calibration_manifest,
+        args.refresh_dataset_dir,
+        args.reference_dataset_dir,
+    )
+    binding_present = [value is not None for value in binding_args]
+    num_generations = int(getattr(selected_config, "num_generations", 4))
+    benchmark_role = None if args.benchmark_role is None else str(args.benchmark_role)
+    benchmark_binding = None
+    if benchmark_role is not None:
+        if args.benchmark_report is not None:
+            raise GRPOTrainingError("pre-freeze benchmark runs must not consume a final benchmark report")
+        if not all(binding_present):
+            raise GRPOTrainingError("pre-freeze benchmark runs require the calibration and active-pool arguments")
+        benchmark_binding = load_grpo_benchmark_binding(
+            calibration_manifest_path=Path(args.calibration_manifest),
+            refresh_dataset_dir=Path(args.refresh_dataset_dir),
+            reference_dataset_dir=Path(args.reference_dataset_dir),
+            verification_workers=int(args.verification_workers),
+            role=benchmark_role,
+        )
+    if benchmark_role is None and num_generations == 8 and (not all(binding_present) or args.benchmark_report is None):
+        raise GRPOTrainingError(
+            "k=8 refresh runs require --calibration-manifest, --refresh-dataset-dir, "
+            "--reference-dataset-dir, and --benchmark-report"
+        )
+    if benchmark_role is None and num_generations != 8 and (any(binding_present) or args.benchmark_report is not None):
+        raise GRPOTrainingError("refresh binding arguments are only valid for k=8 GRPO")
+    refresh_binding = (
+        load_grpo_refresh_binding(
+            calibration_manifest_path=Path(args.calibration_manifest),
+            refresh_dataset_dir=Path(args.refresh_dataset_dir),
+            reference_dataset_dir=Path(args.reference_dataset_dir),
+            benchmark_report_path=Path(args.benchmark_report),
+            verification_workers=int(args.verification_workers),
+        )
+        if num_generations == 8 and benchmark_role is None
+        else None
+    )
     if cli_seed is not None and cli_seed != selected_config.seed:
         print(f"override: seed: {selected_config.seed} -> {cli_seed}", file=sys.stderr)
     piston_config = load_piston_executor_config(selected_config.piston_config)
@@ -915,6 +1055,14 @@ def _train_grpo(args: argparse.Namespace) -> int:
             output_root=output_root,
             seed=effective_seed,
             executor=executor,
+            executor_factory=lambda: PistonExecutor(
+                piston_config,
+                transport_policy=transport_policy,
+                transport_telemetry=transport_telemetry,
+            ),
+            verification_workers=int(args.verification_workers),
+            refresh_binding=refresh_binding,
+            benchmark_binding=benchmark_binding,
             resume_from_checkpoint=resume,
             resume_run_git_commit=resume_run_git_commit,
             resume_code_migration=resume_code_migration,
@@ -1123,6 +1271,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional prepared dataset root override",
     )
     generate_eval_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="safe evaluation run id")
+    generate_eval_parser.add_argument(
+        "--batch-size",
+        type=int,
+        choices=(1, 2, 4, 8, 16),
+        default=1,
+        help="deterministic generation batch size (default: 1)",
+    )
     _add_common_arguments(
         generate_eval_parser,
         config_required=True,
@@ -1152,7 +1307,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=int,
         default=4,
-        help="bounded concurrent local-Piston verification workers (default: 4, maximum: 32)",
+        help="bounded concurrent local-Piston verification workers (default: 4, maximum: 64)",
     )
     _add_common_arguments(
         verify_eval_parser,
@@ -1242,6 +1397,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_sft_parser.set_defaults(handler=_train_sft)
 
+    prepare_calibration_parser = subparsers.add_parser(
+        "prepare-refresh-calibration", help="prepare a Public-safe WP9 calibration prompt bundle"
+    )
+    prepare_calibration_parser.add_argument("--config", type=Path, required=True)
+    prepare_calibration_parser.add_argument("--dataset-dir", type=Path, required=True)
+    prepare_calibration_parser.add_argument("--reference-dataset-dir", type=Path, required=True)
+    prepare_calibration_parser.add_argument("--seed", type=int, default=42)
+    prepare_calibration_parser.add_argument("--output-dir", type=Path, required=True)
+    prepare_calibration_parser.add_argument("--log-level", default="INFO")
+    prepare_calibration_parser.set_defaults(handler=_prepare_refresh_calibration)
+
+    generate_calibration_parser = subparsers.add_parser(
+        "generate-refresh-calibration", help="generate one immutable k=8 frozen-B calibration block"
+    )
+    generate_calibration_parser.add_argument("--config", type=Path, required=True)
+    generate_calibration_parser.add_argument("--input-bundle-dir", type=Path, required=True)
+    generate_calibration_parser.add_argument("--sft-run-dir", type=Path, required=True)
+    generate_calibration_parser.add_argument("--block", choices=("initial", "retry"), required=True)
+    generate_calibration_parser.add_argument("--retry-manifest", type=Path, default=None)
+    generate_calibration_parser.add_argument("--output-dir", type=Path, required=True)
+    generate_calibration_parser.add_argument("--log-level", default="INFO")
+    generate_calibration_parser.set_defaults(handler=_generate_refresh_calibration)
+
+    score_calibration_parser = subparsers.add_parser(
+        "score-refresh-calibration", help="score identical calibration completions with both training verifiers"
+    )
+    score_calibration_parser.add_argument("--dataset-dir", type=Path, required=True)
+    score_calibration_parser.add_argument("--reference-dataset-dir", type=Path, required=True)
+    score_calibration_parser.add_argument("--input-bundle-dir", type=Path, required=True)
+    score_calibration_parser.add_argument("--generation-run-dir", type=Path, required=True)
+    score_calibration_parser.add_argument(
+        "--piston-config", type=Path, default=Path("configs/execution/piston-local.yaml")
+    )
+    score_calibration_parser.add_argument("--workers", type=int, choices=range(1, 65), required=True)
+    score_calibration_parser.add_argument("--output-dir", type=Path, required=True)
+    score_calibration_parser.add_argument("--log-level", default="INFO")
+    score_calibration_parser.set_defaults(handler=_score_refresh_calibration)
+
+    pool_parser = subparsers.add_parser(
+        "build-refresh-active-pool", help="freeze the paired constrained WP9 active training pool"
+    )
+    pool_parser.add_argument("--config", type=Path, required=True)
+    pool_parser.add_argument("--dataset-dir", type=Path, required=True)
+    pool_parser.add_argument("--reference-dataset-dir", type=Path, required=True)
+    pool_parser.add_argument("--input-bundle-dir", type=Path, required=True)
+    pool_parser.add_argument("--initial-scoring-dir", type=Path, required=True)
+    pool_parser.add_argument("--retry-scoring-dir", type=Path, default=None)
+    pool_parser.add_argument("--seed", type=int, default=42)
+    pool_parser.add_argument("--output-dir", type=Path, required=True)
+    pool_parser.add_argument("--log-level", default="INFO")
+    pool_parser.set_defaults(handler=_build_refresh_active_pool)
+
+    benchmark_parser = subparsers.add_parser(
+        "summarize-refresh-benchmark", help="derive refresh batch selection from completed run artifacts"
+    )
+    benchmark_parser.add_argument("--manifest", type=Path, required=True)
+    benchmark_parser.add_argument("--output-dir", type=Path, required=True)
+    benchmark_parser.add_argument("--log-level", default="INFO")
+    benchmark_parser.set_defaults(handler=_summarize_refresh_benchmark)
+
     train_grpo_parser = subparsers.add_parser(
         "train-grpo",
         help="validate a fair C/D pair and run one GRPO reward mode",
@@ -1318,6 +1533,43 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("configs/execution/piston-transport-resilience.yaml"),
         help="operational Piston transport resilience policy; excluded from C/D scientific pair identity",
+    )
+    train_grpo_parser.add_argument(
+        "--calibration-manifest",
+        type=Path,
+        default=None,
+        help="completed calibrated active-pool manifest required by k=8 refresh runs",
+    )
+    train_grpo_parser.add_argument(
+        "--refresh-dataset-dir",
+        type=Path,
+        default=None,
+        help="WP9-a refresh artifact root required to strictly recheck the calibrated active pool",
+    )
+    train_grpo_parser.add_argument(
+        "--reference-dataset-dir",
+        type=Path,
+        default=None,
+        help="reference artifact root required to strictly recheck the calibrated active pool",
+    )
+    train_grpo_parser.add_argument(
+        "--benchmark-report",
+        type=Path,
+        default=None,
+        help="formal artifact-derived throughput report required by k=8 refresh runs",
+    )
+    train_grpo_parser.add_argument(
+        "--benchmark-role",
+        choices=("k8_candidate", "k4_diagnostic"),
+        default=None,
+        help="pre-freeze GRPO throughput role; excludes the final benchmark report binding",
+    )
+    train_grpo_parser.add_argument(
+        "--verification-workers",
+        type=int,
+        choices=range(1, 65),
+        default=1,
+        help="bounded ordered reward-verification workers (default: 1; maximum: 64)",
     )
     train_grpo_parser.add_argument(
         "--seed",

@@ -1,0 +1,6 @@
+{
+  "schema_version": "wp9b-engineering-fixture-v1",
+  "evidence_class": "engineering",
+  "samples_per_problem": 8,
+  "pass_pattern": [true, false, true, false, true, false, true, false]
+}

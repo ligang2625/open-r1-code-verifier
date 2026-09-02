@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import cast
 
 from code_verifier.execution.base import CodeExecutor, ExecutionInfrastructureFailureKind, ExecutionStatus
 from code_verifier.verification import (
     VerificationContractError,
+    VerificationRequest,
     VerificationResult,
+    prevalidate_verification_input,
     validate_verification_result,
     verify_completion,
+    verify_prevalidated_request,
 )
 
 
@@ -75,6 +79,28 @@ def _require_executor(value: object) -> CodeExecutor:
     if not callable(execute):
         raise RewardContractError("executor must provide a callable execute method")
     return cast(CodeExecutor, value)
+
+
+def _prevalidate_verification_inputs(
+    completion_texts: Sequence[str],
+    test_values: Sequence[object],
+    function_values: Sequence[object],
+    metadata_values: Sequence[object],
+) -> list[VerificationRequest]:
+    """Normalize every aligned verifier input before any concurrent executor side effect."""
+    requests: list[VerificationRequest] = []
+    for index, completion in enumerate(completion_texts):
+        try:
+            request = prevalidate_verification_input(
+                completion,
+                test_values[index],
+                function_values[index],
+                metadata_values[index],
+            )
+        except VerificationContractError:
+            raise RewardContractError("reward item violates verification input contract") from None
+        requests.append(request)
+    return requests
 
 
 _COMPONENT_FIELDS = {
@@ -269,3 +295,53 @@ def compute_code_rewards(
         rewards.append(reward)
         component_records.append(dict(record))
     return rewards, component_records
+
+
+def compute_code_rewards_concurrent(
+    completions: object,
+    tests_batch: object,
+    function_names: object,
+    metadata_batch: object,
+    *,
+    executor_factory: Callable[[], CodeExecutor],
+    mode: str,
+    max_concurrency: int,
+) -> tuple[list[float], list[dict[str, object]]]:
+    """Compute rewards concurrently while preserving exact input ordering and failure semantics."""
+    if mode not in {"public", "hidden"}:
+        raise RewardContractError("reward mode must be public or hidden")
+    if not callable(executor_factory):
+        raise RewardContractError("executor_factory must be callable")
+    if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or not 1 <= max_concurrency <= 64:
+        raise RewardContractError("max_concurrency must be an integer in [1, 64]")
+    batch_size = _validate_batch_alignment(completions, tests_batch, function_names, metadata_batch)
+    completion_texts = _completion_texts(completions)
+    if batch_size == 0:
+        return [], []
+    test_values = cast(Sequence[object], tests_batch)
+    function_values = cast(Sequence[object], function_names)
+    metadata_values = cast(Sequence[object], metadata_batch)
+    requests = _prevalidate_verification_inputs(completion_texts, test_values, function_values, metadata_values)
+
+    def score(index: int) -> tuple[float, dict[str, object]]:
+        request = requests[index]
+        executor = None if not request.parse_result.success else _require_executor(executor_factory())
+        try:
+            verification = verify_prevalidated_request(request, executor)
+        except VerificationContractError:
+            raise RewardContractError("reward item violates verification input contract") from None
+        record = _reward_components_from_verification(verification, mode=mode)
+        reward = record["total_reward"]
+        if isinstance(reward, bool) or not isinstance(reward, int | float) or not math.isfinite(float(reward)):
+            raise RewardContractError("total reward must be a finite number")
+        return float(reward), record
+
+    ordered: list[tuple[float, dict[str, object]] | None] = [None] * batch_size
+    with ThreadPoolExecutor(max_workers=min(max_concurrency, batch_size)) as pool:
+        futures = {pool.submit(score, index): index for index in range(batch_size)}
+        for future in as_completed(futures):
+            ordered[futures[future]] = future.result()
+    if any(item is None for item in ordered):
+        raise RewardContractError("concurrent reward scoring did not produce every result")
+    completed = cast(list[tuple[float, dict[str, object]]], ordered)
+    return [item[0] for item in completed], [dict(item[1]) for item in completed]

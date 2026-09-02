@@ -19,10 +19,13 @@ from code_verifier.verification.result_types import (
     verification_result_to_mapping,
 )
 from code_verifier.verification.verifier import (
+    VerificationRequest,
     _normalize_tests,
     _resource_limits_from_metadata,
     _validate_function_name,
+    prevalidate_verification_input,
     verify_completion,
+    verify_prevalidated_request,
 )
 
 _COMPLETION = "prefix\n```python\ndef solve(value):\n    return value\n```\n"
@@ -182,6 +185,32 @@ def test_normalize_tests_preserves_bool_int_float_type_distinctions() -> None:
     assert type(normalized[1]["expected"]) is int
     assert type(normalized[2]["input"]) is float
     assert type(normalized[2]["expected"]) is float
+
+
+def test_prevalidate_verification_input_returns_normalized_request_without_executor_side_effect() -> None:
+    tests = _tests(2)
+    request = prevalidate_verification_input(_COMPLETION, tests, "solve", _METADATA)
+
+    assert isinstance(request, VerificationRequest)
+    assert request.completion == _COMPLETION
+    assert request.tests == tests
+    assert request.function_name == "solve"
+    assert request.timeout_seconds == 1.5
+    assert request.memory_limit_mb == 256
+    assert request.parse_result.success is True
+    assert request.parse_result.code == _EXTRACTED_CODE
+
+    tests[0]["input"] = "caller mutation"
+    assert request.tests == _tests(2)
+
+
+def test_verify_prevalidated_request_reuses_parser_result_and_skips_executor_for_parse_failure() -> None:
+    request = prevalidate_verification_input("explanation only", _tests(1), "solve", _METADATA)
+
+    result = verify_prevalidated_request(request, None)
+
+    assert result.status is ExecutionStatus.PARSE_ERROR
+    assert result.parse_error_type == "no_supported_code_block"
 
 
 def test_resource_limits_accept_wp1_metadata_and_ignore_unrelated_fields() -> None:

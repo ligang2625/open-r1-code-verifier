@@ -1,0 +1,14 @@
+version: wp9b-calibration-v1
+sampling:
+  initial_generations: 8
+  retry_generations: 8
+  temperature: 0.8
+  top_p: 0.95
+  max_new_tokens: 512
+active_pool:
+  size: 3000
+  sft_overlap_fraction: 0.075
+  sft_overlap_hard_max: 0.15
+  dual_informative_min_fraction: 0.70
+  public_only_max_fraction: 0.15
+  hidden_only_max_fraction: 0.15

@@ -5,7 +5,8 @@ from __future__ import annotations
 import keyword
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, cast
 
 from code_verifier.data.schema import SchemaError, json_value_to_mutable, validate_json_value
 from code_verifier.execution.base import (
@@ -15,13 +16,25 @@ from code_verifier.execution.base import (
     TestCaseResult,
     validate_execution_result,
 )
-from code_verifier.parsing.code_extractor import extract_python_code
+from code_verifier.parsing.code_extractor import ParseResult, extract_python_code
 from code_verifier.verification.result_types import (
     FailureCounts,
     VerificationContractError,
     VerificationResult,
     validate_verification_result,
 )
+
+
+@dataclass(frozen=True)
+class VerificationRequest:
+    """Side-effect-free, normalized input for one completion verification."""
+
+    completion: object
+    tests: list[dict[str, Any]]
+    function_name: str
+    timeout_seconds: float
+    memory_limit_mb: int
+    parse_result: ParseResult
 
 
 def _validate_utf8_text(value: str) -> None:
@@ -102,6 +115,27 @@ def _resource_limits_from_metadata(metadata: object) -> tuple[float, int]:
     if isinstance(memory_limit, bool) or not isinstance(memory_limit, int) or memory_limit <= 0:
         raise VerificationContractError("memory_limit_mb must be a positive integer")
     return normalized_time_limit, memory_limit
+
+
+def prevalidate_verification_input(
+    completion: object,
+    tests: object,
+    function_name: object,
+    metadata: object,
+) -> VerificationRequest:
+    """Normalize and parse one request without creating or using an executor."""
+    validated_function_name = _validate_function_name(function_name)
+    normalized_tests = _normalize_tests(tests)
+    timeout_seconds, memory_limit_mb = _resource_limits_from_metadata(metadata)
+    parse_result = extract_python_code(cast(str, completion), expected_function_name=validated_function_name)
+    return VerificationRequest(
+        completion=completion,
+        tests=normalized_tests,
+        function_name=validated_function_name,
+        timeout_seconds=timeout_seconds,
+        memory_limit_mb=memory_limit_mb,
+        parse_result=parse_result,
+    )
 
 
 def _summarize_failure_counts(
@@ -207,6 +241,55 @@ def _executed_result(*, num_code_blocks: int, execution_result: ExecutionResult)
     return result
 
 
+def verify_prevalidated_request(
+    request: VerificationRequest,
+    executor: CodeExecutor | None,
+) -> VerificationResult:
+    """Verify one request returned by :func:`prevalidate_verification_input`."""
+    if not isinstance(request, VerificationRequest):
+        raise VerificationContractError("request must be a VerificationRequest")
+
+    parse_result = request.parse_result
+    if not isinstance(parse_result, ParseResult):
+        raise VerificationContractError("request parse result is invalid")
+    if not parse_result.success:
+        if parse_result.error_type is None:
+            raise VerificationContractError("parser failure must include an error type")
+        return _parse_failure_result(
+            error_type=parse_result.error_type,
+            num_code_blocks=parse_result.num_code_blocks,
+            total_tests=len(request.tests),
+        )
+    if executor is None:
+        raise VerificationContractError("parsed verification requests require an executor")
+
+    try:
+        execution_result = executor.execute(
+            parse_result.code,
+            request.function_name,
+            request.tests,
+            request.timeout_seconds,
+            request.memory_limit_mb,
+        )
+        validate_execution_result(execution_result)
+        if execution_result.status is ExecutionStatus.PARSE_ERROR or any(
+            test_result.status is ExecutionStatus.PARSE_ERROR for test_result in execution_result.test_results
+        ):
+            raise VerificationContractError("executor result must not contain parse_error status")
+        if execution_result.total_tests != len(request.tests):
+            raise VerificationContractError("executor total_tests does not match the selected test layer")
+    except Exception:
+        return _executor_exception_result(
+            num_code_blocks=parse_result.num_code_blocks,
+            total_tests=len(request.tests),
+        )
+
+    return _executed_result(
+        num_code_blocks=parse_result.num_code_blocks,
+        execution_result=execution_result,
+    )
+
+
 def verify_completion(
     completion: str,
     tests: Sequence[Mapping[str, object]],
@@ -215,42 +298,5 @@ def verify_completion(
     executor: CodeExecutor,
 ) -> VerificationResult:
     """Parse and verify one completion against exactly one caller-selected test layer."""
-    validated_function_name = _validate_function_name(function_name)
-    normalized_tests = _normalize_tests(tests)
-    timeout_seconds, memory_limit_mb = _resource_limits_from_metadata(metadata)
-
-    parse_result = extract_python_code(completion, expected_function_name=validated_function_name)
-    if not parse_result.success:
-        if parse_result.error_type is None:
-            raise VerificationContractError("parser failure must include an error type")
-        return _parse_failure_result(
-            error_type=parse_result.error_type,
-            num_code_blocks=parse_result.num_code_blocks,
-            total_tests=len(normalized_tests),
-        )
-
-    try:
-        execution_result = executor.execute(
-            parse_result.code,
-            validated_function_name,
-            normalized_tests,
-            timeout_seconds,
-            memory_limit_mb,
-        )
-        validate_execution_result(execution_result)
-        if execution_result.status is ExecutionStatus.PARSE_ERROR or any(
-            test_result.status is ExecutionStatus.PARSE_ERROR for test_result in execution_result.test_results
-        ):
-            raise VerificationContractError("executor result must not contain parse_error status")
-        if execution_result.total_tests != len(normalized_tests):
-            raise VerificationContractError("executor total_tests does not match the selected test layer")
-    except Exception:
-        return _executor_exception_result(
-            num_code_blocks=parse_result.num_code_blocks,
-            total_tests=len(normalized_tests),
-        )
-
-    return _executed_result(
-        num_code_blocks=parse_result.num_code_blocks,
-        execution_result=execution_result,
-    )
+    request = prevalidate_verification_input(completion, tests, function_name, metadata)
+    return verify_prevalidated_request(request, executor)
