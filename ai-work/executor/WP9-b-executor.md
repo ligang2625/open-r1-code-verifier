@@ -254,3 +254,46 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## Review Round 5 repair execution (E4)
+
+### Routing and provenance
+
+- Task kind: `repair` for committed WP9-b Review Round 5 (`32e73af948eaeae4bc1ddfdac38b0d51dc1b2759`).
+- Effective repair scope was exactly `R5-M1`. Source and effective routing were Local Codex `mode=single`; no subagents or parallel execution lanes were used.
+- The stage remained `development` / `engineering` on the GTX 1660 Ti control plane. No real frozen-B calibration, formal benchmark, optimizer-based GRPO, C2/D2, 24GB/4090 command, or formal 400-problem evaluation was run or claimed.
+- Result code commit captured before this report: `b8d57904728076624243eef023c33b74f96e2e82`.
+
+### Repair result
+
+- Benchmark reconstruction now derives a canonical calibration identity from strict GRPO benchmark sources: calibration manifest SHA256, active order SHA256, Public training SHA256, and Hidden training SHA256.
+- GRPO verification, k4/k8 diagnostic, and paired Public/Hidden benchmark sections must use the same canonical calibration identity; cross-section drift fails closed before the report is written.
+- `check_refresh_benchmark_report()` preserves the independently rebuilt canonical identity in its checked summary. `load_grpo_refresh_binding()` compares all four benchmark values with the strictly checked calibration/active-pool artifact before constructing `GRPORefreshBinding`.
+- A negative regression combines two individually well-formed but different engineering calibration/benchmark artifact sets with the same selected worker and confirms final binding rejection. Production-shadow integration binds benchmark probes to the active pool's actual four hashes.
+
+### Verification evidence
+
+- Pre-change affected baseline: `29 passed`.
+- R5-M1 targeted binding/throughput tests: `26 passed, 3 deselected`; the deselected tests are existing fake training-source tests requiring a GPU-visible runtime. The production-shadow integration test separately passed (`1 passed`).
+- Exact sealed-plan focused unit/integration suite: `326 passed`.
+- `make lint`: PASS — Ruff check, Ruff format check, and strict mypy passed for `135` source/test files.
+- `make test`: PASS — `1185 passed, 3 skipped` in `33.70s`; the three skips are the repository's existing opt-in real-Piston cases requiring `CODE_VERIFIER_RUN_PISTON=1`.
+- `git diff --check`: PASS. The code commit explicitly staged only the six R5-M1 implementation/test files; `.ai-bridge/**` remained untracked and unstaged.
+- Sealed plan, review, both project specifications, `proceedings.md`, and `third_party/open-r1` were not modified.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-b
+  execution_id: E4
+  task_kind: repair
+  source_plan_commit: 23e43b78fd31bfe051b29d38ef9e9d0f43e20590
+  source_review_round: 5
+  source_review_commit: 32e73af948eaeae4bc1ddfdac38b0d51dc1b2759
+  repair_issue_ids:
+    - R5-M1
+  result_code_commit: b8d57904728076624243eef023c33b74f96e2e82
+  execution_backend: local_codex
+  effective_execution_mode: single
+  status: completed
+```
