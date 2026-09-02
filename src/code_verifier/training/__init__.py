@@ -1,6 +1,7 @@
 """Training integration contracts for CodeVerifier."""
 
 from code_verifier.training.grpo import (
+    GRPOBenchmarkBinding,
     GRPOCheckpointIdentity,
     GRPORefreshBinding,
     GRPOTrainingConfig,
@@ -11,6 +12,7 @@ from code_verifier.training.grpo import (
     grpo_run_directory,
     grpo_training_config_from_mapping,
     load_completed_grpo_checkpoint,
+    load_grpo_benchmark_binding,
     load_grpo_refresh_binding,
     load_grpo_training_config,
     run_grpo_training,
@@ -45,6 +47,7 @@ from code_verifier.training.sft_prevalidation import (
 )
 
 __all__ = [
+    "GRPOBenchmarkBinding",
     "GRPOCheckpointIdentity",
     "GRPODataError",
     "GRPORefreshBinding",
@@ -69,6 +72,7 @@ __all__ = [
     "grpo_training_config_from_mapping",
     "load_completed_grpo_checkpoint",
     "load_completed_sft_checkpoint",
+    "load_grpo_benchmark_binding",
     "load_grpo_refresh_binding",
     "load_grpo_training_config",
     "load_sft_training_config",

@@ -133,6 +133,19 @@ class GRPORefreshBinding:
     verification_workers: int
 
 
+@dataclass(frozen=True)
+class GRPOBenchmarkBinding:
+    """Pre-freeze active-pool identity for strict GRPO throughput benchmark runs."""
+
+    calibration_manifest_path: Path
+    calibration_manifest_sha256: str
+    active_order_sha256: str
+    public_training_sha256: str
+    hidden_training_sha256: str
+    verification_workers: int
+    role: str
+
+
 class GRPOTrainingError(RuntimeError):
     """Raised when GRPO configuration, hardware, runtime, or artifacts fail closed."""
 
@@ -216,6 +229,9 @@ _GRPO_TRAINER_RESUME_FILES = (
     "training_args.bin",
 )
 _PAIR_SCHEMA_VERSION = 2
+_BENCHMARK_PAIR_SCHEMA_VERSION = 4
+_GRPO_BENCHMARK_ROLE_GROUP_SIZES = {"k8_candidate": 8, "k4_diagnostic": 4}
+_GRPO_BENCHMARK_WORKERS = frozenset({8, 16, 32, 64})
 GRPO_RESUME_CODE_MIGRATION_OPERATIONAL_REWARD_RESILIENCE = "operational_reward_resilience_v1"
 _GRPO_REWARD_INFRA_RETRY_POLICY_VERSION = "grpo-reward-infra-retry-v2"
 _GRPO_REWARD_INFRA_RETRY_LEGACY_POLICY_VERSIONS = frozenset({"grpo-reward-infra-retry-v1"})
@@ -1504,6 +1520,54 @@ def _strict_json_object(path: Path, *, description: str) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
+def load_grpo_benchmark_binding(
+    *,
+    calibration_manifest_path: Path,
+    refresh_dataset_dir: Path,
+    reference_dataset_dir: Path,
+    verification_workers: int,
+    role: str,
+    allow_engineering: bool = False,
+) -> GRPOBenchmarkBinding:
+    """Build a pre-freeze benchmark binding without requiring the final benchmark report."""
+    if role not in _GRPO_BENCHMARK_ROLE_GROUP_SIZES:
+        raise GRPOTrainingError("benchmark role is invalid")
+    if (
+        isinstance(verification_workers, bool)
+        or not isinstance(verification_workers, int)
+        or verification_workers not in _GRPO_BENCHMARK_WORKERS
+    ):
+        raise GRPOTrainingError("benchmark verification_workers must be one of 8, 16, 32, or 64")
+    try:
+        checked_pool = check_calibrated_active_pool(
+            calibration_manifest_path.parent,
+            refresh_dataset_dir=refresh_dataset_dir,
+            reference_dataset_dir=reference_dataset_dir,
+            allow_test_protocol=allow_engineering,
+        )
+    except (CalibrationError, RefreshDataError) as error:
+        raise GRPOTrainingError(f"calibration artifact failed strict check: {error}") from None
+    if checked_pool.calibration_manifest.resolve(strict=False) != calibration_manifest_path.resolve(strict=False):
+        raise GRPOTrainingError("calibration manifest path is not the strict checked pool manifest")
+    calibration = _strict_json_object(calibration_manifest_path, description="calibration manifest")
+    if calibration.get("status") != "completed" or calibration.get("schema_version") not in {
+        "wp9b-calibration-v1",
+        "wp9b-calibration-test-v1",
+    }:
+        raise GRPOTrainingError("calibration manifest identity/status is invalid")
+    if not allow_engineering and calibration.get("evidence_class") != "formal_calibration":
+        raise GRPOTrainingError("GRPO benchmark requires a formal calibration manifest")
+    return GRPOBenchmarkBinding(
+        calibration_manifest_path=calibration_manifest_path,
+        calibration_manifest_sha256=_file_hash(calibration_manifest_path, description="calibration manifest"),
+        active_order_sha256=checked_pool.active_order_sha256,
+        public_training_sha256=_file_hash(checked_pool.public_grpo_jsonl, description="calibrated Public dataset"),
+        hidden_training_sha256=_file_hash(checked_pool.hidden_grpo_jsonl, description="calibrated Hidden dataset"),
+        verification_workers=verification_workers,
+        role=role,
+    )
+
+
 def load_grpo_refresh_binding(
     *,
     calibration_manifest_path: Path,
@@ -1599,7 +1663,7 @@ def _refresh_binding_mapping(binding: GRPORefreshBinding) -> dict[str, object]:
 def _validate_refresh_active_records(
     public_records: Sequence[Mapping[str, object]],
     hidden_records: Sequence[Mapping[str, object]],
-    binding: GRPORefreshBinding,
+    binding: GRPORefreshBinding | GRPOBenchmarkBinding,
 ) -> None:
     problem_ids = [cast(str, record["problem_id"]) for record in public_records]
     if stable_json_hash(problem_ids) != binding.active_order_sha256:
@@ -2037,10 +2101,19 @@ def _paired_definition(
     seed: int,
     parent_sft: SFTCheckpointIdentity,
     refresh_binding: GRPORefreshBinding | None = None,
+    benchmark_binding: GRPOBenchmarkBinding | None = None,
 ) -> tuple[str, dict[str, object]]:
     """Build one payload-free canonical identity for the complete C/D definition pair."""
+    if refresh_binding is not None and benchmark_binding is not None:
+        raise GRPOTrainingError("refresh and benchmark bindings are mutually exclusive")
+    if benchmark_binding is not None:
+        pair_version = _BENCHMARK_PAIR_SCHEMA_VERSION
+    elif refresh_binding is not None:
+        pair_version = 3
+    else:
+        pair_version = _PAIR_SCHEMA_VERSION
     components: dict[str, object] = {
-        "paired_definition_version": _PAIR_SCHEMA_VERSION if refresh_binding is None else 3,
+        "paired_definition_version": pair_version,
         "paired_public_config_hash": _paired_config_hash(public_config, seed=seed),
         "paired_hidden_config_hash": _paired_config_hash(hidden_config, seed=seed),
         "paired_public_dataset_hash": _file_hash(public_config.dataset_path, description="Public GRPO dataset"),
@@ -2048,6 +2121,19 @@ def _paired_definition(
     }
     if refresh_binding is not None:
         components.update(_refresh_binding_mapping(refresh_binding))
+    elif benchmark_binding is not None:
+        components.update(
+            {
+                "benchmark_source_version": 1,
+                "benchmark_role": benchmark_binding.role,
+                "calibration_manifest_sha256": benchmark_binding.calibration_manifest_sha256,
+                "active_order_sha256": benchmark_binding.active_order_sha256,
+                "active_public_training_sha256": benchmark_binding.public_training_sha256,
+                "active_hidden_training_sha256": benchmark_binding.hidden_training_sha256,
+                "verification_workers": benchmark_binding.verification_workers,
+                "rolling_telemetry_window_groups": _GRPO_ROLLING_TELEMETRY_WINDOW_GROUPS,
+            }
+        )
     canonical = {**components, "seed": seed, "parent_sft": _portable_parent_identity_mapping(parent_sft)}
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), components
@@ -2164,6 +2250,7 @@ def _begin_attempt(
         "resume_from_checkpoint": resume_source,
         "code_commit": code_commit,
         "gpu_hours": 0.0,
+        "failure_kind": None,
         "reward_infrastructure_retry": _RewardInfrastructureRetryTelemetry().to_mapping(),
     }
     if code_migration is not None:
@@ -2183,9 +2270,19 @@ def _set_latest_attempt_retry_telemetry(
     cast(dict[str, object], attempts[-1])["reward_infrastructure_retry"] = telemetry.to_mapping()
 
 
-def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu_hours: float) -> None:
+def _finish_attempt(
+    run_metadata: dict[str, object],
+    *,
+    status: str,
+    attempt_gpu_hours: float,
+    failure_kind: str | None = None,
+) -> None:
     if status not in {"completed", "failed"} or not math.isfinite(attempt_gpu_hours) or attempt_gpu_hours < 0.0:
         raise GRPOTrainingError("GRPO attempt telemetry is invalid")
+    if (status == "completed" and failure_kind is not None) or (
+        status == "failed" and failure_kind not in {"cuda_out_of_memory", "other"}
+    ):
+        raise GRPOTrainingError("GRPO attempt failure telemetry is invalid")
     attempts = run_metadata.get("attempts")
     if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
         raise GRPOTrainingError("GRPO run metadata has invalid attempt history")
@@ -2193,10 +2290,18 @@ def _finish_attempt(run_metadata: dict[str, object], *, status: str, attempt_gpu
     latest["status"] = status
     latest["end_time"] = datetime.now(timezone.utc).isoformat()
     latest["gpu_hours"] = attempt_gpu_hours
+    latest["failure_kind"] = failure_kind
     cumulative = _attempt_gpu_hours_total(attempts)
     run_metadata["gpu_hours"] = cumulative
     run_metadata["status"] = status
     run_metadata["end_time"] = latest["end_time"]
+
+
+def _attempt_failure_kind(error: BaseException) -> str:
+    text = f"{type(error).__name__}: {error}".casefold()
+    if "outofmemoryerror" in text or ("cuda" in text and "out of memory" in text):
+        return "cuda_out_of_memory"
+    return "other"
 
 
 def _reset_cuda_peak_memory() -> None:
@@ -2448,6 +2553,7 @@ def run_grpo_training(
     executor_factory: Callable[[], CodeExecutor] | None = None,
     verification_workers: int = 1,
     refresh_binding: GRPORefreshBinding | None = None,
+    benchmark_binding: GRPOBenchmarkBinding | None = None,
     resume_from_checkpoint: Path | None = None,
     resume_run_git_commit: str | None = None,
     resume_code_migration: str | None = None,
@@ -2467,14 +2573,27 @@ def run_grpo_training(
     if reward_mode not in {"public", "hidden"}:
         raise GRPOTrainingError("reward_mode must select public or hidden from the validated pair")
     config = public_config if reward_mode == "public" else hidden_config
-    if config.num_generations == 8 and refresh_binding is None:
-        raise GRPOTrainingError("k=8 refresh GRPO requires calibration and benchmark binding")
-    if config.num_generations != 8 and refresh_binding is not None:
-        raise GRPOTrainingError("refresh binding is only valid for k=8 GRPO")
-    if refresh_binding is None and verification_workers != 1:
-        raise GRPOTrainingError("legacy GRPO keeps serial reward verification")
-    if refresh_binding is not None and refresh_binding.verification_workers != verification_workers:
-        raise GRPOTrainingError("runtime verification_workers differs from the refresh binding")
+    if refresh_binding is not None and benchmark_binding is not None:
+        raise GRPOTrainingError("refresh and benchmark bindings are mutually exclusive")
+    evidence_binding = benchmark_binding if benchmark_binding is not None else refresh_binding
+    if benchmark_binding is not None:
+        expected_group_size = _GRPO_BENCHMARK_ROLE_GROUP_SIZES.get(benchmark_binding.role)
+        if expected_group_size is None or config.num_generations != expected_group_size:
+            raise GRPOTrainingError("benchmark role does not match num_generations")
+        if verification_workers not in _GRPO_BENCHMARK_WORKERS:
+            raise GRPOTrainingError("benchmark verification_workers must be one of 8, 16, 32, or 64")
+        if benchmark_binding.verification_workers != verification_workers:
+            raise GRPOTrainingError("runtime verification_workers differs from the benchmark binding")
+    elif refresh_binding is not None:
+        if config.num_generations != 8:
+            raise GRPOTrainingError("refresh binding is only valid for k=8 GRPO")
+        if refresh_binding.verification_workers != verification_workers:
+            raise GRPOTrainingError("runtime verification_workers differs from the refresh binding")
+    else:
+        if config.num_generations == 8:
+            raise GRPOTrainingError("k=8 refresh GRPO requires calibration and benchmark binding")
+        if verification_workers != 1:
+            raise GRPOTrainingError("legacy GRPO keeps serial reward verification")
     validate_grpo_training_hardware(config)
     public_parent_sft = load_completed_sft_checkpoint(public_sft_run_dir)
     hidden_parent_sft = load_completed_sft_checkpoint(hidden_sft_run_dir)
@@ -2483,15 +2602,15 @@ def run_grpo_training(
     public_records = load_training_artifact(public_config.dataset_path, kind=TrainingArtifactKind.PUBLIC_GRPO)
     hidden_records = load_training_artifact(hidden_config.dataset_path, kind=TrainingArtifactKind.HIDDEN_GRPO)
     validate_grpo_artifact_pair(public_records, hidden_records)
-    if refresh_binding is not None and (
+    if evidence_binding is not None and (
         _file_hash(public_config.dataset_path, description="Public GRPO dataset")
-        != refresh_binding.public_training_sha256
+        != evidence_binding.public_training_sha256
         or _file_hash(hidden_config.dataset_path, description="Hidden GRPO dataset")
-        != refresh_binding.hidden_training_sha256
+        != evidence_binding.hidden_training_sha256
     ):
         raise GRPOTrainingError("refresh GRPO datasets differ from the calibrated active pool")
-    if refresh_binding is not None:
-        _validate_refresh_active_records(public_records, hidden_records, refresh_binding)
+    if evidence_binding is not None:
+        _validate_refresh_active_records(public_records, hidden_records, evidence_binding)
     parent_sft = public_parent_sft
     paired_definition_sha256, paired_components = _paired_definition(
         public_config,
@@ -2499,6 +2618,7 @@ def run_grpo_training(
         seed=seed,
         parent_sft=parent_sft,
         refresh_binding=refresh_binding,
+        benchmark_binding=benchmark_binding,
     )
     records = public_records if reward_mode == "public" else hidden_records
     run_dir = grpo_run_directory(output_root, config.run_name)
@@ -2583,10 +2703,10 @@ def run_grpo_training(
     retry_telemetry = _RewardInfrastructureRetryTelemetry()
     rolling_telemetry = (
         GRPORollingTelemetry(window_size=_GRPO_ROLLING_TELEMETRY_WINDOW_GROUPS)
-        if refresh_binding is not None
+        if evidence_binding is not None
         else None
     )
-    utilization_sampler = RuntimeUtilizationSampler() if refresh_binding is not None else None
+    utilization_sampler = RuntimeUtilizationSampler() if evidence_binding is not None else None
     utilization_started = False
     _begin_attempt(
         run_metadata,
@@ -2643,7 +2763,7 @@ def run_grpo_training(
                 max_completion_length=config.max_completion_length,
                 retry_telemetry=retry_telemetry,
                 rolling_telemetry=rolling_telemetry,
-                require_calibration_class=refresh_binding is not None,
+                require_calibration_class=evidence_binding is not None,
                 operational_log_path=run_dir / "stdout.log",
                 executor_factory=executor_factory,
                 verification_workers=verification_workers,
@@ -2660,7 +2780,7 @@ def run_grpo_training(
             _install_grpo_runtime_telemetry(
                 trainer,
                 rolling_telemetry=rolling_telemetry,
-                require_optimizer_breakdown=refresh_binding is not None,
+                require_optimizer_breakdown=evidence_binding is not None,
             )
             _install_grpo_checkpoint_log_snapshots(
                 trainer,
@@ -2751,7 +2871,12 @@ def run_grpo_training(
             attempts = run_metadata.get("attempts")
             if isinstance(attempts, list) and attempts and isinstance(attempts[-1], dict):
                 cast(dict[str, object], attempts[-1])["runtime_utilization"] = utilization_snapshot
-        _finish_attempt(run_metadata, status="failed", attempt_gpu_hours=attempt_gpu_hours)
+        _finish_attempt(
+            run_metadata,
+            status="failed",
+            attempt_gpu_hours=attempt_gpu_hours,
+            failure_kind=_attempt_failure_kind(error),
+        )
         _write_json(run_dir / "run.json", run_metadata)
         with (run_dir / "stderr.log").open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")

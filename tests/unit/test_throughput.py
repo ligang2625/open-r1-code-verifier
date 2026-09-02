@@ -162,6 +162,7 @@ def test_formal_summary_does_not_close_when_generation_utilization_is_missing(tm
                 "eval_generation": {"baseline": str(baseline), "candidates": [str(batch2)]},
                 "eval_verification": {"baseline": "unused", "candidates": ["unused"]},
                 "grpo_verification": {"baseline": "unused", "candidates": ["unused"]},
+                "grpo_group_size_diagnostic": {"k4": "unused", "k8": "unused"},
                 "paired_grpo": {
                     "sequential": {"public": "unused", "hidden": "unused"},
                     "concurrent": {"public": "unused", "hidden": "unused"},

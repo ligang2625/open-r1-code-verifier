@@ -136,6 +136,23 @@ class _GRPOProbe:
     reward_count: int = 0
     group_count: int = 0
     rollout_count: int = 0
+    benchmark_role: str | None = None
+    group_size: int = 0
+    diagnostic_identity_sha256: str = ""
+    active_order_sha256: str = ""
+    problem_order_sha256: str = ""
+    problem_count: int = 0
+    generated_tokens: int = 0
+    tokens_per_second: float = 0.0
+    verifier_request_count: int = 0
+    verifier_runtime_seconds: float = 0.0
+    retry_attempts: int = 0
+    oom_count: int = 0
+    infrastructure_error_count: int = 0
+    zero_variance_group_count: int = 0
+    informative_group_count: int = 0
+    gpu_hours: float = 0.0
+    useful_nonzero_variance_groups_per_gpu_hour: float = 0.0
 
 
 def _sha256(path: Path) -> str:
@@ -453,7 +470,26 @@ def _strict_grpo_identity(run_dir: Path) -> object:
         raise ThroughputError(f"formal GRPO benchmark source failed strict checkpoint validation: {error}") from None
 
 
-def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str, object]:
+def _strict_active_pool_paths(dataset_path: Path, *, reward_mode: str) -> tuple[Path, Path]:
+    if reward_mode not in {"public", "hidden"}:
+        raise ThroughputError("formal GRPO reward arm is invalid")
+    training_dir = dataset_path.parent
+    public_dataset_path = training_dir / "public_grpo.jsonl"
+    hidden_dataset_path = training_dir / "hidden_grpo.jsonl"
+    selected_dataset_path = public_dataset_path if reward_mode == "public" else hidden_dataset_path
+    if dataset_path.resolve(strict=False) != selected_dataset_path.resolve(strict=False):
+        raise ThroughputError("formal GRPO selected dataset path does not match its reward arm")
+    if not public_dataset_path.is_file() or not hidden_dataset_path.is_file():
+        raise ThroughputError("formal GRPO active Public/Hidden pool artifacts are missing")
+    return public_dataset_path, hidden_dataset_path
+
+
+def _strict_grpo_source(
+    run_dir: Path,
+    metadata: dict[str, object],
+    *,
+    expected_role: str | None = None,
+) -> dict[str, object]:
     """Validate all payload-free GRPO evidence needed for formal throughput selection."""
     evidence_class = metadata.get("evidence_class")
     if evidence_class == _ENGINEERING_GRPO_EVIDENCE_CLASS:
@@ -585,8 +621,17 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
     effective_seed = metadata.get("seed")
     if isinstance(effective_seed, bool) or not isinstance(effective_seed, int):
         raise ThroughputError("formal GRPO seed is invalid")
-    if config.reward_mode != metadata.get("reward_mode") or config.num_generations != 8:
-        raise ThroughputError("formal GRPO source is not the frozen k=8 refresh configuration")
+    role_group_sizes = {"k8_candidate": 8, "k4_diagnostic": 4}
+    benchmark_role = metadata.get("benchmark_role")
+    if metadata.get("benchmark_source_version") != 1 or benchmark_role not in role_group_sizes:
+        raise ThroughputError("formal GRPO source is not a pre-freeze benchmark run")
+    if metadata.get("paired_definition_version") != 4:
+        raise ThroughputError("formal GRPO benchmark source pair identity version is invalid")
+    if expected_role is not None and benchmark_role != expected_role:
+        raise ThroughputError("formal GRPO benchmark source role does not match the requested benchmark")
+    group_size = role_group_sizes[cast(str, benchmark_role)]
+    if config.reward_mode != metadata.get("reward_mode") or config.num_generations != group_size:
+        raise ThroughputError("formal GRPO benchmark role does not match its resolved group size")
     if config.temperature != 0.8 or config.top_p != 0.95 or config.max_completion_length != 512:
         raise ThroughputError("formal GRPO source sampling configuration differs from the refresh protocol")
     if _config_hash(config, seed=effective_seed) != identity.config_hash:
@@ -613,14 +658,11 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
         "active_order_sha256",
         "active_public_training_sha256",
         "active_hidden_training_sha256",
-        "benchmark_report_sha256",
     ):
         _sha256_text(metadata.get(field), field_name=field)
-    if metadata.get("paired_definition_version") != 3:
-        raise ThroughputError("formal GRPO source is missing the refresh pair binding")
     workers = metadata.get("verification_workers")
     if isinstance(workers, bool) or not isinstance(workers, int) or workers not in _VERIFICATION_WORKERS:
-        raise ThroughputError("formal GRPO refresh verification_workers are invalid")
+        raise ThroughputError("formal GRPO benchmark verification_workers are invalid")
     active_dataset_field = (
         "active_public_training_sha256" if identity.reward_mode == "public" else "active_hidden_training_sha256"
     )
@@ -628,19 +670,19 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
         raise ThroughputError("formal GRPO dataset is not bound to the selected active-pool arm")
 
     # Recompute the pair definition from the current Public config, the sibling Hidden
-    # view, the portable completed-B identity, and the persisted refresh binding fields.
+    # view, the portable completed-B identity, and the pre-freeze benchmark binding fields.
     binding_fields = (
-        "refresh_binding_version",
+        "benchmark_source_version",
+        "benchmark_role",
         "calibration_manifest_sha256",
         "active_order_sha256",
         "active_public_training_sha256",
         "active_hidden_training_sha256",
-        "benchmark_report_sha256",
         "verification_workers",
         "rolling_telemetry_window_groups",
     )
-    if metadata.get("refresh_binding_version") != 1 or metadata.get("rolling_telemetry_window_groups") != 128:
-        raise ThroughputError("formal GRPO refresh binding version/window is invalid")
+    if metadata.get("rolling_telemetry_window_groups") != 128:
+        raise ThroughputError("formal GRPO benchmark rolling telemetry window is invalid")
     paired_components = {
         field: metadata.get(field)
         for field in (
@@ -649,7 +691,7 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
             "paired_hidden_config_hash",
             "paired_public_dataset_hash",
             "paired_hidden_dataset_hash",
-            *binding_fields[1:],
+            *binding_fields,
         )
     }
     selected_config_field = (
@@ -693,11 +735,12 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
     if _stable_hash(paired_canonical) != identity.paired_definition_sha256:
         raise ThroughputError("formal GRPO paired definition hash does not recompute")
 
-    dataset_path = config.dataset_path
-    hidden_dataset_path = dataset_path.with_name("hidden_grpo.jsonl")
-    if not dataset_path.is_file() or not hidden_dataset_path.is_file():
-        raise ThroughputError("formal GRPO active Public/Hidden pool artifacts are missing")
-    public_sha = _sha256(dataset_path)
+    public_dataset_path, hidden_dataset_path = _strict_active_pool_paths(
+        config.dataset_path,
+        reward_mode=identity.reward_mode,
+    )
+    training_dir = config.dataset_path.parent
+    public_sha = _sha256(public_dataset_path)
     hidden_sha = _sha256(hidden_dataset_path)
     if public_sha != metadata.get("active_public_training_sha256") or hidden_sha != metadata.get(
         "active_hidden_training_sha256"
@@ -706,7 +749,7 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
     try:
         from code_verifier.data.leakage_checks import TrainingArtifactKind, load_training_artifact
 
-        public_records = load_training_artifact(dataset_path, kind=TrainingArtifactKind.PUBLIC_GRPO)
+        public_records = load_training_artifact(public_dataset_path, kind=TrainingArtifactKind.PUBLIC_GRPO)
         hidden_records = load_training_artifact(hidden_dataset_path, kind=TrainingArtifactKind.HIDDEN_GRPO)
     except Exception as error:
         raise ThroughputError(f"formal GRPO active pool failed strict validation: {error}") from None
@@ -724,7 +767,7 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
         ):
             raise ThroughputError("formal GRPO active pool calibration_class binding is invalid")
 
-    calibration_path = dataset_path.parent.parent / "calibration_manifest.json"
+    calibration_path = training_dir.parent / "calibration_manifest.json"
     calibration = _json(calibration_path)
     if _sha256(calibration_path) != metadata.get("calibration_manifest_sha256"):
         raise ThroughputError("formal GRPO calibration manifest hash mismatch")
@@ -791,8 +834,8 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
     groups = _jsonl(groups_path)
     rollouts = _jsonl(rollouts_path)
     metrics = _jsonl(metrics_path)
-    if not groups or len(rewards) != len(groups) * 8 or len(rollouts) != len(rewards):
-        raise ThroughputError("formal GRPO artifact counts do not prove complete k=8 groups")
+    if not groups or len(rewards) != len(groups) * group_size or len(rollouts) != len(rewards):
+        raise ThroughputError("formal GRPO artifact counts do not prove complete benchmark groups")
     reward_fields = {
         "item_index",
         "group_index",
@@ -851,10 +894,10 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
     for expected_index, row in enumerate(rewards):
         if set(row) != reward_fields or row.get("item_index") != expected_index:
             raise ThroughputError("formal GRPO reward artifact schema/order is invalid")
-        group_index = expected_index // 8
+        group_index = expected_index // group_size
         if row.get("mode") != metadata.get("reward_mode") or row.get("group_index") != group_index:
             raise ThroughputError("formal GRPO reward artifact identity is invalid")
-        if row.get("group_item_index") != expected_index % 8 or row.get("problem_id") not in public_ids:
+        if row.get("group_item_index") != expected_index % group_size or row.get("problem_id") not in public_ids:
             raise ThroughputError("formal GRPO reward artifact problem/order binding is invalid")
         if any(key in row for key in _GRPO_FORBIDDEN_ARTIFACT_FIELDS):
             raise ThroughputError("formal GRPO reward artifact contains payload data")
@@ -874,7 +917,11 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
             raise ThroughputError("formal GRPO reward artifact flags are invalid")
         reward_by_group.setdefault(cast(int, row["group_index"]), []).append(row)
     for expected_index, row in enumerate(groups):
-        if set(row) != group_fields or row.get("group_index") != expected_index or row.get("sample_count") != 8:
+        if (
+            set(row) != group_fields
+            or row.get("group_index") != expected_index
+            or row.get("sample_count") != group_size
+        ):
             raise ThroughputError("formal GRPO group artifact schema/order is invalid")
         if row.get("reward_mode") != metadata.get("reward_mode"):
             raise ThroughputError("formal GRPO group artifact identity is invalid")
@@ -913,10 +960,10 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
         test_values = [
             _finite_number(item.get("test_reward"), field_name="group test reward") for item in group_rewards
         ]
-        total_mean = sum(total_values) / 8
-        test_mean = sum(test_values) / 8
-        total_std = math.sqrt(sum((value - total_mean) ** 2 for value in total_values) / 8)
-        test_std = math.sqrt(sum((value - test_mean) ** 2 for value in test_values) / 8)
+        total_mean = sum(total_values) / group_size
+        test_mean = sum(test_values) / group_size
+        total_std = math.sqrt(sum((value - total_mean) ** 2 for value in total_values) / group_size)
+        test_std = math.sqrt(sum((value - test_mean) ** 2 for value in test_values) / group_size)
         expected_statistics = {
             "mean": total_mean,
             "std": total_std,
@@ -959,9 +1006,9 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
         if set(row) != rollout_fields or row.get("item_index") != expected_index:
             raise ThroughputError("formal GRPO rollout artifact schema/order is invalid")
         if (
-            row.get("group_index") != expected_index // 8
-            or row.get("group_item_index") != expected_index % 8
-            or row.get("problem_id") != groups[expected_index // 8].get("problem_id")
+            row.get("group_index") != expected_index // group_size
+            or row.get("group_item_index") != expected_index % group_size
+            or row.get("problem_id") != groups[expected_index // group_size].get("problem_id")
             or row.get("reward_mode") != metadata.get("reward_mode")
             or row.get("total_reward") != rewards[expected_index].get("total_reward")
         ):
@@ -994,14 +1041,22 @@ def _strict_grpo_source(run_dir: Path, metadata: dict[str, object]) -> dict[str,
         "groups": groups,
         "rollouts": rollouts,
         "metrics": metrics,
+        "benchmark_role": benchmark_role,
+        "group_size": group_size,
     }
 
 
-def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False, strict_source: bool = False) -> _GRPOProbe:
+def _grpo_probe(
+    run_dir: Path,
+    *,
+    require_formal_telemetry: bool = False,
+    strict_source: bool = False,
+    expected_role: str | None = None,
+) -> _GRPOProbe:
     metadata = _json(run_dir / "run.json")
     strict_artifacts: dict[str, object] | None = None
     if strict_source:
-        strict_artifacts = _strict_grpo_source(run_dir, metadata)
+        strict_artifacts = _strict_grpo_source(run_dir, metadata, expected_role=expected_role)
     elif metadata.get("evidence_class") != _ENGINEERING_GRPO_EVIDENCE_CLASS:
         raise ThroughputError(
             "engineering GRPO benchmark source must explicitly declare evidence_class=engineering_fixture"
@@ -1022,14 +1077,30 @@ def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False, strict
     attempts = metadata.get("attempts")
     if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
         raise ThroughputError("GRPO benchmark attempt telemetry is invalid")
-    retry = cast(dict[str, object], attempts[-1]).get("reward_infrastructure_retry", {})
-    if not isinstance(retry, dict):
-        raise ThroughputError("GRPO benchmark retry telemetry is invalid")
-    retry_exhausted = retry.get("retry_exhausted", 0)
-    prepare_failures = retry.get("recovery_prepare_failures", 0)
-    retry_counters = (retry_exhausted, prepare_failures)
-    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in retry_counters):
-        raise ThroughputError("GRPO benchmark retry counters are invalid")
+    retry_attempts = 0
+    retry_exhausted = 0
+    prepare_failures = 0
+    oom_count = 0
+    for attempt in attempts:
+        if not isinstance(attempt, Mapping):
+            raise ThroughputError("GRPO benchmark attempt telemetry is invalid")
+        retry = attempt.get("reward_infrastructure_retry", {})
+        if not isinstance(retry, Mapping):
+            raise ThroughputError("GRPO benchmark retry telemetry is invalid")
+        raw_retry_attempts = retry.get("retry_attempts", 0)
+        raw_retry_exhausted = retry.get("retry_exhausted", 0)
+        raw_prepare_failures = retry.get("recovery_prepare_failures", 0)
+        retry_counters = (raw_retry_attempts, raw_retry_exhausted, raw_prepare_failures)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in retry_counters):
+            raise ThroughputError("GRPO benchmark retry counters are invalid")
+        retry_attempts += cast(int, raw_retry_attempts)
+        retry_exhausted += cast(int, raw_retry_exhausted)
+        prepare_failures += cast(int, raw_prepare_failures)
+        failure_kind = attempt.get("failure_kind")
+        if failure_kind not in {None, "other", "cuda_out_of_memory"}:
+            raise ThroughputError("GRPO benchmark attempt failure_kind is invalid")
+        if failure_kind == "cuda_out_of_memory":
+            oom_count += 1
     rewards_path = run_dir / "rewards.jsonl"
     groups_path = run_dir / "group_metrics.jsonl"
     rewards = _strip_operational_fields(_jsonl(rewards_path), group=False)
@@ -1103,21 +1174,68 @@ def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False, strict
                 "bf16_supported",
             )
         }
-        identity["refresh_binding"] = {
+        identity["benchmark_binding"] = {
             field: metadata.get(field)
             for field in (
-                "paired_definition_sha256",
+                "benchmark_role",
                 "calibration_manifest_sha256",
                 "active_order_sha256",
                 "active_public_training_sha256",
                 "active_hidden_training_sha256",
-                "benchmark_report_sha256",
-                "verification_workers",
             )
         }
+        diagnostic_config = dict(scientific_config)
+        diagnostic_config.pop("num_generations", None)
+        diagnostic_identity = dict(identity)
+        diagnostic_identity["resolved_scientific_config"] = diagnostic_config
+        diagnostic_identity["benchmark_binding"] = {
+            field: metadata.get(field)
+            for field in (
+                "calibration_manifest_sha256",
+                "active_order_sha256",
+                "active_public_training_sha256",
+                "active_hidden_training_sha256",
+            )
+        }
+        diagnostic_identity["piston_config_sha256"] = _sha256(Path(cast(str, resolved["piston_config"])))
+    else:
+        diagnostic_identity = identity
     throughput = len(groups) / duration
     if not math.isfinite(throughput) or throughput <= 0.0:
         raise ThroughputError("GRPO benchmark throughput is invalid")
+    benchmark_role_value: str | None = None
+    group_size_value = 0
+    active_order_sha256 = ""
+    problem_order_sha256 = ""
+    problem_count = 0
+    generated_tokens = 0
+    tokens_per_second = 0.0
+    verifier_request_count = 0
+    verifier_runtime_seconds = 0.0
+    infrastructure_error_count = 0
+    zero_variance_group_count = 0
+    informative_group_count = 0
+    gpu_hours = 0.0
+    useful_nonzero_variance_groups_per_gpu_hour = 0.0
+    if strict_artifacts is not None:
+        benchmark_role_value = cast(str, strict_artifacts["benchmark_role"])
+        group_size_value = cast(int, strict_artifacts["group_size"])
+        strict_rollouts = cast(list[dict[str, object]], strict_artifacts["rollouts"])
+        generated_tokens = sum(cast(int, row["completion_token_count"]) for row in strict_rollouts)
+        tokens_per_second = generated_tokens / duration
+        verifier_request_count = len(rewards)
+        verifier_runtime_seconds = sum(verifier_runtime_values)
+        infrastructure_error_count = sum(bool(row.get("infrastructure_failure")) for row in rewards)
+        active_order_sha256 = cast(str, metadata["active_order_sha256"])
+        zero_variance_group_count = sum(row.get("total_reward_zero_variance") is True for row in raw_groups)
+        informative_group_count = len(raw_groups) - zero_variance_group_count
+        problem_order = [row.get("problem_id") for row in raw_groups]
+        problem_order_sha256 = _stable_hash(problem_order)
+        problem_count = len(set(problem_order))
+        gpu_hours = _finite_number(metadata.get("gpu_hours"), field_name="gpu_hours")
+        if gpu_hours <= 0.0:
+            raise ThroughputError("formal GRPO benchmark gpu_hours must be positive")
+        useful_nonzero_variance_groups_per_gpu_hour = informative_group_count / gpu_hours
     runtime_utilization: dict[str, object] | None = None
     if require_formal_telemetry:
         try:
@@ -1135,8 +1253,8 @@ def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False, strict
         group_parity_sha256=_stable_hash(groups),
         paired_definition_sha256=paired_definition,
         run_manifest_sha256=_sha256(run_dir / "run.json"),
-        retry_exhausted=cast(int, retry_exhausted),
-        recovery_prepare_failures=cast(int, prepare_failures),
+        retry_exhausted=retry_exhausted,
+        recovery_prepare_failures=prepare_failures,
         peak_cuda_memory_reserved_bytes=peak_reserved,
         mean_verifier_runtime_seconds=mean_verifier_runtime,
         p95_verifier_runtime_seconds=p95_verifier_runtime,
@@ -1150,6 +1268,23 @@ def _grpo_probe(run_dir: Path, *, require_formal_telemetry: bool = False, strict
         reward_count=len(_jsonl(rewards_path)) if strict_artifacts is not None else 0,
         group_count=len(raw_groups) if strict_artifacts is not None else 0,
         rollout_count=(len(_jsonl(run_dir / "rollouts.jsonl")) if strict_artifacts is not None else 0),
+        benchmark_role=benchmark_role_value,
+        group_size=group_size_value,
+        diagnostic_identity_sha256=_stable_hash(diagnostic_identity),
+        active_order_sha256=active_order_sha256,
+        problem_order_sha256=problem_order_sha256,
+        problem_count=problem_count,
+        generated_tokens=generated_tokens,
+        tokens_per_second=tokens_per_second,
+        verifier_request_count=verifier_request_count,
+        verifier_runtime_seconds=verifier_runtime_seconds,
+        retry_attempts=retry_attempts,
+        oom_count=oom_count,
+        infrastructure_error_count=infrastructure_error_count,
+        zero_variance_group_count=zero_variance_group_count,
+        informative_group_count=informative_group_count,
+        gpu_hours=gpu_hours,
+        useful_nonzero_variance_groups_per_gpu_hour=useful_nonzero_variance_groups_per_gpu_hour,
     )
 
 
@@ -1262,6 +1397,7 @@ def _select_grpo_verification(
         baseline_path,
         require_formal_telemetry=require_formal_telemetry,
         strict_source=strict_source,
+        expected_role="k8_candidate" if strict_source else None,
     )
     candidates: list[dict[str, object]] = []
     eligible: list[_GRPOProbe] = []
@@ -1270,6 +1406,7 @@ def _select_grpo_verification(
             path,
             require_formal_telemetry=require_formal_telemetry,
             strict_source=strict_source,
+            expected_role="k8_candidate" if strict_source else None,
         )
         reason: str | None = None
         if probe.workers not in _VERIFICATION_WORKERS:
@@ -1280,7 +1417,15 @@ def _select_grpo_verification(
             reason = "reward_parity_mismatch"
         elif probe.group_parity_sha256 != baseline.group_parity_sha256:
             reason = "group_parity_mismatch"
-        elif probe.retry_exhausted or probe.recovery_prepare_failures:
+        elif any(
+            (
+                probe.retry_attempts,
+                probe.retry_exhausted,
+                probe.recovery_prepare_failures,
+                probe.oom_count,
+                probe.infrastructure_error_count,
+            )
+        ):
             reason = "infrastructure_instability"
         if reason is None:
             eligible.append(probe)
@@ -1378,6 +1523,7 @@ def _paired_grpo_decision(
             path,
             require_formal_telemetry=require_formal_telemetry,
             strict_source=strict_source,
+            expected_role="k8_candidate" if strict_source else None,
         )
         for path in sequential_paths
     )
@@ -1386,6 +1532,7 @@ def _paired_grpo_decision(
             path,
             require_formal_telemetry=require_formal_telemetry,
             strict_source=strict_source,
+            expected_role="k8_candidate" if strict_source else None,
         )
         for path in concurrent_paths
     )
@@ -1413,7 +1560,18 @@ def _paired_grpo_decision(
     ):
         stable = False
         rejection = "concurrent_scientific_parity_mismatch"
-    elif any(probe.retry_exhausted or probe.recovery_prepare_failures for probe in probes):
+    elif any(
+        any(
+            (
+                probe.retry_attempts,
+                probe.retry_exhausted,
+                probe.recovery_prepare_failures,
+                probe.oom_count,
+                probe.infrastructure_error_count,
+            )
+        )
+        for probe in probes
+    ):
         stable = False
         rejection = "infrastructure_instability"
     sequential_wall = seq_public.duration_seconds + seq_hidden.duration_seconds
@@ -1441,6 +1599,116 @@ def _paired_grpo_decision(
     }
 
 
+def _grpo_diagnostic_entry(probe: _GRPOProbe) -> dict[str, object]:
+    if probe.group_count <= 0 or probe.group_size not in {4, 8}:
+        raise ThroughputError("GRPO group-size diagnostic source metrics are incomplete")
+    zero_fraction = probe.zero_variance_group_count / probe.group_count
+    entry: dict[str, object] = {
+        "path": str(probe.path),
+        "role": probe.benchmark_role,
+        "reward_mode": probe.reward_mode,
+        "workers": probe.workers,
+        "group_size": probe.group_size,
+        "active_order_sha256": probe.active_order_sha256,
+        "problem_count": probe.problem_count,
+        "group_count": probe.group_count,
+        "sample_count": probe.reward_count,
+        "duration_seconds": probe.duration_seconds,
+        "verifier_request_count": probe.verifier_request_count,
+        "verifier_runtime_seconds": probe.verifier_runtime_seconds,
+        "gpu_hours": probe.gpu_hours,
+        "peak_cuda_memory_reserved_bytes": probe.peak_cuda_memory_reserved_bytes,
+        "oom_count": probe.oom_count,
+        "retry_attempts": probe.retry_attempts,
+        "retry_exhausted": probe.retry_exhausted,
+        "recovery_prepare_failures": probe.recovery_prepare_failures,
+        "infrastructure_error_count": probe.infrastructure_error_count,
+        "zero_variance_group_count": probe.zero_variance_group_count,
+        "zero_variance_fraction": zero_fraction,
+        "informative_group_count": probe.informative_group_count,
+        "useful_nonzero_variance_groups_per_gpu_hour": probe.useful_nonzero_variance_groups_per_gpu_hour,
+    }
+    entry["generated_" + "tokens"] = probe.generated_tokens
+    entry["tokens_" + "per_second"] = probe.tokens_per_second
+    return entry
+
+
+def _grpo_group_size_diagnostic(
+    section: object,
+    *,
+    require_formal_telemetry: bool,
+    strict_source: bool,
+) -> dict[str, object]:
+    if not strict_source:
+        raise ThroughputError("GRPO group-size diagnostic requires strict actual-run sources")
+    if not isinstance(section, dict) or set(section) != {"k4", "k8"}:
+        raise ThroughputError("GRPO group-size diagnostic declaration is invalid")
+    k4_path = section.get("k4")
+    k8_path = section.get("k8")
+    if not isinstance(k4_path, str) or not isinstance(k8_path, str):
+        raise ThroughputError("GRPO group-size diagnostic paths are invalid")
+    k4 = _grpo_probe(
+        Path(k4_path),
+        require_formal_telemetry=require_formal_telemetry,
+        strict_source=True,
+        expected_role="k4_diagnostic",
+    )
+    k8 = _grpo_probe(
+        Path(k8_path),
+        require_formal_telemetry=require_formal_telemetry,
+        strict_source=True,
+        expected_role="k8_candidate",
+    )
+    if k4.reward_mode != k8.reward_mode:
+        raise ThroughputError("GRPO group-size diagnostic reward arm differs")
+    if k4.workers != k8.workers:
+        raise ThroughputError("GRPO group-size diagnostic verification runtime differs")
+    if k4.diagnostic_identity_sha256 != k8.diagnostic_identity_sha256:
+        raise ThroughputError("GRPO group-size diagnostic scientific identity differs beyond group size")
+    if k4.active_order_sha256 != k8.active_order_sha256:
+        raise ThroughputError("GRPO group-size diagnostic active-pool order differs")
+    if (
+        k4.problem_order_sha256 != k8.problem_order_sha256
+        or k4.group_count != k8.group_count
+        or k4.problem_count != k8.problem_count
+    ):
+        raise ThroughputError("GRPO group-size diagnostic problem/order workset differs")
+    k4_entry = _grpo_diagnostic_entry(k4)
+    k8_entry = _grpo_diagnostic_entry(k8)
+    warnings: list[str] = []
+    k4_zero = k4.zero_variance_group_count / k4.group_count
+    k8_zero = k8.zero_variance_group_count / k8.group_count
+    if k4_zero <= 0.20 and k4_zero - k8_zero < 0.05:
+        warnings.append("k4_already_informative_k8_small_variance_gain")
+    if (
+        k4.useful_nonzero_variance_groups_per_gpu_hour > 0.0
+        and k8.useful_nonzero_variance_groups_per_gpu_hour <= 0.85 * k4.useful_nonzero_variance_groups_per_gpu_hour
+    ):
+        warnings.append("k8_useful_groups_per_gpu_hour_regression")
+    if any(
+        (
+            k8.oom_count,
+            k8.retry_attempts,
+            k8.retry_exhausted,
+            k8.recovery_prepare_failures,
+            k8.infrastructure_error_count,
+        )
+    ):
+        warnings.append("k8_infrastructure_instability_observed")
+    return {
+        "primary_protocol": "k8",
+        "reconsider_k8": bool(warnings),
+        "warning_reasons": warnings,
+        "diagnostic_identity_sha256": k8.diagnostic_identity_sha256,
+        "active_order_sha256": k8.active_order_sha256,
+        "problem_order_sha256": k8.problem_order_sha256,
+        "reward_mode": k8.reward_mode,
+        "workers": k8.workers,
+        "k4": k4_entry,
+        "k8": k8_entry,
+    }
+
+
 def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> RefreshBenchmarkSummary:
     """Derive refresh operational selections only from completed, hash-bound run artifacts."""
     try:
@@ -1453,6 +1721,7 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
         "eval_generation",
         "eval_verification",
         "grpo_verification",
+        "grpo_group_size_diagnostic",
         "paired_grpo",
     }
     required = {"version", "evidence_class", "eval_generation"}
@@ -1461,7 +1730,12 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
     evidence_class = raw.get("evidence_class")
     if raw.get("version") != _BENCHMARK_VERSION or evidence_class not in {"engineering", "formal"}:
         raise ThroughputError("benchmark manifest identity is invalid")
-    formal_sections = ("eval_verification", "grpo_verification", "paired_grpo")
+    formal_sections = (
+        "eval_verification",
+        "grpo_verification",
+        "grpo_group_size_diagnostic",
+        "paired_grpo",
+    )
     if evidence_class == "formal" and any(key not in raw for key in formal_sections):
         raise ThroughputError("formal benchmark manifest requires all refresh benchmark sections")
 
@@ -1482,6 +1756,13 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
     if "grpo_verification" in raw:
         selected_grpo_workers, grpo_verification_report = _select_grpo_verification(
             raw["grpo_verification"],
+            require_formal_telemetry=require_formal_telemetry,
+            strict_source=evidence_class == "formal",
+        )
+    grpo_group_size_report: dict[str, object] | None = None
+    if "grpo_group_size_diagnostic" in raw:
+        grpo_group_size_report = _grpo_group_size_diagnostic(
+            raw["grpo_group_size_diagnostic"],
             require_formal_telemetry=require_formal_telemetry,
             strict_source=evidence_class == "formal",
         )
@@ -1511,6 +1792,8 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
         report["eval_verification"] = eval_verification_report
     if grpo_verification_report is not None:
         report["grpo_verification"] = grpo_verification_report
+    if grpo_group_size_report is not None:
+        report["grpo_group_size_diagnostic"] = grpo_group_size_report
     if paired_report is not None:
         report["paired_grpo"] = paired_report
     if output_dir.exists():

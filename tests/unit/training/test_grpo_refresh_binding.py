@@ -13,6 +13,7 @@ from code_verifier.training.calibration import CalibrationPoolSummary
 from code_verifier.training.grpo import (
     GRPOTrainingError,
     _validate_refresh_active_records,
+    load_grpo_benchmark_binding,
     load_grpo_refresh_binding,
 )
 
@@ -133,6 +134,34 @@ def test_refresh_binding_is_derived_from_strict_checker_outputs(
     assert binding.benchmark_report_sha256 == _sha256(benchmark_path)
     assert binding.verification_workers == 16
     assert binding.active_order_sha256 == stable_json_hash(["p1"])
+
+
+def test_benchmark_binding_bootstraps_without_final_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path)
+    _patch_strict_checkers(
+        monkeypatch,
+        root=tmp_path,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+    )
+
+    binding = load_grpo_benchmark_binding(
+        calibration_manifest_path=calibration_path,
+        refresh_dataset_dir=tmp_path / "refresh",
+        reference_dataset_dir=tmp_path / "reference",
+        verification_workers=16,
+        role="k8_candidate",
+        allow_engineering=True,
+    )
+
+    assert binding.role == "k8_candidate"
+    assert binding.verification_workers == 16
+    assert binding.calibration_manifest_sha256 == _sha256(calibration_path)
+    assert binding.active_order_sha256 == stable_json_hash(["p1"])
+    assert not hasattr(binding, "benchmark_report_path")
 
 
 def test_refresh_binding_rejects_unchecked_minimal_calibration(tmp_path: Path) -> None:

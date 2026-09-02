@@ -106,6 +106,7 @@ from code_verifier.training import (
     load_calibration_config,
     load_completed_grpo_checkpoint,
     load_completed_sft_checkpoint,
+    load_grpo_benchmark_binding,
     load_grpo_refresh_binding,
     load_grpo_training_config,
     load_sft_training_config,
@@ -959,16 +960,29 @@ def _train_grpo(args: argparse.Namespace) -> int:
         args.calibration_manifest,
         args.refresh_dataset_dir,
         args.reference_dataset_dir,
-        args.benchmark_report,
     )
     binding_present = [value is not None for value in binding_args]
     num_generations = int(getattr(selected_config, "num_generations", 4))
-    if num_generations == 8 and not all(binding_present):
+    benchmark_role = None if args.benchmark_role is None else str(args.benchmark_role)
+    benchmark_binding = None
+    if benchmark_role is not None:
+        if args.benchmark_report is not None:
+            raise GRPOTrainingError("pre-freeze benchmark runs must not consume a final benchmark report")
+        if not all(binding_present):
+            raise GRPOTrainingError("pre-freeze benchmark runs require the calibration and active-pool arguments")
+        benchmark_binding = load_grpo_benchmark_binding(
+            calibration_manifest_path=Path(args.calibration_manifest),
+            refresh_dataset_dir=Path(args.refresh_dataset_dir),
+            reference_dataset_dir=Path(args.reference_dataset_dir),
+            verification_workers=int(args.verification_workers),
+            role=benchmark_role,
+        )
+    if benchmark_role is None and num_generations == 8 and (not all(binding_present) or args.benchmark_report is None):
         raise GRPOTrainingError(
             "k=8 refresh runs require --calibration-manifest, --refresh-dataset-dir, "
             "--reference-dataset-dir, and --benchmark-report"
         )
-    if num_generations != 8 and any(binding_present):
+    if benchmark_role is None and num_generations != 8 and (any(binding_present) or args.benchmark_report is not None):
         raise GRPOTrainingError("refresh binding arguments are only valid for k=8 GRPO")
     refresh_binding = (
         load_grpo_refresh_binding(
@@ -978,7 +992,7 @@ def _train_grpo(args: argparse.Namespace) -> int:
             benchmark_report_path=Path(args.benchmark_report),
             verification_workers=int(args.verification_workers),
         )
-        if num_generations == 8
+        if num_generations == 8 and benchmark_role is None
         else None
     )
     if cli_seed is not None and cli_seed != selected_config.seed:
@@ -1048,6 +1062,7 @@ def _train_grpo(args: argparse.Namespace) -> int:
             ),
             verification_workers=int(args.verification_workers),
             refresh_binding=refresh_binding,
+            benchmark_binding=benchmark_binding,
             resume_from_checkpoint=resume,
             resume_run_git_commit=resume_run_git_commit,
             resume_code_migration=resume_code_migration,
@@ -1542,6 +1557,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="formal artifact-derived throughput report required by k=8 refresh runs",
+    )
+    train_grpo_parser.add_argument(
+        "--benchmark-role",
+        choices=("k8_candidate", "k4_diagnostic"),
+        default=None,
+        help="pre-freeze GRPO throughput role; excludes the final benchmark report binding",
     )
     train_grpo_parser.add_argument(
         "--verification-workers",

@@ -1666,6 +1666,7 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
         "--refresh-dataset-dir",
         "--reference-dataset-dir",
         "--benchmark-report",
+        "--benchmark-role",
         "--verification-workers",
         "--seed",
         "--output-dir",
@@ -1686,6 +1687,115 @@ def test_train_grpo_help_requires_completed_sft_and_exposes_resume(capsys: Any) 
             ]
         )
     assert invalid_migration.value.code == 2
+
+
+def test_train_grpo_prefreeze_benchmark_bootstraps_without_final_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public = load_grpo_training_config(Path("configs/grpo/refresh-public.yaml"))
+    hidden = load_grpo_training_config(Path("configs/grpo/refresh-hidden.yaml"))
+    configs = {Path("public.yaml"): public, Path("hidden.yaml"): hidden}
+    binding_calls: list[dict[str, object]] = []
+    seen: dict[str, object] = {}
+    benchmark_binding = object()
+
+    class FakePistonExecutor:
+        def __init__(self, config: object, **kwargs: object) -> None:
+            assert config == "PISTON_CONFIG"
+            assert set(kwargs) == {"transport_policy", "transport_telemetry"}
+
+        @staticmethod
+        def validate_runtime() -> str:
+            return "3.10.0"
+
+    def fake_benchmark_binding(**kwargs: object) -> object:
+        binding_calls.append(dict(kwargs))
+        return benchmark_binding
+
+    def fake_run(public_config: object, hidden_config: object, **kwargs: object) -> SimpleNamespace:
+        seen["public_config"] = public_config
+        seen["hidden_config"] = hidden_config
+        seen.update(kwargs)
+        return SimpleNamespace(
+            train_samples=2,
+            train_loss=0.125,
+            reward_mode="public",
+            run_dir=tmp_path / "grpo" / "refresh-public",
+            checkpoint_dir=tmp_path / "grpo" / "refresh-public" / "checkpoints",
+        )
+
+    monkeypatch.setattr(cli_module, "load_grpo_training_config", lambda path: configs[path])
+    monkeypatch.setattr(cli_module, "load_grpo_benchmark_binding", fake_benchmark_binding)
+    monkeypatch.setattr(cli_module, "load_piston_executor_config", lambda path: "PISTON_CONFIG")
+    monkeypatch.setattr(cli_module, "PistonExecutor", FakePistonExecutor)
+    monkeypatch.setattr(cli_module, "run_grpo_training", fake_run)
+
+    assert (
+        main(
+            [
+                "train-grpo",
+                "--public-config",
+                "public.yaml",
+                "--hidden-config",
+                "hidden.yaml",
+                "--public-sft-run-dir",
+                "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
+                "--calibration-manifest",
+                str(tmp_path / "calibration" / "calibration_manifest.json"),
+                "--refresh-dataset-dir",
+                str(tmp_path / "refresh"),
+                "--reference-dataset-dir",
+                str(tmp_path / "reference"),
+                "--benchmark-role",
+                "k8_candidate",
+                "--verification-workers",
+                "16",
+                "--output-dir",
+                str(tmp_path / "grpo"),
+            ]
+        )
+        == 0
+    )
+    assert len(binding_calls) == 1
+    assert binding_calls[0]["verification_workers"] == 16
+    assert binding_calls[0]["role"] == "k8_candidate"
+    assert "benchmark_report_path" not in binding_calls[0]
+    assert seen["benchmark_binding"] is benchmark_binding
+    assert seen["refresh_binding"] is None
+    assert seen["verification_workers"] == 16
+
+
+def test_train_grpo_final_k8_still_requires_benchmark_report(capsys: Any, tmp_path: Path) -> None:
+    assert (
+        main(
+            [
+                "train-grpo",
+                "--public-config",
+                "configs/grpo/refresh-public.yaml",
+                "--hidden-config",
+                "configs/grpo/refresh-hidden.yaml",
+                "--public-sft-run-dir",
+                "completed-sft",
+                "--hidden-sft-run-dir",
+                "completed-sft",
+                "--reward-mode",
+                "public",
+                "--calibration-manifest",
+                str(tmp_path / "calibration" / "calibration_manifest.json"),
+                "--refresh-dataset-dir",
+                str(tmp_path / "refresh"),
+                "--reference-dataset-dir",
+                str(tmp_path / "reference"),
+            ]
+        )
+        == 2
+    )
+    assert "--benchmark-report" in capsys.readouterr().err
 
 
 def test_train_grpo_defaults_to_persistent_artifact_root(
