@@ -78,3 +78,38 @@ __all__ = [
     "validate_sft_record",
     "validate_sft_training_hardware",
 ]
+from code_verifier.training.calibration import (
+    CalibrationClass,
+    CalibrationConfig,
+    CalibrationError,
+    CalibrationGenerationRecord,
+    CalibrationGenerationSummary,
+    CalibrationInputRecord,
+    CalibrationPoolSummary,
+    build_calibrated_active_pool,
+    calibration_problem_seed,
+    check_calibrated_active_pool,
+    load_calibration_config,
+    load_completed_calibration_generation,
+    prepare_calibration_input_bundle,
+    run_calibration_generation,
+    score_calibration_generation,
+)
+
+__all__ += [
+    "CalibrationClass",
+    "CalibrationConfig",
+    "CalibrationError",
+    "CalibrationGenerationRecord",
+    "CalibrationGenerationSummary",
+    "CalibrationInputRecord",
+    "CalibrationPoolSummary",
+    "build_calibrated_active_pool",
+    "calibration_problem_seed",
+    "check_calibrated_active_pool",
+    "load_calibration_config",
+    "load_completed_calibration_generation",
+    "prepare_calibration_input_bundle",
+    "run_calibration_generation",
+    "score_calibration_generation",
+]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -386,3 +387,14 @@ def test_telemetry_restore_is_cumulative_and_every_mutation_can_be_durably_snaps
     assert telemetry.transport_safe_retries == 2
     assert len(snapshots) == 2
     assert snapshots[-1] == telemetry.to_mapping()
+
+
+def test_transport_telemetry_is_thread_safe_and_callbacks_never_lose_updates() -> None:
+    snapshots: list[int] = []
+    telemetry = PistonTransportTelemetry()
+    telemetry.set_on_change(lambda mapping: snapshots.append(cast(int, mapping["transport_requests"])))
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(lambda _index: telemetry.record_transport_request(), range(500)))
+    assert telemetry.transport_requests == 500
+    assert len(snapshots) == 500
+    assert snapshots == list(range(1, 501))

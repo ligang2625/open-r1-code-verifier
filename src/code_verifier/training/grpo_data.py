@@ -61,6 +61,57 @@ def _contains_forbidden_key(value: object) -> bool:
     return False
 
 
+def build_grpo_row(record: Mapping[str, object], *, reward_mode: str) -> dict[str, Any]:
+    """Build one validated payload-minimal GRPO row shared by training and calibration."""
+    if reward_mode not in {"public", "hidden"}:
+        raise GRPODataError("reward_mode must be public or hidden")
+    kind = TrainingArtifactKind.PUBLIC_GRPO if reward_mode == "public" else TrainingArtifactKind.HIDDEN_GRPO
+    try:
+        check_training_record(record, kind=kind)
+    except LeakageError as error:
+        raise GRPODataError(str(error)) from None
+    if _contains_forbidden_key(record):
+        raise GRPODataError("GRPO record contains a forbidden training-data key")
+    problem_id = _nonempty_utf8(record["problem_id"], field_name="problem_id")
+    problem_statement = _nonempty_utf8(record["prompt"], field_name="prompt")
+    function_signature = _nonempty_utf8(record["function_signature"], field_name="function_signature")
+    function_name = _nonempty_utf8(record["function_name"], field_name="function_name")
+    visible_tests = _sequence(record["visible_tests"], field_name="visible_tests")
+    metadata = _mapping(record["metadata"], field_name="metadata")
+    visible_mappings = [
+        _mapping(test, field_name=f"visible_tests[{test_index}]") for test_index, test in enumerate(visible_tests)
+    ]
+    row: dict[str, Any] = {
+        "prompt": [
+            {
+                "role": "user",
+                "content": build_code_prompt_from_fields(
+                    problem_statement,
+                    function_signature,
+                    visible_mappings,
+                ),
+            }
+        ],
+        "problem_id": problem_id,
+        "function_name": function_name,
+        "metadata": dict(metadata),
+        "visible_tests": [
+            _encoded_test_case(test, field_name=f"visible_tests[{test_index}]")
+            for test_index, test in enumerate(visible_mappings)
+        ],
+    }
+    if reward_mode == "hidden":
+        hidden_tests = _sequence(record["train_hidden_tests"], field_name="train_hidden_tests")
+        row["train_hidden_tests"] = [
+            _encoded_test_case(
+                _mapping(test, field_name=f"train_hidden_tests[{test_index}]"),
+                field_name=f"train_hidden_tests[{test_index}]",
+            )
+            for test_index, test in enumerate(hidden_tests)
+        ]
+    return row
+
+
 def build_grpo_dataset(
     records: Sequence[Mapping[str, object]],
     *,
@@ -71,58 +122,14 @@ def build_grpo_dataset(
         raise GRPODataError("reward_mode must be public or hidden")
     if isinstance(records, str | bytes | bytearray) or not isinstance(records, Sequence) or not records:
         raise GRPODataError("GRPO records must be a non-empty sequence")
-    kind = TrainingArtifactKind.PUBLIC_GRPO if reward_mode == "public" else TrainingArtifactKind.HIDDEN_GRPO
     rows: list[dict[str, Any]] = []
     problem_ids: set[str] = set()
     for index, record in enumerate(records, start=1):
         if not isinstance(record, Mapping):
             raise GRPODataError(f"GRPO record {index} must be a mapping")
-        try:
-            check_training_record(record, kind=kind)
-        except LeakageError as error:
-            raise GRPODataError(str(error)) from None
-        if _contains_forbidden_key(record):
-            raise GRPODataError("GRPO record contains a forbidden training-data key")
-
         problem_id = _nonempty_utf8(record["problem_id"], field_name="problem_id")
         if problem_id in problem_ids:
             raise GRPODataError("GRPO records contain duplicate problem_id values")
         problem_ids.add(problem_id)
-        problem_statement = _nonempty_utf8(record["prompt"], field_name="prompt")
-        function_signature = _nonempty_utf8(record["function_signature"], field_name="function_signature")
-        function_name = _nonempty_utf8(record["function_name"], field_name="function_name")
-        visible_tests = _sequence(record["visible_tests"], field_name="visible_tests")
-        metadata = _mapping(record["metadata"], field_name="metadata")
-        visible_mappings = [
-            _mapping(test, field_name=f"visible_tests[{test_index}]") for test_index, test in enumerate(visible_tests)
-        ]
-        row: dict[str, Any] = {
-            "prompt": [
-                {
-                    "role": "user",
-                    "content": build_code_prompt_from_fields(
-                        problem_statement,
-                        function_signature,
-                        visible_mappings,
-                    ),
-                }
-            ],
-            "problem_id": problem_id,
-            "function_name": function_name,
-            "metadata": dict(metadata),
-            "visible_tests": [
-                _encoded_test_case(test, field_name=f"visible_tests[{test_index}]")
-                for test_index, test in enumerate(visible_mappings)
-            ],
-        }
-        if reward_mode == "hidden":
-            hidden_tests = _sequence(record["train_hidden_tests"], field_name="train_hidden_tests")
-            row["train_hidden_tests"] = [
-                _encoded_test_case(
-                    _mapping(test, field_name=f"train_hidden_tests[{test_index}]"),
-                    field_name=f"train_hidden_tests[{test_index}]",
-                )
-                for test_index, test in enumerate(hidden_tests)
-            ]
-        rows.append(row)
+        rows.append(build_grpo_row(record, reward_mode=reward_mode))
     return Dataset.from_list(rows)
