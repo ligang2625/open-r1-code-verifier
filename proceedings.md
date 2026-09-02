@@ -880,3 +880,29 @@ WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next depen
 - **仍然严格的 identity**：正确 stage/worktree/task、completed execution 幂等、`.ai-bridge/**` zero tracked paths、真实 formal evidence/hidden-test isolation、24GB operator boundary、**实际 target handoff commit**、tracked `run.sh` SHA、received operator-evidence SHA、target runtime identity、`command_rc/postcheck_rc/gate_status` 与 required artifact/metadata hashes 继续 fail closed。普通 parent/source commit 等式不能替代这些真实执行 identity，也不能反过来成为无关 blocker。
 - **WP9 scientific guard**：本 amendment 不改变 `PROJECT_SPEC_GRPO_Refresh.md` 的 SFT/GRPO overlap、k=8、zero-variance、Public/Hidden pairing、evaluation leakage、real calibration/pilot/formal evidence 或 WP9 dependency order。用户可以改变实现路径，但不能用 workflow override 降低这些规范性 acceptance。
 - **Current routing**：本次 maintenance 不创建 active stage，不改变已 finalized `WP9-a`。**下一 dependency-ready stage 仍为 `WP9-b` development**；planner 必须同时读取主规格、Refresh addendum、最新 proceedings 与当前 canonical workflow policy。
+
+---
+
+## WP9-b — Calibration / k=8 / throughput engineering
+
+- **完成日期**：2026-09-02
+- **阶段状态**：已完成 / finalized
+- **验收结论**：PASS（依据 `ai-work/reviewer/WP9-b-review.md` R6）
+- **执行计划**：`ai-work/planner/WP9-b-plan.md`
+- **Review commit**：`0a36384`
+- **Merge commit**：`f991d85e184040226254e09460d7ffc66814936a`
+
+### 工程交付
+
+- 完成 WP9-b calibration engineering contract：Public-safe calibration bundle、k=8 sampled generation contract、Public/Hidden same-completion scoring、retry/hard/easy classification、active-pool manifest 与严格 hash-bound artifact pipeline。
+- 完成 refresh k=8 GRPO engineering path：新增 refresh configs、bounded concurrent verification、ordered reward handling、group/rolling telemetry、backward/optimizer timing contract，同时保持 legacy k=4 config identity 不变。
+- 完成 evaluation throughput engineering：batched generation contract、verification worker sweep contract、artifact-derived benchmark reconstruction，以及 k=8 primary + controlled k=4 diagnostic evidence path。
+- 完成 R1–R5 review repair lineage，最终 R6 PASS 关闭 `R5-M1`：benchmark report identity 与 final refresh binding 使用同一严格校验的 calibration/active-pool identity。
+
+### 验收与边界
+
+- Reviewer R6 独立通过 affected regression（30 passed）、WP9-b sealed focused suite（326 passed）、`make lint`，以及 `make test`（1185 passed, 3 skipped）。skip 仅为既有 opt-in real-Piston tests；WP9-b development stage 未将其伪造为 PASS。
+- 本阶段为 `stage_profile=development` / `evidence_class=engineering`。未运行真实 frozen-B calibration、24GB/4090 formal benchmark、C2/D2 checkpoint 或 400-problem refresh evaluation；这些仍属于后续 WP9-c+ validation boundary。
+- 本阶段未修改 `third_party/open-r1` gitlink；项目规格与历史 WP0–WP8 completion record 保持 immutable。
+
+---

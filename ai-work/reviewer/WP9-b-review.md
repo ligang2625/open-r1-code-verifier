@@ -641,3 +641,16 @@ repair_routing:
 ### Conclusion
 
 `pass`. E4 closes `R5-M1`: the benchmark report's runtime selections are now cryptographically and semantically coupled to the same strictly checked calibration/active-pool identity consumed by final refresh training, and all independent acceptance gates pass. Reviewer-ex stops here without commit/merge/proceedings mutation. Next lifecycle action is `stage-lifecycle checkpoint_review`; after the PASS checkpoint, `stage-lifecycle finalize` may finalize WP9-b.
+
+## Finalization Record
+
+```yaml
+finalization_record:
+  version: 1
+  stage_id: WP9-b
+  review_round: 6
+  review_commit: 0a36384
+  merge_commit: f991d85e184040226254e09460d7ffc66814936a
+  status: finalized
+  finalized_at: 2026-09-02
+```
