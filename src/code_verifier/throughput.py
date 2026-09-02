@@ -92,6 +92,10 @@ class RefreshBenchmarkSummary:
     selected_grpo_verification_workers: int | None = None
     selected_eval_verification_workers: int | None = None
     paired_grpo_mode: str = "sequential"
+    calibration_manifest_sha256: str | None = None
+    active_order_sha256: str | None = None
+    active_public_training_sha256: str | None = None
+    active_hidden_training_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +157,9 @@ class _GRPOProbe:
     informative_group_count: int = 0
     gpu_hours: float = 0.0
     useful_nonzero_variance_groups_per_gpu_hour: float = 0.0
+    calibration_manifest_sha256: str = ""
+    active_public_training_sha256: str = ""
+    active_hidden_training_sha256: str = ""
 
 
 def _sha256(path: Path) -> str:
@@ -1145,6 +1152,18 @@ def _grpo_probe(
     parent_seed = metadata.get("parent_sft_seed")
     if isinstance(parent_seed, bool) or not isinstance(parent_seed, int):
         raise ThroughputError("GRPO benchmark parent SFT seed is invalid")
+    calibration_identity_fields = (
+        "calibration_manifest_sha256",
+        "active_order_sha256",
+        "active_public_training_sha256",
+        "active_hidden_training_sha256",
+    )
+    if any(
+        not isinstance(metadata.get(field), str) or re.fullmatch(r"[0-9a-f]{64}", cast(str, metadata[field])) is None
+        for field in calibration_identity_fields
+    ):
+        raise ThroughputError("GRPO benchmark calibration identity is incomplete")
+    calibration_identity = {field: cast(str, metadata[field]) for field in calibration_identity_fields}
     identity = {
         "reward_mode": reward_mode,
         "dataset_hash": metadata.get("dataset_hash"),
@@ -1157,6 +1176,7 @@ def _grpo_probe(
         "parent_sft_dependency_lock_hash": metadata.get("parent_sft_dependency_lock_hash"),
         "parent_sft_seed": metadata.get("parent_sft_seed"),
         "resolved_scientific_config": scientific_config,
+        "calibration_identity": calibration_identity,
     }
     if strict_artifacts is not None:
         strict_environment = cast(dict[str, object], strict_artifacts["environment"])
@@ -1205,7 +1225,7 @@ def _grpo_probe(
         raise ThroughputError("GRPO benchmark throughput is invalid")
     benchmark_role_value: str | None = None
     group_size_value = 0
-    active_order_sha256 = ""
+    active_order_sha256 = calibration_identity["active_order_sha256"]
     problem_order_sha256 = ""
     problem_count = 0
     generated_tokens = 0
@@ -1285,6 +1305,9 @@ def _grpo_probe(
         informative_group_count=informative_group_count,
         gpu_hours=gpu_hours,
         useful_nonzero_variance_groups_per_gpu_hour=useful_nonzero_variance_groups_per_gpu_hour,
+        calibration_manifest_sha256=calibration_identity["calibration_manifest_sha256"],
+        active_public_training_sha256=calibration_identity["active_public_training_sha256"],
+        active_hidden_training_sha256=calibration_identity["active_hidden_training_sha256"],
     )
 
 
@@ -1389,6 +1412,15 @@ def _select_eval_verification(
     }
 
 
+def _grpo_calibration_identity(probe: _GRPOProbe) -> dict[str, str]:
+    return {
+        "calibration_manifest_sha256": probe.calibration_manifest_sha256,
+        "active_order_sha256": probe.active_order_sha256,
+        "active_public_training_sha256": probe.active_public_training_sha256,
+        "active_hidden_training_sha256": probe.active_hidden_training_sha256,
+    }
+
+
 def _select_grpo_verification(
     section: object, *, require_formal_telemetry: bool = False, strict_source: bool = False
 ) -> tuple[int, dict[str, object]]:
@@ -1399,6 +1431,7 @@ def _select_grpo_verification(
         strict_source=strict_source,
         expected_role="k8_candidate" if strict_source else None,
     )
+    calibration_identity = _grpo_calibration_identity(baseline)
     candidates: list[dict[str, object]] = []
     eligible: list[_GRPOProbe] = []
     for path in candidate_paths:
@@ -1464,6 +1497,7 @@ def _select_grpo_verification(
         raise ThroughputError("no stable GRPO verification worker candidate passed parity checks")
     selected = min(eligible, key=lambda probe: (-probe.throughput_per_second, probe.workers))
     return selected.workers, {
+        "calibration_identity": calibration_identity,
         "baseline": {
             "path": str(baseline.path),
             "workers": baseline.workers,
@@ -1537,6 +1571,9 @@ def _paired_grpo_decision(
         for path in concurrent_paths
     )
     probes = (seq_public, seq_hidden, con_public, con_hidden)
+    calibration_identity = _grpo_calibration_identity(seq_public)
+    if any(_grpo_calibration_identity(probe) != calibration_identity for probe in probes[1:]):
+        raise ThroughputError("paired GRPO calibration identity differs")
     stable = True
     rejection: str | None = None
     if (seq_public.reward_mode, seq_hidden.reward_mode, con_public.reward_mode, con_hidden.reward_mode) != (
@@ -1583,6 +1620,7 @@ def _paired_grpo_decision(
     gain_fraction = 1.0 - concurrent_wall / sequential_wall
     recommendation = "concurrent" if stable and concurrent_wall <= 0.85 * sequential_wall else "sequential"
     return recommendation, {
+        "calibration_identity": calibration_identity,
         "sequential_wall_seconds": sequential_wall,
         "concurrent_wall_seconds": concurrent_wall,
         "gain_fraction": gain_fraction,
@@ -1667,6 +1705,9 @@ def _grpo_group_size_diagnostic(
         raise ThroughputError("GRPO group-size diagnostic scientific identity differs beyond group size")
     if k4.active_order_sha256 != k8.active_order_sha256:
         raise ThroughputError("GRPO group-size diagnostic active-pool order differs")
+    calibration_identity = _grpo_calibration_identity(k8)
+    if _grpo_calibration_identity(k4) != calibration_identity:
+        raise ThroughputError("GRPO group-size diagnostic calibration identity differs")
     if (
         k4.problem_order_sha256 != k8.problem_order_sha256
         or k4.group_count != k8.group_count
@@ -1697,6 +1738,7 @@ def _grpo_group_size_diagnostic(
         warnings.append("k8_infrastructure_instability_observed")
     return {
         "primary_protocol": "k8",
+        "calibration_identity": calibration_identity,
         "reconsider_k8": bool(warnings),
         "warning_reasons": warnings,
         "diagnostic_identity_sha256": k8.diagnostic_identity_sha256,
@@ -1775,6 +1817,16 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
             strict_source=evidence_class == "formal",
         )
 
+    calibration_identity_reports = [
+        section["calibration_identity"]
+        for section in (grpo_verification_report, grpo_group_size_report, paired_report)
+        if section is not None
+    ]
+    if calibration_identity_reports and any(
+        identity != calibration_identity_reports[0] for identity in calibration_identity_reports[1:]
+    ):
+        raise ThroughputError("benchmark GRPO sections use different calibration identities")
+
     report: dict[str, object] = {
         "version": _BENCHMARK_VERSION,
         "evidence_class": evidence_class,
@@ -1792,6 +1844,8 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
         report["eval_verification"] = eval_verification_report
     if grpo_verification_report is not None:
         report["grpo_verification"] = grpo_verification_report
+    if calibration_identity_reports:
+        report["calibration_identity"] = calibration_identity_reports[0]
     if grpo_group_size_report is not None:
         report["grpo_group_size_diagnostic"] = grpo_group_size_report
     if paired_report is not None:
@@ -1820,6 +1874,26 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
         selected_grpo_verification_workers=selected_grpo_workers,
         selected_eval_verification_workers=selected_eval_workers,
         paired_grpo_mode=paired_mode,
+        calibration_manifest_sha256=(
+            cast(str, cast(dict[str, object], report["calibration_identity"])["calibration_manifest_sha256"])
+            if "calibration_identity" in report
+            else None
+        ),
+        active_order_sha256=(
+            cast(str, cast(dict[str, object], report["calibration_identity"])["active_order_sha256"])
+            if "calibration_identity" in report
+            else None
+        ),
+        active_public_training_sha256=(
+            cast(str, cast(dict[str, object], report["calibration_identity"])["active_public_training_sha256"])
+            if "calibration_identity" in report
+            else None
+        ),
+        active_hidden_training_sha256=(
+            cast(str, cast(dict[str, object], report["calibration_identity"])["active_hidden_training_sha256"])
+            if "calibration_identity" in report
+            else None
+        ),
     )
 
 
@@ -1857,4 +1931,8 @@ def check_refresh_benchmark_report(
         selected_grpo_verification_workers=rebuilt.selected_grpo_verification_workers,
         selected_eval_verification_workers=rebuilt.selected_eval_verification_workers,
         paired_grpo_mode=rebuilt.paired_grpo_mode,
+        calibration_manifest_sha256=rebuilt.calibration_manifest_sha256,
+        active_order_sha256=rebuilt.active_order_sha256,
+        active_public_training_sha256=rebuilt.active_public_training_sha256,
+        active_hidden_training_sha256=rebuilt.active_hidden_training_sha256,
     )

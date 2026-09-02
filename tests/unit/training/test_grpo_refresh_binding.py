@@ -22,13 +22,18 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_engineering_binding_artifacts(root: Path, *, workers: int = 16) -> tuple[Path, Path]:
+def _write_engineering_binding_artifacts(
+    root: Path,
+    *,
+    workers: int = 16,
+    problem_id: str = "p1",
+) -> tuple[Path, Path]:
     training = root / "training"
     training.mkdir(parents=True)
     public_path = training / "public_grpo.jsonl"
     hidden_path = training / "hidden_grpo.jsonl"
-    public_path.write_text('{"problem_id":"p1"}\n', encoding="utf-8")
-    hidden_path.write_text('{"problem_id":"p1"}\n', encoding="utf-8")
+    public_path.write_text(json.dumps({"problem_id": problem_id}) + "\n", encoding="utf-8")
+    hidden_path.write_text(json.dumps({"problem_id": problem_id}) + "\n", encoding="utf-8")
     calibration_path = root / "calibration_manifest.json"
     calibration_path.write_text(
         json.dumps(
@@ -36,7 +41,7 @@ def _write_engineering_binding_artifacts(root: Path, *, workers: int = 16) -> tu
                 "schema_version": "wp9b-calibration-test-v1",
                 "status": "completed",
                 "evidence_class": "engineering",
-                "active_order_sha256": stable_json_hash(["p1"]),
+                "active_order_sha256": stable_json_hash([problem_id]),
                 "artifacts": {
                     "training/public_grpo.jsonl": _sha256(public_path),
                     "training/hidden_grpo.jsonl": _sha256(hidden_path),
@@ -103,6 +108,10 @@ def _patch_strict_checkers(
             selected_eval_generation_batch_size=2,
             evidence_class="engineering",
             selected_grpo_verification_workers=workers,
+            calibration_manifest_sha256=_sha256(calibration_path),
+            active_order_sha256=stable_json_hash(["p1"]),
+            active_public_training_sha256=_sha256(public_path),
+            active_hidden_training_sha256=_sha256(hidden_path),
         )
 
     monkeypatch.setattr(grpo_module, "check_calibrated_active_pool", check_pool)
@@ -243,6 +252,55 @@ def test_refresh_binding_rejects_dataset_tamper_and_worker_drift(
             reference_dataset_dir=workers_root / "reference",
             benchmark_report_path=benchmark_path,
             verification_workers=32,
+            allow_engineering=True,
+        )
+
+
+def test_refresh_binding_rejects_different_valid_calibration_and_benchmark_sets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration_root = tmp_path / "calibration-a"
+    benchmark_root = tmp_path / "calibration-b"
+    calibration_path, benchmark_path = _write_engineering_binding_artifacts(calibration_root)
+    other_calibration_path, other_benchmark_path = _write_engineering_binding_artifacts(
+        benchmark_root,
+        problem_id="p2",
+    )
+    other_public = benchmark_root / "training" / "public_grpo.jsonl"
+    other_hidden = benchmark_root / "training" / "hidden_grpo.jsonl"
+
+    _patch_strict_checkers(
+        monkeypatch,
+        root=calibration_root,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+    )
+
+    def check_other_benchmark(path: Path, *, allow_engineering: bool = False) -> RefreshBenchmarkSummary:
+        assert path == other_benchmark_path
+        assert allow_engineering is True
+        return RefreshBenchmarkSummary(
+            report_dir=other_benchmark_path.parent,
+            report_path=other_benchmark_path,
+            selected_eval_generation_batch_size=2,
+            evidence_class="engineering",
+            selected_grpo_verification_workers=16,
+            calibration_manifest_sha256=_sha256(other_calibration_path),
+            active_order_sha256=stable_json_hash(["p2"]),
+            active_public_training_sha256=_sha256(other_public),
+            active_hidden_training_sha256=_sha256(other_hidden),
+        )
+
+    monkeypatch.setattr(grpo_module, "check_refresh_benchmark_report", check_other_benchmark)
+
+    with pytest.raises(GRPOTrainingError, match="benchmark calibration identity differs"):
+        load_grpo_refresh_binding(
+            calibration_manifest_path=calibration_path,
+            refresh_dataset_dir=calibration_root / "refresh",
+            reference_dataset_dir=calibration_root / "reference",
+            benchmark_report_path=other_benchmark_path,
+            verification_workers=16,
             allow_engineering=True,
         )
 

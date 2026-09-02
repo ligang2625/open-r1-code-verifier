@@ -19,6 +19,10 @@ def write_grpo_probe(
     infrastructure_failure: bool = False,
     parent_config_hash: str = "7" * 64,
     parent_dependency_lock_hash: str = "8" * 64,
+    calibration_manifest_sha256: str = "a" * 64,
+    active_order_sha256: str = "b" * 64,
+    active_public_training_sha256: str = "c" * 64,
+    active_hidden_training_sha256: str = "d" * 64,
 ) -> Path:
     run = root / name
     run.mkdir(parents=True)
@@ -41,6 +45,10 @@ def write_grpo_probe(
         "parent_sft_config_hash": parent_config_hash,
         "parent_sft_dependency_lock_hash": parent_dependency_lock_hash,
         "parent_sft_seed": 42,
+        "calibration_manifest_sha256": calibration_manifest_sha256,
+        "active_order_sha256": active_order_sha256,
+        "active_public_training_sha256": active_public_training_sha256,
+        "active_hidden_training_sha256": active_hidden_training_sha256,
         "peak_cuda_memory_reserved_bytes": 1024,
         "attempts": [
             {

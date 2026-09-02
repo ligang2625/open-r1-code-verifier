@@ -88,6 +88,9 @@ def _probe(
         informative_group_count=group_count - zero_variance_groups,
         gpu_hours=0.1,
         useful_nonzero_variance_groups_per_gpu_hour=useful_groups_per_gpu_hour,
+        calibration_manifest_sha256="6" * 64,
+        active_public_training_sha256="7" * 64,
+        active_hidden_training_sha256="a" * 64,
     )
 
 

@@ -1628,6 +1628,20 @@ def load_grpo_refresh_binding(
         raise GRPOTrainingError(f"refresh benchmark artifact failed strict check: {error}") from None
     if checked_benchmark.selected_grpo_verification_workers != verification_workers:
         raise GRPOTrainingError("verification_workers differs from the benchmark selection")
+    benchmark_calibration_identity = (
+        checked_benchmark.calibration_manifest_sha256,
+        checked_benchmark.active_order_sha256,
+        checked_benchmark.active_public_training_sha256,
+        checked_benchmark.active_hidden_training_sha256,
+    )
+    calibration_identity = (
+        _file_hash(calibration_manifest_path, description="calibration manifest"),
+        active_order_sha,
+        public_sha,
+        hidden_sha,
+    )
+    if benchmark_calibration_identity != calibration_identity:
+        raise GRPOTrainingError("benchmark calibration identity differs from the calibrated active pool")
     benchmark = _strict_json_object(benchmark_report_path, description="refresh benchmark report")
     if benchmark.get("version") != "wp9b-refresh-benchmark-v1":
         raise GRPOTrainingError("refresh benchmark report version is invalid")

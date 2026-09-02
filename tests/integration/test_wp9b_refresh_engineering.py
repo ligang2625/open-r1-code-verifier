@@ -290,6 +290,10 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
         workers=8,
         start=started,
         duration_seconds=8.0,
+        calibration_manifest_sha256=hashlib.sha256(checked.calibration_manifest.read_bytes()).hexdigest(),
+        active_order_sha256=checked.active_order_sha256,
+        active_public_training_sha256=hashlib.sha256(checked.public_grpo_jsonl.read_bytes()).hexdigest(),
+        active_hidden_training_sha256=hashlib.sha256(checked.hidden_grpo_jsonl.read_bytes()).hexdigest(),
     )
     grpo_workers16 = write_grpo_probe(
         tmp_path,
@@ -298,6 +302,10 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
         workers=16,
         start=started,
         duration_seconds=4.0,
+        calibration_manifest_sha256=hashlib.sha256(checked.calibration_manifest.read_bytes()).hexdigest(),
+        active_order_sha256=checked.active_order_sha256,
+        active_public_training_sha256=hashlib.sha256(checked.public_grpo_jsonl.read_bytes()).hexdigest(),
+        active_hidden_training_sha256=hashlib.sha256(checked.hidden_grpo_jsonl.read_bytes()).hexdigest(),
     )
     benchmark_manifest = tmp_path / "benchmark.yaml"
     benchmark_manifest.write_text(
