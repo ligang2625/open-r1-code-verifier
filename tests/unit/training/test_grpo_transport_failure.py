@@ -282,9 +282,9 @@ def test_unrecovered_transport_infrastructure_failure_aborts_before_update_after
         _invoke(callback)
     assert len(executor.calls) == 4
     assert executor.prepare_calls == 3
-    reward_rows = [json.loads(line) for line in (tmp_path / "rewards.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert reward_rows[0]["infrastructure_failure"] is True
-    assert reward_rows[0]["total_reward"] == 0.0
+    assert not (tmp_path / "rewards.jsonl").exists()
+    assert not (tmp_path / "rollouts.jsonl").exists()
+    assert not (tmp_path / "groups.jsonl").exists()
     retry_rows = [json.loads(line) for line in (tmp_path / "stdout.log").read_text(encoding="utf-8").splitlines()]
     assert retry_rows[-1]["event"] == "grpo_reward_infrastructure_retry_exhausted"
     assert retry_rows[-1]["retries"] == 3

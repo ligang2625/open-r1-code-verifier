@@ -232,16 +232,9 @@ def test_wp7a_reward_callback_fails_closed_after_logging_infrastructure_failure(
         )
 
     assert len(executor.calls) == 1
-    rewards = [json.loads(line) for line in (tmp_path / "public" / "rewards.jsonl").read_text().splitlines()]
-    rollouts = [json.loads(line) for line in (tmp_path / "public" / "rollouts.jsonl").read_text().splitlines()]
-    groups = [json.loads(line) for line in (tmp_path / "public" / "group_metrics.jsonl").read_text().splitlines()]
-    assert len(rewards) == len(rollouts) == 4
-    assert len(groups) == 1
-    assert all(row["status"] == ExecutionStatus.SANDBOX_ERROR.value for row in rewards)
-    assert all(row["infrastructure_failure"] is True for row in rewards)
-    assert all(row["total_reward"] == 0.0 for row in rewards)
-    assert all(row["total_reward"] == 0.0 for row in rollouts)
-    assert groups[0]["mean"] == 0.0
+    assert not (tmp_path / "public" / "rewards.jsonl").exists()
+    assert not (tmp_path / "public" / "rollouts.jsonl").exists()
+    assert not (tmp_path / "public" / "group_metrics.jsonl").exists()
 
 
 class _Constructor:
