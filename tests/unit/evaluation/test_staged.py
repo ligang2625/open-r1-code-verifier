@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 import code_verifier.evaluation.evaluate as evaluation_module
 import code_verifier.evaluation.staged as staged_module
@@ -45,6 +47,25 @@ class _SequenceGenerator:
         if isinstance(value, BaseException):
             raise value
         return value
+
+
+class _BatchGenerator:
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], list[int]]] = []
+
+    def generate(self, prompt: str, *, seed: int) -> GenerationResult:
+        raise AssertionError("batch generator must use generate_batch")
+
+    def generate_batch(self, prompts: list[str], *, seeds: list[int]) -> list[GenerationResult]:
+        self.calls.append((list(prompts), list(seeds)))
+        return [
+            GenerationResult(
+                completion=f"```python\ndef solve(x):\n    return x\n# {index}\n```",
+                completion_tokens=8 + index,
+                latency_ms=2.0,
+            )
+            for index, _ in enumerate(prompts)
+        ]
 
 
 class _PassExecutor:
@@ -273,6 +294,76 @@ def test_generation_resume_uses_only_the_missing_exact_prefix(tmp_path: Path, mo
     assert completed.completed_before_run == 2
     assert completed.generated_this_run == 0
     assert no_op.calls == []
+
+
+def test_generation_batch_v2_persists_partial_batch_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problems = [_problem(f"p{index}", f"M{index}") for index in range(5)]
+    _patch_problems(monkeypatch, problems)
+    generator = _BatchGenerator()
+    config = _config(tmp_path)
+
+    bundle = run_generation_bundle(
+        config=config,
+        model_id="example/model",
+        generator=generator,
+        run_id="batch-v2",
+        output_root=tmp_path / "outputs",
+        seed=42,
+        batch_size=2,
+    )
+
+    assert [len(prompts) for prompts, _ in generator.calls] == [2, 2, 1]
+    metadata = json.loads((bundle.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == 2
+    assert metadata["batch_size"] == 2
+    metrics = [json.loads(line) for line in (bundle.run_dir / "metrics.jsonl").read_text().splitlines()]
+    assert [row["batch_index"] for row in metrics] == [0, 0, 1, 1, 2]
+    assert metrics[-1]["batch_start_ordinal"] == 4
+    assert metrics[-1]["batch_end_ordinal"] == 5
+    assert sum(row["generation_latency_ms"] for row in metrics) == 10.0
+
+
+def test_completed_loader_accepts_historical_v1_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = [_problem("p1", "ONE")]
+    _patch_problems(monkeypatch, problems)
+    config = _config(tmp_path)
+    bundle = run_generation_bundle(
+        config=config,
+        model_id="example/model",
+        generator=_SequenceGenerator([_completion("ONE")]),
+        run_id="historical-v1",
+        output_root=tmp_path / "outputs",
+        seed=42,
+    )
+    resolved_path = bundle.run_dir / "resolved_config.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    resolved["schema_version"] = 1
+    resolved.pop("batch_size")
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=True, allow_unicode=True), encoding="utf-8")
+    encoded_contract = json.dumps(resolved, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    contract_sha = hashlib.sha256(encoded_contract.encode()).hexdigest()
+    rows_path = bundle.records_path
+    rows = [json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines()]
+    rows[0]["evaluation_contract_sha256"] = contract_sha
+    rows_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    run_path = bundle.run_dir / "run.json"
+    metadata = json.loads(run_path.read_text(encoding="utf-8"))
+    metadata["schema_version"] = 1
+    metadata.pop("batch_size")
+    metadata["evaluation_contract_sha256"] = contract_sha
+    metadata["resolved_config_sha256"] = hashlib.sha256(resolved_path.read_bytes()).hexdigest()
+    metadata["records_sha256"] = hashlib.sha256(rows_path.read_bytes()).hexdigest()
+    run_path.write_text(json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    identity, loaded_rows = load_completed_generation_bundle(bundle.run_dir, config=config, problems=problems, seed=42)
+    assert identity.schema_version == 1
+    assert identity.batch_size == 1
+    assert len(loaded_rows) == 1
 
 
 def test_completed_bundle_is_portable_across_local_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

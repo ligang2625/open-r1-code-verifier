@@ -645,6 +645,8 @@ def test_generate_eval_handler_does_not_construct_piston(
                 "example/model",
                 "--run-name",
                 "split-run",
+                "--batch-size",
+                "4",
                 "--output-dir",
                 str(output_root),
             ]
@@ -654,6 +656,7 @@ def test_generate_eval_handler_does_not_construct_piston(
     assert seen["generator"] is generator
     assert seen["run_id"] == "split-run"
     assert seen["output_root"] == output_root
+    assert seen["batch_size"] == 4
     assert "generated 4 evaluation prompts" in capsys.readouterr().out
 
 

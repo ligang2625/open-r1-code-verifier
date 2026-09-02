@@ -486,6 +486,7 @@ def _generate_eval(args: argparse.Namespace) -> int:
         run_id=str(args.run_name),
         output_root=Path(str(args.output_dir)),
         seed=int(args.seed),
+        batch_size=int(args.batch_size),
     )
     print(
         f"generated {summary.total_problems} evaluation prompts "
@@ -1123,6 +1124,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional prepared dataset root override",
     )
     generate_eval_parser.add_argument("--run-name", type=_safe_run_name, required=True, help="safe evaluation run id")
+    generate_eval_parser.add_argument(
+        "--batch-size",
+        type=int,
+        choices=(1, 2, 4, 8, 16),
+        default=1,
+        help="deterministic generation batch size (default: 1)",
+    )
     _add_common_arguments(
         generate_eval_parser,
         config_required=True,
@@ -1152,7 +1160,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=int,
         default=4,
-        help="bounded concurrent local-Piston verification workers (default: 4, maximum: 32)",
+        help="bounded concurrent local-Piston verification workers (default: 4, maximum: 64)",
     )
     _add_common_arguments(
         verify_eval_parser,
