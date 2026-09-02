@@ -259,3 +259,112 @@ repair_routing:
 ### Conclusion
 
 `needs_repair`. E1 successfully closes the strict binding-layer issue (`R1-M2`) and the original concurrent fail-before-side-effect issue (`R1-M3`), and its reported test/lint evidence is independently reproducible. However, the active-pool repair still loses source+difficulty strata when class and stratum are correlated (`R1-M1`), GRPO throughput evidence still trusts shallow self-declared source directories rather than strict artifacts (`R1-M4`), and the concurrency repair introduces Reward→Parsing/Verifier-internal responsibility leakage (`R2-M1`). Next lifecycle action is `stage-lifecycle checkpoint_review`; only after that checkpoint should the three repair lanes be routed.
+
+## Review Round 3
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-b
+  review_round: 3
+  source_execution_id: E2
+  reviewed_head_commit: da38045c5b9278a17aee9ba54f4a9237539d05d8
+  conclusion: needs_repair
+```
+
+### Effective contract / provenance
+
+- Effective stage contract remains `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, `development_terminal=false`. WP9-b is still responsible for target-ready engineering contracts only; real frozen-B calibration, real k=8 pilot/C2/D2, 24GB execution, and formal 400-problem evaluation remain WP9-c+ validation work.
+- Review ran in the plan-declared `feat/wp9-b` worktree `/home/dzy/open-r1-code-verifier/.worktrees/wp9-b`. Before this review artifact edit the worktree was clean and `git ls-files .ai-bridge` was empty.
+- Latest completed execution is E2. Its execution-report commit is the reviewed HEAD `da38045c5b9278a17aee9ba54f4a9237539d05d8`; the committed R2 review `b0ce11835e3955427d6e4e8e9d3693b2ba4d7625` and E2 result-code commit `a15622eea69aafc6374f60252c2a876b5f70b56b` are both ancestors of that HEAD.
+- E2's code commits are scoped to the three R2 repair lanes: calibration selector, Verification/Reward preflight boundary, and GRPO throughput source validation. No sealed plan, project spec, proceedings, dependency lock, or `third_party/open-r1` change is part of the E2 result-code range.
+
+### Independent verification
+
+- Exact sealed-plan focused suite from WP9-b plan §6.1: `324 passed`.
+- E2 combined repair regression set (calibration + WP9-b integration + verifier/reward + WP4 integration + refresh binding + GRPO throughput): `103 passed`.
+- Supplemental reviewer set (`verification/test_verifier`, `rewards/test_common`, refresh binding, GRPO throughput, verification throughput): `78 passed`.
+- `make lint`: PASS — Ruff check, Ruff format check, and strict mypy pass for `134` source/test files.
+- `make test`: PASS — `1169 passed, 3 skipped` in `114.03s`; all three skips are the existing opt-in real-Piston tests requiring `CODE_VERIFIER_RUN_PISTON=1`. The default CUDA smoke tests ran and passed.
+- `git diff --check`: PASS; `.ai-bridge/**` remains untracked.
+- Reviewer k=8 bootstrap probe: both tracked refresh configs load as `num_generations=8`, but calling the production `run_grpo_training(..., refresh_binding=None)` fails before any B artifact access with `GRPOTrainingError: k=8 refresh GRPO requires calibration and benchmark binding`. This independently demonstrates that the current production path cannot generate a pre-selection k=8 verifier sweep without an already completed benchmark report.
+- Source inspection of the formal Hidden probe path finds an arm-path error: for a Hidden run `config.dataset_path` is `.../hidden_grpo.jsonl`, but `_strict_grpo_source()` treats that selected-arm path as the Public artifact before deriving `hidden_grpo.jsonl`, so both hashes come from the Hidden file and the Public hash comparison fails for a normal distinct Public/Hidden active-pool pair.
+
+### Execution report declaration verification
+
+- E2's `16 passed`, `77 passed`, `10 passed`, and combined `103 passed` repair-gate claims are independently reproduced by the combined repair suite.
+- E2's focused `324 passed`, `make lint` PASS, and full `1169 passed, 3 skipped` claims are independently reproduced.
+- E2 claim that `R1-M1` is closed: verified. The selector now computes largest-remainder source+difficulty quotas from each complete overlap bucket before applying dual-first class preference, preserves exact strata quotas, enforces class bounds, and has a correlated mixed-class regression that reproduces the R2 counterexample as `14/4` rather than `16/2`.
+- E2 claim that `R2-M1` is closed: verified. Parsing/normalization is owned by Verification through public `prevalidate_verification_input()` / `verify_prevalidated_request()` APIs, while Reward consumes those APIs and no longer imports Parsing or verifier-private helpers. Whole-batch prevalidation still completes before executor-factory side effects.
+- E2 claim that `R1-M4` is closed: not verified. The new strict loader is directionally correct and rejects the old shallow engineering fixture as formal evidence, but its formal source path has an incorrect Hidden-arm dataset binding and, more fundamentally, requires the final benchmark binding/report on the very k=8 runs needed to create that report.
+- E2 correctly makes no real frozen-B calibration, C2/D2 checkpoint, 4090 throughput, or formal 400-problem scientific claim; the absence of such evidence is not a WP9-b defect.
+
+### Previous-round issue verification
+
+| issue_id | status | evidence |
+|---|---|---|
+| `R1-M1` | 已修复 | `src/code_verifier/training/calibration.py:1418-1558` allocates whole-bucket source+difficulty strata first, then dual-first/single-arm fallback with global caps; `tests/unit/training/test_calibration.py:301-351` covers the correlated class/stratum counterexample and input-order determinism. |
+| `R1-M2` | 已修复 | The refresh binding still comes from strict calibrated-pool and benchmark-report checkers rather than caller-supplied digests; no regression was found in E2. |
+| `R1-M3` | 已修复 | Concurrent reward still completes aligned Verification-layer preflight before executor construction, and the zero-side-effect late-invalid regression remains green. |
+| `R1-M4` | 修复不完整 | Formal GRPO source validation now uses `load_completed_grpo_checkpoint()`, but `src/code_verifier/throughput.py:696-705` misbinds the Hidden selected-arm path as Public, while `src/code_verifier/training/grpo.py:2470-2477` and `1507-1583` require the already-selected benchmark binding for every k=8 run, creating a bootstrap cycle for the worker/paired benchmark itself. |
+| `R2-M1` | 已修复 | `src/code_verifier/verification/verifier.py:120-138,244-302` owns parsing/preflight/execution orchestration; `src/code_verifier/rewards/common.py:84-103,300-347` consumes only public Verification APIs. |
+
+### Findings
+
+#### R1-M4 — Formal GRPO benchmark sources are stricter, but the strict path is not executable for the required pre-freeze sweep
+
+E2 correctly replaced the shallow formal source with `_strict_grpo_identity()` → `load_completed_grpo_checkpoint()` and extensive runtime/config/pool/log recomputation (`src/code_verifier/throughput.py:439-997`). That closes the original "four self-authored files can become formal evidence" hole, but two production-path defects keep the same R1 issue materially open.
+
+First, the strict active-pool path is arm-incorrect. At `src/code_verifier/throughput.py:696-705`, `dataset_path = config.dataset_path` is always hashed as `public_sha`, then `hidden_dataset_path = dataset_path.with_name("hidden_grpo.jsonl")`. For the tracked Hidden refresh config (`configs/grpo/refresh-hidden.yaml:3`), `dataset_path` already is `hidden_grpo.jsonl`, so both variables identify the Hidden file. A legitimate Hidden run whose Public and Hidden training artifacts differ will therefore fail the `active_public_training_sha256` comparison. Existing strict-source tests are only negative (`tests/unit/test_throughput_grpo.py:176-195`); there is no positive strict Public-and-Hidden completed-source test to expose this.
+
+Second, the formal benchmark has a circular bootstrap. `run_grpo_training()` rejects every k=8 run without a `GRPORefreshBinding` (`src/code_verifier/training/grpo.py:2470-2477`), while `load_grpo_refresh_binding()` itself requires a completed benchmark report and requires runtime workers to equal that report's already selected worker (`1507-1583`). `_strict_grpo_source()` also requires refresh metadata including `benchmark_report_sha256` (`src/code_verifier/throughput.py:610-643`). Yet the formal throughput report is supposed to be the artifact that compares k=8 verifier-worker candidates and chooses that worker. The reviewer probe hits this cycle before any external B/checkpoint access. A prior final binding cannot solve the sweep either, because it freezes one worker value and therefore cannot generate the alternative worker candidates being compared.
+
+Impact: WP9-c cannot use the implemented production contracts to create and then strictly validate the formal k=8 verifier/paired benchmark evidence that WP9-b was required to make target-ready. Hidden strict sources are rejected on their own path, and the worker-selection benchmark requires its own result before its candidate runs can exist. This is a code-contract defect in WP9-b development, not a complaint about missing 4090 evidence.
+
+Required repair: introduce an explicit **pre-freeze benchmark-run contract** for real k=8 benchmark candidates. It must bind the completed B identity, formal calibration/active-pool identity, exact k=8 scientific config/seed/runtime, candidate worker count, and completed output artifact hashes, but it must not require the not-yet-created final benchmark report or selected worker. The final C2/D2 training path should continue to require the frozen benchmark report/binding. Derive Public and Hidden active-pool paths explicitly from the calibration root (or branch correctly by reward mode), and add positive strict-source regressions for both arms plus the worker-sweep bootstrap path.
+
+#### R3-M1 — The throughput harness still omits the mandatory legacy k=4 versus k=8 benchmark comparison
+
+The frozen plan requires the benchmark manifest to carry a legacy k=4 reference and k=8 candidates, and explicitly says `k4 vs k8` is a benchmark comparison (`ai-work/planner/WP9-b-plan.md:497-504`). The active Refresh specification likewise requires, before formal C2/D2, a legacy `num_generations=4` small reference and a `num_generations=8` candidate (`PROJECT_SPEC_GRPO_Refresh.md:758-768`).
+
+The implemented report schema has no such section. `summarize_refresh_benchmarks()` accepts only `eval_generation`, optional eval verification, `grpo_verification`, and `paired_grpo` sections (`src/code_verifier/throughput.py:1444-1495`). In the entire throughput module, the only explicit `num_generations` validation for GRPO requires `== 8` (`src/code_verifier/throughput.py:588-591`), so the strict formal source path cannot represent a legacy k=4 reference. The engineering integration manifest likewise contains only eval-generation and k=8 GRPO worker fixtures (`tests/integration/test_wp9b_refresh_engineering.py:283-326`).
+
+This also leaves the GRPO side of the §12 record incomplete: the current GRPO report derives group throughput, memory, verifier timing and artifact hashes, but does not expose artifact-derived generated-token count / tokens-per-second for the k4/k8 comparison even though §12 requires generated tokens and tokens/s for each benchmark (`PROJECT_SPEC_GRPO_Refresh.md:770-784`).
+
+Impact: a future formal report can satisfy the implemented schema while omitting one of the specification's mandatory comparisons, and therefore cannot demonstrate that k=8 throughput was evaluated without changing scientific work/budget relative to the legacy k=4 reference.
+
+Required repair: add a formal k4-vs-k8 benchmark section/source contract that accepts strict actual artifacts for both protocols, independently proves the same B/pool/seed/scientific budget except for the intended generation-group-size difference, rejects confounds such as fewer steps/shorter completion/different reward or dataset, and derives the required token/time/resource/error telemetry from artifacts. Formal report checking must reject omission of this comparison. Add positive k4/k8 parity/identity tests and negative confound tests.
+
+### Acceptance status
+
+- `R1-M1`, `R1-M2`, `R1-M3`, and `R2-M1` are closed under independent code/test review.
+- `R1-M4` remains materially incomplete because the new strict formal GRPO path cannot validate a normal Hidden source and cannot bootstrap the k=8 worker/paired sweep without an already-frozen benchmark result.
+- New `R3-M1` records the still-missing mandatory k4-vs-k8 benchmark contract and required artifact-derived telemetry coverage.
+- All independent lint/test gates are green, but current tests do not contain a positive strict formal Public+Hidden source or a formal k4-vs-k8 report, so they do not exercise the failing target-ready contract above.
+- WP9-b still does not require actual 24GB/4090 execution or scientific results. The failure is that the development implementation cannot support the specified future formal evidence flow as written.
+
+### Repair Routing
+
+```yaml
+repair_routing:
+  version: 1
+  required: true
+  source_review_round: 3
+  mode: single
+  complexity: normal
+  single_class: normal
+  parallelizability: low
+  multi_benefit: low
+  independent_workstreams: 1
+  repair_issue_ids:
+    - R1-M4
+    - R3-M1
+  rationale:
+    - "Both remaining findings are one formal GRPO benchmark-bootstrap/source-contract problem spanning the pre-freeze run identity and the final throughput report; splitting them would risk two incompatible evidence schemas."
+    - "The repair should define one pre-freeze actual-run contract that supports k4/k8 and worker/paired candidates, then let the final report freeze choices consumed by formal C2/D2."
+  workstream_candidates: []
+```
+
+### Conclusion
+
+`needs_repair`. E2 closes the active-pool stratification and Verification/Reward boundary defects and independently reproduces all reported test/lint gates. Its strict-source repair is a substantial improvement, but `R1-M4` is still open because the formal Hidden source binding is arm-incorrect and the k=8 benchmark path depends on its own not-yet-created final report. The throughput harness also still omits the specification-mandated k4-versus-k8 comparison (`R3-M1`). Next lifecycle action is `stage-lifecycle checkpoint_review`; after that checkpoint, route the single integrated benchmark-contract repair.
