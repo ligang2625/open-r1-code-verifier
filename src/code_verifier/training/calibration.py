@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 from code_verifier.config import ConfigError, load_yaml_mapping
 from code_verifier.data.deduplicate import stable_json_hash
@@ -38,6 +38,7 @@ _INPUT_FIELDS = {
     "overlap_origin",
     "quality_gate_required",
 }
+_SelectionKey = TypeVar("_SelectionKey")
 
 
 class CalibrationError(RuntimeError):
@@ -1095,18 +1096,9 @@ def _active_selection_hash(seed: int, namespace: str, problem_id: str) -> str:
     return stable_json_hash({"namespace": namespace, "seed": seed, "problem_id": problem_id})
 
 
-def _source_difficulty_stratified_select(
+def _source_difficulty_groups(
     records: Sequence[dict[str, object]],
-    *,
-    count: int,
-    seed: int,
-    namespace: str,
-) -> list[dict[str, object]]:
-    """Select an exact proportional source+difficulty sample with deterministic largest remainder."""
-    if isinstance(count, bool) or not isinstance(count, int) or count < 0 or count > len(records):
-        raise CalibrationError("active-pool stratified selection count is invalid")
-    if count == 0:
-        return []
+) -> dict[tuple[str, str], list[dict[str, object]]]:
     groups: dict[tuple[str, str], list[dict[str, object]]] = {}
     seen_ids: set[str] = set()
     for record in records:
@@ -1125,29 +1117,96 @@ def _source_difficulty_stratified_select(
             raise CalibrationError("active-pool stratified population identity is invalid")
         seen_ids.add(problem_id)
         groups.setdefault((source_name, difficulty), []).append(record)
+    return groups
 
-    allocations: dict[tuple[str, str], int] = {}
-    remainders: list[tuple[float, tuple[str, str]]] = []
-    total = len(records)
-    for stratum in sorted(groups):
-        exact = count * len(groups[stratum]) / total
-        base = math.floor(exact)
-        allocations[stratum] = base
-        remainders.append((exact - base, stratum))
+
+def _largest_remainder_allocations(
+    populations: Mapping[_SelectionKey, int],
+    *,
+    count: int,
+    seed: int,
+    namespace: str,
+) -> dict[_SelectionKey, int]:
+    """Allocate an exact count proportionally, with deterministic stable-hash ties."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise CalibrationError("active-pool stratified selection count is invalid")
+    if not populations:
+        if count == 0:
+            return {}
+        raise CalibrationError("active-pool stratified population is empty")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in populations.values()):
+        raise CalibrationError("active-pool stratified population counts are invalid")
+    total = sum(populations.values())
+    if count > total:
+        raise CalibrationError("active-pool stratified selection count is invalid")
+    if count == 0:
+        return {key: 0 for key in populations}
+
+    allocations: dict[_SelectionKey, int] = {}
+    remainders: list[tuple[int, _SelectionKey]] = []
+    keys = sorted(populations, key=lambda item: cast(tuple[str, ...], item))
+    for key in keys:
+        numerator = count * populations[key]
+        base, remainder = divmod(numerator, total)
+        allocations[key] = base
+        remainders.append((remainder, key))
     remaining = count - sum(allocations.values())
-    for _remainder, stratum in sorted(remainders, key=lambda item: (-item[0], item[1]))[:remaining]:
-        allocations[stratum] += 1
+    for _remainder, key in sorted(
+        remainders,
+        key=lambda item: (
+            -item[0],
+            _active_selection_hash(seed, namespace, "|".join(cast(tuple[str, ...], item[1]))),
+            cast(tuple[str, ...], item[1]),
+        ),
+    )[:remaining]:
+        allocations[key] += 1
+    return allocations
 
+
+def _stable_select_records(
+    records: Sequence[dict[str, object]],
+    *,
+    count: int,
+    seed: int,
+    namespace: str,
+) -> list[dict[str, object]]:
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0 or count > len(records):
+        raise CalibrationError("active-pool stratified selection count is invalid")
+    ordered = sorted(
+        records,
+        key=lambda record: (
+            _active_selection_hash(seed, namespace, cast(str, record["problem_id"])),
+            cast(str, record["problem_id"]),
+        ),
+    )
+    return ordered[:count]
+
+
+def _source_difficulty_stratified_select(
+    records: Sequence[dict[str, object]],
+    *,
+    count: int,
+    seed: int,
+    namespace: str,
+) -> list[dict[str, object]]:
+    """Select an exact proportional source+difficulty sample with deterministic largest remainder."""
+    groups = _source_difficulty_groups(records)
+    allocations = _largest_remainder_allocations(
+        {stratum: len(rows) for stratum, rows in groups.items()},
+        count=count,
+        seed=seed,
+        namespace=namespace,
+    )
     selected: list[dict[str, object]] = []
     for stratum in sorted(groups):
-        ordered = sorted(
-            groups[stratum],
-            key=lambda record: (
-                _active_selection_hash(seed, namespace, cast(str, record["problem_id"])),
-                cast(str, record["problem_id"]),
-            ),
+        selected.extend(
+            _stable_select_records(
+                groups[stratum],
+                count=allocations[stratum],
+                seed=seed,
+                namespace=f"{namespace}|{stratum[0]}|{stratum[1]}",
+            )
         )
-        selected.extend(ordered[: allocations[stratum]])
     return selected
 
 
@@ -1200,28 +1259,53 @@ def _raise_active_selection_error(
 
 
 def _allocate_public_single_slots(
-    single_needs: Mapping[str, int],
-    public_available: Mapping[str, int],
-    hidden_available: Mapping[str, int],
+    single_needs: Mapping[tuple[str, str, str], int],
+    public_available: Mapping[tuple[str, str, str], int],
+    hidden_available: Mapping[tuple[str, str, str], int],
     *,
     public_cap: int,
     hidden_cap: int,
     eligible: Sequence[dict[str, object]],
     quotas: Mapping[str, int],
     config: CalibrationConfig,
-) -> dict[str, int]:
+) -> dict[tuple[str, str, str], int]:
+    """Allocate residual single-arm slots while retaining each source/difficulty quota."""
+    if set(single_needs) != set(public_available) or set(single_needs) != set(hidden_available):
+        _raise_active_selection_error(
+            "single-arm allocation strata are not aligned",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
     total_single = sum(single_needs.values())
-    lower: dict[str, int] = {}
-    upper: dict[str, int] = {}
+    lower: dict[tuple[str, str, str], int] = {}
+    upper: dict[tuple[str, str, str], int] = {}
     for bucket in sorted(single_needs):
         need = single_needs[bucket]
         public_count = public_available[bucket]
         hidden_count = hidden_available[bucket]
+        if (
+            isinstance(need, bool)
+            or not isinstance(need, int)
+            or need < 0
+            or isinstance(public_count, bool)
+            or not isinstance(public_count, int)
+            or public_count < 0
+            or isinstance(hidden_count, bool)
+            or not isinstance(hidden_count, int)
+            or hidden_count < 0
+        ):
+            _raise_active_selection_error(
+                "single-arm allocation population is invalid",
+                eligible=eligible,
+                quotas=quotas,
+                config=config,
+            )
         lower[bucket] = max(0, need - hidden_count)
         upper[bucket] = min(need, public_count)
         if lower[bucket] > upper[bucket]:
             _raise_active_selection_error(
-                f"{bucket} source population cannot fill its single-arm quota",
+                f"{bucket} source/difficulty stratum cannot fill its single-arm quota",
                 eligible=eligible,
                 quotas=quotas,
                 config=config,
@@ -1237,31 +1321,45 @@ def _allocate_public_single_slots(
         )
     if total_single == 0:
         return {bucket: 0 for bucket in single_needs}
-    total_available = sum(public_available.values()) + sum(hidden_available.values())
-    ideal_public = (
-        0
-        if total_available == 0
-        else math.floor(total_single * sum(public_available.values()) / total_available + 0.5)
-    )
+    total_public_available = sum(public_available.values())
+    total_available = total_public_available + sum(hidden_available.values())
+    if total_available == 0:
+        _raise_active_selection_error(
+            "single-arm strata cannot fill the requested target",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    ideal_public = (2 * total_single * total_public_available + total_available) // (2 * total_available)
     target_public = min(max(ideal_public, global_lower), global_upper)
     allocations = dict(lower)
     remaining = target_public - sum(allocations.values())
     if remaining <= 0:
         return allocations
     headroom = {bucket: upper[bucket] - lower[bucket] for bucket in single_needs}
-    total_headroom = sum(headroom.values())
-    remainders: list[tuple[float, str]] = []
-    assigned = 0
-    for bucket in sorted(headroom):
-        if headroom[bucket] == 0:
-            continue
-        exact = remaining * headroom[bucket] / total_headroom
-        base = math.floor(exact)
-        allocations[bucket] += base
-        assigned += base
-        remainders.append((exact - base, bucket))
-    for _remainder, bucket in sorted(remainders, key=lambda item: (-item[0], item[1]))[: remaining - assigned]:
-        allocations[bucket] += 1
+    extras = _largest_remainder_allocations(
+        headroom,
+        count=remaining,
+        seed=0,
+        namespace="active-single-arm-public",
+    )
+    for bucket, extra in extras.items():
+        allocations[bucket] += extra
+    for bucket in sorted(allocations):
+        if allocations[bucket] < lower[bucket] or allocations[bucket] > upper[bucket]:
+            _raise_active_selection_error(
+                "single-arm allocation exceeded a source/difficulty stratum bound",
+                eligible=eligible,
+                quotas=quotas,
+                config=config,
+            )
+    if sum(allocations.values()) != target_public:
+        _raise_active_selection_error(
+            "single-arm allocation did not produce the requested Public count",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
     return allocations
 
 
@@ -1271,7 +1369,7 @@ def _select_active_records(
     config: CalibrationConfig,
     seed: int,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    """Apply overlap quotas, class priority, then deterministic source+difficulty stratification."""
+    """Apply overlap quotas, whole-bucket strata, class priority, and bounded fallback."""
     overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
     quotas = {
         "sft_reuse": overlap_target,
@@ -1288,10 +1386,35 @@ def _select_active_records(
         "sft_reuse": [record for record in eligible if record.get("overlap_origin") == "sft_reuse"],
         "external_new": [record for record in eligible if record.get("overlap_origin") != "sft_reuse"],
     }
+    allowed_classes = {item.value for item in CalibrationClass}
+    seen_ids: set[str] = set()
+    for record in eligible:
+        problem_id = record.get("problem_id")
+        if (
+            not isinstance(problem_id, str)
+            or not problem_id
+            or problem_id in seen_ids
+            or not isinstance(record.get("source_name"), str)
+            or not cast(str, record["source_name"])
+            or not isinstance(record.get("difficulty"), str)
+            or not cast(str, record["difficulty"])
+            or record.get("calibration_class") not in allowed_classes
+            or record.get("calibration_class") == CalibrationClass.DUAL_UNINFORMATIVE.value
+        ):
+            _raise_active_selection_error(
+                "eligible calibration population contains an invalid or uninformative record",
+                eligible=eligible,
+                quotas=quotas,
+                config=config,
+            )
+        seen_ids.add(cast(str, problem_id))
     selected: list[dict[str, object]] = []
-    single_needs: dict[str, int] = {}
-    public_available: dict[str, int] = {}
-    hidden_available: dict[str, int] = {}
+    single_needs: dict[tuple[str, str, str], int] = {}
+    public_available: dict[tuple[str, str, str], int] = {}
+    hidden_available: dict[tuple[str, str, str], int] = {}
+    stratum_targets: dict[tuple[str, str, str], int] = {}
+    public_candidates: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    hidden_candidates: dict[tuple[str, str, str], list[dict[str, object]]] = {}
     for bucket_name in ("sft_reuse", "external_new"):
         population = buckets[bucket_name]
         quota = quotas[bucket_name]
@@ -1302,27 +1425,45 @@ def _select_active_records(
                 quotas=quotas,
                 config=config,
             )
-        dual = [
-            record
-            for record in population
-            if record.get("calibration_class") == CalibrationClass.DUAL_INFORMATIVE.value
-        ]
-        dual_count = min(quota, len(dual))
-        selected.extend(
-            _source_difficulty_stratified_select(
-                dual,
-                count=dual_count,
-                seed=seed,
-                namespace=f"{bucket_name}|dual",
+        groups = _source_difficulty_groups(population)
+        allocations = _largest_remainder_allocations(
+            {stratum: len(rows) for stratum, rows in groups.items()},
+            count=quota,
+            seed=seed,
+            namespace=f"{bucket_name}|strata",
+        )
+        for stratum in sorted(groups):
+            key = (bucket_name, stratum[0], stratum[1])
+            stratum_targets[key] = allocations[stratum]
+            dual = [
+                record
+                for record in groups[stratum]
+                if record.get("calibration_class") == CalibrationClass.DUAL_INFORMATIVE.value
+            ]
+            public = [
+                record
+                for record in groups[stratum]
+                if record.get("calibration_class") == CalibrationClass.PUBLIC_ONLY.value
+            ]
+            hidden = [
+                record
+                for record in groups[stratum]
+                if record.get("calibration_class") == CalibrationClass.HIDDEN_ONLY.value
+            ]
+            public_candidates[key] = public
+            hidden_candidates[key] = hidden
+            dual_count = min(allocations[stratum], len(dual))
+            selected.extend(
+                _stable_select_records(
+                    dual,
+                    count=dual_count,
+                    seed=seed,
+                    namespace=f"{bucket_name}|{stratum[0]}|{stratum[1]}|dual",
+                )
             )
-        )
-        single_needs[bucket_name] = quota - dual_count
-        public_available[bucket_name] = sum(
-            record.get("calibration_class") == CalibrationClass.PUBLIC_ONLY.value for record in population
-        )
-        hidden_available[bucket_name] = sum(
-            record.get("calibration_class") == CalibrationClass.HIDDEN_ONLY.value for record in population
-        )
+            single_needs[key] = allocations[stratum] - dual_count
+            public_available[key] = len(public)
+            hidden_available[key] = len(hidden)
 
     dual_min = math.ceil(config.active_pool_size * config.dual_informative_min_fraction)
     if len(selected) < dual_min:
@@ -1345,30 +1486,23 @@ def _select_active_records(
         config=config,
     )
 
-    for bucket_name in ("sft_reuse", "external_new"):
-        population = buckets[bucket_name]
-        public_candidates = [
-            record for record in population if record.get("calibration_class") == CalibrationClass.PUBLIC_ONLY.value
-        ]
-        hidden_candidates = [
-            record for record in population if record.get("calibration_class") == CalibrationClass.HIDDEN_ONLY.value
-        ]
-        public_count = public_targets[bucket_name]
-        hidden_count = single_needs[bucket_name] - public_count
+    for key in sorted(stratum_targets):
+        public_count = public_targets[key]
+        hidden_count = single_needs[key] - public_count
         selected.extend(
-            _source_difficulty_stratified_select(
-                public_candidates,
+            _stable_select_records(
+                public_candidates[key],
                 count=public_count,
                 seed=seed,
-                namespace=f"{bucket_name}|public-only",
+                namespace=f"{key[0]}|{key[1]}|{key[2]}|public-only",
             )
         )
         selected.extend(
-            _source_difficulty_stratified_select(
-                hidden_candidates,
+            _stable_select_records(
+                hidden_candidates[key],
                 count=hidden_count,
                 seed=seed,
-                namespace=f"{bucket_name}|hidden-only",
+                namespace=f"{key[0]}|{key[1]}|{key[2]}|hidden-only",
             )
         )
 
@@ -1393,6 +1527,31 @@ def _select_active_records(
     ):
         _raise_active_selection_error(
             "selected pool cannot satisfy the single-arm informative caps",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    selected_bucket_counts = Counter(
+        "sft_reuse" if record.get("overlap_origin") == "sft_reuse" else "external_new" for record in selected
+    )
+    if any(selected_bucket_counts[bucket] != quotas[bucket] for bucket in quotas):
+        _raise_active_selection_error(
+            "active-pool selector did not preserve overlap quotas",
+            eligible=eligible,
+            quotas=quotas,
+            config=config,
+        )
+    selected_strata = Counter(
+        (
+            "sft_reuse" if record.get("overlap_origin") == "sft_reuse" else "external_new",
+            cast(str, record.get("source_name")),
+            cast(str, record.get("difficulty")),
+        )
+        for record in selected
+    )
+    if any(selected_strata[key] != target for key, target in stratum_targets.items()):
+        _raise_active_selection_error(
+            "active-pool selector did not preserve source/difficulty strata quotas",
             eligible=eligible,
             quotas=quotas,
             config=config,

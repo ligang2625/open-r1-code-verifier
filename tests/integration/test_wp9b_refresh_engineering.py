@@ -413,6 +413,28 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
             reference_dataset_dir=reference_dir,
             allow_test_protocol=True,
         )
+
+    class_tamper = tmp_path / "class-tamper"
+    shutil.copytree(active_dir, class_tamper)
+    class_records_path = class_tamper / "records" / "calibration.jsonl"
+    class_records = [json.loads(line) for line in class_records_path.read_text(encoding="utf-8").splitlines()]
+    class_records[0]["calibration_class"] = "public_only"
+    unhashed_class_record = dict(class_records[0])
+    unhashed_class_record.pop("calibration_record_sha256")
+    class_records[0]["calibration_record_sha256"] = stable_json_hash(unhashed_class_record)
+    class_records_sha = calibration_module._write_jsonl(class_records_path, class_records)
+    class_manifest_path = class_tamper / "calibration_manifest.json"
+    class_manifest = json.loads(class_manifest_path.read_text(encoding="utf-8"))
+    class_manifest["artifacts"]["records/calibration.jsonl"] = class_records_sha
+    calibration_module._write_json(class_manifest_path, class_manifest)
+    with pytest.raises(CalibrationError, match="class does not recompute"):
+        check_calibrated_active_pool(
+            class_tamper,
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            allow_test_protocol=True,
+        )
+
     with pytest.raises(GRPOTrainingError, match="calibration artifact failed strict check"):
         load_grpo_refresh_binding(
             calibration_manifest_path=derived_manifest_path,

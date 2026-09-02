@@ -298,6 +298,94 @@ def test_active_selection_stratifies_unequal_source_difficulty_in_both_overlap_b
     assert [record["problem_id"] for record in selected_again] == [record["problem_id"] for record in selected]
 
 
+def test_active_selection_allocates_whole_bucket_before_class_preference() -> None:
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
+    records: list[dict[str, object]] = [
+        {
+            "problem_id": f"dual-{index}",
+            "source_name": "source-a",
+            "difficulty": "hard",
+            "overlap_origin": "external_new",
+            "calibration_class": CalibrationClass.DUAL_INFORMATIVE.value,
+        }
+        for index in range(16)
+    ]
+    records.extend(
+        {
+            "problem_id": f"public-{index}",
+            "source_name": "source-b",
+            "difficulty": "easy",
+            "overlap_origin": "external_new",
+            "calibration_class": CalibrationClass.PUBLIC_ONLY.value,
+        }
+        for index in range(2)
+    )
+    records.extend(
+        {
+            "problem_id": f"hidden-{index}",
+            "source_name": "source-b",
+            "difficulty": "easy",
+            "overlap_origin": "external_new",
+            "calibration_class": CalibrationClass.HIDDEN_ONLY.value,
+        }
+        for index in range(2)
+    )
+
+    selected, reserve = calibration._select_active_records(records, config=config, seed=42)
+    assert Counter(
+        (cast(str, record["source_name"]), cast(str, record["difficulty"])) for record in selected
+    ) == Counter({("source-a", "hard"): 14, ("source-b", "easy"): 4})
+    assert Counter(cast(str, record["calibration_class"]) for record in selected) == Counter(
+        {
+            CalibrationClass.DUAL_INFORMATIVE.value: 14,
+            CalibrationClass.PUBLIC_ONLY.value: 2,
+            CalibrationClass.HIDDEN_ONLY.value: 2,
+        }
+    )
+    assert len(reserve) == 2
+
+    selected_again, reserve_again = calibration._select_active_records(list(reversed(records)), config=config, seed=42)
+    assert [record["problem_id"] for record in selected_again] == [record["problem_id"] for record in selected]
+    assert sorted(reserve_again, key=lambda record: cast(str, record["problem_id"])) == sorted(
+        reserve, key=lambda record: cast(str, record["problem_id"])
+    )
+
+
+def test_active_selection_rejects_correlated_single_arm_cap_with_diagnostics() -> None:
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
+    records: list[dict[str, object]] = [
+        {
+            "problem_id": f"dual-{index}",
+            "source_name": "source-a",
+            "difficulty": "hard",
+            "overlap_origin": "external_new",
+            "calibration_class": CalibrationClass.DUAL_INFORMATIVE.value,
+        }
+        for index in range(16)
+    ]
+    records.extend(
+        {
+            "problem_id": f"public-{index}",
+            "source_name": "source-b",
+            "difficulty": "easy",
+            "overlap_origin": "external_new",
+            "calibration_class": CalibrationClass.PUBLIC_ONLY.value,
+        }
+        for index in range(4)
+    )
+
+    with pytest.raises(CalibrationError, match="population_diagnostics=") as error:
+        calibration._select_active_records(records, config=config, seed=42)
+
+    message = str(error.value)
+    for expected in (
+        '"overlap_bucket":"external_new"',
+        '"calibration_class":"public_only"',
+        '"source_name":"source-b"',
+    ):
+        assert expected in message
+
+
 def test_active_selection_error_reports_requested_constraints_and_stratified_population() -> None:
     config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 10, 0.10, 0.15, 0.70, 0.15, 0.15)
     records: list[dict[str, object]] = [
