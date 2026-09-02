@@ -569,3 +569,75 @@ repair_routing:
 ### Conclusion
 
 `needs_repair`. E3 is a substantial repair and passes the executable verification gates, but final benchmark evidence is not yet guaranteed to describe the same calibration/active-pool identity consumed by refresh training. Next lifecycle action is `stage-lifecycle checkpoint_review`.
+
+## Review Round 6
+
+```yaml
+review_record:
+  version: 1
+  stage_id: WP9-b
+  review_round: 6
+  source_execution_id: E4
+  reviewed_head_commit: 85ccab80d8e939f204d87d46a9732218b6f0ba9b
+  conclusion: pass
+```
+
+### Effective contract / provenance
+
+- The effective stage contract remains `stage_profile=development`, `control_plane_hardware=GTX 1660 Ti (6GB)`, `target_hardware=GTX 1660 Ti (6GB)`, `evidence_class=engineering`, and `development_terminal=false`. No real frozen-B calibration, 24GB/4090 GRPO, C2/D2 checkpoint, formal runtime recommendation, or 400-problem result is required or claimed by E4.
+- Review ran in the plan-declared `feat/wp9-b` worktree `/home/dzy/open-r1-code-verifier/.worktrees/wp9-b`. Before this review append the worktree was clean and `git ls-files .ai-bridge` was empty.
+- Latest completed execution is `E4`. Its result-code commit is `b8d57904728076624243eef023c33b74f96e2e82`; the execution-report commit is current reviewed HEAD `85ccab80d8e939f204d87d46a9732218b6f0ba9b`. The report commit changes only `ai-work/executor/WP9-b-executor.md`, so there is no post-report business-code continuation to attribute.
+- E4 is scoped to the sole R5 repair issue `R5-M1`. The result-code commit changes the benchmark identity/report layer, final GRPO refresh binding, and their unit/integration regressions; it does not modify the sealed plan, project specifications, `proceedings.md`, or `third_party/open-r1`.
+
+### Independent verification
+
+- Reviewer affected regression set (`test_grpo_refresh_binding`, generation/GRPO throughput, benchmark-contract tests, and WP9-b production-shadow integration): `30 passed`.
+- Exact sealed-plan focused suite from WP9-b plan §6.1: `326 passed`.
+- `make lint`: PASS — Ruff check, Ruff format check, and strict mypy pass for `135` source/test files.
+- `make test`: PASS — `1185 passed, 3 skipped` in `114.95s`; the three skips are the repository's existing opt-in real-Piston cases requiring `CODE_VERIFIER_RUN_PISTON=1`.
+- The review does not treat those real-Piston skips as fabricated PASS evidence; WP9-b's sealed development contract does not make real Piston a hard gate.
+
+### Execution report declaration verification
+
+- E4 claim that the exact sealed-plan focused suite is `326 passed`: independently reproduced.
+- E4 claim that `make lint` passes for `135` source/test files: independently reproduced.
+- E4 claim that full `make test` is `1185 passed, 3 skipped`: independently reproduced.
+- E4 claim that benchmark reconstruction now carries one canonical calibration identity across GRPO verification, k4/k8 diagnostic, and paired Public/Hidden sections: verified in `src/code_verifier/throughput.py`. Each strict GRPO probe binds `calibration_manifest_sha256`, active order, and Public/Hidden training hashes into its scientific identity; each GRPO report section exposes that identity; the report builder rejects cross-section identity drift before writing the report.
+- E4 claim that final refresh binding rejects a benchmark produced from a different calibrated active pool: verified in `src/code_verifier/training/grpo.py`. `load_grpo_refresh_binding()` strictly checks the current calibrated pool and benchmark report, then compares the benchmark's four calibration identity values with the actual calibration-manifest hash, active-order hash, and Public/Hidden training hashes before constructing `GRPORefreshBinding`.
+- The identity is not merely trusted from benchmark metadata: the formal GRPO strict-source path independently revalidates completed GRPO/B identity, canonical config/runtime, Public/Hidden active-pool files/order, the formal calibration manifest, and every calibration artifact hash before those four values reach benchmark reconstruction.
+
+### Previous-round issue verification
+
+| issue_id | R5 severity | status | evidence |
+|---|---|---|---|
+| `R5-M1` | major | 已修复 | `src/code_verifier/throughput.py:1155-1180,1415-1421,1424-1532,1551-1637,1674-1751,1820-1849,1900-1938` propagates and cross-checks the canonical calibration identity through strict benchmark reconstruction; `src/code_verifier/training/grpo.py:1587-1661` strictly checks both artifacts and rejects identity mismatch before final binding. The new negative regression with two individually valid but different calibration/benchmark sets passes. |
+
+### Acceptance status
+
+- All previously actionable WP9-b review issues are closed under the current effective contract: `R1-M1`, `R1-M2`, `R1-M3`, `R1-M4`, `R2-M1`, narrowed `R3-M1`, and `R5-M1`.
+- The WP9-b development implementation now provides a target-ready, strict evidence path in which pre-freeze k8 benchmark candidates and the controlled k4 diagnostic bind the completed B/calibrated pool identity, benchmark reconstruction requires one common calibration identity across GRPO sections, and final refresh training requires the benchmark report to describe the exact calibrated pool it consumes.
+- No new blocker, major, minor, or other actionable effective-contract defect was found in E4 or the current reviewed tree.
+- This PASS is only for the reviewed WP9-b development code/evidence contract. It does not certify future WP9-c 4090 benchmark values, calibration results, C2/D2 checkpoints, or research conclusions.
+
+### Repair Routing
+
+```yaml
+repair_routing:
+  version: 1
+  required: false
+  source_review_round: 6
+  mode: null
+  complexity: null
+  single_class: null
+  parallelizability: null
+  multi_benefit: null
+  independent_workstreams: 0
+  repair_issue_ids: []
+  rationale:
+    - "All actionable review issues are closed and the independent focused/lint/full-test gates pass; no executor repair is required."
+  workstream_candidates: []
+```
+
+### Conclusion
+
+`pass`. E4 closes `R5-M1`: the benchmark report's runtime selections are now cryptographically and semantically coupled to the same strictly checked calibration/active-pool identity consumed by final refresh training, and all independent acceptance gates pass. Reviewer-ex stops here without commit/merge/proceedings mutation. Next lifecycle action is `stage-lifecycle checkpoint_review`; after the PASS checkpoint, `stage-lifecycle finalize` may finalize WP9-b.
