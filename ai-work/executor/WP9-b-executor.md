@@ -102,3 +102,58 @@ execution_record:
   effective_execution_mode: single
   status: completed
 ```
+
+## Review Round 1 repair execution (E1)
+
+### Routing and provenance
+
+- Task kind: `repair` for committed WP9-b Review Round 1 (`a218d7b`).
+- Source routing remained `mode=multi` with three review-defined workstreams; Web GPT + CodexPro executed them as `serialized_multi` in the existing `feat/wp9-b` stage worktree.
+- Effective repair scope was exactly `R1-M1`, `R1-M2`, `R1-M3`, and `R1-M4`; no plan/review/proceedings/spec/third-party changes and no target-GPU/formal run were introduced.
+- Stage profile remained `development`; all evidence below is fixture/mock/CPU/development evidence only.
+
+### Repair commits and issue mapping
+
+- `53f5d42` `fix(wp9-b): stratify calibrated active selection` — R1-M1. Producer and strict checker share deterministic overlap-bucket selection with class priority plus source+difficulty largest-remainder allocation, stable ordering, fail-closed diagnostics, unequal-strata coverage, and selection-tamper rejection.
+- `6bd6d8d` `fix(wp9-b): prevalidate concurrent reward batches` — R1-M3. Every aligned completion/test/function/resource contract is prevalidated before executor factory/thread work; a late invalid item proves zero factory/execute side effects.
+- `b8744b9` `fix(wp9-b): bind refresh evidence identities` — R1-M2/R1-M4. Refresh binding requires strict active-pool recomputation plus a reconstructable throughput report; eval candidates bind normalized resolved config/problem order and GRPO candidates bind complete portable B config/dependency identity.
+- `8c772a6` `style(wp9-b): normalize repair formatting` — Ruff-format-only closeout; no semantic behavior changed.
+
+### Verification evidence
+
+- Calibration selector + production-shadow integration after R1-M1: `14 passed`.
+- Concurrent reward unit suite after R1-M3: `38 passed`.
+- Shared throughput/binding/GRPO/CLI/integration repair set: `200 passed`.
+- Exact sealed-plan focused suite from WP9-b plan section 6.1: `322 passed`.
+- Additional review-specific reward/throughput/binding regression set: `49 passed`.
+- `make lint`: PASS — Ruff check, Ruff format check, and mypy all passed for `134` source/test files.
+- `make test`: PASS — `1162 passed, 3 skipped` in `114.42s`; the three skips are the repository's existing opt-in real-Piston cases requiring `CODE_VERIFIER_RUN_PISTON=1`.
+- `git diff --check`: PASS before the final code-format commit and again on the final report diff; the stage working tree was clean before appending this execution record.
+
+### Repair result
+
+- R1-M1 is closed by strict source+difficulty stratified allocation in both overlap buckets and checker recomputation.
+- R1-M2 is closed by strict calibration source revalidation plus benchmark-manifest snapshot/reconstruction; shallow self-authored calibration/benchmark documents cannot construct a refresh binding.
+- R1-M3 is closed by whole-batch side-effect-free verifier-input prevalidation before concurrent executor creation.
+- R1-M4 is closed by strict generation resolved-config/problem-order identity and complete parent-B config/dependency identity for GRPO throughput candidates.
+- No formal worker count, active-pool research result, C2/D2 checkpoint, 24GB execution, or 400-problem result is claimed; those remain WP9-c+ validation responsibilities.
+
+```yaml
+execution_record:
+  version: 1
+  stage_id: WP9-b
+  execution_id: E1
+  task_kind: repair
+  source_plan_commit: 23e43b78fd31bfe051b29d38ef9e9d0f43e20590
+  source_review_round: 1
+  source_review_commit: a218d7b8894b5504c2e750e558e0dcaf83c14cc2
+  repair_issue_ids:
+    - R1-M1
+    - R1-M2
+    - R1-M3
+    - R1-M4
+  result_code_commit: 8c772a6f4cc340be4bd263d6e82c16b03142ebfe
+  execution_backend: web_codexpro
+  effective_execution_mode: serialized_multi
+  status: completed
+```
