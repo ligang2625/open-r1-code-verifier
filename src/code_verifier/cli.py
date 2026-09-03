@@ -587,6 +587,8 @@ def _prepare_refresh_calibration(args: argparse.Namespace) -> int:
         tokenizer_model_id=sft.model_id,
         tokenizer_model_revision=sft.model_revision,
         minimum_records=config.active_pool_size,
+        exclude_quality_gate_required=bool(args.exclude_quality_gate_required),
+        maximum_records=None if args.maximum_records is None else int(args.maximum_records),
     )
     print(f"calibration_input={output}")
     return 0
@@ -1432,6 +1434,17 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_calibration_parser.add_argument("--reference-dataset-dir", type=Path, required=True)
     prepare_calibration_parser.add_argument("--sft-run-dir", type=Path, required=True)
     prepare_calibration_parser.add_argument("--seed", type=int, default=42)
+    prepare_calibration_parser.add_argument(
+        "--exclude-quality-gate-required",
+        action="store_true",
+        help="exclude candidates that still require the independent data-quality gate",
+    )
+    prepare_calibration_parser.add_argument(
+        "--maximum-records",
+        type=int,
+        default=None,
+        help="deterministic source/difficulty-stratified calibration tranche size",
+    )
     prepare_calibration_parser.add_argument("--output-dir", type=Path, required=True)
     prepare_calibration_parser.add_argument("--log-level", default="INFO")
     prepare_calibration_parser.set_defaults(handler=_prepare_refresh_calibration)

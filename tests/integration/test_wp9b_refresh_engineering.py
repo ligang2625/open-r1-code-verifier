@@ -231,6 +231,54 @@ def test_calibration_input_context_filter_records_exclusions(
     assert len(records) == 6
 
 
+def test_calibration_input_quality_safe_tranche_is_strict_and_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_config, reference_dir = _setup_fixture_environment(tmp_path, monkeypatch)
+    refresh_dir = tmp_path / "refresh-tranche"
+    prepare_refresh_data(
+        refresh_config,
+        seed=42,
+        reference_dataset_dir=reference_dir,
+        source_cache_dir=tmp_path / "cache-tranche",
+        output_dir=refresh_dir,
+    )
+    selection = [
+        json.loads(line)
+        for line in (refresh_dir / "manifest" / "selection.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    quality_eligible = sum(not bool(row["quality_gate_required"]) for row in selection)
+    tranche_size = min(4, quality_eligible)
+    assert tranche_size > 0
+
+    first = tmp_path / "calibration-input-tranche-a"
+    second = tmp_path / "calibration-input-tranche-b"
+    for output in (first, second):
+        prepare_calibration_input_bundle(
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            output_dir=output,
+            seed=42,
+            allow_test_protocol=True,
+            minimum_records=1,
+            exclude_quality_gate_required=True,
+            maximum_records=tranche_size,
+        )
+        manifest, records = calibration_module._load_input_bundle(output)
+        assert len(records) == tranche_size
+        assert all(not record.quality_gate_required for record in records)
+        candidate_filter = manifest["candidate_filter"]
+        assert isinstance(candidate_filter, dict)
+        assert candidate_filter["policy"] == "quality_safe_stratified_tranche_v1"
+        assert candidate_filter["quality_eligible_record_count"] == quality_eligible
+        assert candidate_filter["selected_record_count"] == tranche_size
+        assert candidate_filter["tranche_reserve_record_count"] == quality_eligible - tranche_size
+
+    assert (first / "inputs.jsonl").read_bytes() == (second / "inputs.jsonl").read_bytes()
+    assert (first / "tranche_reserve.jsonl").read_bytes() == (second / "tranche_reserve.jsonl").read_bytes()
+
+
 def test_wp9b_production_shadow_calibration_active_pool_and_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -258,6 +306,7 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
         output_dir=input_dir,
         seed=42,
         allow_test_protocol=True,
+        maximum_records=5,
     )
     input_payload = (input_dir / "inputs.jsonl").read_text(encoding="utf-8")
     assert "train_hidden_tests" not in input_payload

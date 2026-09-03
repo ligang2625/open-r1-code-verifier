@@ -423,6 +423,8 @@ def prepare_calibration_input_bundle(
     tokenizer_model_id: str | None = None,
     tokenizer_model_revision: str | None = None,
     minimum_records: int = 1,
+    exclude_quality_gate_required: bool = False,
+    maximum_records: int | None = None,
 ) -> Path:
     """Create a deterministic Public-safe calibration prompt bundle from strict WP9-a artifacts."""
     summary = check_refresh_data(
@@ -450,6 +452,12 @@ def prepare_calibration_input_bundle(
         raise CalibrationError("production calibration input requires exact tokenizer context filtering")
     if isinstance(minimum_records, bool) or not isinstance(minimum_records, int) or minimum_records <= 0:
         raise CalibrationError("minimum_records must be a positive integer")
+    if not isinstance(exclude_quality_gate_required, bool):
+        raise CalibrationError("exclude_quality_gate_required must be a boolean")
+    if maximum_records is not None and (
+        isinstance(maximum_records, bool) or not isinstance(maximum_records, int) or maximum_records <= 0
+    ):
+        raise CalibrationError("maximum_records must be a positive integer or null")
     if filter_enabled:
         if isinstance(max_prompt_tokens, bool) or not isinstance(max_prompt_tokens, int) or max_prompt_tokens <= 0:
             raise CalibrationError("max_prompt_tokens must be a positive integer")
@@ -503,9 +511,34 @@ def prepare_calibration_input_bundle(
                 "quality_gate_required": selection["quality_gate_required"],
             }
         )
+    context_eligible_count = len(input_records)
+    excluded_quality: list[dict[str, object]] = []
+    if exclude_quality_gate_required:
+        excluded_quality = [
+            {"problem_id": cast(str, record["problem_id"]), "reason": "quality_gate_required"}
+            for record in input_records
+            if record["quality_gate_required"] is True
+        ]
+        input_records = [record for record in input_records if record["quality_gate_required"] is False]
+    quality_eligible_count = len(input_records)
+    tranche_reserve: list[dict[str, object]] = []
+    if maximum_records is not None and len(input_records) > maximum_records:
+        selected = _source_difficulty_stratified_select(
+            input_records,
+            count=maximum_records,
+            seed=seed,
+            namespace="calibration-quality-safe-tranche-v1",
+        )
+        selected_ids = {cast(str, record["problem_id"]) for record in selected}
+        tranche_reserve = [
+            {"problem_id": cast(str, record["problem_id"]), "reason": "tranche_reserve"}
+            for record in input_records
+            if cast(str, record["problem_id"]) not in selected_ids
+        ]
+        input_records = [record for record in input_records if cast(str, record["problem_id"]) in selected_ids]
     if len(input_records) < minimum_records:
         raise CalibrationError(
-            f"context-eligible calibration input has {len(input_records)} records; minimum is {minimum_records}"
+            f"calibration input has {len(input_records)} selected records; minimum is {minimum_records}"
         )
     if output_dir.exists():
         raise CalibrationError("calibration input output directory must not already exist")
@@ -513,6 +546,14 @@ def prepare_calibration_input_bundle(
     try:
         records_sha = _write_jsonl(temporary / "inputs.jsonl", input_records)
         excluded_sha = _write_jsonl(temporary / "excluded_context.jsonl", excluded_context) if filter_enabled else None
+        quality_excluded_sha = (
+            _write_jsonl(temporary / "excluded_quality.jsonl", excluded_quality)
+            if exclude_quality_gate_required
+            else None
+        )
+        tranche_reserve_sha = (
+            _write_jsonl(temporary / "tranche_reserve.jsonl", tranche_reserve) if maximum_records is not None else None
+        )
         source_manifest_sha = _sha256(summary.root_manifest)
         source_manifest = _load_json(summary.root_manifest)
         manifest = {
@@ -541,9 +582,22 @@ def prepare_calibration_input_bundle(
                 "max_prompt_tokens": max_prompt_tokens,
                 "max_new_tokens": max_new_tokens,
                 "source_record_count": len(public_rows),
-                "eligible_record_count": len(input_records),
+                "eligible_record_count": context_eligible_count,
                 "excluded_record_count": len(excluded_context),
                 "excluded_records_sha256": excluded_sha,
+            }
+        if exclude_quality_gate_required or maximum_records is not None:
+            manifest["candidate_filter"] = {
+                "policy": "quality_safe_stratified_tranche_v1",
+                "exclude_quality_gate_required": exclude_quality_gate_required,
+                "maximum_records": maximum_records,
+                "context_eligible_record_count": context_eligible_count,
+                "quality_eligible_record_count": quality_eligible_count,
+                "quality_excluded_record_count": len(excluded_quality),
+                "quality_excluded_records_sha256": quality_excluded_sha,
+                "selected_record_count": len(input_records),
+                "tranche_reserve_record_count": len(tranche_reserve),
+                "tranche_reserve_records_sha256": tranche_reserve_sha,
             }
         _write_json(temporary / "input_manifest.json", manifest)
         os.replace(temporary, output_dir)
@@ -551,6 +605,82 @@ def prepare_calibration_input_bundle(
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return output_dir
+
+
+def _validate_candidate_filter(
+    input_bundle_dir: Path,
+    manifest: Mapping[str, object],
+    raw: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    candidate_filter = manifest.get("candidate_filter")
+    if candidate_filter is None:
+        return None
+    expected_fields = {
+        "policy",
+        "exclude_quality_gate_required",
+        "maximum_records",
+        "context_eligible_record_count",
+        "quality_eligible_record_count",
+        "quality_excluded_record_count",
+        "quality_excluded_records_sha256",
+        "selected_record_count",
+        "tranche_reserve_record_count",
+        "tranche_reserve_records_sha256",
+    }
+    if not isinstance(candidate_filter, Mapping) or set(candidate_filter) != expected_fields:
+        raise CalibrationError("calibration input candidate filter metadata is invalid")
+    exclude_quality = candidate_filter.get("exclude_quality_gate_required")
+    maximum_records = candidate_filter.get("maximum_records")
+    context_count = candidate_filter.get("context_eligible_record_count")
+    quality_count = candidate_filter.get("quality_eligible_record_count")
+    quality_excluded_count = candidate_filter.get("quality_excluded_record_count")
+    reserve_count = candidate_filter.get("tranche_reserve_record_count")
+    integer_counts = (context_count, quality_count, quality_excluded_count, reserve_count)
+    if (
+        candidate_filter.get("policy") != "quality_safe_stratified_tranche_v1"
+        or not isinstance(exclude_quality, bool)
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in integer_counts)
+        or candidate_filter.get("selected_record_count") != len(raw)
+        or cast(int, context_count) != cast(int, quality_count) + cast(int, quality_excluded_count)
+        or cast(int, quality_count) != len(raw) + cast(int, reserve_count)
+    ):
+        raise CalibrationError("calibration input candidate filter counts are invalid")
+    if maximum_records is not None and (
+        isinstance(maximum_records, bool)
+        or not isinstance(maximum_records, int)
+        or maximum_records <= 0
+        or len(raw) > maximum_records
+    ):
+        raise CalibrationError("calibration input candidate tranche limit is invalid")
+    if exclude_quality:
+        path = input_bundle_dir / "excluded_quality.jsonl"
+        if candidate_filter.get("quality_excluded_records_sha256") != _sha256(path):
+            raise CalibrationError("calibration input excluded-quality hash mismatch")
+        rows = _load_jsonl(path)
+        if len(rows) != quality_excluded_count or any(
+            set(row) != {"problem_id", "reason"}
+            or not isinstance(row.get("problem_id"), str)
+            or row.get("reason") != "quality_gate_required"
+            for row in rows
+        ):
+            raise CalibrationError("calibration input excluded-quality records are invalid")
+    elif candidate_filter.get("quality_excluded_records_sha256") is not None or quality_excluded_count != 0:
+        raise CalibrationError("calibration input quality exclusion metadata is inconsistent")
+    if maximum_records is not None:
+        path = input_bundle_dir / "tranche_reserve.jsonl"
+        if candidate_filter.get("tranche_reserve_records_sha256") != _sha256(path):
+            raise CalibrationError("calibration input tranche-reserve hash mismatch")
+        rows = _load_jsonl(path)
+        if len(rows) != reserve_count or any(
+            set(row) != {"problem_id", "reason"}
+            or not isinstance(row.get("problem_id"), str)
+            or row.get("reason") != "tranche_reserve"
+            for row in rows
+        ):
+            raise CalibrationError("calibration input tranche-reserve records are invalid")
+    elif candidate_filter.get("tranche_reserve_records_sha256") is not None or reserve_count != 0:
+        raise CalibrationError("calibration input tranche-reserve metadata is inconsistent")
+    return candidate_filter
 
 
 def _load_input_bundle(input_bundle_dir: Path) -> tuple[dict[str, object], list[CalibrationInputRecord]]:
@@ -562,6 +692,7 @@ def _load_input_bundle(input_bundle_dir: Path) -> tuple[dict[str, object], list[
         raise CalibrationError("calibration input records hash mismatch")
     if manifest.get("record_count") != len(raw):
         raise CalibrationError("calibration input record count mismatch")
+    candidate_filter = _validate_candidate_filter(input_bundle_dir, manifest, raw)
     context_filter = manifest.get("context_filter")
     if context_filter is not None:
         expected_filter_fields = {
@@ -585,11 +716,16 @@ def _load_input_bundle(input_bundle_dir: Path) -> tuple[dict[str, object], list[
             or isinstance(max_prompt_tokens, bool)
             or not isinstance(max_prompt_tokens, int)
             or max_prompt_tokens <= 0
-            or context_filter.get("eligible_record_count") != len(raw)
+            or context_filter.get("eligible_record_count")
+            != (
+                candidate_filter.get("context_eligible_record_count")
+                if isinstance(candidate_filter, Mapping)
+                else len(raw)
+            )
             or isinstance(excluded_count, bool)
             or not isinstance(excluded_count, int)
             or excluded_count < 0
-            or source_count != len(raw) + excluded_count
+            or source_count != cast(int, context_filter.get("eligible_record_count")) + excluded_count
         ):
             raise CalibrationError("calibration input context filter counts/limits are invalid")
         excluded_path = input_bundle_dir / "excluded_context.jsonl"
@@ -629,6 +765,12 @@ def _load_input_bundle(input_bundle_dir: Path) -> tuple[dict[str, object], list[
             quality_gate_required=record["quality_gate_required"],
         )
         records.append(item)
+    if (
+        isinstance(candidate_filter, Mapping)
+        and candidate_filter.get("exclude_quality_gate_required") is True
+        and any(record.quality_gate_required for record in records)
+    ):
+        raise CalibrationError("quality-safe calibration input contains a quality-gate-required record")
     ids = [record.problem_id for record in records]
     if len(ids) != len(set(ids)) or manifest.get("problem_order_sha256") != stable_json_hash(ids):
         raise CalibrationError("calibration input problem order is invalid")
@@ -1652,7 +1794,13 @@ def _select_active_records(
     seed: int,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Apply overlap quotas, whole-bucket strata, class priority, and bounded fallback."""
-    overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    preferred_overlap = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    available_sft = sum(record.get("overlap_origin") == "sft_reuse" for record in eligible)
+    available_external = len(eligible) - available_sft
+    minimum_sft_needed = max(0, config.active_pool_size - available_external)
+    overlap_target = min(preferred_overlap, available_sft)
+    if overlap_target < minimum_sft_needed:
+        overlap_target = minimum_sft_needed
     quotas = {
         "sft_reuse": overlap_target,
         "external_new": config.active_pool_size - overlap_target,
@@ -1972,7 +2120,8 @@ def build_calibrated_active_pool(
         seed=seed,
     )
     reserve.extend(informative_reserve)
-    overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    preferred_overlap = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    overlap_count = sum(record["overlap_origin"] == "sft_reuse" for record in selected)
     counts = Counter(cast(str, record["calibration_class"]) for record in selected)
     selected.sort(key=lambda record: _selection_hash(seed + 1, cast(str, record["problem_id"])))
     selected_ids = [cast(str, record["problem_id"]) for record in selected]
@@ -2039,8 +2188,10 @@ def build_calibrated_active_pool(
             "selected_problems": len(selected_ids),
             "class_counts": class_counts,
             "class_fractions": {key: value / len(selected_ids) for key, value in class_counts.items()},
-            "sft_overlap_count": overlap_target,
-            "sft_overlap_fraction": overlap_target / len(selected_ids),
+            "sft_overlap_count": overlap_count,
+            "sft_overlap_fraction": overlap_count / len(selected_ids),
+            "sft_overlap_preferred_count": preferred_overlap,
+            "sft_overlap_shortfall_count": max(0, preferred_overlap - overlap_count),
             "quality_excluded_count": sum(record["quality_gate_required"] is True for record in final_records),
         }
         classification_report_path = temporary / "reports" / "classification_summary.json"
@@ -2072,6 +2223,10 @@ def build_calibrated_active_pool(
             "wp9a_manifest_sha256": input_manifest["wp9a_manifest_sha256"],
             "wp9a_selected_order_sha256": input_manifest["wp9a_selected_order_sha256"],
             "input_manifest_sha256": _sha256(input_bundle_dir / "input_manifest.json"),
+            "calibrated_problem_count": len(final_records),
+            "calibrated_problem_order_sha256": stable_json_hash(
+                [cast(str, record["problem_id"]) for record in final_records]
+            ),
             "initial_scoring_manifest_sha256": _sha256(initial_scoring_dir / "score_manifest.json"),
             "retry_scoring_manifest_sha256": (
                 None if retry_scoring_dir is None else _sha256(retry_scoring_dir / "score_manifest.json")
@@ -2120,6 +2275,8 @@ def check_calibrated_active_pool(
         "wp9a_manifest_sha256",
         "wp9a_selected_order_sha256",
         "input_manifest_sha256",
+        "calibrated_problem_count",
+        "calibrated_problem_order_sha256",
         "initial_scoring_manifest_sha256",
         "retry_scoring_manifest_sha256",
         "sft_checkpoint",
@@ -2247,8 +2404,15 @@ def check_calibrated_active_pool(
 
     records = _load_jsonl(pool_dir / "records" / "calibration.jsonl")
     record_ids = [record.get("problem_id") for record in records]
-    if record_ids != source_public_ids or len(record_ids) != len(set(record_ids)):
-        raise CalibrationError("calibration records do not cover the frozen WP9-a pool exactly once in order")
+    if any(not isinstance(problem_id, str) for problem_id in record_ids) or len(record_ids) != len(set(record_ids)):
+        raise CalibrationError("calibration records contain invalid or duplicate problem IDs")
+    record_id_set = set(cast(list[str], record_ids))
+    if [problem_id for problem_id in source_public_ids if problem_id in record_id_set] != record_ids:
+        raise CalibrationError("calibration records are not an ordered subset of the frozen WP9-a pool")
+    if manifest.get("calibrated_problem_count") != len(records) or manifest.get(
+        "calibrated_problem_order_sha256"
+    ) != stable_json_hash(record_ids):
+        raise CalibrationError("calibrated problem subset identity does not match its records")
     record_by_id: dict[str, dict[str, object]] = {}
     for record in records:
         problem_id = cast(str, record["problem_id"])
@@ -2308,7 +2472,7 @@ def check_calibrated_active_pool(
         seed=seed,
     )
     reserve = [*base_reserve, *informative_reserve]
-    overlap_target = int(round(config.active_pool_size * config.sft_overlap_fraction))
+    preferred_overlap = int(round(config.active_pool_size * config.sft_overlap_fraction))
     selected_counts = Counter(cast(str, record["calibration_class"]) for record in selected_records)
     if selected_counts[CalibrationClass.DUAL_UNINFORMATIVE.value] != 0:
         raise CalibrationError("calibrated active pool contains dual-uninformative problems")
@@ -2373,6 +2537,8 @@ def check_calibrated_active_pool(
         "class_fractions": {key: value / len(selected_ids) for key, value in class_counts.items()},
         "sft_overlap_count": overlap_count,
         "sft_overlap_fraction": overlap_count / len(selected_ids),
+        "sft_overlap_preferred_count": preferred_overlap,
+        "sft_overlap_shortfall_count": max(0, preferred_overlap - overlap_count),
         "quality_excluded_count": sum(record["quality_gate_required"] is True for record in records),
     }
     if (
@@ -2386,8 +2552,8 @@ def check_calibrated_active_pool(
     active_order_sha = stable_json_hash(selected_ids)
     if manifest.get("active_order_sha256") != active_order_sha:
         raise CalibrationError("active pool order hash mismatch")
-    if overlap_count != overlap_target or overlap_count / len(selected_ids) > config.sft_overlap_hard_max + 1e-12:
-        raise CalibrationError("active-pool SFT overlap does not satisfy the frozen target/hard max")
+    if overlap_count / len(selected_ids) > config.sft_overlap_hard_max + 1e-12:
+        raise CalibrationError("active-pool SFT overlap exceeds the frozen hard max")
 
     return CalibrationPoolSummary(
         pool_dir=pool_dir,

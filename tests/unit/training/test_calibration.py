@@ -638,7 +638,7 @@ def test_active_selection_rejects_correlated_single_arm_cap_with_diagnostics() -
         assert expected in message
 
 
-def test_active_selection_error_reports_requested_constraints_and_stratified_population() -> None:
+def test_active_selection_treats_overlap_fraction_as_preferred_target() -> None:
     config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 10, 0.10, 0.15, 0.70, 0.15, 0.15)
     records: list[dict[str, object]] = [
         {
@@ -651,14 +651,8 @@ def test_active_selection_error_reports_requested_constraints_and_stratified_pop
         for index in range(10)
     ]
 
-    with pytest.raises(CalibrationError, match="population_diagnostics=") as error:
-        calibration._select_active_records(records, config=config, seed=42)
+    selected, reserve = calibration._select_active_records(records, config=config, seed=42)
 
-    message = str(error.value)
-    for expected in (
-        '"requested_class_constraints"',
-        '"overlap_bucket":"external_new"',
-        '"source_name":"only-source"',
-        '"difficulty":"hard"',
-    ):
-        assert expected in message
+    assert len(selected) == 10
+    assert reserve == []
+    assert all(record["overlap_origin"] == "external_new" for record in selected)
