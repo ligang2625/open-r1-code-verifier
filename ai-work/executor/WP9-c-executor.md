@@ -459,3 +459,185 @@ execution_checkpoint:
   blocker: manual RTX 4090 C4 Gate A execution and evidence/artifact return are required
   status: awaiting_operator
 ```
+
+## C5 repair: reuse committed C2/C3 calibration samples
+
+The user explicitly authorized replacing the unexecuted C4 handoff with a scientific-reuse protocol that reuses eligible, already committed C2/C3 frozen-B generation results. C4 remains immutable history and was not edited. C5 supersedes C4 before formal C4 execution.
+
+The reuse decision is frozen strictly from problem identity and source provenance before any Public/Hidden verifier scoring. C2 has precedence over C3 for overlapping historical groups. Each selected calibration problem still contributes exactly one initial k=8 block: an eligible historical block replaces fresh generation; historical and new blocks are never concatenated into 16 initial samples. All 5,000 final problems will subsequently be scored/re-scored together by the same current Public and Hidden verifiers.
+
+A read-only target audit established that C2 contains 12 complete committed k=8 problem groups at batch 4 and C3 contains 426 complete committed k=8 groups at batch 1; both are bound to the exact frozen B identity, exact source input identities, block 0, and stable per-problem seeds. C2's 12 problem IDs are exactly the first 12 C3 source-input IDs. Against the frozen C4 5,000-problem tranche, deterministic precedence yields 8 C2 groups, 211 additional C3 groups, and 4,781 problems requiring new generation. The resulting 5,000-row problem-origin map is frozen before scoring.
+
+C5 deliberately keeps `problem_batch_size=4` only for the 4,781 newly generated problems. Reused C2/C3 groups preserve their original source batch provenance; batch size is treated as inference-engineering provenance rather than a scientific treatment. C5 uses the existing production `generate-refresh-calibration` implementation for the missing-only staging run, preserving its exact-prefix resume/OOM semantics. After that staging run completes, C5 atomically composes a standard 40,000-record canonical generation artifact in the original C4 input order and records exact source provenance for every problem.
+
+C5 also repairs an inherited C4 handoff-only defect discovered during review: the C4 script's intended strict input-bundle preflight invocation had empty shell arguments. Historical C4 is left untouched; the C5 script restores the intended exact input SHA/count/tokenizer binding. This does not alter the scientific population or calibration sampling parameters.
+
+Frozen C5 reuse/missing identities:
+
+- problem-origin map SHA256: `74d882df1f29a6957ba9d43887531e8596b091f0f735629ea8da624737171b0f`
+- C2 reused problems: `8`
+- C3 reused problems after C2 precedence: `211`
+- total reused problems: `219`
+- newly generated problems: `4781`
+- newly generated records: `38248`
+- final problems/records: `5000 / 40000`
+- missing-only input manifest SHA256: `91cf290342111b493017e61d5be7b314fe96b79b3284b6bc0dce04682414e308`
+- missing-only input records SHA256: `79b38b57277579d9eaf5499ea219f062a5e7bebb603eb8a473c8f84d18d915f1`
+- missing-only problem-order SHA256: `4f5fdfbf8d2238638672b17d795d7d9cc4629dd3cae8860eef4cdb61d15d8acf`
+
+Historical source identities frozen by C5:
+
+- C2 input manifest / records / order: `3eeee5ffea63904e3bd714d275147cd9df438aa3332f49bfd99d7398d71571d3` / `86f385a03836d731aa5d03b268f3880ad1e2ac9dccc7c391a8b97d6a9668b682` / `355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001`
+- C2 run / generation / progress: `823a8d6a738ddf3e905d43c2d390da3f9b449b07404f2d76cf60bb7b5db07b0f` / `b218d3437ceb495c31a89cbaf36a5ee30224bb2ef00e55d0def6e8d9edb8cfad` / `a81f8e46efe27cde3fd00aea48bdb325cae45051b4620a0e8899c2aa19c98e5b`
+- C2 operator evidence: `9eb342bc24896ffd95f5d9a635ead3745c0f41e8bcc794c9469545ebb03de13c`
+- C3 input manifest / records / order: `0ac247e0eae6244148a117a350284dd7088c6822a2eab68382eb22cfd1a2b6c6` / `22675dcbe31c663079c244175f6557d4b65b2206d96ef644c66677b97dd40140` / `4de0fa55f04ee02bdd5c4668f97cca9eeb254273c25c354df3c66bc89be9b197`
+- C3 run / generation / progress: `25568d1d83286e79ee92749163a0415b949b9e2208749c398f73488a34fcc48c` / `42fbe9e19da60723541bb4388e035b91aaeb597c775ec7fd4187542a0c1617a4` / `9ab25cce8f1552647de273db825d57bb5f23cfca31808b73db02e247ef30afb8`
+- C3 operator evidence: `950d605a5e46af424d11e7d94fa5a6511c61f2c711df592c68a289f298b0eb2e`
+
+Pre-handoff static checks completed before this checkpoint append: C5 shell syntax passes `bash -n`; all 16 quoted embedded Python heredocs compile; the target read-only audit confirms exact C2/C3 committed-prefix semantics and hashes. Full repository validation is recorded after the checkpoint below.
+
+```yaml
+execution_checkpoint:
+  version: 1
+  stage_id: WP9-c
+  checkpoint_id: C5
+  task_kind: repair
+  source_plan_commit: 5a1f083af6bfdf2e1333bd70e95e9257b4e66b48
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  repair_basis: user_directed_scientific_reuse_of_C2_C3_generation
+  result_code_commit: 643bba54b5f92c74796922f51ea9eb4c1aae655b
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  interruption_class: operator
+  operator_gate_id: wp9c-calibration-initial-generation
+  operator_handoff_mode: portable_target
+  operator_restart_policy: exact_missing_prefix_or_strict_completed_composite_reuse
+  supersedes_checkpoint: C4
+  operator_commit_binding: runtime_WP9C_HANDOFF_COMMIT_must_equal_target_HEAD
+  operator_script: ai-work/executor/operator/WP9-c/wp9c-calibration-initial-generation/C5/run.sh
+  operator_script_sha256: 4c2daeefe61c25c95f05125862b5d3bbdde37547fab633e018c9b3f5b86885d5
+  calibration_config_sha256: 97b2706808e1d4d2fa9088be018617c3e1459633767d3505de138fc5f48c68b0
+  problem_batch_size: 4
+  problem_batch_size_semantics: generated_missing_only_reused_groups_retain_source_batch_provenance
+  reuse_policy: ordered_complete_problem_precedence_v1
+  reuse_selection_timing: problem_id_only_before_verifier_scoring
+  source_precedence: [C2, C3, generated]
+  reused_problem_count: 219
+  c2_reused_problem_count: 8
+  c3_reused_problem_count: 211
+  generated_problem_count: 4781
+  generated_record_count: 38248
+  problem_origins_sha256: 74d882df1f29a6957ba9d43887531e8596b091f0f735629ea8da624737171b0f
+  missing_input_manifest_sha256: 91cf290342111b493017e61d5be7b314fe96b79b3284b6bc0dce04682414e308
+  missing_input_records_sha256: 79b38b57277579d9eaf5499ea219f062a5e7bebb603eb8a473c8f84d18d915f1
+  missing_input_problem_order_sha256: 4f5fdfbf8d2238638672b17d795d7d9cc4629dd3cae8860eef4cdb61d15d8acf
+  c2_source_problem_batch_size: 4
+  c2_input_manifest_sha256: 3eeee5ffea63904e3bd714d275147cd9df438aa3332f49bfd99d7398d71571d3
+  c2_input_records_sha256: 86f385a03836d731aa5d03b268f3880ad1e2ac9dccc7c391a8b97d6a9668b682
+  c2_input_problem_order_sha256: 355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001
+  c2_run_sha256: 823a8d6a738ddf3e905d43c2d390da3f9b449b07404f2d76cf60bb7b5db07b0f
+  c2_generation_sha256: b218d3437ceb495c31a89cbaf36a5ee30224bb2ef00e55d0def6e8d9edb8cfad
+  c2_progress_sha256: a81f8e46efe27cde3fd00aea48bdb325cae45051b4620a0e8899c2aa19c98e5b
+  c2_operator_evidence_sha256: 9eb342bc24896ffd95f5d9a635ead3745c0f41e8bcc794c9469545ebb03de13c
+  c3_source_problem_batch_size: 1
+  c3_input_manifest_sha256: 0ac247e0eae6244148a117a350284dd7088c6822a2eab68382eb22cfd1a2b6c6
+  c3_input_records_sha256: 22675dcbe31c663079c244175f6557d4b65b2206d96ef644c66677b97dd40140
+  c3_input_problem_order_sha256: 4de0fa55f04ee02bdd5c4668f97cca9eeb254273c25c354df3c66bc89be9b197
+  c3_run_sha256: 25568d1d83286e79ee92749163a0415b949b9e2208749c398f73488a34fcc48c
+  c3_generation_sha256: 42fbe9e19da60723541bb4388e035b91aaeb597c775ec7fd4187542a0c1617a4
+  c3_progress_sha256: 9ab25cce8f1552647de273db825d57bb5f23cfca31808b73db02e247ef30afb8
+  c3_operator_evidence_sha256: 950d605a5e46af424d11e7d94fa5a6511c61f2c711df592c68a289f298b0eb2e
+  control_plane_input_bundle: /home/dzy/wp9c-calibration-input-C4-qualitysafe-5000
+  target_input_bundle: $CODE_VERIFIER_DATA_ROOT/wp9c/calibration-input-C4-qualitysafe-5000
+  target_missing_input_bundle: $CODE_VERIFIER_DATA_ROOT/wp9c/calibration-input-C5-missing-4781
+  input_manifest_sha256: f53cd897530756df5e8ae78903bf52225dc988d636051a4030323b71726506d5
+  input_records_sha256: 18c77583dc0695747fd5d6a46a3439730f4e3abc0b8e32a7f79aafa4e1b46361
+  input_problem_order_sha256: e48e3803be5a7a6d497f677e0bc2da2233840b56cade7a7f4305579d770687de
+  excluded_context_sha256: 83219a69b08ffe5348f15e3078389dece3f94e28a8964ac9604ee9d80cf21e1f
+  excluded_quality_sha256: ac6559ae28f59808797462d235b5c8fc8ba0c8eddf16298cb157764767519b3b
+  tranche_reserve_sha256: 3fac92dc70e725fefb86899fe600885380ef0bcdbb07a6de28f6c7dbf2a78df2
+  context_filter_policy: chat_template_prompt_cap_v1
+  candidate_filter_policy: quality_safe_stratified_tranche_v1
+  source_record_count: 10000
+  context_eligible_record_count: 9621
+  quality_eligible_record_count: 8549
+  quality_excluded_record_count: 1072
+  tranche_reserve_record_count: 3549
+  eligible_record_count: 5000
+  excluded_record_count: 379
+  max_prompt_tokens: 2048
+  max_new_tokens: 512
+  expected_problem_count: 5000
+  expected_record_count: 40000
+  wp9a_manifest_sha256: 98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625
+  wp9a_selected_order_sha256: 355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001
+  formal_b_run_name: B-sft-formal-seed42
+  formal_b_model_id: Qwen/Qwen2.5-Coder-1.5B-Instruct
+  formal_b_model_revision: 2e1fd397ee46e1388853d2af2c993145b0f1098a
+  formal_b_adapter_model_sha256: 51042ea9c52d2d24976c2ca4e777f1a5f792e3943ff171d03e55b959463a7a67
+  formal_b_adapter_config_sha256: 3738f9ef0ac56f90a48497ab4c0a1f172770864aa61dad56e8d9751050f34344
+  base_model_weights_sha256: c1b9b30e907950516ba3c646bdf570d8084c25a6410a0cdca80cf04b11bc13a8
+  base_model_config_sha256: 88f9a17863c05fb313515d2ff74b1098e0c35579f99068e32beda00618508ae0
+  base_model_generation_config_sha256: 1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1
+  base_model_tokenizer_sha256: c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539
+  base_model_tokenizer_config_sha256: 959e7f1d9a1b7641a6d6ce05ca97b75c7894fcb66cbe5a040406458fb1128ee4
+  base_model_vocab_sha256: ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910
+  base_model_merges_sha256: 599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3
+  expected_target_output: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial
+  generated_staging_output: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/C5-new-generation
+  preserved_c3_source: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/quarantine/calibration/initial/C3-reuse-source-for-C5
+  completed_scope:
+    - froze score-independent problem-level C2/C3 reuse before verifier scoring
+    - audited C2/C3 committed k8 groups and exact frozen-B/input/seed provenance read-only on target
+    - froze 8 C2 plus 211 C3 reusable problems and the 4,781-problem generation complement
+    - retained the C4 quality-safe 5,000-problem scientific population and exact original order
+    - prepared exact-prefix-resumable batch-4 generation only for the missing 4,781 problems
+    - prepared atomic canonical composition plus per-problem source provenance and strict final source-to-group postcheck
+    - repaired the inherited blank C4 input-preflight invocation only in the new C5 handoff
+  remaining_scope:
+    - manually execute C5 Gate A on the RTX 4090 and return evidence plus completed composite generation bundle
+    - run one uniform Public/Hidden scoring pass over all 5,000 final problems and execute the protocol retry rule
+    - attempt the frozen 3,000-problem selector
+    - fail closed and issue deterministic reserve expansion if the selector is infeasible
+    - complete remaining WP9-c benchmark and pilot gates
+  blocker: manual RTX4090 C5 Gate A execution and evidence/artifact return are required
+  status: awaiting_operator
+```
+
+C5 local validation after checkpoint preparation:
+
+- `bash -n ai-work/executor/operator/WP9-c/wp9c-calibration-initial-generation/C5/run.sh` -> PASS.
+- all 16 quoted embedded Python heredocs in the C5 operator compile -> PASS.
+- C5 operator script SHA256 remains `5170b8e6cb5a7f8f85734fbb1298e597588df89f186ee28851bf0d2da76426cc`, matching the C5 checkpoint metadata.
+- C5 checkpoint metadata self-parse confirms `checkpoint_id=C5`, `supersedes_checkpoint=C4`, restart policy `exact_missing_prefix_or_strict_completed_composite_reuse`, and reuse counts `219 = 8 C2 + 211 C3`, with `4781 / 38248` newly generated problems/records.
+- focused calibration tests: `25 passed in 2.04s`.
+- `make lint`: Ruff check PASS, Ruff format PASS, strict mypy PASS over 136 source files.
+- full test suite: `1201 passed, 3 skipped in 110.98s`; the three skips are the existing opt-in real-Piston integration tests.
+- target C2/C3 source validation was read-only; no formal operator was started/stopped or mutated through CodexPro.
+
+C5 final-byte correction (append-only): after the first local-validation note above, the handoff was tightened to require the exact historical C2 operator-evidence artifact as additional provenance. The target read-only check confirms that C2 evidence exists at the expected Gate A path, has SHA256 `9eb342bc24896ffd95f5d9a635ead3745c0f41e8bcc794c9469545ebb03de13c`, and records the historical C2 failure (`gate_status=internal_error`, `command_rc=2`); C5 does not reinterpret it as a passed gate. This provenance-only refinement does not change the frozen reuse map or model-generation semantics. It supersedes the earlier validation-note statement that the script SHA was `5170b8e6...`.
+
+Final C5 handoff bytes after that refinement:
+
+- operator script SHA256: `4c2daeefe61c25c95f05125862b5d3bbdde37547fab633e018c9b3f5b86885d5`, matching the C5 checkpoint block.
+- `bash -n` on the final script -> PASS.
+- all 16 quoted embedded Python heredocs in the final script compile -> PASS.
+- final C2 operator-evidence SHA binding -> `9eb342bc24896ffd95f5d9a635ead3745c0f41e8bcc794c9469545ebb03de13c`.
+- the prior focused/lint/full-suite results remain applicable because the post-test refinement touched only the operator handoff/report provenance, not production `src/`, configs, or tests.
+
+
+### C5 pre-handoff validation
+
+After the C5 checkpoint was assembled, the control-plane validation suite passed without modifying production source code:
+
+- `bash -n ai-work/executor/operator/WP9-c/wp9c-calibration-initial-generation/C5/run.sh` -> PASS.
+- all 16 quoted embedded Python heredocs in the C5 operator script compile -> PASS.
+- C5 operator script mode is `0755`; script SHA256 and the C5 checkpoint `operator_script_sha256` are identical: `4c2daeefe61c25c95f05125862b5d3bbdde37547fab633e018c9b3f5b86885d5`.
+- read-only RTX 4090 audit reconfirmed no active calibration operator/generation process and exact historical C2/C3 run/generation/progress SHA256 values; C2 operator evidence SHA256 is `9eb342bc24896ffd95f5d9a635ead3745c0f41e8bcc794c9469545ebb03de13c`, C3 operator evidence SHA256 is `950d605a5e46af424d11e7d94fa5a6511c61f2c711df592c68a289f298b0eb2e`.
+- `git diff --check` -> PASS.
+- `make lint` -> Ruff check PASS, Ruff format PASS, strict mypy PASS over 136 source/test files.
+- `.venv/bin/python -m pytest` -> `1201 passed, 3 skipped in 112.63s`; skips are only the existing opt-in real-Piston tests.
+
+No RTX 4090 formal operator command was started, stopped, or mutated during this repair. C5 remains `awaiting_operator`.
