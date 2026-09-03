@@ -256,3 +256,107 @@ execution_checkpoint:
   status: awaiting_operator
 ```
 
+
+## C2 target failure and user-directed repair continuation
+
+C2 was executed manually on the certified RTX 4090 target at detached handoff `e3c952fc9780138fa8d1332cc374da9d07ee347b`; this target execution is now accepted as failure evidence, not as a successful Gate A artifact. The C2 preflight passed the exact handoff, formal 10,000-record input, strict formal B, pinned Qwen snapshot bytes, RTX 4090/CUDA/BF16, and dependency identity gates. Generation then started with `problem_batch_size=4`, k=8, and `max_new_tokens=512` and crash-safely committed 96 records for 12 complete problems before the next batch failed with `OutOfMemoryError`.
+
+Read-only target audit of the preserved canonical C2 output `/root/sj-tmp/open-r1-code-verifier-outputs/wp9c/calibration/initial` found `run.json` status `running`, C2 identity `problem_batch_size=4`, old input manifest SHA `3eeee5ffea63904e3bd714d275147cd9df438aa3332f49bfd99d7398d71571d3`, old records SHA `86f385a03836d731aa5d03b268f3880ad1e2ac9dccc7c391a8b97d6a9668b682`, and old problem-order SHA `355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001`. `samples/progress.json` is `{version: 1, record_count: 96, byte_count: 110037}`; `generations.jsonl` is 110037 bytes with SHA256 `b218d3437ceb495c31a89cbaf36a5ee30224bb2ef00e55d0def6e8d9edb8cfad`; `run.json` SHA256 is `823a8d6a738ddf3e905d43c2d390da3f9b449b07404f2d76cf60bb7b5db07b0f`; and `progress.json` SHA256 is `a81f8e46efe27cde3fd00aea48bdb325cae45051b4620a0e8899c2aa19c98e5b`. The target checkout remained clean after the failed attempt.
+
+C2 operator evidence records `command_rc=2`, `postcheck_rc=125`, and `gate_status=internal_error`, but the terminal log proves the actual command failure was `model sampled batch generation failed: OutOfMemoryError`. The mismatch is an operator-classification defect: the C2 `ERR` trap fires for the nonzero generation command before the intended explicit `COMMAND_RC` handling. C3 therefore places the generation command in a shell conditional so an expected nonzero CLI result is captured and finalized as `gate_status=command_failed`; unexpected shell errors and INT/TERM signals remain fail-closed through the existing traps. The postcheck command uses the same conditional form so a postcheck failure is classified as `postcheck_failed` rather than `internal_error`.
+
+The observed OOM is not only a batch-size issue. Exact Qwen tokenizer plus the production chat template showed an extreme long-tail in the immutable WP9-a 10,000-problem authority, including a prompt near 32,358 tokens at the failure neighborhood and prompts far beyond the model context limit. The user explicitly overrides the sealed plan wording that required the WP9-c initial calibration input itself to remain exactly 10,000 problems: the WP9-a 10,000-record authority/provenance remains immutable, while WP9-c calibration may deterministically exclude prompts whose exact rendered prompt exceeds 2,048 tokens. This user override controls this continuation and does not modify the sealed plan.
+
+Production repair commit `9cd10261f4fd3b47135c65154c7a8aca930c29ac` (`wp9c: filter oversized calibration prompts`) adds the frozen tracked `max_prompt_tokens: 2048` protocol, exact formal-B tokenizer/revision chat-template counting, deterministic survivor-order preservation, `excluded_context.jsonl`, context-filter manifest metadata, and strict filtered-bundle validation while continuing to require the formal WP9-a source to contain exactly 10,000 problems. The tracked calibration config SHA256 is `97b2706808e1d4d2fa9088be018617c3e1459633767d3505de138fc5f48c68b0`. Raw `uv.lock` SHA256 remains `f0ef5dc5645e18c9a625057a8b12d3d1c666e9f0cb3539f0e776ba8b26655e80`; the project dependency identity remains the separately defined `59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560`.
+
+The regenerated formal filtered input `/home/dzy/wp9c-calibration-input-9cd1026-context2048` was strict-read back under `9cd10261`: source count 10,000, eligible count 9,621, excluded count 379, prompt cap 2,048, completion cap 512, manifest SHA256 `0ac247e0eae6244148a117a350284dd7088c6822a2eab68382eb22cfd1a2b6c6`, `inputs.jsonl` SHA256 `22675dcbe31c663079c244175f6557d4b65b2206d96ef644c66677b97dd40140`, `excluded_context.jsonl` SHA256 `83219a69b08ffe5348f15e3078389dece3f94e28a8964ac9604ee9d80cf21e1f`, filtered problem-order SHA256 `4de0fa55f04ee02bdd5c4668f97cca9eeb254273c25c354df3c66bc89be9b197`, WP9-a root manifest SHA256 `98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625`, and original WP9-a selected-order SHA256 `355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001`. The filter policy is `chat_template_prompt_cap_v1`, tokenizer model is `Qwen/Qwen2.5-Coder-1.5B-Instruct`, and exact tokenizer/model revision is `2e1fd397ee46e1388853d2af2c993145b0f1098a`.
+
+C3 supersedes C2. It binds the target input to `$CODE_VERIFIER_DATA_ROOT/wp9c/calibration-input-context2048`, sets `problem_batch_size=1`, preserves k=8 / temperature 0.8 / top-p 0.95 / max-new-tokens 512 and the existing deterministic per-problem seed namespace, and requires a final exact 9,621-problem / 76,968-record stream. In addition to production strict loading and exact bytes/provenance checks, C3 re-tokenizes every survivor with the pinned local-only Qwen tokenizer and the production chat template and fails if any rendered prompt exceeds 2,048 tokens. An existing canonical output with a non-C3 identity, including the preserved C2 running 96-record prefix, is moved as a whole into `wp9c/quarantine/calibration/initial/before-C3-*`; a sidecar quarantine manifest records the old run/progress identity, run/generation/progress hashes, generation byte size, and C2 operator-evidence hash before a fresh C3-compatible output is created. A valid later C3 prefix may still exact-prefix resume, and a strict completed C3 bundle may be reused.
+
+## C3 — context-capped Gate A repair handoff
+
+```yaml
+execution_checkpoint:
+  version: 1
+  stage_id: WP9-c
+  checkpoint_id: C3
+  task_kind: repair
+  source_plan_commit: 5a1f083af6bfdf2e1333bd70e95e9257b4e66b48
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  repair_basis: user_directed_c2_target_failure_repair
+  result_code_commit: 9cd10261f4fd3b47135c65154c7a8aca930c29ac
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  interruption_class: operator
+  operator_gate_id: wp9c-calibration-initial-generation
+  operator_handoff_mode: portable_target
+  operator_restart_policy: exact_prefix_or_strict_completed_reuse_after_identity_quarantine
+  supersedes_checkpoint: C2
+  operator_commit_binding: runtime_WP9C_HANDOFF_COMMIT_must_equal_target_HEAD
+  operator_script: ai-work/executor/operator/WP9-c/wp9c-calibration-initial-generation/C3/run.sh
+  operator_script_sha256: 07760259a06f60b2ce068a52f31d7ae6630e49fec5f7cf90467f295d5d605224
+  calibration_config_sha256: 97b2706808e1d4d2fa9088be018617c3e1459633767d3505de138fc5f48c68b0
+  problem_batch_size: 1
+  control_plane_input_bundle: /home/dzy/wp9c-calibration-input-9cd1026-context2048
+  target_input_bundle: $CODE_VERIFIER_DATA_ROOT/wp9c/calibration-input-context2048
+  input_manifest_sha256: 0ac247e0eae6244148a117a350284dd7088c6822a2eab68382eb22cfd1a2b6c6
+  input_records_sha256: 22675dcbe31c663079c244175f6557d4b65b2206d96ef644c66677b97dd40140
+  input_problem_order_sha256: 4de0fa55f04ee02bdd5c4668f97cca9eeb254273c25c354df3c66bc89be9b197
+  excluded_context_sha256: 83219a69b08ffe5348f15e3078389dece3f94e28a8964ac9604ee9d80cf21e1f
+  context_filter_policy: chat_template_prompt_cap_v1
+  source_record_count: 10000
+  eligible_record_count: 9621
+  excluded_record_count: 379
+  max_prompt_tokens: 2048
+  max_new_tokens: 512
+  expected_problem_count: 9621
+  expected_record_count: 76968
+  wp9a_manifest_sha256: 98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625
+  wp9a_selected_order_sha256: 355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001
+  formal_b_run_name: B-sft-formal-seed42
+  formal_b_model_id: Qwen/Qwen2.5-Coder-1.5B-Instruct
+  formal_b_model_revision: 2e1fd397ee46e1388853d2af2c993145b0f1098a
+  formal_b_adapter_model_sha256: 51042ea9c52d2d24976c2ca4e777f1a5f792e3943ff171d03e55b959463a7a67
+  formal_b_adapter_config_sha256: 3738f9ef0ac56f90a48497ab4c0a1f172770864aa61dad56e8d9751050f34344
+  base_model_weights_sha256: c1b9b30e907950516ba3c646bdf570d8084c25a6410a0cdca80cf04b11bc13a8
+  base_model_config_sha256: 88f9a17863c05fb313515d2ff74b1098e0c35579f99068e32beda00618508ae0
+  base_model_generation_config_sha256: 1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1
+  base_model_tokenizer_sha256: c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539
+  base_model_tokenizer_config_sha256: 959e7f1d9a1b7641a6d6ce05ca97b75c7894fcb66cbe5a040406458fb1128ee4
+  base_model_vocab_sha256: ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910
+  base_model_merges_sha256: 599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3
+  superseded_c2_target_head: e3c952fc9780138fa8d1332cc374da9d07ee347b
+  superseded_c2_partial_record_count: 96
+  superseded_c2_partial_byte_count: 110037
+  superseded_c2_generation_sha256: b218d3437ceb495c31a89cbaf36a5ee30224bb2ef00e55d0def6e8d9edb8cfad
+  superseded_c2_run_sha256: 823a8d6a738ddf3e905d43c2d390da3f9b449b07404f2d76cf60bb7b5db07b0f
+  superseded_c2_progress_sha256: a81f8e46efe27cde3fd00aea48bdb325cae45051b4620a0e8899c2aa19c98e5b
+  expected_target_output: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial
+  expected_artifacts:
+    - $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial/run.json
+    - $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial/samples/generations.jsonl
+    - $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial/samples/progress.json
+    - $CODE_VERIFIER_ARTIFACT_ROOT/operator/WP9-c/5a1f083af6bfdf2e1333bd70e95e9257b4e66b48/wp9c-calibration-initial-generation/C3/operator-evidence.json
+    - $CODE_VERIFIER_ARTIFACT_ROOT/operator/WP9-c/5a1f083af6bfdf2e1333bd70e95e9257b4e66b48/wp9c-calibration-initial-generation/C3/postcheck-summary.json
+  quarantine_root: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/quarantine/calibration/initial
+  control_plane_evidence_receive_dir: /home/dzy/wp9c-operator-evidence/WP9-c/wp9c-calibration-initial-generation/C3
+  control_plane_generation_receive_dir: /home/dzy/wp9c-calibration-initial-C3
+  completed_scope:
+    - accepted and recorded the real C2 target OOM as target failure evidence
+    - recorded the user override permitting deterministic context filtering while preserving WP9-a 10k authority
+    - strict-read back the 9,621-record context-capped formal calibration input
+    - retained the production repair commit 9cd10261 without reworking it
+    - prepared C3 portable target preflight, C2 quarantine, batch-1 generation, corrected command classification, and 76,968-record postcheck
+  remaining_scope:
+    - manually execute C3 Gate A on the RTX 4090 and return operator evidence plus the completed immutable generation bundle
+    - run initial dual-verifier Piston scoring at workers=8 and derive retry manifest
+    - conditionally execute retry generation/scoring and freeze the 3,000-problem active pool
+    - run evaluation generation/verification benchmark sweep
+    - run GRPO throughput benchmark and freeze benchmark report
+    - run k=8 Public/Hidden pilot and zero-variance gate
+    - complete WP9-c execution inventory and ready_for_wp9d decision
+  blocker: manual RTX 4090 C3 Gate A execution and evidence/artifact return are required
+  status: awaiting_operator
+```
