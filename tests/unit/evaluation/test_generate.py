@@ -124,6 +124,17 @@ class _BatchModel(_FakeModel):
         return [[1, 2, 3, 10 + index] for index in range(count)]
 
 
+class _GroupedSamplingBatchModel(_FakeModel):
+    def generate(self, **kwargs: object) -> list[list[int]]:
+        self.generate_kwargs = dict(kwargs)
+        input_ids = kwargs["input_ids"]
+        assert isinstance(input_ids, _FakeTensor)
+        raw_count = kwargs.get("num_return_sequences", 1)
+        assert isinstance(raw_count, int)
+        count = len(input_ids.rows) * raw_count
+        return [[1, 2, 3, 10 + index] for index in range(count)]
+
+
 class _FakeLoader:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -833,6 +844,15 @@ def test_transformers_generator_generate_batch_rejects_bad_alignment() -> None:
         generator.generate_batch(["one"], seeds=[])
 
 
+def test_sampled_completion_token_prefix_stops_at_first_eos() -> None:
+    prefix, token_count = generation_module._generated_token_prefix(
+        [1, 2, 3, 10, 11, 99, 99], prompt_width=3, eos_token_ids={99}
+    )
+
+    assert prefix == [10, 11, 99]
+    assert token_count == 3
+
+
 def test_sampling_generator_emits_exact_ordered_k8_group() -> None:
     tokenizer = _BatchTokenizer()
     model = _BatchModel()
@@ -854,9 +874,73 @@ def test_sampling_generator_emits_exact_ordered_k8_group() -> None:
     assert model.generate_kwargs["do_sample"] is True
     assert model.generate_kwargs["temperature"] == 0.8
     assert model.generate_kwargs["top_p"] == 0.95
+    assert model.generate_kwargs["top_k"] == 0
+    assert model.generate_kwargs["repetition_penalty"] == 1.0
     assert model.generate_kwargs["num_return_sequences"] == 8
     with pytest.raises(GenerationError, match="must equal 8"):
         generator.generate_group("prompt", seed=42, num_generations=4)
+
+
+def test_sampling_generator_batches_multiple_problem_groups_in_one_model_call() -> None:
+    tokenizer = _BatchTokenizer()
+    model = _GroupedSamplingBatchModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    generator = TransformersSamplingCompletionGenerator(
+        tokenizer=tokenizer,
+        model=model,
+        torch_runtime=_FakeTorch(),
+        transformers_runtime=runtime,
+        device="cpu",
+        config=SamplingGenerationConfig(temperature=0.8, top_p=0.95, max_new_tokens=512),
+    )
+
+    grouped = generator.generate_groups(["first", "second"], seeds=[7, 8], num_generations=8)
+
+    assert len(grouped) == 2
+    assert [result.completion for result in grouped[0]] == [str(10 + index) for index in range(8)]
+    assert [result.completion for result in grouped[1]] == [str(18 + index) for index in range(8)]
+    assert runtime.seeds == [7]
+    assert model.generate_kwargs is not None
+    assert model.generate_kwargs["do_sample"] is True
+    assert model.generate_kwargs["num_return_sequences"] == 8
+    assert model.generate_kwargs["temperature"] == 1.0
+    assert model.generate_kwargs["top_p"] == 1.0
+    assert model.generate_kwargs["top_k"] == 0
+    assert model.generate_kwargs["repetition_penalty"] == 1.0
+    processors = model.generate_kwargs["logits_processor"]
+    assert isinstance(processors, list) and len(processors) == 1
+
+
+def test_independent_group_sampling_processor_replays_each_problem_rng_stream() -> None:
+    torch = pytest.importorskip("torch")
+    scores = torch.tensor([[4.0, 3.0, 2.0, 1.0] for _ in range(8)] + [[1.0, 2.0, 3.0, 4.0] for _ in range(8)])
+    input_ids = torch.zeros((16, 1), dtype=torch.long)
+    seeds = [123, 456]
+    processor = generation_module._IndependentGroupSamplingProcessor(
+        torch_runtime=torch,
+        seeds=seeds,
+        group_size=8,
+        temperature=0.8,
+        top_p=0.95,
+    )
+
+    forced = processor(input_ids, scores)
+    selected = forced.argmax(dim=-1)
+
+    from transformers.generation.logits_process import TemperatureLogitsWarper, TopPLogitsWarper
+
+    reference_scores = TemperatureLogitsWarper(0.8)(input_ids, scores)
+    reference_scores = TopPLogitsWarper(0.95)(input_ids, reference_scores)
+    probabilities = reference_scores.softmax(dim=-1)
+    expected: list[object] = []
+    for index, seed in enumerate(seeds):
+        rng = torch.Generator(device=probabilities.device)
+        rng.manual_seed(seed)
+        start = index * 8
+        expected.append(torch.multinomial(probabilities[start : start + 8], num_samples=1, generator=rng))
+    expected_tokens = torch.cat(expected, dim=0).squeeze(1)
+
+    assert torch.equal(selected, expected_tokens)
 
 
 def test_generation_config_rejects_unsupported_dtype() -> None:

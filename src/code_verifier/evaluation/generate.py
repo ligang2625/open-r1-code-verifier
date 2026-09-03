@@ -8,7 +8,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from code_verifier.data.schema import CodeProblem
 from code_verifier.prompting import build_code_prompt
@@ -116,6 +116,71 @@ class GroupSamplingGenerator(Protocol):
     def generate_group(self, prompt: str, *, seed: int, num_generations: int) -> list[GenerationResult]:
         """Generate one sampled group using a deterministic group seed."""
         ...
+
+
+@runtime_checkable
+class BatchedGroupSamplingGenerator(GroupSamplingGenerator, Protocol):
+    """Sample multiple calibration groups with independent per-problem RNG streams."""
+
+    def generate_groups(
+        self,
+        prompts: Sequence[str],
+        *,
+        seeds: Sequence[int],
+        num_generations: int,
+    ) -> list[list[GenerationResult]]:
+        """Generate one ordered sampled group per prompt while preserving problem order."""
+        ...
+
+
+class _IndependentGroupSamplingProcessor:
+    """Force multinomial choices from one deterministic RNG stream per prompt group."""
+
+    def __init__(
+        self,
+        *,
+        torch_runtime: Any,
+        seeds: Sequence[int],
+        group_size: int,
+        temperature: float,
+        top_p: float,
+    ) -> None:
+        self._torch = torch_runtime
+        self._seeds = list(seeds)
+        self._group_size = group_size
+        self._temperature = float(temperature)
+        self._top_p = float(top_p)
+        self._generators: list[Any] | None = None
+
+    def __call__(self, input_ids: Any, scores: Any) -> Any:
+        expected_rows = len(self._seeds) * self._group_size
+        if len(scores) != expected_rows:
+            raise GenerationError("sampled batch row count no longer matches independent problem groups")
+        warped = scores / self._temperature
+        if self._top_p < 1.0:
+            sorted_logits, sorted_indices = warped.sort(descending=False)
+            cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+            sorted_indices_to_remove = cumulative_probs <= (1.0 - self._top_p)
+            sorted_indices_to_remove[..., -1:] = False
+            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+            warped = warped.masked_fill(indices_to_remove, float("-inf"))
+        probabilities = warped.softmax(dim=-1)
+        if self._generators is None:
+            device = probabilities.device
+            self._generators = []
+            for seed in self._seeds:
+                generator = self._torch.Generator(device=device)
+                generator.manual_seed(seed)
+                self._generators.append(generator)
+        sampled: list[Any] = []
+        for index, generator in enumerate(self._generators):
+            start = index * self._group_size
+            stop = start + self._group_size
+            sampled.append(self._torch.multinomial(probabilities[start:stop], num_samples=1, generator=generator))
+        selected = self._torch.cat(sampled, dim=0)
+        forced = self._torch.full_like(scores, float("-inf"))
+        forced.scatter_(1, selected, 0.0)
+        return forced
 
 
 def validate_generation_config(config: GenerationConfig) -> None:
@@ -648,6 +713,28 @@ class TransformersCompletionGenerator:
         return results
 
 
+def _generated_token_prefix(row: Any, *, prompt_width: int, eos_token_ids: set[int]) -> tuple[Any, int]:
+    new_token_ids = row[prompt_width:]
+    token_count = len(new_token_ids)
+    if eos_token_ids:
+        for index, token in enumerate(new_token_ids):
+            if int(token) in eos_token_ids:
+                token_count = index + 1
+                break
+    return new_token_ids[:token_count], token_count
+
+
+def _sampling_eos_token_ids(model: Any, tokenizer: Any) -> set[int]:
+    raw_eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+    if raw_eos is None:
+        raw_eos = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(raw_eos, int):
+        return {raw_eos}
+    if isinstance(raw_eos, Sequence) and not isinstance(raw_eos, str | bytes | bytearray):
+        return {int(value) for value in raw_eos}
+    return set()
+
+
 class TransformersSamplingCompletionGenerator:
     """Read-only completed-SFT generator for WP9 B-only sampled calibration."""
 
@@ -727,6 +814,123 @@ class TransformersSamplingCompletionGenerator:
             config=config,
         )
 
+    def generate_groups(
+        self,
+        prompts: Sequence[str],
+        *,
+        seeds: Sequence[int],
+        num_generations: int,
+    ) -> list[list[GenerationResult]]:
+        """Generate multiple k=8 groups in one model call with independent problem RNG streams."""
+        if isinstance(prompts, str | bytes | bytearray) or not isinstance(prompts, Sequence) or not prompts:
+            raise GenerationError("prompts must be a non-empty sequence")
+        if isinstance(seeds, str | bytes | bytearray) or not isinstance(seeds, Sequence):
+            raise GenerationError("seeds must be a sequence")
+        if len(prompts) != len(seeds):
+            raise GenerationError("prompts and seeds must have equal lengths")
+        if num_generations != 8:
+            raise GenerationError("calibration num_generations must equal 8")
+        if len(prompts) == 1:
+            return [self.generate_group(prompts[0], seed=seeds[0], num_generations=num_generations)]
+        chat_template = getattr(self._tokenizer, "chat_template", None)
+        if not isinstance(chat_template, str) or not chat_template:
+            raise GenerationError("tokenizer does not provide a chat template")
+        rendered: list[str] = []
+        normalized_seeds: list[int] = []
+        for prompt, seed in zip(prompts, seeds, strict=True):
+            if not isinstance(prompt, str):
+                raise GenerationError("prompt must be a string")
+            try:
+                prompt.encode("utf-8")
+            except UnicodeEncodeError:
+                raise GenerationError("prompt must contain valid UTF-8 text") from None
+            if isinstance(seed, bool) or not isinstance(seed, int):
+                raise GenerationError("seed must be an integer")
+            try:
+                rendered.append(
+                    self._tokenizer.apply_chat_template(
+                        [{"role": "user", "content": prompt}],
+                        add_generation_prompt=True,
+                        tokenize=False,
+                    )
+                )
+            except Exception as error:
+                raise GenerationError(f"could not encode configured chat prompt: {type(error).__name__}") from None
+            normalized_seeds.append(seed)
+        original_padding_side = getattr(self._tokenizer, "padding_side", None)
+        try:
+            if original_padding_side is not None:
+                self._tokenizer.padding_side = "left"
+            encoded = self._tokenizer(
+                rendered,
+                return_tensors="pt",
+                add_special_tokens=False,
+                padding=True,
+            )
+            prompt_width = len(encoded["input_ids"][0])
+        except Exception as error:
+            raise GenerationError(f"could not encode configured chat prompt batch: {type(error).__name__}") from None
+        finally:
+            if original_padding_side is not None:
+                self._tokenizer.padding_side = original_padding_side
+        if self._device != "auto":
+            encoded = {key: value.to(self._device) for key, value in encoded.items()}
+        elif hasattr(self._model, "device"):
+            encoded = {key: value.to(self._model.device) for key, value in encoded.items()}
+        processor = _IndependentGroupSamplingProcessor(
+            torch_runtime=self._torch,
+            seeds=normalized_seeds,
+            group_size=num_generations,
+            temperature=float(self._config.temperature),
+            top_p=float(self._config.top_p),
+        )
+        self._transformers.set_seed(normalized_seeds[0])
+        started = time.perf_counter()
+        try:
+            with self._torch.inference_mode():
+                generated = self._model.generate(
+                    **encoded,
+                    do_sample=True,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    max_new_tokens=self._config.max_new_tokens,
+                    num_return_sequences=num_generations,
+                    logits_processor=[processor],
+                )
+        except Exception as error:
+            raise GenerationError(f"model sampled batch generation failed: {type(error).__name__}") from None
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        expected_rows = len(rendered) * num_generations
+        if len(generated) != expected_rows:
+            raise GenerationError("model sampled batch generation returned an unexpected number of sequences")
+        eos_ids = _sampling_eos_token_ids(self._model, self._tokenizer)
+        attributed_latency = latency_ms / expected_rows
+        grouped: list[list[GenerationResult]] = []
+        for problem_index in range(len(rendered)):
+            start = problem_index * num_generations
+            rows = generated[start : start + num_generations]
+            results: list[GenerationResult] = []
+            for row in rows:
+                new_token_ids, token_count = _generated_token_prefix(
+                    row, prompt_width=prompt_width, eos_token_ids=eos_ids
+                )
+                try:
+                    completion = self._tokenizer.decode(new_token_ids, skip_special_tokens=True)
+                except Exception as error:
+                    raise GenerationError(f"model decode failed: {type(error).__name__}") from None
+                results.append(
+                    GenerationResult(
+                        completion=completion,
+                        completion_tokens=token_count,
+                        latency_ms=attributed_latency,
+                        hit_max_new_tokens=token_count >= self._config.max_new_tokens,
+                    )
+                )
+            grouped.append(results)
+        return grouped
+
     def generate_group(self, prompt: str, *, seed: int, num_generations: int) -> list[GenerationResult]:
         """Generate exactly one ordered k=8 calibration block from a shared prompt."""
         if not isinstance(prompt, str):
@@ -765,6 +969,8 @@ class TransformersSamplingCompletionGenerator:
                     do_sample=True,
                     temperature=float(self._config.temperature),
                     top_p=float(self._config.top_p),
+                    top_k=0,
+                    repetition_penalty=1.0,
                     max_new_tokens=self._config.max_new_tokens,
                     num_return_sequences=num_generations,
                 )
@@ -773,10 +979,11 @@ class TransformersSamplingCompletionGenerator:
         latency_ms = (time.perf_counter() - started) * 1000.0
         if len(generated) != num_generations:
             raise GenerationError("model sampled generation returned an unexpected number of sequences")
+        eos_ids = _sampling_eos_token_ids(self._model, self._tokenizer)
         attributed_latency = latency_ms / num_generations
         results: list[GenerationResult] = []
         for row in generated:
-            new_token_ids = row[prompt_width:]
+            new_token_ids, token_count = _generated_token_prefix(row, prompt_width=prompt_width, eos_token_ids=eos_ids)
             try:
                 completion = self._tokenizer.decode(new_token_ids, skip_special_tokens=True)
             except Exception as error:
@@ -784,9 +991,9 @@ class TransformersSamplingCompletionGenerator:
             results.append(
                 GenerationResult(
                     completion=completion,
-                    completion_tokens=len(new_token_ids),
+                    completion_tokens=token_count,
                     latency_ms=attributed_latency,
-                    hit_max_new_tokens=len(new_token_ids) >= self._config.max_new_tokens,
+                    hit_max_new_tokens=token_count >= self._config.max_new_tokens,
                 )
             )
         return results

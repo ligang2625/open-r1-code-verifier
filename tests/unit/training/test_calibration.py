@@ -52,6 +52,21 @@ class _InterruptingGenerator(_FakeGenerator):
         return super().generate_group(prompt, seed=seed, num_generations=num_generations)
 
 
+class _FakeBatchedGenerator(_FakeGenerator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_calls: list[tuple[list[str], list[int], int]] = []
+
+    def generate_groups(
+        self, prompts: list[str], *, seeds: list[int], num_generations: int
+    ) -> list[list[GenerationResult]]:
+        self.batch_calls.append((list(prompts), list(seeds), num_generations))
+        return [
+            super(_FakeBatchedGenerator, self).generate_group(prompt, seed=seed, num_generations=num_generations)
+            for prompt, seed in zip(prompts, seeds, strict=True)
+        ]
+
+
 def _write_input_bundle(root: Path, problem_ids: list[str]) -> None:
     rows = [
         {
@@ -157,6 +172,124 @@ def test_generation_bundle_is_k8_ordered_and_hash_checked(tmp_path: Path, monkey
     )
     with pytest.raises(CalibrationError, match="hash mismatch"):
         load_completed_calibration_generation(run_dir)
+
+
+def test_completed_generation_rejects_progress_marker_tamper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    input_dir = tmp_path / "input"
+    _write_input_bundle(input_dir, ["p1"])
+    monkeypatch.setattr(calibration, "load_completed_sft_checkpoint", lambda _: _fake_sft_identity(tmp_path))
+    run_dir = tmp_path / "run"
+    run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=_FakeGenerator(),
+        output_dir=run_dir,
+        block_index=0,
+    )
+    progress_path = run_dir / "samples" / "progress.json"
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["byte_count"] -= 1
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+    with pytest.raises(CalibrationError, match="progress does not match records"):
+        load_completed_calibration_generation(run_dir)
+
+
+def test_generation_problem_batching_preserves_problem_order_and_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_dir = tmp_path / "input"
+    problem_ids = ["p1", "p2", "p3", "p4", "p5"]
+    _write_input_bundle(input_dir, problem_ids)
+    monkeypatch.setattr(calibration, "load_completed_sft_checkpoint", lambda _: _fake_sft_identity(tmp_path))
+    generator = _FakeBatchedGenerator()
+    run_dir = tmp_path / "run"
+
+    summary = run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=generator,
+        output_dir=run_dir,
+        block_index=0,
+        problem_batch_size=2,
+    )
+    manifest, records = load_completed_calibration_generation(run_dir)
+    progress = json.loads((run_dir / "samples" / "progress.json").read_text(encoding="utf-8"))
+
+    assert summary.record_count == 40
+    assert manifest["problem_batch_size"] == 2
+    assert [len(call[0]) for call in generator.batch_calls] == [2, 2]
+    assert [row["problem_id"] for row in records[::8]] == problem_ids
+    assert progress["record_count"] == 40
+    assert progress["byte_count"] == (run_dir / "samples" / "generations.jsonl").stat().st_size
+
+
+def test_generation_append_path_never_rewrites_the_full_growing_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_dir = tmp_path / "input"
+    _write_input_bundle(input_dir, ["p1", "p2", "p3"])
+    monkeypatch.setattr(calibration, "load_completed_sft_checkpoint", lambda _: _fake_sft_identity(tmp_path))
+    original_write_jsonl = calibration._write_jsonl
+
+    def guarded_write_jsonl(path: Path, records: list[dict[str, object]]) -> str:
+        if path.name == "generations.jsonl":
+            raise AssertionError("generation persistence must append instead of rewriting the full JSONL")
+        return original_write_jsonl(path, records)
+
+    monkeypatch.setattr(calibration, "_write_jsonl", guarded_write_jsonl)
+    summary = run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=_FakeGenerator(),
+        output_dir=tmp_path / "run",
+        block_index=0,
+    )
+
+    assert summary.record_count == 24
+
+
+def test_generation_resume_truncates_only_uncommitted_append_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_dir = tmp_path / "input"
+    _write_input_bundle(input_dir, ["p1", "p2"])
+    monkeypatch.setattr(calibration, "load_completed_sft_checkpoint", lambda _: _fake_sft_identity(tmp_path))
+    run_dir = tmp_path / "run"
+
+    with pytest.raises(RuntimeError, match="simulated generation interruption"):
+        run_calibration_generation(
+            input_bundle_dir=input_dir,
+            sft_run_dir=tmp_path / "sft",
+            generator=_InterruptingGenerator(successful_groups=1),
+            output_dir=run_dir,
+            block_index=0,
+        )
+
+    generation_path = run_dir / "samples" / "generations.jsonl"
+    progress_path = run_dir / "samples" / "progress.json"
+    progress_before = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert progress_before["record_count"] == 8
+    committed_size = progress_before["byte_count"]
+    with generation_path.open("ab") as handle:
+        handle.write(b'{"problem_id":"partial-tail"')
+
+    resumed = _FakeGenerator()
+    summary = run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "sft",
+        generator=resumed,
+        output_dir=run_dir,
+        block_index=0,
+    )
+    progress_after = json.loads(progress_path.read_text(encoding="utf-8"))
+
+    assert summary.record_count == 16
+    assert [call[0] for call in resumed.calls] == ["prompt p2"]
+    assert generation_path.stat().st_size > committed_size
+    assert progress_after["byte_count"] == generation_path.stat().st_size
+    _, records = load_completed_calibration_generation(run_dir)
+    assert [row["problem_id"] for row in records[::8]] == ["p1", "p2"]
 
 
 def test_generation_resume_accepts_empty_exact_prefix_after_early_interrupt(

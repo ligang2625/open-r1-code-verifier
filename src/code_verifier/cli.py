@@ -588,6 +588,7 @@ def _generate_refresh_calibration(args: argparse.Namespace) -> int:
         output_dir=Path(args.output_dir),
         block_index=block_index,
         retry_manifest=None if args.retry_manifest is None else Path(args.retry_manifest),
+        problem_batch_size=int(args.problem_batch_size),
     )
     print(f"calibration_generation={summary.run_dir}")
     return 0
@@ -1416,6 +1417,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate_calibration_parser.add_argument("--sft-run-dir", type=Path, required=True)
     generate_calibration_parser.add_argument("--block", choices=("initial", "retry"), required=True)
     generate_calibration_parser.add_argument("--retry-manifest", type=Path, default=None)
+    generate_calibration_parser.add_argument("--problem-batch-size", type=int, choices=range(1, 9), default=1)
     generate_calibration_parser.add_argument("--output-dir", type=Path, required=True)
     generate_calibration_parser.add_argument("--log-level", default="INFO")
     generate_calibration_parser.set_defaults(handler=_generate_refresh_calibration)

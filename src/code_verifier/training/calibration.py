@@ -21,7 +21,7 @@ from code_verifier.data.deduplicate import stable_json_hash
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
 from code_verifier.data.leakage_checks import TrainingArtifactKind, load_training_artifact
 from code_verifier.data.refresh import check_refresh_data
-from code_verifier.evaluation.generate import GenerationResult, GroupSamplingGenerator
+from code_verifier.evaluation.generate import BatchedGroupSamplingGenerator, GenerationResult, GroupSamplingGenerator
 from code_verifier.execution.base import CodeExecutor
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards_concurrent
 from code_verifier.training.grpo_data import build_grpo_row
@@ -29,6 +29,7 @@ from code_verifier.training.sft import SFTCheckpointIdentity, load_completed_sft
 
 CALIBRATION_SCHEMA_VERSION = "wp9b-calibration-v1"
 CALIBRATION_TEST_SCHEMA_VERSION = "wp9b-calibration-test-v1"
+_CALIBRATION_PROGRESS_VERSION = 1
 _INPUT_FIELDS = {
     "problem_id",
     "prompt",
@@ -198,6 +199,99 @@ def _write_jsonl(path: Path, records: Sequence[Mapping[str, object]]) -> str:
     content = b"".join(_json_bytes(dict(record)) for record in records)
     _atomic_bytes(path, content)
     return hashlib.sha256(content).hexdigest()
+
+
+def _write_generation_progress(output_dir: Path, *, record_count: int, byte_count: int) -> None:
+    if record_count < 0 or record_count % 8 or byte_count < 0:
+        raise CalibrationError("calibration generation progress is invalid")
+    _write_json(
+        output_dir / "samples" / "progress.json",
+        {
+            "version": _CALIBRATION_PROGRESS_VERSION,
+            "record_count": record_count,
+            "byte_count": byte_count,
+        },
+    )
+
+
+def _load_running_calibration_generation_prefix(output_dir: Path) -> tuple[list[dict[str, object]], int]:
+    """Load the durable running prefix and discard only bytes newer than its atomic progress marker."""
+    records_path = output_dir / "samples" / "generations.jsonl"
+    progress_path = output_dir / "samples" / "progress.json"
+    if not progress_path.exists():
+        if records_path.exists():
+            records = _load_jsonl(records_path)
+            if len(records) % 8:
+                raise CalibrationError("legacy calibration generation resume ends inside a problem group")
+            byte_count = records_path.stat().st_size
+            _write_generation_progress(output_dir, record_count=len(records), byte_count=byte_count)
+            return records, byte_count
+        _write_generation_progress(output_dir, record_count=0, byte_count=0)
+        return [], 0
+    progress = _load_json(progress_path)
+    if set(progress) != {"version", "record_count", "byte_count"}:
+        raise CalibrationError("calibration generation progress fields are invalid")
+    if progress.get("version") != _CALIBRATION_PROGRESS_VERSION:
+        raise CalibrationError("calibration generation progress version is invalid")
+    progress_record_count = progress.get("record_count")
+    progress_byte_count = progress.get("byte_count")
+    if (
+        isinstance(progress_record_count, bool)
+        or not isinstance(progress_record_count, int)
+        or progress_record_count < 0
+        or progress_record_count % 8
+        or isinstance(progress_byte_count, bool)
+        or not isinstance(progress_byte_count, int)
+        or progress_byte_count < 0
+    ):
+        raise CalibrationError("calibration generation progress values are invalid")
+    if not records_path.exists():
+        if progress_record_count != 0 or progress_byte_count != 0:
+            raise CalibrationError("calibration generation progress points to missing committed data")
+        return [], 0
+    current_size = records_path.stat().st_size
+    if current_size < progress_byte_count:
+        raise CalibrationError("calibration generation committed data is shorter than its progress marker")
+    if current_size > progress_byte_count:
+        with records_path.open("r+b") as handle:
+            handle.truncate(progress_byte_count)
+            handle.flush()
+            os.fsync(handle.fileno())
+    if progress_byte_count:
+        with records_path.open("rb") as handle:
+            handle.seek(progress_byte_count - 1)
+            if handle.read(1) != b"\n":
+                raise CalibrationError("calibration generation committed prefix does not end on a JSONL boundary")
+    records = _load_jsonl(records_path)
+    if len(records) != progress_record_count:
+        raise CalibrationError("calibration generation progress record count mismatch")
+    return records, progress_byte_count
+
+
+def _append_calibration_generation_batch(
+    output_dir: Path,
+    records: Sequence[Mapping[str, object]],
+    *,
+    committed_record_count: int,
+    committed_byte_count: int,
+) -> tuple[int, int]:
+    """Durably append one complete multi-problem batch, then atomically advance its commit marker."""
+    if not records or len(records) % 8:
+        raise CalibrationError("calibration generation append must contain complete problem groups")
+    records_path = output_dir / "samples" / "generations.jsonl"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    current_size = records_path.stat().st_size if records_path.exists() else 0
+    if current_size != committed_byte_count:
+        raise CalibrationError("calibration generation file changed after progress recovery")
+    content = b"".join(_json_bytes(dict(record)) for record in records)
+    with records_path.open("ab") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    next_record_count = committed_record_count + len(records)
+    next_byte_count = committed_byte_count + len(content)
+    _write_generation_progress(output_dir, record_count=next_record_count, byte_count=next_byte_count)
+    return next_record_count, next_byte_count
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -452,6 +546,7 @@ def run_calibration_generation(
     output_dir: Path,
     block_index: int,
     retry_manifest: Path | None = None,
+    problem_batch_size: int = 1,
 ) -> CalibrationGenerationSummary:
     """Generate or exact-prefix resume one initial/retry k=8 sampled-B bundle."""
     input_manifest, input_records = _load_input_bundle(input_bundle_dir)
@@ -461,6 +556,14 @@ def run_calibration_generation(
         raise CalibrationError(f"completed B identity is invalid: {type(error).__name__}") from None
     if block_index not in {0, 1}:
         raise CalibrationError("block_index must be 0 or 1")
+    if (
+        isinstance(problem_batch_size, bool)
+        or not isinstance(problem_batch_size, int)
+        or not 1 <= problem_batch_size <= 8
+    ):
+        raise CalibrationError("problem_batch_size must be an integer between 1 and 8")
+    if problem_batch_size > 1 and not isinstance(generator, BatchedGroupSamplingGenerator):
+        raise CalibrationError("problem_batch_size > 1 requires a batched group sampling generator")
     if block_index == 0 and retry_manifest is not None:
         raise CalibrationError("initial generation cannot consume a retry manifest")
     if block_index == 1 and retry_manifest is None:
@@ -484,6 +587,7 @@ def run_calibration_generation(
         "status": "running",
         "block_index": block_index,
         "samples_per_problem": 8,
+        "problem_batch_size": problem_batch_size,
         "input_manifest_sha256": _sha256(input_bundle_dir / "input_manifest.json"),
         "input_records_sha256": input_manifest["records_sha256"],
         "problem_order_sha256": stable_json_hash([record.problem_id for record in selected]),
@@ -494,6 +598,7 @@ def run_calibration_generation(
     existing: list[dict[str, object]] = []
     existing_status = "running"
     completed_manifest: dict[str, object] | None = None
+    committed_byte_count = 0
     if output_dir.exists():
         existing_manifest = _load_json(output_dir / "run.json")
         status = existing_manifest.get("status")
@@ -510,15 +615,12 @@ def run_calibration_generation(
             raise CalibrationError("calibration generation resume identity mismatch")
         if existing_status == "completed":
             completed_manifest, existing = load_completed_calibration_generation(output_dir)
-        elif records_path.exists():
-            existing = _load_jsonl(records_path)
         else:
-            # The running manifest can be published before the first complete k=8 group.
-            # With no records file yet, the durable state is the empty exact prefix.
-            existing = []
+            existing, committed_byte_count = _load_running_calibration_generation_prefix(output_dir)
     else:
         output_dir.mkdir(parents=True)
         _write_json(output_dir / "run.json", identity)
+        _write_generation_progress(output_dir, record_count=0, byte_count=0)
     expected_keys = [
         (record.problem_id, block_index * 8 + sample_offset) for record in selected for sample_offset in range(8)
     ]
@@ -544,42 +646,64 @@ def run_calibration_generation(
             records_sha256=records_sha,
             block_index=block_index,
         )
-    records = list(existing)
+    committed_record_count = len(existing)
     base_seed = input_manifest.get("seed")
     if isinstance(base_seed, bool) or not isinstance(base_seed, int):
         raise CalibrationError("calibration input seed is invalid")
-    for item in selected[completed_problem_count:]:
-        group_seed = calibration_problem_seed(base_seed, item.problem_id, block_index)
-        generated = generator.generate_group(item.prompt, seed=group_seed, num_generations=8)
-        if len(generated) != 8 or any(not isinstance(result, GenerationResult) for result in generated):
-            raise CalibrationError("calibration generator must return exactly eight GenerationResult values")
-        group_records = [
-            {
-                "problem_id": item.problem_id,
-                "block_index": block_index,
-                "sample_index": block_index * 8 + offset,
-                "sample_seed": calibration_problem_seed(base_seed, item.problem_id, block_index),
-                "completion": result.completion,
-                "completion_tokens": result.completion_tokens,
-                "generation_latency_ms": result.latency_ms,
-                "hit_max_new_tokens": result.hit_max_new_tokens,
-            }
-            for offset, result in enumerate(generated)
-        ]
-        records.extend(group_records)
-        _write_jsonl(records_path, records)
+    remaining = selected[completed_problem_count:]
+    for batch_start in range(0, len(remaining), problem_batch_size):
+        items = remaining[batch_start : batch_start + problem_batch_size]
+        seeds = [calibration_problem_seed(base_seed, item.problem_id, block_index) for item in items]
+        if len(items) > 1:
+            batched_generator = cast(BatchedGroupSamplingGenerator, generator)
+            generated_groups = batched_generator.generate_groups(
+                [item.prompt for item in items],
+                seeds=seeds,
+                num_generations=8,
+            )
+        else:
+            generated_groups = [generator.generate_group(items[0].prompt, seed=seeds[0], num_generations=8)]
+        if len(generated_groups) != len(items):
+            raise CalibrationError("calibration batched generator returned an unexpected number of problem groups")
+        batch_records: list[dict[str, object]] = []
+        for item, group_seed, generated in zip(items, seeds, generated_groups, strict=True):
+            if len(generated) != 8 or any(not isinstance(result, GenerationResult) for result in generated):
+                raise CalibrationError("calibration generator must return exactly eight GenerationResult values")
+            batch_records.extend(
+                {
+                    "problem_id": item.problem_id,
+                    "block_index": block_index,
+                    "sample_index": block_index * 8 + offset,
+                    "sample_seed": group_seed,
+                    "completion": result.completion,
+                    "completion_tokens": result.completion_tokens,
+                    "generation_latency_ms": result.latency_ms,
+                    "hit_max_new_tokens": result.hit_max_new_tokens,
+                }
+                for offset, result in enumerate(generated)
+            )
+        committed_record_count, committed_byte_count = _append_calibration_generation_batch(
+            output_dir,
+            batch_records,
+            committed_record_count=committed_record_count,
+            committed_byte_count=committed_byte_count,
+        )
+    if committed_record_count != len(expected_keys):
+        raise CalibrationError("calibration generation did not cover the exact selected problem set")
+    if not records_path.exists():
+        _atomic_bytes(records_path, b"")
     records_sha = _sha256(records_path)
     final = {
         **identity,
         "status": "completed",
-        "record_count": len(records),
+        "record_count": committed_record_count,
         "records_sha256": records_sha,
     }
     _write_json(output_dir / "run.json", final)
     return CalibrationGenerationSummary(
         run_dir=output_dir,
         records_path=records_path,
-        record_count=len(records),
+        record_count=committed_record_count,
         problem_count=len(selected),
         records_sha256=records_sha,
         block_index=block_index,
@@ -591,8 +715,19 @@ def load_completed_calibration_generation(run_dir: Path) -> tuple[dict[str, obje
     manifest = _load_json(run_dir / "run.json")
     if manifest.get("schema_version") != CALIBRATION_SCHEMA_VERSION or manifest.get("status") != "completed":
         raise CalibrationError("calibration generation is not completed")
-    records = _load_jsonl(run_dir / "samples" / "generations.jsonl")
-    if manifest.get("records_sha256") != _sha256(run_dir / "samples" / "generations.jsonl"):
+    records_path = run_dir / "samples" / "generations.jsonl"
+    records = _load_jsonl(records_path)
+    batch_size = manifest.get("problem_batch_size")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 8:
+        raise CalibrationError("calibration generation problem batch size is invalid")
+    progress = _load_json(run_dir / "samples" / "progress.json")
+    if set(progress) != {"version", "record_count", "byte_count"}:
+        raise CalibrationError("completed calibration generation progress fields are invalid")
+    if progress.get("version") != _CALIBRATION_PROGRESS_VERSION:
+        raise CalibrationError("completed calibration generation progress version is invalid")
+    if progress.get("record_count") != len(records) or progress.get("byte_count") != records_path.stat().st_size:
+        raise CalibrationError("completed calibration generation progress does not match records")
+    if manifest.get("records_sha256") != _sha256(records_path):
         raise CalibrationError("calibration generation records hash mismatch")
     if manifest.get("record_count") != len(records):
         raise CalibrationError("calibration generation record count mismatch")
