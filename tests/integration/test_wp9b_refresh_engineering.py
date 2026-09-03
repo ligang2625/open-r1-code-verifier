@@ -179,6 +179,58 @@ def _generation_bundle(root: Path, *, name: str, batch_size: int, latency_ms: fl
     return run
 
 
+def test_calibration_input_context_filter_records_exclusions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_config, reference_dir = _setup_fixture_environment(tmp_path, monkeypatch)
+    refresh_dir = tmp_path / "refresh-filter"
+    refresh_summary = prepare_refresh_data(
+        refresh_config,
+        seed=42,
+        reference_dataset_dir=reference_dir,
+        source_cache_dir=tmp_path / "cache-filter",
+        output_dir=refresh_dir,
+    )
+    assert refresh_summary.selected_problems == 7
+
+    calls = 0
+
+    def count_prompt_tokens(_: str) -> int:
+        nonlocal calls
+        calls += 1
+        return 4096 if calls == 2 else 128
+
+    input_dir = tmp_path / "calibration-input-filtered"
+    prepare_calibration_input_bundle(
+        refresh_dataset_dir=refresh_dir,
+        reference_dataset_dir=reference_dir,
+        output_dir=input_dir,
+        seed=42,
+        allow_test_protocol=True,
+        prompt_token_counter=count_prompt_tokens,
+        max_prompt_tokens=2048,
+        max_new_tokens=512,
+        tokenizer_model_id="fixture-model",
+        tokenizer_model_revision="a" * 40,
+        minimum_records=4,
+    )
+
+    manifest = json.loads((input_dir / "input_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["record_count"] == 6
+    context_filter = manifest["context_filter"]
+    assert context_filter["policy"] == "chat_template_prompt_cap_v1"
+    assert context_filter["source_record_count"] == 7
+    assert context_filter["eligible_record_count"] == 6
+    assert context_filter["excluded_record_count"] == 1
+    excluded = [json.loads(line) for line in (input_dir / "excluded_context.jsonl").read_text().splitlines()]
+    assert len(excluded) == 1
+    assert excluded[0]["prompt_tokens"] == 4096
+    assert excluded[0]["reason"] == "prompt_token_limit"
+    _, records = calibration_module._load_input_bundle(input_dir)
+    assert len(records) == 6
+
+
 def test_wp9b_production_shadow_calibration_active_pool_and_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -246,6 +298,7 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
         temperature=0.8,
         top_p=0.95,
         max_new_tokens=512,
+        max_prompt_tokens=2048,
         active_pool_size=4,
         sft_overlap_fraction=0.0,
         sft_overlap_hard_max=0.15,

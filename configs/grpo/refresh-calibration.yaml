@@ -5,6 +5,7 @@ sampling:
   temperature: 0.8
   top_p: 0.95
   max_new_tokens: 512
+  max_prompt_tokens: 2048
 active_pool:
   size: 3000
   sft_overlap_fraction: 0.075

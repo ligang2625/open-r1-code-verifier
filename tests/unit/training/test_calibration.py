@@ -109,7 +109,7 @@ def _fake_sft_identity(root: Path) -> SFTCheckpointIdentity:
 
 def test_tracked_calibration_config_is_frozen() -> None:
     config = load_calibration_config(Path("configs/grpo/refresh-calibration.yaml"))
-    assert config == CalibrationConfig(8, 8, 0.8, 0.95, 512, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
+    assert config == CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
 
 
 def test_tracked_calibration_config_rejects_protocol_drift(tmp_path: Path) -> None:
@@ -507,7 +507,7 @@ def test_retry_and_disposition_rules_cover_hard_easy_and_quality_priority() -> N
 
 
 def test_active_selection_stratifies_unequal_source_difficulty_in_both_overlap_buckets() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 20, 0.10, 0.15, 0.70, 0.15, 0.15)
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 20, 0.10, 0.15, 0.70, 0.15, 0.15)
     records: list[dict[str, object]] = []
     for prefix, count, source_name, difficulty, overlap_origin in (
         ("sft-a", 3, "source-a", "easy", "sft_reuse"),
@@ -551,7 +551,7 @@ def test_active_selection_stratifies_unequal_source_difficulty_in_both_overlap_b
 
 
 def test_active_selection_allocates_whole_bucket_before_class_preference() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
     records: list[dict[str, object]] = [
         {
             "problem_id": f"dual-{index}",
@@ -604,7 +604,7 @@ def test_active_selection_allocates_whole_bucket_before_class_preference() -> No
 
 
 def test_active_selection_rejects_correlated_single_arm_cap_with_diagnostics() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
     records: list[dict[str, object]] = [
         {
             "problem_id": f"dual-{index}",
@@ -639,7 +639,7 @@ def test_active_selection_rejects_correlated_single_arm_cap_with_diagnostics() -
 
 
 def test_active_selection_error_reports_requested_constraints_and_stratified_population() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 10, 0.10, 0.15, 0.70, 0.15, 0.15)
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 10, 0.10, 0.15, 0.70, 0.15, 0.15)
     records: list[dict[str, object]] = [
         {
             "problem_id": f"p-{index}",

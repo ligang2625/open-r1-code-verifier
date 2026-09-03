@@ -555,12 +555,38 @@ def _verify_eval(args: argparse.Namespace) -> int:
 
 
 def _prepare_refresh_calibration(args: argparse.Namespace) -> int:
-    load_calibration_config(Path(args.config))
+    config = load_calibration_config(Path(args.config))
+    sft = load_completed_sft_checkpoint(Path(args.sft_run_dir))
+    if sft.model_revision is None:
+        raise ValueError("formal calibration context filtering requires an exact model revision")
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        sft.model_id,
+        revision=sft.model_revision,
+        local_files_only=True,
+    )
+
+    def prompt_token_counter(prompt: str) -> int:
+        rendered = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        encoded = tokenizer(rendered, add_special_tokens=False)
+        return len(encoded["input_ids"])
+
     output = prepare_calibration_input_bundle(
         refresh_dataset_dir=Path(args.dataset_dir),
         reference_dataset_dir=Path(args.reference_dataset_dir),
         output_dir=Path(args.output_dir),
         seed=int(args.seed),
+        prompt_token_counter=prompt_token_counter,
+        max_prompt_tokens=config.max_prompt_tokens,
+        max_new_tokens=config.max_new_tokens,
+        tokenizer_model_id=sft.model_id,
+        tokenizer_model_revision=sft.model_revision,
+        minimum_records=config.active_pool_size,
     )
     print(f"calibration_input={output}")
     return 0
@@ -1404,6 +1430,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_calibration_parser.add_argument("--config", type=Path, required=True)
     prepare_calibration_parser.add_argument("--dataset-dir", type=Path, required=True)
     prepare_calibration_parser.add_argument("--reference-dataset-dir", type=Path, required=True)
+    prepare_calibration_parser.add_argument("--sft-run-dir", type=Path, required=True)
     prepare_calibration_parser.add_argument("--seed", type=int, default=42)
     prepare_calibration_parser.add_argument("--output-dir", type=Path, required=True)
     prepare_calibration_parser.add_argument("--log-level", default="INFO")

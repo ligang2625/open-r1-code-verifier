@@ -64,6 +64,7 @@ class CalibrationConfig:
     temperature: float
     top_p: float
     max_new_tokens: int
+    max_prompt_tokens: int
     active_pool_size: int
     sft_overlap_fraction: float
     sft_overlap_hard_max: float
@@ -77,6 +78,10 @@ class CalibrationConfig:
                 raise CalibrationError(f"{name} must equal 8")
         if self.temperature != 0.8 or self.top_p != 0.95 or self.max_new_tokens != 512:
             raise CalibrationError("calibration sampling must equal 0.8/0.95/512")
+        if isinstance(self.max_prompt_tokens, bool) or not isinstance(self.max_prompt_tokens, int):
+            raise CalibrationError("max_prompt_tokens must be a positive integer")
+        if not 1 <= self.max_prompt_tokens <= 2048:
+            raise CalibrationError("max_prompt_tokens must be in [1, 2048]")
         if isinstance(self.active_pool_size, bool) or not isinstance(self.active_pool_size, int):
             raise CalibrationError("active_pool_size must be a positive integer")
         if self.active_pool_size <= 0:
@@ -337,6 +342,7 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
         "temperature",
         "top_p",
         "max_new_tokens",
+        "max_prompt_tokens",
     }:
         raise ConfigError("refresh calibration sampling config is invalid")
     if not isinstance(pool, Mapping) or set(pool) != {
@@ -355,6 +361,7 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
             temperature=cast(float, sampling["temperature"]),
             top_p=cast(float, sampling["top_p"]),
             max_new_tokens=cast(int, sampling["max_new_tokens"]),
+            max_prompt_tokens=cast(int, sampling["max_prompt_tokens"]),
             active_pool_size=cast(int, pool["size"]),
             sft_overlap_fraction=cast(float, pool["sft_overlap_fraction"]),
             sft_overlap_hard_max=cast(float, pool["sft_overlap_hard_max"]),
@@ -370,6 +377,7 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
         temperature=0.8,
         top_p=0.95,
         max_new_tokens=512,
+        max_prompt_tokens=2048,
         active_pool_size=3000,
         sft_overlap_fraction=0.075,
         sft_overlap_hard_max=0.15,
@@ -409,6 +417,12 @@ def prepare_calibration_input_bundle(
     output_dir: Path,
     seed: int,
     allow_test_protocol: bool = False,
+    prompt_token_counter: Callable[[str], int] | None = None,
+    max_prompt_tokens: int | None = None,
+    max_new_tokens: int | None = None,
+    tokenizer_model_id: str | None = None,
+    tokenizer_model_revision: str | None = None,
+    minimum_records: int = 1,
 ) -> Path:
     """Create a deterministic Public-safe calibration prompt bundle from strict WP9-a artifacts."""
     summary = check_refresh_data(
@@ -421,8 +435,32 @@ def prepare_calibration_input_bundle(
     if len(public_rows) != len(selections):
         raise CalibrationError("WP9-a public view and selection manifest are not aligned")
     if not allow_test_protocol and len(public_rows) != 10_000:
-        raise CalibrationError("production calibration input must contain exactly 10,000 problems")
+        raise CalibrationError("production WP9-a source must contain exactly 10,000 problems")
+    filter_values = (
+        prompt_token_counter,
+        max_prompt_tokens,
+        max_new_tokens,
+        tokenizer_model_id,
+        tokenizer_model_revision,
+    )
+    filter_enabled = any(value is not None for value in filter_values)
+    if filter_enabled and any(value is None for value in filter_values):
+        raise CalibrationError("context filtering requires a token counter, limits, and exact tokenizer identity")
+    if not allow_test_protocol and not filter_enabled:
+        raise CalibrationError("production calibration input requires exact tokenizer context filtering")
+    if isinstance(minimum_records, bool) or not isinstance(minimum_records, int) or minimum_records <= 0:
+        raise CalibrationError("minimum_records must be a positive integer")
+    if filter_enabled:
+        if isinstance(max_prompt_tokens, bool) or not isinstance(max_prompt_tokens, int) or max_prompt_tokens <= 0:
+            raise CalibrationError("max_prompt_tokens must be a positive integer")
+        if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or max_new_tokens <= 0:
+            raise CalibrationError("max_new_tokens must be a positive integer")
+        if not isinstance(tokenizer_model_id, str) or not tokenizer_model_id.strip():
+            raise CalibrationError("tokenizer_model_id must be a non-empty string")
+        if not isinstance(tokenizer_model_revision, str) or not tokenizer_model_revision.strip():
+            raise CalibrationError("tokenizer_model_revision must be a non-empty string")
     input_records: list[dict[str, object]] = []
+    excluded_context: list[dict[str, object]] = []
     for public, selection in zip(public_rows, selections, strict=True):
         row = build_grpo_row(public, reward_mode="public")
         prompt_messages = row["prompt"]
@@ -438,10 +476,26 @@ def prepare_calibration_input_bundle(
         problem_id = public.get("problem_id")
         if problem_id != selection.get("problem_id") or not isinstance(problem_id, str):
             raise CalibrationError("WP9-a public view and selection IDs/order differ")
+        prompt_content = cast(str, prompt_message["content"])
+        if filter_enabled:
+            assert prompt_token_counter is not None
+            assert isinstance(max_prompt_tokens, int)
+            prompt_tokens = prompt_token_counter(prompt_content)
+            if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, int) or prompt_tokens <= 0:
+                raise CalibrationError("prompt token counter must return a positive integer")
+            if prompt_tokens > max_prompt_tokens:
+                excluded_context.append(
+                    {
+                        "problem_id": problem_id,
+                        "prompt_tokens": prompt_tokens,
+                        "reason": "prompt_token_limit",
+                    }
+                )
+                continue
         input_records.append(
             {
                 "problem_id": problem_id,
-                "prompt": prompt_message["content"],
+                "prompt": prompt_content,
                 "function_name": public["function_name"],
                 "source_name": selection["source"],
                 "difficulty": difficulty,
@@ -449,11 +503,16 @@ def prepare_calibration_input_bundle(
                 "quality_gate_required": selection["quality_gate_required"],
             }
         )
+    if len(input_records) < minimum_records:
+        raise CalibrationError(
+            f"context-eligible calibration input has {len(input_records)} records; minimum is {minimum_records}"
+        )
     if output_dir.exists():
         raise CalibrationError("calibration input output directory must not already exist")
     temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
     try:
         records_sha = _write_jsonl(temporary / "inputs.jsonl", input_records)
+        excluded_sha = _write_jsonl(temporary / "excluded_context.jsonl", excluded_context) if filter_enabled else None
         source_manifest_sha = _sha256(summary.root_manifest)
         source_manifest = _load_json(summary.root_manifest)
         manifest = {
@@ -469,6 +528,23 @@ def prepare_calibration_input_bundle(
             "wp9a_hidden_training_sha256": _sha256(summary.hidden_grpo_jsonl),
             "evidence_class": "engineering" if allow_test_protocol else "formal_input",
         }
+        if filter_enabled:
+            assert isinstance(max_prompt_tokens, int)
+            assert isinstance(max_new_tokens, int)
+            assert isinstance(tokenizer_model_id, str)
+            assert isinstance(tokenizer_model_revision, str)
+            assert isinstance(excluded_sha, str)
+            manifest["context_filter"] = {
+                "policy": "chat_template_prompt_cap_v1",
+                "tokenizer_model_id": tokenizer_model_id,
+                "tokenizer_model_revision": tokenizer_model_revision,
+                "max_prompt_tokens": max_prompt_tokens,
+                "max_new_tokens": max_new_tokens,
+                "source_record_count": len(public_rows),
+                "eligible_record_count": len(input_records),
+                "excluded_record_count": len(excluded_context),
+                "excluded_records_sha256": excluded_sha,
+            }
         _write_json(temporary / "input_manifest.json", manifest)
         os.replace(temporary, output_dir)
     except Exception:
@@ -486,6 +562,50 @@ def _load_input_bundle(input_bundle_dir: Path) -> tuple[dict[str, object], list[
         raise CalibrationError("calibration input records hash mismatch")
     if manifest.get("record_count") != len(raw):
         raise CalibrationError("calibration input record count mismatch")
+    context_filter = manifest.get("context_filter")
+    if context_filter is not None:
+        expected_filter_fields = {
+            "policy",
+            "tokenizer_model_id",
+            "tokenizer_model_revision",
+            "max_prompt_tokens",
+            "max_new_tokens",
+            "source_record_count",
+            "eligible_record_count",
+            "excluded_record_count",
+            "excluded_records_sha256",
+        }
+        if not isinstance(context_filter, Mapping) or set(context_filter) != expected_filter_fields:
+            raise CalibrationError("calibration input context filter metadata is invalid")
+        max_prompt_tokens = context_filter.get("max_prompt_tokens")
+        excluded_count = context_filter.get("excluded_record_count")
+        source_count = context_filter.get("source_record_count")
+        if (
+            context_filter.get("policy") != "chat_template_prompt_cap_v1"
+            or isinstance(max_prompt_tokens, bool)
+            or not isinstance(max_prompt_tokens, int)
+            or max_prompt_tokens <= 0
+            or context_filter.get("eligible_record_count") != len(raw)
+            or isinstance(excluded_count, bool)
+            or not isinstance(excluded_count, int)
+            or excluded_count < 0
+            or source_count != len(raw) + excluded_count
+        ):
+            raise CalibrationError("calibration input context filter counts/limits are invalid")
+        excluded_path = input_bundle_dir / "excluded_context.jsonl"
+        if context_filter.get("excluded_records_sha256") != _sha256(excluded_path):
+            raise CalibrationError("calibration input excluded-context hash mismatch")
+        excluded_rows = _load_jsonl(excluded_path)
+        if len(excluded_rows) != excluded_count or any(
+            set(row) != {"problem_id", "prompt_tokens", "reason"}
+            or not isinstance(row.get("problem_id"), str)
+            or isinstance(row.get("prompt_tokens"), bool)
+            or not isinstance(row.get("prompt_tokens"), int)
+            or cast(int, row["prompt_tokens"]) <= max_prompt_tokens
+            or row.get("reason") != "prompt_token_limit"
+            for row in excluded_rows
+        ):
+            raise CalibrationError("calibration input excluded-context records are invalid")
     if any(set(record) != _INPUT_FIELDS for record in raw):
         raise CalibrationError("calibration input record fields are invalid")
     forbidden = ("train_hidden_tests", "eval_hidden_tests", "reference_solution", "starter_code", "sft_response")
@@ -2035,6 +2155,7 @@ def check_calibrated_active_pool(
         "temperature",
         "top_p",
         "max_new_tokens",
+        "max_prompt_tokens",
         "active_pool_size",
         "sft_overlap_fraction",
         "sft_overlap_hard_max",
@@ -2051,6 +2172,7 @@ def check_calibrated_active_pool(
             temperature=cast(float, config_mapping["temperature"]),
             top_p=cast(float, config_mapping["top_p"]),
             max_new_tokens=cast(int, config_mapping["max_new_tokens"]),
+            max_prompt_tokens=cast(int, config_mapping["max_prompt_tokens"]),
             active_pool_size=cast(int, config_mapping["active_pool_size"]),
             sft_overlap_fraction=cast(float, config_mapping["sft_overlap_fraction"]),
             sft_overlap_hard_max=cast(float, config_mapping["sft_overlap_hard_max"]),
@@ -2061,7 +2183,7 @@ def check_calibrated_active_pool(
     except (CalibrationError, KeyError, TypeError, ValueError) as error:
         raise CalibrationError("calibrated active-pool config is invalid") from error
     if not allow_test_protocol:
-        frozen = CalibrationConfig(8, 8, 0.8, 0.95, 512, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
+        frozen = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
         if config != frozen:
             raise CalibrationError("formal calibrated active-pool config differs from the frozen WP9 protocol")
 
