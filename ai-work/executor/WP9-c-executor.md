@@ -360,3 +360,102 @@ execution_checkpoint:
   blocker: manual RTX 4090 C3 Gate A execution and evidence/artifact return are required
   status: awaiting_operator
 ```
+
+
+## C3 interruption acceptance and C4 bounded-calibration repair
+
+The user manually interrupted C3 after the batch-1 run proved too slow. Read-only target audit accepted C3 as real interruption evidence: gate_status=interrupted, command_rc=130, postcheck_rc=125, 3,408 crash-safe committed records / 426 complete problems, byte_count=3,997,886, and no remaining formal generation process. Preserved hashes: generation 42fbe9e19da60723541bb4388e035b91aaeb597c775ec7fd4187542a0c1617a4; run.json 25568d1d83286e79ee92749163a0415b949b9e2208749c398f73488a34fcc48c; progress.json 9ab25cce8f1552647de273db825d57bb5f23cfca31808b73db02e247ef30afb8; operator-evidence 950d605a5e46af424d11e7d94fa5a6511c61f2c711df592c68a289f298b0eb2e. C4 preserves this evidence and quarantines the incompatible C3 canonical output before fresh generation.
+
+The continuation audit found two downstream protocol defects. The active-pool strict checker still required calibration records to cover all WP9-a 10,000 rows although calibration input is now an authorized deterministic subset. Also, among the 9,621 context survivors, 1,072 are quality_gate_required=true, and all 750 sft_reuse rows are in that unresolved set. The selector correctly excludes unresolved quality-gated rows but previously required exact 7.5% SFT overlap, which made the pool mathematically impossible. The Refresh spec defines 5-10% SFT/GRPO overlap as a SHOULD/default while <=15% overlap, >=85% new data, and the independent quality gate remain hard constraints. C4 therefore does not waive quality gates: 7.5% is a preferred target bounded by eligible SFT availability, while 15% remains a hard maximum.
+
+Repair commit 643bba54b5f92c74796922f51ea9eb4c1aae655b adds deterministic quality-safe candidate filtering/tranching, strict excluded_quality/tranche_reserve sidecars, ordered-subset active-pool provenance, and preferred-target overlap semantics. Formal source authority remains the exact WP9-a 10,000 rows. The first C4 tranche excludes unresolved quality-required rows and deterministically source/difficulty-stratifies to 5,000 rows. If real scoring cannot satisfy the frozen 3,000-problem class/informativeness constraints, WP9-c must fail closed and issue a later deterministic expansion; no quality/scientific threshold may be relaxed.
+
+The formal control-plane bundle /home/dzy/wp9c-calibration-input-C4-qualitysafe-5000 strict-loads with source=10,000, context-eligible=9,621, context-excluded=379, quality-eligible=8,549, quality-excluded=1,072, selected=5,000, reserve=3,549. All selected rows are quality_gate_required=false and external_new. Composition is 4,605 deepcoder-primeintellect/unknown + 395 deepcoder-taco/unknown. Hashes: manifest f53cd897530756df5e8ae78903bf52225dc988d636051a4030323b71726506d5; inputs 18c77583dc0695747fd5d6a46a3439730f4e3abc0b8e32a7f79aafa4e1b46361; selected order e48e3803be5a7a6d497f677e0bc2da2233840b56cade7a7f4305579d770687de; excluded-context 83219a69b08ffe5348f15e3078389dece3f94e28a8964ac9604ee9d80cf21e1f; excluded-quality ac6559ae28f59808797462d235b5c8fc8ba0c8eddf16298cb157764767519b3b; reserve 3fac92dc70e725fefb86899fe600885380ef0bcdbb07a6de28f6c7dbf2a78df2.
+
+C4 uses problem_batch_size=4. The C2 batch-4 OOM is not a valid worst-case result for this input because its failing batch contained an approximately 32,358-token prompt; C4 re-tokenizes every selected row with the exact local tokenizer/chat template and fails above 2,048. Scientific generation settings remain k=8, temperature=0.8, top_p=0.95, max_new_tokens=512 and the same per-problem seed namespace/formal B. A C4 OOM is preserved as command_failed rather than silently changing identity.
+
+Control-plane validation before handoff: focused calibration/integration tests 25 passed; full suite 1201 passed, 3 skipped (existing real-Piston opt-in skips only); make lint passed Ruff check, Ruff format check, and mypy over 136 source files.
+
+## C4 — quality-safe bounded Gate A repair handoff
+
+```yaml
+execution_checkpoint:
+  version: 1
+  stage_id: WP9-c
+  checkpoint_id: C4
+  task_kind: repair
+  source_plan_commit: 5a1f083af6bfdf2e1333bd70e95e9257b4e66b48
+  source_review_round: null
+  source_review_commit: null
+  repair_issue_ids: []
+  repair_basis: user_directed_c3_efficiency_and_protocol_repair
+  result_code_commit: 643bba54b5f92c74796922f51ea9eb4c1aae655b
+  execution_backend: web_codexpro
+  effective_execution_mode: single
+  interruption_class: operator
+  operator_gate_id: wp9c-calibration-initial-generation
+  operator_handoff_mode: portable_target
+  operator_restart_policy: exact_prefix_or_strict_completed_reuse_after_identity_quarantine
+  supersedes_checkpoint: C3
+  operator_commit_binding: runtime_WP9C_HANDOFF_COMMIT_must_equal_target_HEAD
+  operator_script: ai-work/executor/operator/WP9-c/wp9c-calibration-initial-generation/C4/run.sh
+  operator_script_sha256: 14cc1cfa01703d1f949501bf1002251372f31ea514b876b09853b8a3b79b4841
+  calibration_config_sha256: 97b2706808e1d4d2fa9088be018617c3e1459633767d3505de138fc5f48c68b0
+  problem_batch_size: 4
+  control_plane_input_bundle: /home/dzy/wp9c-calibration-input-C4-qualitysafe-5000
+  target_input_bundle: $CODE_VERIFIER_DATA_ROOT/wp9c/calibration-input-C4-qualitysafe-5000
+  input_manifest_sha256: f53cd897530756df5e8ae78903bf52225dc988d636051a4030323b71726506d5
+  input_records_sha256: 18c77583dc0695747fd5d6a46a3439730f4e3abc0b8e32a7f79aafa4e1b46361
+  input_problem_order_sha256: e48e3803be5a7a6d497f677e0bc2da2233840b56cade7a7f4305579d770687de
+  excluded_context_sha256: 83219a69b08ffe5348f15e3078389dece3f94e28a8964ac9604ee9d80cf21e1f
+  excluded_quality_sha256: ac6559ae28f59808797462d235b5c8fc8ba0c8eddf16298cb157764767519b3b
+  tranche_reserve_sha256: 3fac92dc70e725fefb86899fe600885380ef0bcdbb07a6de28f6c7dbf2a78df2
+  context_filter_policy: chat_template_prompt_cap_v1
+  candidate_filter_policy: quality_safe_stratified_tranche_v1
+  source_record_count: 10000
+  context_eligible_record_count: 9621
+  quality_eligible_record_count: 8549
+  quality_excluded_record_count: 1072
+  tranche_reserve_record_count: 3549
+  eligible_record_count: 5000
+  excluded_record_count: 379
+  max_prompt_tokens: 2048
+  max_new_tokens: 512
+  expected_problem_count: 5000
+  expected_record_count: 40000
+  wp9a_manifest_sha256: 98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625
+  wp9a_selected_order_sha256: 355cfec302a38c3c05e4237be178c5f34207cabb432d2b65f1b4a027cf42d001
+  formal_b_run_name: B-sft-formal-seed42
+  formal_b_model_id: Qwen/Qwen2.5-Coder-1.5B-Instruct
+  formal_b_model_revision: 2e1fd397ee46e1388853d2af2c993145b0f1098a
+  formal_b_adapter_model_sha256: 51042ea9c52d2d24976c2ca4e777f1a5f792e3943ff171d03e55b959463a7a67
+  formal_b_adapter_config_sha256: 3738f9ef0ac56f90a48497ab4c0a1f172770864aa61dad56e8d9751050f34344
+  base_model_weights_sha256: c1b9b30e907950516ba3c646bdf570d8084c25a6410a0cdca80cf04b11bc13a8
+  base_model_config_sha256: 88f9a17863c05fb313515d2ff74b1098e0c35579f99068e32beda00618508ae0
+  base_model_generation_config_sha256: 1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1
+  base_model_tokenizer_sha256: c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539
+  base_model_tokenizer_config_sha256: 959e7f1d9a1b7641a6d6ce05ca97b75c7894fcb66cbe5a040406458fb1128ee4
+  base_model_vocab_sha256: ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910
+  base_model_merges_sha256: 599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3
+  superseded_c3_operator_evidence_sha256: 950d605a5e46af424d11e7d94fa5a6511c61f2c711df592c68a289f298b0eb2e
+  superseded_c3_partial_problem_count: 426
+  superseded_c3_partial_record_count: 3408
+  superseded_c3_partial_byte_count: 3997886
+  superseded_c3_generation_sha256: 42fbe9e19da60723541bb4388e035b91aaeb597c775ec7fd4187542a0c1617a4
+  superseded_c3_run_sha256: 25568d1d83286e79ee92749163a0415b949b9e2208749c398f73488a34fcc48c
+  superseded_c3_progress_sha256: 9ab25cce8f1552647de273db825d57bb5f23cfca31808b73db02e247ef30afb8
+  expected_target_output: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/initial
+  quarantine_root: $CODE_VERIFIER_ARTIFACT_ROOT/wp9c/quarantine/calibration/initial
+  completed_scope:
+    - accepted and froze the real C3 interruption evidence
+    - repaired subset active-pool provenance and overlap-target semantics without bypassing quality gates
+    - materialized and strict-read back the deterministic 5,000-row quality-safe first tranche
+    - prepared C4 portable quarantine, batch-4 generation, failure classification, and 40,000-record postcheck
+  remaining_scope:
+    - manually execute C4 Gate A on the RTX 4090 and return evidence plus completed generation bundle
+    - run dual-verifier scoring and attempt the frozen 3,000-problem selector
+    - fail closed and issue deterministic expansion if the selector is infeasible
+    - complete remaining WP9-c benchmark and pilot gates
+  blocker: manual RTX 4090 C4 Gate A execution and evidence/artifact return are required
+  status: awaiting_operator
+```
