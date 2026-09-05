@@ -1,0 +1,74 @@
+{
+  "checkpoint_id": "C24-final-reduced-pool-assembly-and-sft-reuse-audit",
+  "parent_checkpoint": "C23-under8-final-formal-piston",
+  "status": "completed_verified",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-final-reduced-pool-assembly",
+  "backfill_failed_candidates": false,
+  "minimum_pool_count": null,
+  "source_expansion_allowed": false,
+  "threshold_relaxation": false,
+  "verified_result": {
+    "ready_lane_formal": 1030,
+    "under8_formal": 572,
+    "external_new_formal_total": 1602,
+    "historical_sft_reuse_population": 750,
+    "sft_reuse_formal_eligible": 0,
+    "precalibration_pool_total": 1602,
+    "backfill_required": false
+  },
+  "source_counts": {
+    "BAAI/TACO": 513,
+    "codeparrot/apps": 62,
+    "deepcoder-primeintellect": 507,
+    "deepcoder-taco": 14,
+    "opencoder-educational": 418,
+    "tkeskin/leetcode-solutions": 88
+  },
+  "formal_b_context": {
+    "all_1602_pass": true,
+    "max_prompt_tokens": 2019,
+    "cap": 2048
+  },
+  "sft_reuse_decision": {
+    "old_requested_quota": 225,
+    "admitted": 0,
+    "reason": "all 750 frozen WP9-a SFT-reuse rows have unresolved quality_gate_required=true",
+    "quota_backfill_allowed": false
+  },
+  "informativeness_accounting": {
+    "status": "pending_fresh_calibration",
+    "dual_informative": null,
+    "public_only": null,
+    "hidden_only": null,
+    "dual_uninformative": null,
+    "old_5000_problem_calibration_scoring_source_allowed": false,
+    "selection_by_old_reward_outcome_allowed": false,
+    "post_calibration_rule": "report actual class counts; exclude dual_uninformative without backfill"
+  },
+  "verified_artifacts": {
+    "report": "/home/dzy/wp9c-final-reduced-pool-C24/report.json",
+    "report_sha256": "a5be86d847282f61e4497baafd095adad58e02ddc2015531c73d8c798843b6b6",
+    "external_formal_problems": "/home/dzy/wp9c-final-reduced-pool-C24/external_formal_problems.jsonl",
+    "external_formal_problems_sha256": "d94c5216ef28272fb1e0ee0ec50667c423711d8587227a4feee84687c7509a6f",
+    "precalibration_selection": "/home/dzy/wp9c-final-reduced-pool-C24/precalibration_selection.jsonl",
+    "precalibration_selection_sha256": "fc85f5482747e09decec3dae68883727ec578f0f3a2c9c5486f01e37251a1b62",
+    "sft_reuse_audit": "/home/dzy/wp9c-final-reduced-pool-C24/sft_reuse_audit.jsonl",
+    "sft_reuse_audit_sha256": "c24a9909e3ce06f4db95ff7639254e1a083b8a447d0f565a466d921f28fc5f6c"
+  },
+  "bindings": {
+    "c23_checkpoint_sha256": "3ae90108af2b9fe91a7bcf239230f74c7c12352750074077a45a4e33e6b5478a",
+    "c19_formal_passers_sha256": "aef07311638fd3bd292003aa4097d0adf22ef6ac7e7432530b29546511dccb8f",
+    "c23_formal_passers_sha256": "3f4992359a4828331b155931c0a6d64c739e9d1e3f07aa60c67308a2e47780e0",
+    "audit_script_sha256": "7e2f1bc31df0156cfbc6e393bf76d06c17970e7edb9fd8fbc8c75692cea992f6"
+  },
+  "execution_boundaries": {
+    "candidate_code_execution": false,
+    "piston_run": false,
+    "generation_run": false,
+    "calibration_scoring_run": false,
+    "grpo_run": false,
+    "gpu_run": false
+  },
+  "next_gate": "fresh-reduced-pool-calibration-generation-and-scoring"
+}

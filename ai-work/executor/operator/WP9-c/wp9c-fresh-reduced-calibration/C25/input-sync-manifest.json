@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C25",
+  "purpose": "fresh reduced-pool calibration input transfer",
+  "source_root_control_plane": "/home/dzy/wp9c-fresh-calibration-input-C25",
+  "target_root_relative_to_formal_data_root": "wp9c/fresh-calibration-input-C25",
+  "problem_count": 1602,
+  "expected_total_bytes": 2574292,
+  "files": [
+    {
+      "path": "input_manifest.json",
+      "size_bytes": 1434,
+      "sha256": "bdccb68febe85f1da381ba01671fb220246dac9e74cdfacb89e4d1da7e334aff"
+    },
+    {
+      "path": "inputs.jsonl",
+      "size_bytes": 2571715,
+      "sha256": "dbb6f18a472e390acbec641daab65db6d3f2cb07d3469f8e46ef2d90bf867d18"
+    },
+    {
+      "path": "excluded_context.jsonl",
+      "size_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "excluded_quality.jsonl",
+      "size_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "report.json",
+      "size_bytes": 1078,
+      "sha256": "6b3b886a9fb539bb4025b1714d7ffb711b1ff83f95874b0f32bb18cb5dfde457"
+    },
+    {
+      "path": "report.sha256",
+      "size_bytes": 65,
+      "sha256": "1a7151e685deb1c0fd2aba3ee41f9eb373f1abd3697315c11460d21f402047ea"
+    }
+  ],
+  "report_sidecar_value": "6b3b886a9fb539bb4025b1714d7ffb711b1ff83f95874b0f32bb18cb5dfde457",
+  "copy_policy": {
+    "byte_identity_required": true,
+    "copy_complete_directory": true,
+    "preserve_zero_byte_files": true,
+    "no_regeneration_on_target": true,
+    "no_source_expansion": true,
+    "no_backfill": true
+  }
+}

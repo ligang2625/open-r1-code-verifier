@@ -1,0 +1,14 @@
+version: wp9c-reduced-fresh-calibration-generation-v1
+protocol_amendment: wp9c-reduced-quota-current-viable-v1
+input:
+  problem_count: 1602
+  external_new_count: 1602
+  sft_reuse_count: 0
+  seed: 42
+sampling:
+  initial_generations: 8
+  retry_generations: 8
+  temperature: 0.8
+  top_p: 0.95
+  max_new_tokens: 512
+  max_prompt_tokens: 2048
