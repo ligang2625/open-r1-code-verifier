@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C26",
+  "parent_checkpoint": "C25-fresh-reduced-calibration-generation",
+  "status": "awaiting_control_plane_scoring",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "purpose": "fresh Public/Hidden scoring of the accepted C25 1602x8 completions",
+  "scoring_semantics": "same_completion_bytes_public_then_hidden_v1",
+  "expected_problem_count": 1602,
+  "expected_record_count": 12816,
+  "initial_block_index": 0,
+  "initial_sample_indices": "0..7",
+  "retry_rule": "public_all_test_zero && hidden_all_test_zero",
+  "source_expansion_allowed": false,
+  "backfill_allowed": false,
+  "old_5000_completion_or_score_reuse_allowed": false,
+  "reward_outcome_source_selection_allowed": false,
+  "bindings": {
+    "c24_checkpoint_sha256": "48ac639cc3fba0c540437bfbba0b65403575f424c06eefd6b8c51d00771313f1",
+    "c25_checkpoint_sha256": "0ba51b0b502357482d6eba137d900b6686a19bab3470255992502a9ebb750916",
+    "c24_formal_problems_sha256": "d94c5216ef28272fb1e0ee0ec50667c423711d8587227a4feee84687c7509a6f",
+    "c25_input_manifest_sha256": "bdccb68febe85f1da381ba01671fb220246dac9e74cdfacb89e4d1da7e334aff",
+    "c25_inputs_sha256": "dbb6f18a472e390acbec641daab65db6d3f2cb07d3469f8e46ef2d90bf867d18",
+    "c25_generation_run_sha256": "e2ead0f322864be3f262ee3384b6ebbd48af2941f427ad444852373626e42d05",
+    "c25_generation_records_sha256": "8802287fc1c4076397093f25ca7180edf222c31a90b7d2395a3e4aedde62365a",
+    "c25_generation_progress_sha256": "01f3ea0705adc072d5ed2fe082c16aa9f6adf38a4547ba28c9fd371d167d5fdf",
+    "c25_operator_evidence_sha256": "c15acec284333c03da02d4632a8ae56f4b91f986e46f2f86fa8c0c1b7c6c8bec",
+    "c25_postcheck_sha256": "8c3586aec8d9f9356f4ff2e39ee2c5427b975e9dd834d6b15807e253f5d19eda",
+    "problem_order_sha256": "2b7d6a79ee11a4f21898d27e4cc352f0e5fe1f86104a55e7b4c8ebaac602443e",
+    "piston_config_sha256": "f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e",
+    "piston_transport_policy_sha256": "16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c",
+    "handoff_commit": "322db1e1649d8c87b51352f57c0884b0b9a24bfc"
+  },
+  "implementation": {
+    "scorer": "src/code_verifier/training/reduced_calibration.py",
+    "scorer_sha256": "780e510635571a7cddec39e8beee0ef0021ca1e4322e4d1cc32108328d8614c4",
+    "scoring_checkpoint_module": "src/code_verifier/training/calibration_checkpoint.py",
+    "scoring_checkpoint_module_sha256": "4f8bc6c16ce1c7951b464e5f1d540a538eecb362227c4eab5bf6bac8f530078e",
+    "runner": "ai-work/executor/operator/WP9-c/wp9c-fresh-reduced-calibration-scoring/C26/run_scoring.py",
+    "runner_sha256": "cd5f616b6516b9df0898721938198a873a32c4ac0eee5c34b3ffccfce1baf9fc",
+    "shell_runner": "ai-work/executor/operator/WP9-c/wp9c-fresh-reduced-calibration-scoring/C26/run.sh",
+    "shell_runner_sha256": "9e66a9b45b01b16ad7286de3cb7fc75a6da92bb4ea48b2923e5d4c54d99558ac"
+  },
+  "paths": {
+    "c24_formal_problems": "/home/dzy/wp9c-final-reduced-pool-C24/external_formal_problems.jsonl",
+    "c25_input_bundle": "/home/dzy/wp9c-fresh-calibration-input-C25",
+    "c25_generation_receive": "/home/dzy/wp9c-fresh-calibration-generation-C25",
+    "c25_operator_evidence_receive": "/home/dzy/wp9c-operator-evidence/WP9-c/wp9c-fresh-reduced-calibration-generation/C25",
+    "piston_config": "configs/execution/piston-local.yaml",
+    "piston_transport_policy": "configs/execution/piston-transport-resilience.yaml",
+    "output": "/home/dzy/wp9c-fresh-reduced-calibration-score-C26",
+    "resume_checkpoint": "/home/dzy/wp9c-fresh-reduced-calibration-score-C26.checkpoint"
+  },
+  "postcheck_contract": {
+    "strict_readback": true,
+    "same_completion_bytes_for_public_hidden": true,
+    "infrastructure_failure_fail_closed": true,
+    "retry_ids_unique": true,
+    "retry_ids_sorted": true,
+    "retry_ids_subset_of_current_1602": true,
+    "retry_manifest_hash_frozen": true
+  },
+  "execution_state": {
+    "c25_sync_complete": true,
+    "formal_scoring_started": true,
+    "reason": "accepted C25 receive preflight passed; C26 scoring uses the durable exact-prefix checkpoint and canonical safe Piston transport retries"
+  }
+}
