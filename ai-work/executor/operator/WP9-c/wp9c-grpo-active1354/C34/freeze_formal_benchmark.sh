@@ -32,18 +32,18 @@ PY_MACHINE
 )
 ARTIFACT_ROOT="${ROOTS[0]}"; FORMAL_DATA_ROOT="${ROOTS[1]}"
 BASE="$ARTIFACT_ROOT/wp9c/grpo-c29"
-EVAL="$BASE/eval-generation"
-VERIFY="$FORMAL_DATA_ROOT/wp9c/eval-verification-C34"
+EVAL="$BASE/eval200-generation"
+VERIFY="$FORMAL_DATA_ROOT/wp9c/eval200-verification-C34"
 GRPO="$BASE/benchmark-sources"
 OUT="$BASE/benchmark"
-RUN="wp9c-c29-b-eval-b1-seed42"
+RUN="wp9c-c29-b-eval200-b1-seed42"
 
 "$PY" "$SCRIPT_DIR/build_formal_benchmark.py" \
-  --eval-b1 "$EVAL/b1/generation/wp9c-c29-b-eval-b1-seed42" \
-  --eval-b2 "$EVAL/b2/generation/wp9c-c29-b-eval-b2-seed42" \
-  --eval-b4 "$EVAL/b4/generation/wp9c-c29-b-eval-b4-seed42" \
-  --eval-b8 "$EVAL/b8/generation/wp9c-c29-b-eval-b8-seed42" \
-  --eval-b16 "$EVAL/b16/generation/wp9c-c29-b-eval-b16-seed42" \
+  --eval-b1 "$EVAL/b1/generation/wp9c-c29-b-eval200-b1-seed42" \
+  --eval-b2 "$EVAL/b2/generation/wp9c-c29-b-eval200-b2-seed42" \
+  --eval-b4 "$EVAL/b4/generation/wp9c-c29-b-eval200-b4-seed42" \
+  --eval-b8 "$EVAL/b8/generation/wp9c-c29-b-eval200-b8-seed42" \
+  --eval-b16 "$EVAL/b16/generation/wp9c-c29-b-eval200-b16-seed42" \
   --eval-v1 "$VERIFY/v1/evaluation/$RUN" \
   --eval-v8 "$VERIFY/v8/evaluation/$RUN" \
   --eval-v16 "$VERIFY/v16/evaluation/$RUN" \

@@ -59,7 +59,13 @@
     "selected_pair": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/run_selected_pair.sh",
     "active_pool_audit": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/verify_grpo_active1354.py",
     "pilot_check": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/check_pilot.py",
-    "formal_benchmark_builder": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/build_formal_benchmark.py"
+    "formal_benchmark_builder": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/build_formal_benchmark.py",
+    "eval200_builder": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/build_eval200_subset.py",
+    "eval200_builder_sha256": "02f37e98f5110871209099cf2224cfaa875799d52d7f799003344af6b0e2cd5a",
+    "eval_generation_sweep_sha256": "5a183d759bddc7423ae688d82e2b72ea49dd8d1536c106027238dd2f5a510466",
+    "eval_verification_sweep_sha256": "32b8d0c3abe81e20cd013d43da213d43b802885482307993936dafb4698cde8d",
+    "freeze_formal_benchmark_sha256": "3a2655c9e5505c1c54ebc064d9f372e6fed0df88fc079c5de48b9a4aa75a7532",
+    "formal_benchmark_builder_sha256": "a5bd4dc9dd7d8c1ea6c035a457f019fb34de2cf643b0a21f5a4d7c56051c10ea"
   },
   "data_transfer": {
     "c29_control_plane_source": "/home/dzy/wp9c-final-reduced-calibration-C29",
@@ -67,7 +73,9 @@
     "heldout_eval400_control_plane_source": "/home/dzy/wp8-formal-sync/data/prepared",
     "heldout_eval400_target_relative_root": "wp9c/heldout-eval400-C34",
     "project_code_transport": "git",
-    "data_transport": "rsync"
+    "data_transport": "rsync",
+    "heldout_eval200_control_plane_source": "/home/dzy/wp9c-heldout-eval200-C34",
+    "heldout_eval200_target_relative_root": "wp9c/heldout-eval200-C34"
   },
   "gates": [
     "target active-1354 audit",
@@ -84,7 +92,11 @@
     "real_c29_max_prompt_tokens": 2019,
     "shell_syntax": "passed",
     "python_compile": "passed",
-    "focused_pytest": "103 passed"
+    "focused_pytest": "103 passed",
+    "eval200_builder": "passed_twice_byte_identical",
+    "eval200_test_problem_count": 200,
+    "eval200_unique_problem_ids": 200,
+    "eval200_order_matches_eval400_first200": true
   },
   "handoff_contract": {
     "operator_requires_exact_clean_git_commit": true,
@@ -93,6 +105,24 @@
     "benchmark_timing_sources_forbid_resume": true,
     "pilot_and_formal_resume_require_explicit_checkpoint": true,
     "public_hidden_parent_is_same_frozen_b": true,
-    "public_never_parents_hidden": true
+    "public_never_parents_hidden": true,
+    "c29_and_eval200_inputs_are_rsync_only": true
+  },
+  "systems_benchmark_eval": {
+    "workload_problem_count": 200,
+    "selection": "first_200_in_frozen_order",
+    "control_plane_path": "/home/dzy/wp9c-heldout-eval200-C34",
+    "target_relative_root": "wp9c/heldout-eval200-C34",
+    "scientific_heldout_eval400_remains_authoritative": true,
+    "legacy_interrupted_b1_generated_records_at_least": 245,
+    "legacy_interrupted_b1_accepted_as_formal_throughput_source": false,
+    "legacy_interrupted_b1_first200_problem_order_match": null,
+    "ordered_problem_ids_sha256": "8a723184e8c3787cf8c18f2d9f6ddd59f6928ca4711b31dc196e4daffb91a422",
+    "canonical_problems_sha256": "6d90392983a8605773b1f83acb2811f666290598fec8eec4f2225d2eb95d64d3",
+    "hf_arrow_sha256": "0713020cf3c0c5cf8ede7883be4dda2dabdc9e763b88ffeb94df538120ed11c6",
+    "hf_dataset_info_sha256": "92bbb50ce5825d6c8ee4a675a9199f0ebae50535909313d1e442ed28d68895f9",
+    "hf_state_sha256": "cd9375ded43d13e712090ddf5dbaadcd682e4d8a0e22b70904f9aa3ad216fcb0",
+    "eval200_manifest_sha256": "c3ee992f59faa70e1bc6a3d60546921f1862db56b79135f98a561cecae1951cf",
+    "source_eval400_canonical_sha256": "d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6"
   }
 }

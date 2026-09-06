@@ -4,7 +4,7 @@ set -Eeuo pipefail
 GENERATION_RUN="${1:-}"
 DATASET_DIR="${2:-}"
 OUTPUT_BASE="${3:-}"
-[[ "$GENERATION_RUN" = /* && -d "$GENERATION_RUN" ]] || { echo "usage: run_eval_verification_sweep.sh <absolute-b1-generation-run> <absolute-eval400-dataset> <absolute-output-base>" >&2; exit 64; }
+[[ "$GENERATION_RUN" = /* && -d "$GENERATION_RUN" ]] || { echo "usage: run_eval_verification_sweep.sh <absolute-eval200-b1-generation-run> <absolute-eval200-dataset> <absolute-output-base>" >&2; exit 64; }
 [[ "$DATASET_DIR" = /* && -d "$DATASET_DIR" ]] || { echo "evaluation dataset must be an existing absolute directory" >&2; exit 64; }
 [[ "$OUTPUT_BASE" = /* ]] || { echo "output base must be absolute" >&2; exit 64; }
 
@@ -21,17 +21,27 @@ DIRTY="$(git status --porcelain=v1 --untracked-files=normal | grep -vE '^\?\? \.
 [[ -z "$DIRTY" ]] || { echo "control-plane checkout must be clean outside .ai-bridge" >&2; exit 125; }
 
 EXPECTED=(
-  "d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6 canonical/problems.jsonl"
-  "474edfd8731dea9f4938630f4f4903b6a016124c9ee5d4d4eed2a322015c47af hf_dataset/data-00000-of-00001.arrow"
+  "6d90392983a8605773b1f83acb2811f666290598fec8eec4f2225d2eb95d64d3 canonical/problems.jsonl"
+  "0713020cf3c0c5cf8ede7883be4dda2dabdc9e763b88ffeb94df538120ed11c6 hf_dataset/data-00000-of-00001.arrow"
   "92bbb50ce5825d6c8ee4a675a9199f0ebae50535909313d1e442ed28d68895f9 hf_dataset/dataset_info.json"
-  "ea62279de3ce3df8f6908e3a9dd1901734f12fc6cc0569cda75527e2d7841ca1 hf_dataset/state.json"
+  "cd9375ded43d13e712090ddf5dbaadcd682e4d8a0e22b70904f9aa3ad216fcb0 hf_dataset/state.json"
 )
 for item in "${EXPECTED[@]}"; do
   sha="${item%% *}"; rel="${item#* }"
   [[ -f "$DATASET_DIR/$rel" && "$(sha256sum "$DATASET_DIR/$rel" | awk '{print $1}')" == "$sha" ]] || {
-    echo "heldout eval dataset hash mismatch: $rel" >&2; exit 125;
+    echo "heldout eval200 dataset hash mismatch: $rel" >&2; exit 125;
   }
 done
+
+"$PY" - "$DATASET_DIR/eval200_manifest.json" <<'PY_EVAL200'
+import json, sys
+from pathlib import Path
+value=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if value.get("selection") != "first_200_in_frozen_order" or value.get("problem_count") != 200:
+    raise SystemExit("eval200 deterministic selection drift")
+if value.get("ordered_problem_ids_sha256") != "8a723184e8c3787cf8c18f2d9f6ddd59f6928ca4711b31dc196e4daffb91a422":
+    raise SystemExit("eval200 ordered problem IDs drift")
+PY_EVAL200
 
 CONFIG="$REPO_ROOT/configs/eval/base.yaml"
 "$PY" - "$GENERATION_RUN" <<'PY_GEN'
@@ -41,10 +51,10 @@ from code_verifier.evaluation.staged import load_generation_bundle_source
 run=Path(sys.argv[1])
 source=load_generation_bundle_source(run)
 value=json.loads((run/"run.json").read_text(encoding="utf-8"))
-if source.run_id != "wp9c-c29-b-eval-b1-seed42" or source.seed != 42:
+if source.run_id != "wp9c-c29-b-eval200-b1-seed42" or source.seed != 42:
     raise SystemExit("batch-1 generation source identity drift")
-if value.get("batch_size") != 1 or value.get("total_problems") != 400 or value.get("completed_records") != 400:
-    raise SystemExit("batch-1 generation source is not complete formal 400")
+if value.get("batch_size") != 1 or value.get("total_problems") != 200 or value.get("completed_records") != 200:
+    raise SystemExit("batch-1 generation source is not complete formal eval200")
 PY_GEN
 
 "$PY" - "$CONFIG" <<'PY_PISTON'
@@ -54,7 +64,7 @@ from code_verifier.execution.piston import PistonExecutor, load_piston_executor_
 PistonExecutor(load_piston_executor_config(Path(sys.argv[1]))).validate_runtime()
 PY_PISTON
 
-RUN_NAME="wp9c-c29-b-eval-b1-seed42"
+RUN_NAME="wp9c-c29-b-eval200-b1-seed42"
 mkdir -p "$OUTPUT_BASE"
 for WORKERS in 1 8 16 32 64; do
   OUT_ROOT="$OUTPUT_BASE/v${WORKERS}"
@@ -64,7 +74,7 @@ for WORKERS in 1 8 16 32 64; do
 import json, sys
 from pathlib import Path
 value=json.loads((Path(sys.argv[1])/"run.json").read_text(encoding="utf-8"))
-if value.get("status") != "completed" or value.get("completed_records") != 400 or value.get("verification_workers") != int(sys.argv[2]):
+if value.get("status") != "completed" or value.get("completed_records") != 200 or value.get("verification_workers") != int(sys.argv[2]):
     raise SystemExit(1)
 PY_DONE
     then

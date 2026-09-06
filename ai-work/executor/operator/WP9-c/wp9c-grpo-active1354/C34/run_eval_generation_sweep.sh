@@ -44,18 +44,18 @@ export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 TOKENIZERS_
 export TMPDIR="/root/tmp"
 mkdir -p "$TMPDIR"
 
-DATASET_DIR="$FORMAL_DATA_ROOT/wp9c/heldout-eval400-C34"
+DATASET_DIR="$FORMAL_DATA_ROOT/wp9c/heldout-eval200-C34"
 B_RUN="$ARTIFACT_ROOT/sft/B-sft-formal-seed42"
-OUT_BASE="$ARTIFACT_ROOT/wp9c/grpo-c29/eval-generation"
+OUT_BASE="$ARTIFACT_ROOT/wp9c/grpo-c29/eval200-generation"
 CONFIG="$REPO_ROOT/configs/eval/base.yaml"
-[[ -d "$DATASET_DIR" ]] || { echo "heldout-eval400-C34 is missing; rsync it first" >&2; exit 125; }
+[[ -d "$DATASET_DIR" ]] || { echo "heldout-eval200-C34 is missing; rsync it first" >&2; exit 125; }
 [[ -d "$B_RUN" ]] || { echo "formal B run is missing" >&2; exit 125; }
 
 EXPECTED=(
-  "d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6 canonical/problems.jsonl"
-  "474edfd8731dea9f4938630f4f4903b6a016124c9ee5d4d4eed2a322015c47af hf_dataset/data-00000-of-00001.arrow"
+  "6d90392983a8605773b1f83acb2811f666290598fec8eec4f2225d2eb95d64d3 canonical/problems.jsonl"
+  "0713020cf3c0c5cf8ede7883be4dda2dabdc9e763b88ffeb94df538120ed11c6 hf_dataset/data-00000-of-00001.arrow"
   "92bbb50ce5825d6c8ee4a675a9199f0ebae50535909313d1e442ed28d68895f9 hf_dataset/dataset_info.json"
-  "ea62279de3ce3df8f6908e3a9dd1901734f12fc6cc0569cda75527e2d7841ca1 hf_dataset/state.json"
+  "cd9375ded43d13e712090ddf5dbaadcd682e4d8a0e22b70904f9aa3ad216fcb0 hf_dataset/state.json"
   "79af3c2a3742e0cda8d02901a07241afce12a54c0b6d334e3012bcd0b69f77f7 training/hidden_grpo.jsonl"
   "94ef48888d2b2edaa0080b9b412c274ada692c9546fe135572d48ab20fd49223 training/public_grpo.jsonl"
   "4b90cf95de2d8f12bdc98decbfb712b8eacf5987b02b02b868075ed9ca69eb0c training/sft.jsonl"
@@ -64,9 +64,28 @@ EXPECTED=(
 for item in "${EXPECTED[@]}"; do
   sha="${item%% *}"; rel="${item#* }"
   [[ -f "$DATASET_DIR/$rel" && "$(sha256sum "$DATASET_DIR/$rel" | awk '{print $1}')" == "$sha" ]] || {
-    echo "heldout eval dataset hash mismatch: $rel" >&2; exit 125;
+    echo "heldout eval200 dataset hash mismatch: $rel" >&2; exit 125;
   }
 done
+
+"$PY" - "$DATASET_DIR/eval200_manifest.json" <<'PY_EVAL200'
+import json, sys
+from pathlib import Path
+value=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if value.get("schema_version") != "wp9c-c34-eval200-subset-v1": raise SystemExit("eval200 manifest schema drift")
+if value.get("selection") != "first_200_in_frozen_order" or value.get("problem_count") != 200:
+    raise SystemExit("eval200 deterministic selection drift")
+if value.get("ordered_problem_ids_sha256") != "8a723184e8c3787cf8c18f2d9f6ddd59f6928ca4711b31dc196e4daffb91a422":
+    raise SystemExit("eval200 ordered problem IDs drift")
+source=value.get("source_eval400", {})
+if source.get("test_problem_count") != 400:
+    raise SystemExit("eval200 source eval400 count drift")
+if source.get("artifact_sha256", {}).get("canonical/problems.jsonl") != "d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6":
+    raise SystemExit("eval200 source eval400 identity drift")
+contract=value.get("scientific_evaluation_contract", {})
+if contract.get("heldout_eval400_remains_authoritative") is not True:
+    raise SystemExit("eval400 scientific authority contract drift")
+PY_EVAL200
 
 "$PY" - "$B_RUN" <<'PY_B'
 import sys
@@ -85,7 +104,7 @@ GPU_TOTAL="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits |
 
 mkdir -p "$OUT_BASE"
 for BATCH in 1 2 4 8 16; do
-  RUN_NAME="wp9c-c29-b-eval-b${BATCH}-seed42"
+  RUN_NAME="wp9c-c29-b-eval200-b${BATCH}-seed42"
   OUT_ROOT="$OUT_BASE/b${BATCH}"
   RUN_DIR="$OUT_ROOT/generation/$RUN_NAME"
   if [[ -d "$RUN_DIR" ]]; then
@@ -94,7 +113,7 @@ import json, sys
 from pathlib import Path
 run=Path(sys.argv[1]); batch=int(sys.argv[2])
 value=json.loads((run/"run.json").read_text(encoding="utf-8"))
-if value.get("status") != "completed" or value.get("total_problems") != 400 or value.get("completed_records") != 400:
+if value.get("status") != "completed" or value.get("total_problems") != 200 or value.get("completed_records") != 200:
     raise SystemExit(1)
 if value.get("batch_size") != batch or value.get("seed") != 42:
     raise SystemExit(1)
@@ -121,13 +140,13 @@ import json, sys
 from pathlib import Path
 from code_verifier.throughput import compare_generation_bundle_parity
 root=Path(sys.argv[1])
-base=root/"b1"/"generation"/"wp9c-c29-b-eval-b1-seed42"
+base=root/"b1"/"generation"/"wp9c-c29-b-eval200-b1-seed42"
 result={"baseline": str(base), "candidates": {}}
 for batch in (2,4,8,16):
-    run=root/f"b{batch}"/"generation"/f"wp9c-c29-b-eval-b{batch}-seed42"
+    run=root/f"b{batch}"/"generation"/f"wp9c-c29-b-eval200-b{batch}-seed42"
     parity=compare_generation_bundle_parity(base, run)
     result["candidates"][str(batch)]={"exact": parity.exact, "reason": parity.reason, "problem_count": parity.problem_count}
-    if not parity.exact or parity.problem_count != 400:
+    if not parity.exact or parity.problem_count != 200:
         raise SystemExit(f"batch {batch} generation parity failed: {parity}")
 print(json.dumps(result, sort_keys=True))
 PY_PARITY
