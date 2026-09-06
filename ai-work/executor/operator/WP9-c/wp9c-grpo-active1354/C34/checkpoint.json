@@ -3,86 +3,96 @@
   "stage_id": "WP9-c",
   "checkpoint_id": "C34",
   "parent_checkpoint": "C30-reduced-active-pool-compatibility",
-  "status": "awaiting_target_execution",
-  "purpose": "prepare the frozen C29 active-1354 reduced calibrated pool for strict 4090 GRPO benchmark, pilot, and formal training without starting SFT",
+  "status": "ready_for_target",
+  "purpose": "prepare the frozen C29 active-1354 pool for formal systems benchmark, k8 pilot, and 300-step Public/Hidden GRPO on the 24GB target",
   "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
-  "scientific_identity": {
-    "parent_sft_run_id": "B-sft-formal-seed42",
-    "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-    "model_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
-    "seed": 42,
+  "training_started": false,
+  "sft_work_in_scope": false,
+  "frozen_pool": {
     "active_problem_count": 1354,
     "calibration_manifest_sha256": "5593fe90c19a096678f19e45ca6736e0fc97d242e4f27f92f0b10bb303077d5b",
     "active_order_sha256": "401f854032095cb638637dcf2d1ec000b770cd2d4c78619331f0b13746618c14",
     "public_training_sha256": "558250d06043702e153f88067a88d34378923255ef015cfbc97e106592d9188c",
-    "hidden_training_sha256": "9aae7ce46347236f69a67aadb60a719c76f089451873a4fd8d4b92147f74abec"
+    "hidden_training_sha256": "9aae7ce46347236f69a67aadb60a719c76f089451873a4fd8d4b92147f74abec",
+    "sft_overlap_count": 0
   },
   "prompt_audit": {
-    "local_output_sha256": "2577ec0b3007ec522b71037e214b94794941b54bda3887b94b14afe922e84404",
-    "minimum_prompt_tokens": 116,
+    "tokenizer_model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "tokenizer_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+    "active_problem_count": 1354,
+    "min_prompt_tokens": 116,
     "p95_prompt_tokens": 817,
-    "maximum_prompt_tokens": 2019,
+    "max_prompt_tokens": 2019,
     "count_over_1024": 30,
     "count_over_2048": 0,
-    "decision": "freeze all C29 benchmark/pilot/formal GRPO configs at max_prompt_length=2048; historical 1024 refresh configs are not valid for this pool"
+    "selected_max_prompt_length": 2048,
+    "reason": "the historical refresh max_prompt_length=1024 would truncate 30 frozen C29 prompts"
   },
   "production_compatibility": {
-    "grpo_py_sha256": "88c779a5ba2ba996904aba201c011af5d8578a5a7647abf7df5d94fd2a5f44d3",
+    "reduced_checker": "src/code_verifier/training/reduced_calibrated_pool.py",
     "reduced_checker_sha256": "710bdc45d0709d719feb5e1234b4845188961ef2323e296d49cb80e6cf36c5bd",
-    "reduced_checker_test_sha256": "3569857c9bdabec17fc0b0773dd1926e1cb2cd58366488f373ca8183b70841ec",
-    "c30_checkpoint_sha256": "c7e84afcdf61a61dd78c35aeabe4b019686917dcac57e218aa70f26ea1cc1f09",
-    "c30_target_sync_manifest_sha256": "2fd82bc16c587296440e84d5364891a9409014ee8061ed8798adea0b613ec930"
+    "grpo_binding": "src/code_verifier/training/grpo.py",
+    "grpo_binding_sha256": "88c779a5ba2ba996904aba201c011af5d8578a5a7647abf7df5d94fd2a5f44d3",
+    "c30_checkpoint": "ai-work/executor/operator/WP9-c/wp9c-reduced-active-pool-compatibility/C30/checkpoint.json",
+    "c30_target_sync_manifest": "ai-work/executor/operator/WP9-c/wp9c-reduced-active-pool-compatibility/C30/target-sync-manifest.json"
   },
   "configs": {
-    "formal_public_sha256": "ceb6d7c1e26dd8d18a604138d683e8e9f6a73fadcfcafa85725ae368e6aa59d7",
-    "formal_hidden_sha256": "6c590f719b51cc9a3c10cfd41c5ad30260adf3a16e1162124e39b621295c56a7",
-    "benchmark_public_sha256": "1cad9631d51368b38fc9a407aa33a2ad6d0b394ef5dcabb5add203af979f04cd",
-    "benchmark_hidden_sha256": "b96f1e470bda26b3875532c53af7f33fd45301a304a21dc1d157370bd0f1c872",
-    "benchmark_k4_public_sha256": "40acb37e5b1feb00f430327bc96958297acaee1d43f9dd8e225148f048372f10",
-    "benchmark_k4_hidden_sha256": "0aae4516088132748576bb1737769ad43d5211ee7cd123f5dd6de977d4eb3286",
-    "pilot_public_sha256": "f4376f9ef1848e89674462e7f44f784b4a9d9f7cd41c5b1c4e4a39ee6c9b3f97",
-    "pilot_hidden_sha256": "fb55cbb82969b8deb7220980abfdb3b8cf35de2be842ef590c1c42408ccc9fb9",
-    "formal_max_steps": 300,
-    "pilot_max_steps": 100,
-    "benchmark_max_steps": 20,
-    "num_generations": 8,
-    "max_prompt_length": 2048,
-    "max_completion_length": 512
+    "formal_public": "configs/grpo/wp9c-c29-active1354-public.yaml",
+    "formal_hidden": "configs/grpo/wp9c-c29-active1354-hidden.yaml",
+    "benchmark_public": "configs/grpo/wp9c-c29-active1354-benchmark-public.yaml",
+    "benchmark_hidden": "configs/grpo/wp9c-c29-active1354-benchmark-hidden.yaml",
+    "benchmark_k4_public": "configs/grpo/wp9c-c29-active1354-benchmark-k4-public.yaml",
+    "benchmark_k4_hidden": "configs/grpo/wp9c-c29-active1354-benchmark-k4-hidden.yaml",
+    "pilot_public": "configs/grpo/wp9c-c29-active1354-pilot-public.yaml",
+    "pilot_hidden": "configs/grpo/wp9c-c29-active1354-pilot-hidden.yaml"
   },
   "operator": {
-    "run_sh_sha256": "bb9be0ac14b0929030224284794574d324adccef19a7e09d99c1c42ba5cca807",
-    "concurrent_benchmark_sh_sha256": "2b9f0e0ceed915132978686e79b4e75e6be2ce80a4b24e83f51de87d1a4b3b68",
-    "concurrent_pair_sh_sha256": "388035d9455f4841c294f26b917c1814ed859e9f106b128ef5f0e3e596a03d68",
-    "audit_py_sha256": "771f13d49ca656095c365133641b8e454de9afb12321398e99924fd47911d435",
-    "pilot_check_py_sha256": "6f9ed8571ae195dbd3a6ef226647f90ddc9cbf82ccd6e67da33d6c405ec56ce0",
-    "benchmark_builder_py_sha256": "70bd5b0eac6b616fc8d94ef04516fb09c1481427d750aeda8d2c17f88286113d",
-    "runbook_sha256": "b03d25b34b94ebf6459525c64558dc707b543625fbf6071f00577c5bfa40fc85",
-    "restart_policy": "benchmark=fresh_timing_source; pilot/formal=trainer_checkpoint",
-    "formal_requires_both_pilots_green": true,
-    "same_gpu_parallelism": "formal benchmark decision only"
+    "run": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/run.sh",
+    "run_sha256": "bb9be0ac14b0929030224284794574d324adccef19a7e09d99c1c42ba5cca807",
+    "concurrent_benchmark": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/run_concurrent_benchmark.sh",
+    "concurrent_benchmark_sha256": "2b9f0e0ceed915132978686e79b4e75e6be2ce80a4b24e83f51de87d1a4b3b68",
+    "concurrent_pair": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/run_concurrent_pair.sh",
+    "concurrent_pair_sha256": "388035d9455f4841c294f26b917c1814ed859e9f106b128ef5f0e3e596a03d68",
+    "eval_generation_sweep": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/run_eval_generation_sweep.sh",
+    "eval_verification_sweep": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/run_eval_verification_sweep.sh",
+    "freeze_formal_benchmark": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/freeze_formal_benchmark.sh",
+    "selected_pair": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/run_selected_pair.sh",
+    "active_pool_audit": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/verify_grpo_active1354.py",
+    "pilot_check": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/check_pilot.py",
+    "formal_benchmark_builder": "ai-work/executor/operator/WP9-c/wp9c-grpo-active1354/C34/build_formal_benchmark.py"
   },
+  "data_transfer": {
+    "c29_control_plane_source": "/home/dzy/wp9c-final-reduced-calibration-C29",
+    "c29_target_relative_root": "wp9c/final-reduced-calibration-C29",
+    "heldout_eval400_control_plane_source": "/home/dzy/wp8-formal-sync/data/prepared",
+    "heldout_eval400_target_relative_root": "wp9c/heldout-eval400-C34",
+    "project_code_transport": "git",
+    "data_transport": "rsync"
+  },
+  "gates": [
+    "target active-1354 audit",
+    "formal evaluation generation/verification throughput sources",
+    "formal GRPO throughput sources and benchmark freeze",
+    "selected-runtime Public/Hidden k8 pilot",
+    "green pilot acceptance for both arms",
+    "selected-runtime Public/Hidden 300-step GRPO"
+  ],
   "verification": {
-    "prompt_audit": "passed on real local C29 pool",
-    "shell_syntax": "run.sh, run_concurrent_benchmark.sh, run_concurrent_pair.sh passed bash -n",
-    "python_compile": "verify_grpo_active1354.py, check_pilot.py, build_formal_benchmark.py passed py_compile",
-    "ruff": "passed for C34 helpers/tests plus reduced-pool GRPO production compatibility",
-    "focused_pytest": "118 passed",
-    "gpu_training_started": false,
-    "sft_work_started": false
+    "real_c29_active1354_audit": "passed",
+    "real_c29_active_problem_count": 1354,
+    "real_c29_count_over_1024": 30,
+    "real_c29_max_prompt_tokens": 2019,
+    "shell_syntax": "passed",
+    "python_compile": "passed",
+    "focused_pytest": "103 passed"
   },
-  "transfer": {
-    "code_transport": "git exact handoff commit",
-    "data_transport": "rsync C29 11-file pool using C30 target-sync manifest",
-    "target_relative_data_root": "wp9c/final-reduced-calibration-C29",
-    "target_data_file_count": 11,
-    "target_data_total_bytes": 8130354
-  },
-  "next_actions": [
-    "commit this narrow GRPO handoff",
-    "make the commit reachable on the 4090 via Git",
-    "rsync the C29 pool to the target formal-data root",
-    "establish the canonical reverse-SSH Piston forward",
-    "run C34 audit and formal benchmark sources",
-    "freeze the C29-bound benchmark report, run both green pilots, then start formal 300-step Public/Hidden GRPO"
-  ]
+  "handoff_contract": {
+    "operator_requires_exact_clean_git_commit": true,
+    "operator_requires_script_sha256": true,
+    "c29_and_eval400_inputs_are_rsync_only": true,
+    "benchmark_timing_sources_forbid_resume": true,
+    "pilot_and_formal_resume_require_explicit_checkpoint": true,
+    "public_hidden_parent_is_same_frozen_b": true,
+    "public_never_parents_hidden": true
+  }
 }
