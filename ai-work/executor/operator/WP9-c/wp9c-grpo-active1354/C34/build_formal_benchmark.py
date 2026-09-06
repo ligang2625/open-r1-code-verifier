@@ -76,7 +76,7 @@ def build(args: argparse.Namespace) -> dict[str, object]:
 
     eval_generation = {
         batch_size: _assert_eval200_generation_source(getattr(args, f"eval_b{batch_size}"), batch_size=batch_size)
-        for batch_size in (1, 2, 4, 8, 16)
+        for batch_size in (1, 2, 4, 8)
     }
     eval_verification: dict[int, str] = {}
     verification_generation_records_sha: str | None = None
@@ -93,7 +93,7 @@ def build(args: argparse.Namespace) -> dict[str, object]:
         "evidence_class": "formal",
         "eval_generation": {
             "baseline": eval_generation[1],
-            "candidates": [eval_generation[batch_size] for batch_size in (2, 4, 8, 16)],
+            "candidates": [eval_generation[batch_size] for batch_size in (2, 4, 8)],
         },
         "eval_verification": {
             "baseline": eval_verification[1],
@@ -142,6 +142,8 @@ def build(args: argparse.Namespace) -> dict[str, object]:
         "manifest": str(manifest_path),
         "report": str(summary.report_path),
         "systems_benchmark_eval_problem_count": 200,
+        "systems_benchmark_eval_generation_candidates": [1, 2, 4, 8],
+        "eval_generation_batch16_skipped_by_operator": True,
         "scientific_heldout_eval400_remains_authoritative": True,
         "selected_eval_generation_batch_size": checked.selected_eval_generation_batch_size,
         "selected_eval_verification_workers": checked.selected_eval_verification_workers,
@@ -161,7 +163,7 @@ def build(args: argparse.Namespace) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    for name in ("eval_b1", "eval_b2", "eval_b4", "eval_b8", "eval_b16"):
+    for name in ("eval_b1", "eval_b2", "eval_b4", "eval_b8"):
         parser.add_argument(f"--{name.replace('_', '-')}", required=True)
     for name in ("eval_v1", "eval_v8", "eval_v16", "eval_v32", "eval_v64"):
         parser.add_argument(f"--{name.replace('_', '-')}", required=True)
