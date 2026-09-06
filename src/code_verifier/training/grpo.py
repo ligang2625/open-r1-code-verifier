@@ -49,6 +49,7 @@ from code_verifier.training.calibration import CalibrationError, check_calibrate
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.grpo_telemetry import GRPORollingTelemetry
 from code_verifier.training.open_r1_adapter import import_open_r1_module
+from code_verifier.training.reduced_calibrated_pool import ReducedCalibratedPoolError, check_reduced_calibrated_pool
 from code_verifier.training.sft import (
     SFTCheckpointIdentity,
     SFTTrainingError,
@@ -1538,14 +1539,18 @@ def load_grpo_benchmark_binding(
         or verification_workers not in _GRPO_BENCHMARK_WORKERS
     ):
         raise GRPOTrainingError("benchmark verification_workers must be one of 8, 16, 32, or 64")
+    calibration = _strict_json_object(calibration_manifest_path, description="calibration manifest")
     try:
-        checked_pool = check_calibrated_active_pool(
-            calibration_manifest_path.parent,
-            refresh_dataset_dir=refresh_dataset_dir,
-            reference_dataset_dir=reference_dataset_dir,
-            allow_test_protocol=allow_engineering,
-        )
-    except (CalibrationError, RefreshDataError) as error:
+        if calibration.get("schema_version") == "wp9c-reduced-calibration-v1":
+            checked_pool = check_reduced_calibrated_pool(calibration_manifest_path.parent)
+        else:
+            checked_pool = check_calibrated_active_pool(
+                calibration_manifest_path.parent,
+                refresh_dataset_dir=refresh_dataset_dir,
+                reference_dataset_dir=reference_dataset_dir,
+                allow_test_protocol=allow_engineering,
+            )
+    except (CalibrationError, ReducedCalibratedPoolError, RefreshDataError) as error:
         raise GRPOTrainingError(f"calibration artifact failed strict check: {error}") from None
     if checked_pool.calibration_manifest.resolve(strict=False) != calibration_manifest_path.resolve(strict=False):
         raise GRPOTrainingError("calibration manifest path is not the strict checked pool manifest")
@@ -1553,6 +1558,7 @@ def load_grpo_benchmark_binding(
     if calibration.get("status") != "completed" or calibration.get("schema_version") not in {
         "wp9b-calibration-v1",
         "wp9b-calibration-test-v1",
+        "wp9c-reduced-calibration-v1",
     }:
         raise GRPOTrainingError("calibration manifest identity/status is invalid")
     if not allow_engineering and calibration.get("evidence_class") != "formal_calibration":
@@ -1584,14 +1590,18 @@ def load_grpo_refresh_binding(
         or not 1 <= verification_workers <= 64
     ):
         raise GRPOTrainingError("verification_workers must be an integer in [1, 64]")
+    calibration = _strict_json_object(calibration_manifest_path, description="calibration manifest")
     try:
-        checked_pool = check_calibrated_active_pool(
-            calibration_manifest_path.parent,
-            refresh_dataset_dir=refresh_dataset_dir,
-            reference_dataset_dir=reference_dataset_dir,
-            allow_test_protocol=allow_engineering,
-        )
-    except (CalibrationError, RefreshDataError) as error:
+        if calibration.get("schema_version") == "wp9c-reduced-calibration-v1":
+            checked_pool = check_reduced_calibrated_pool(calibration_manifest_path.parent)
+        else:
+            checked_pool = check_calibrated_active_pool(
+                calibration_manifest_path.parent,
+                refresh_dataset_dir=refresh_dataset_dir,
+                reference_dataset_dir=reference_dataset_dir,
+                allow_test_protocol=allow_engineering,
+            )
+    except (CalibrationError, ReducedCalibratedPoolError, RefreshDataError) as error:
         raise GRPOTrainingError(f"calibration artifact failed strict check: {error}") from None
     if checked_pool.calibration_manifest.resolve(strict=False) != calibration_manifest_path.resolve(strict=False):
         raise GRPOTrainingError("calibration manifest path is not the strict checked pool manifest")
@@ -1599,6 +1609,7 @@ def load_grpo_refresh_binding(
     if calibration.get("status") != "completed" or calibration.get("schema_version") not in {
         "wp9b-calibration-v1",
         "wp9b-calibration-test-v1",
+        "wp9c-reduced-calibration-v1",
     }:
         raise GRPOTrainingError("calibration manifest identity/status is invalid")
     if not allow_engineering and calibration.get("evidence_class") != "formal_calibration":

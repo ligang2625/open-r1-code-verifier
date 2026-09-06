@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C30",
+  "source_root": "/home/dzy/wp9c-final-reduced-calibration-C29",
+  "target_relative_root": "wp9c/final-reduced-calibration-C29",
+  "file_count": 11,
+  "total_bytes": 8130354,
+  "files": [
+    {"path": "calibration_manifest.json", "size_bytes": 4371, "sha256": "5593fe90c19a096678f19e45ca6736e0fc97d242e4f27f92f0b10bb303077d5b"},
+    {"path": "manifest/active_selection.jsonl", "size_bytes": 345315, "sha256": "3b099b95873eb98252af5bf7d2c4422199d4bb095c0a2e2eebe4b44ae63331b2"},
+    {"path": "manifest/excluded_dual_uninformative.jsonl", "size_bytes": 63712, "sha256": "b4b2f5ae347fd6635aa8b24a271b0f60ce8b7fd3be29360ee1741a19f3f5b8b9"},
+    {"path": "manifest/problem_order.jsonl", "size_bytes": 121706, "sha256": "82a58dcb6283d85149d7715675639a7782c4ed9a7c3d17646287a390719dd986"},
+    {"path": "manifest/retry_problem_ids.jsonl", "size_bytes": 14048, "sha256": "f0c03e55771bc86dd3f9966214ade7d34a9734cff133bdbdd1e6d1d8071c2eb5"},
+    {"path": "records/calibration.jsonl", "size_bytes": 3241211, "sha256": "70f3cdb5330d84fbe79e15c8668da001626d85466b7bb419920533e9db36085e"},
+    {"path": "reports/classification_summary.json", "size_bytes": 103, "sha256": "08e963ab366d400477ca93295be280bbf6aa01dd8f6a7817d0be7a8163fdd69c"},
+    {"path": "reports/disposition_summary.json", "size_bytes": 113, "sha256": "f81fbf59f67d9854bb01ab5c2ac09bafab3e919f2d2872330662258a24f36f41"},
+    {"path": "reports/pool_composition.json", "size_bytes": 627, "sha256": "b43c289bbdff0830b94f1139bdc15985dc1aa2c48bdf8b1605fd08f39537e969"},
+    {"path": "training/hidden_grpo.jsonl", "size_bytes": 2291655, "sha256": "9aae7ce46347236f69a67aadb60a719c76f089451873a4fd8d4b92147f74abec"},
+    {"path": "training/public_grpo.jsonl", "size_bytes": 2047493, "sha256": "558250d06043702e153f88067a88d34378923255ef015cfbc97e106592d9188c"}
+  ]
+}

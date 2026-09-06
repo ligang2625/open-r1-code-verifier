@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C30",
+  "parent_checkpoint": "C29-final-reduced-calibration",
+  "status": "completed_verified",
+  "purpose": "make the accepted no-backfill reduced calibrated pool a strict production GRPO benchmark/refresh binding input without reopening the old 3000-pool protocol",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "reduced_calibration_schema": "wp9c-reduced-calibration-v1",
+  "verified_pool": {
+    "calibration_manifest_sha256": "5593fe90c19a096678f19e45ca6736e0fc97d242e4f27f92f0b10bb303077d5b",
+    "selected_problems": 1354,
+    "dual_informative": 1123,
+    "public_only": 88,
+    "hidden_only": 143,
+    "dual_uninformative": 0,
+    "sft_overlap_count": 0,
+    "active_order_sha256": "401f854032095cb638637dcf2d1ec000b770cd2d4c78619331f0b13746618c14",
+    "public_training_sha256": "558250d06043702e153f88067a88d34378923255ef015cfbc97e106592d9188c",
+    "hidden_training_sha256": "9aae7ce46347236f69a67aadb60a719c76f089451873a4fd8d4b92147f74abec"
+  },
+  "implementation": {
+    "reduced_checker": "src/code_verifier/training/reduced_calibrated_pool.py",
+    "reduced_checker_sha256": "710bdc45d0709d719feb5e1234b4845188961ef2323e296d49cb80e6cf36c5bd",
+    "grpo_binding": "src/code_verifier/training/grpo.py",
+    "grpo_binding_sha256": "88c779a5ba2ba996904aba201c011af5d8578a5a7647abf7df5d94fd2a5f44d3",
+    "unit_test": "tests/unit/training/test_reduced_calibrated_pool.py",
+    "unit_test_sha256": "3569857c9bdabec17fc0b0773dd1926e1cb2cd58366488f373ca8183b70841ec"
+  },
+  "binding_behavior": {
+    "old_wp9b_calibration_schemas_unchanged": true,
+    "reduced_schema_dispatches_to_reduced_checker": true,
+    "reduced_checker_ignores_legacy_refresh_reference_authority": true,
+    "reduced_checker_requires_formal_calibration_evidence": true,
+    "reduced_checker_requires_no_backfill": true,
+    "reduced_checker_requires_dual_uninformative_zero_in_active_view": true,
+    "public_hidden_training_order_and_projection_checked": true,
+    "calibration_record_hash_and_8_or_16_sample_contract_checked": true
+  },
+  "verification": {
+    "ruff": "passed",
+    "mypy": "passed",
+    "focused_test_count": 132,
+    "focused_tests": [
+      "tests/unit/training/test_reduced_calibrated_pool.py",
+      "tests/unit/training/test_grpo_refresh_binding.py",
+      "tests/unit/training/test_grpo_refresh_validation_configs.py",
+      "tests/unit/training/test_grpo_data.py",
+      "tests/unit/training/test_grpo_transport_failure.py",
+      "tests/unit/training/test_grpo.py",
+      "tests/unit/test_throughput_grpo.py",
+      "tests/unit/training/test_grpo_resume_lineage.py",
+      "tests/unit/training/test_grpo_telemetry.py"
+    ],
+    "real_c29_production_checker": "C29_PRODUCTION_REDUCED_CHECK_OK",
+    "real_c29_grpo_benchmark_binding": "C29_GRPO_BENCHMARK_BINDING_OK",
+    "target_sync_manifest": "ai-work/executor/operator/WP9-c/wp9c-reduced-active-pool-compatibility/C30/target-sync-manifest.json",
+    "target_sync_manifest_sha256": "2fd82bc16c587296440e84d5364891a9409014ee8061ed8798adea0b613ec930",
+    "target_sync_file_count": 11,
+    "target_sync_total_bytes": 8130354
+  },
+  "execution_boundaries": {
+    "grpo_training_started": false,
+    "benchmark_started": false,
+    "pilot_started": false,
+    "gpu_required_for_next_execution": true
+  },
+  "next_gate": "sync C29 reduced active pool and this compatibility code to the 24GB target, then run target-side formal evaluation generation / GRPO throughput benchmark gates"
+}
