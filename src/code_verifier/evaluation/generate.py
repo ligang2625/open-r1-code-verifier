@@ -665,7 +665,10 @@ class TransformersCompletionGenerator:
             normalized_seeds.append(seed)
             rendered.append(rendered_prompt)
         del normalized_prompts
+        original_padding_side = getattr(self._tokenizer, "padding_side", None)
         try:
+            if original_padding_side is not None:
+                self._tokenizer.padding_side = "left"
             encoded = self._tokenizer(
                 rendered,
                 return_tensors="pt",
@@ -676,6 +679,9 @@ class TransformersCompletionGenerator:
             prompt_width = len(input_ids[0])
         except Exception as error:
             raise GenerationError(f"could not encode configured chat prompt batch: {type(error).__name__}") from None
+        finally:
+            if original_padding_side is not None:
+                self._tokenizer.padding_side = original_padding_side
         if self._device != "auto":
             encoded = {key: value.to(self._device) for key, value in encoded.items()}
         elif hasattr(self._model, "device"):
@@ -694,10 +700,15 @@ class TransformersCompletionGenerator:
         latency_ms = (time.perf_counter() - started) * 1000.0
         if len(generated) != len(rendered):
             raise GenerationError("model batch generation returned an unexpected number of sequences")
+        eos_ids = _sampling_eos_token_ids(self._model, self._tokenizer)
         attributed_latency = latency_ms / len(rendered)
         results: list[GenerationResult] = []
         for row in generated:
-            new_token_ids = row[prompt_width:]
+            new_token_ids, token_count = _generated_token_prefix(
+                row,
+                prompt_width=prompt_width,
+                eos_token_ids=eos_ids,
+            )
             try:
                 completion = self._tokenizer.decode(new_token_ids, skip_special_tokens=True)
             except Exception as error:
@@ -705,9 +716,9 @@ class TransformersCompletionGenerator:
             results.append(
                 GenerationResult(
                     completion=completion,
-                    completion_tokens=len(new_token_ids),
+                    completion_tokens=token_count,
                     latency_ms=attributed_latency,
-                    hit_max_new_tokens=len(new_token_ids) >= self._config.max_new_tokens,
+                    hit_max_new_tokens=token_count >= self._config.max_new_tokens,
                 )
             )
         return results

@@ -90,6 +90,13 @@ class _FakeModel:
 
 
 class _BatchTokenizer(_FakeTokenizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.padding_side = "right"
+        self.batch_padding_sides: list[str] = []
+        self.eos_token_id = 99
+        self.pad_token_id = 0
+
     def __call__(
         self,
         text: str | list[str],
@@ -102,6 +109,7 @@ class _BatchTokenizer(_FakeTokenizer):
         assert add_special_tokens is False
         if isinstance(text, list):
             assert padding is True
+            self.batch_padding_sides.append(self.padding_side)
             return {
                 "input_ids": _FakeTensor([[1, 2, 3] for _ in text]),
                 "attention_mask": _FakeTensor([[1, 1, 1] for _ in text]),
@@ -133,6 +141,80 @@ class _GroupedSamplingBatchModel(_FakeModel):
         assert isinstance(raw_count, int)
         count = len(input_ids.rows) * raw_count
         return [[1, 2, 3, 10 + index] for index in range(count)]
+
+
+class _ParityTokenizer(_FakeTokenizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.padding_side = "right"
+        self.batch_padding_sides: list[str] = []
+        self.eos_token_id = 99
+        self.pad_token_id = 0
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        add_generation_prompt: bool,
+        tokenize: bool,
+    ) -> str:
+        assert add_generation_prompt is True
+        assert tokenize is False
+        return messages[0]["content"]
+
+    @staticmethod
+    def _encode(text: str) -> list[int]:
+        return [1 + (ord(character) % 50) for character in text]
+
+    def __call__(
+        self,
+        text: str | list[str],
+        *,
+        return_tensors: str,
+        add_special_tokens: bool,
+        padding: bool = False,
+    ) -> dict[str, _FakeTensor]:
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        if isinstance(text, str):
+            row = self._encode(text)
+            return {"input_ids": _FakeTensor([row]), "attention_mask": _FakeTensor([[1] * len(row)])}
+        assert padding is True
+        self.batch_padding_sides.append(self.padding_side)
+        raw_rows = [self._encode(item) for item in text]
+        width = max(len(row) for row in raw_rows)
+        rows: list[list[int]] = []
+        masks: list[list[int]] = []
+        for row in raw_rows:
+            pad_count = width - len(row)
+            if self.padding_side == "left":
+                rows.append(([self.pad_token_id] * pad_count) + row)
+                masks.append(([0] * pad_count) + ([1] * len(row)))
+            else:
+                rows.append(row + ([self.pad_token_id] * pad_count))
+                masks.append(([1] * len(row)) + ([0] * pad_count))
+        return {"input_ids": _FakeTensor(rows), "attention_mask": _FakeTensor(masks)}
+
+    def decode(self, token_ids: list[int], *, skip_special_tokens: bool) -> str:
+        assert skip_special_tokens is True
+        return ",".join(str(item) for item in token_ids if item not in {self.pad_token_id, self.eos_token_id})
+
+
+class _PaddingSensitiveParityModel(_FakeModel):
+    def generate(self, **kwargs: object) -> list[list[int]]:
+        self.generate_kwargs = dict(kwargs)
+        input_ids = kwargs["input_ids"]
+        assert isinstance(input_ids, _FakeTensor)
+        completions: list[list[int]] = []
+        for row in input_ids.rows:
+            last_token = row[-1]
+            generated_count = 1 + (last_token % 3)
+            completions.append([200 + last_token + offset for offset in range(generated_count)] + [99])
+        max_completion_width = max(len(completion) for completion in completions)
+        return [
+            row + completion + ([0] * (max_completion_width - len(completion)))
+            for row, completion in zip(input_ids.rows, completions, strict=True)
+        ]
 
 
 class _FakeLoader:
@@ -834,6 +916,40 @@ def test_transformers_generator_generate_batch_preserves_order_and_apportions_la
     assert runtime.seeds == [7]
     assert model.generate_kwargs is not None
     assert model.generate_kwargs["do_sample"] is False
+
+
+def test_transformers_generator_batch_candidates_match_sequential_for_variable_prompt_lengths() -> None:
+    tokenizer = _ParityTokenizer()
+    model = _PaddingSensitiveParityModel()
+    runtime = _FakeTransformers(tokenizer, model)
+    generator = TransformersCompletionGenerator(
+        tokenizer=tokenizer,
+        model=model,
+        torch_runtime=_FakeTorch(),
+        transformers_runtime=runtime,
+        device="cpu",
+        config=GenerationConfig(do_sample=False, temperature=None, top_p=None, max_new_tokens=8),
+    )
+    prompts = ["p" + ("x" * index) for index in range(1, 17)]
+    seeds = [100 + index for index in range(len(prompts))]
+    reference = [generator.generate(prompt, seed=seed) for prompt, seed in zip(prompts, seeds, strict=True)]
+    reference_identity = [
+        (result.completion, result.completion_tokens, result.hit_max_new_tokens) for result in reference
+    ]
+
+    for batch_size in (1, 2, 4, 8, 16):
+        candidate: list[GenerationResult] = []
+        for start in range(0, len(prompts), batch_size):
+            stop = start + batch_size
+            candidate.extend(generator.generate_batch(prompts[start:stop], seeds=seeds[start:stop]))
+        candidate_identity = [
+            (result.completion, result.completion_tokens, result.hit_max_new_tokens) for result in candidate
+        ]
+        assert candidate_identity == reference_identity
+
+    assert tokenizer.batch_padding_sides
+    assert set(tokenizer.batch_padding_sides) == {"left"}
+    assert tokenizer.padding_side == "right"
 
 
 def test_transformers_generator_generate_batch_rejects_bad_alignment() -> None:
