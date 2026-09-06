@@ -145,6 +145,41 @@ def test_refresh_binding_is_derived_from_strict_checker_outputs(
     assert binding.active_order_sha256 == stable_json_hash(["p1"])
 
 
+def test_refresh_binding_accepts_fixed_execution_report_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration_path, benchmark_path = _write_engineering_binding_artifacts(tmp_path)
+    benchmark_path.write_text(
+        json.dumps(
+            {
+                "version": "wp9c-fixed-execution-v1",
+                "evidence_class": "formal",
+                "selected_grpo_verification_workers": 16,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _patch_strict_checkers(
+        monkeypatch,
+        root=tmp_path,
+        calibration_path=calibration_path,
+        benchmark_path=benchmark_path,
+    )
+
+    binding = load_grpo_refresh_binding(
+        calibration_manifest_path=calibration_path,
+        refresh_dataset_dir=tmp_path / "refresh",
+        reference_dataset_dir=tmp_path / "reference",
+        benchmark_report_path=benchmark_path,
+        verification_workers=16,
+        allow_engineering=True,
+    )
+
+    assert binding.verification_workers == 16
+    assert binding.benchmark_report_sha256 == _sha256(benchmark_path)
+
+
 def test_benchmark_binding_bootstraps_without_final_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

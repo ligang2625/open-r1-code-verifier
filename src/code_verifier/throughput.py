@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from code_verifier.training.grpo import GRPOCheckpointIdentity
 
 _BENCHMARK_VERSION = "wp9b-refresh-benchmark-v1"
+_FIXED_EXECUTION_VERSION = "wp9c-fixed-execution-v1"
 _EVAL_BATCH_SIZES = frozenset({1, 2, 4, 8, 16})
 _VERIFICATION_WORKERS = frozenset({8, 16, 32, 64})
 _ENGINEERING_GRPO_EVIDENCE_CLASS = "engineering_fixture"
@@ -1897,13 +1898,74 @@ def summarize_refresh_benchmarks(manifest_path: Path, *, output_dir: Path) -> Re
     )
 
 
+def _check_fixed_execution_contract(report_path: Path, report: dict[str, object]) -> RefreshBenchmarkSummary:
+    allowed = {
+        "version",
+        "evidence_class",
+        "selection_source",
+        "selected_eval_generation_batch_size",
+        "selected_eval_verification_workers",
+        "selected_grpo_verification_workers",
+        "paired_grpo_mode",
+        "calibration_identity",
+        "note",
+    }
+    if set(report) != allowed:
+        raise ThroughputError("fixed execution contract fields are invalid")
+    if report.get("evidence_class") != "formal" or report.get("selection_source") != "operator_fixed_reuse":
+        raise ThroughputError("fixed execution contract identity is invalid")
+    eval_batch = report.get("selected_eval_generation_batch_size")
+    eval_workers = report.get("selected_eval_verification_workers")
+    grpo_workers = report.get("selected_grpo_verification_workers")
+    paired_mode = report.get("paired_grpo_mode")
+    if isinstance(eval_batch, bool) or not isinstance(eval_batch, int) or eval_batch not in _EVAL_BATCH_SIZES:
+        raise ThroughputError("fixed execution eval batch is invalid")
+    if isinstance(eval_workers, bool) or not isinstance(eval_workers, int) or not 1 <= eval_workers <= 64:
+        raise ThroughputError("fixed execution eval verification workers are invalid")
+    if (
+        isinstance(grpo_workers, bool)
+        or not isinstance(grpo_workers, int)
+        or grpo_workers not in _VERIFICATION_WORKERS
+    ):
+        raise ThroughputError("fixed execution GRPO verification workers are invalid")
+    if paired_mode not in {"sequential", "concurrent"}:
+        raise ThroughputError("fixed execution paired mode is invalid")
+    identity = report.get("calibration_identity")
+    identity_fields = {
+        "calibration_manifest_sha256",
+        "active_order_sha256",
+        "active_public_training_sha256",
+        "active_hidden_training_sha256",
+    }
+    if not isinstance(identity, dict) or set(identity) != identity_fields:
+        raise ThroughputError("fixed execution calibration identity is invalid")
+    values = [identity[field] for field in sorted(identity_fields)]
+    if any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in values):
+        raise ThroughputError("fixed execution calibration hashes are invalid")
+    return RefreshBenchmarkSummary(
+        report_dir=report_path.parent,
+        report_path=report_path,
+        selected_eval_generation_batch_size=eval_batch,
+        evidence_class="formal",
+        selected_grpo_verification_workers=grpo_workers,
+        selected_eval_verification_workers=eval_workers,
+        paired_grpo_mode=cast(str, paired_mode),
+        calibration_manifest_sha256=cast(str, identity["calibration_manifest_sha256"]),
+        active_order_sha256=cast(str, identity["active_order_sha256"]),
+        active_public_training_sha256=cast(str, identity["active_public_training_sha256"]),
+        active_hidden_training_sha256=cast(str, identity["active_hidden_training_sha256"]),
+    )
+
+
 def check_refresh_benchmark_report(
     report_path: Path,
     *,
     allow_engineering: bool = False,
 ) -> RefreshBenchmarkSummary:
-    """Rebuild a benchmark report from its snapshotted manifest and strict source artifacts."""
+    """Validate a strict benchmark report or an explicit fixed execution contract."""
     report = _json(report_path)
+    if report.get("version") == _FIXED_EXECUTION_VERSION:
+        return _check_fixed_execution_contract(report_path, report)
     evidence_class = report.get("evidence_class")
     if report.get("version") != _BENCHMARK_VERSION or evidence_class not in {"engineering", "formal"}:
         raise ThroughputError("refresh benchmark report identity is invalid")

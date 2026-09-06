@@ -3,9 +3,9 @@ set -Eeuo pipefail
 
 ACTION="${1:-preflight}"
 case "$ACTION" in
-  preflight|execute) ;;
+  preflight|prepare|execute) ;;
   *)
-    echo "usage: run_formal_training.sh <preflight|execute>" >&2
+    echo "usage: run_formal_training.sh <preflight|prepare|execute>" >&2
     exit 64
     ;;
 esac
@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 PY="$REPO_ROOT/.venv/bin/python"
 SELECTED_PAIR="$SCRIPT_DIR/run_selected_pair.sh"
+FREEZE_EXECUTION="$SCRIPT_DIR/freeze_formal_benchmark.sh"
 RUN_SH="$SCRIPT_DIR/run.sh"
 CONCURRENT_BENCHMARK="$SCRIPT_DIR/run_concurrent_benchmark.sh"
 CONCURRENT_PAIR="$SCRIPT_DIR/run_concurrent_pair.sh"
@@ -243,11 +244,15 @@ PY_CONFIG
   echo "C29 Hidden training hash mismatch" >&2; exit 125;
 }
 
-[[ -f "$REPORT" ]] || {
-  echo "formal benchmark report missing: $REPORT" >&2
-  echo "formal training remains blocked until the benchmark/worker selection report is frozen" >&2
-  exit 125
-}
+if [[ ! -f "$REPORT" ]]; then
+  if [[ "$ACTION" == "preflight" ]]; then
+    echo "fixed execution contract missing: $REPORT" >&2
+    echo "run: bash $0 prepare" >&2
+    exit 125
+  fi
+  bash "$FREEZE_EXECUTION"
+fi
+[[ -f "$REPORT" ]] || { echo "fixed execution contract was not created: $REPORT" >&2; exit 125; }
 
 read -r SELECTED_EVAL_BATCH SELECTED_WORKERS PAIRED_MODE BENCHMARK_SHA < <("$PY" - "$REPORT" "$EXPECTED_CALIBRATION_SHA" "$EXPECTED_ACTIVE_ORDER_SHA" "$EXPECTED_PUBLIC_SHA" "$EXPECTED_HIDDEN_SHA" <<'PY_REPORT'
 import hashlib
@@ -273,7 +278,19 @@ print(summary.selected_eval_generation_batch_size, summary.selected_grpo_verific
 PY_REPORT
 )
 
-echo "formal benchmark exact-text eval batch=$SELECTED_EVAL_BATCH; C34 effective eval batch=$EXPECTED_EVAL_BATCH uses per-problem Pass@1 exact parity"
+[[ "$SELECTED_EVAL_BATCH" == "$EXPECTED_EVAL_BATCH" ]] || {
+  echo "fixed execution contract eval batch drift: selected=$SELECTED_EVAL_BATCH expected=$EXPECTED_EVAL_BATCH" >&2
+  exit 125
+}
+echo "fixed execution contract: eval_batch=$SELECTED_EVAL_BATCH grpo_workers=$SELECTED_WORKERS paired_mode=$PAIRED_MODE"
+
+if [[ ! -f "$PUBLIC_PILOT" || ! -f "$HIDDEN_PILOT" ]]; then
+  if [[ "$ACTION" == "preflight" ]]; then
+    echo "pilot acceptance missing; run: bash $0 prepare" >&2
+    exit 125
+  fi
+  bash "$SELECTED_PAIR" pilot
+fi
 
 "$PY" - "$PUBLIC_PILOT" "$HIDDEN_PILOT" "$BENCHMARK_SHA" "$SELECTED_WORKERS" <<'PY_PILOT'
 import json
@@ -298,11 +315,15 @@ for mode, path in (("public", public_path), ("hidden", hidden_path)):
 print("pilot_gate=green public=green hidden=green")
 PY_PILOT
 
-printf 'formal_preflight=PASS handoff=%s eval_batch=%s strict_report_eval_batch=%s grpo_workers=%s paired_mode=%s\n' \
-  "$HANDOFF" "$EXPECTED_EVAL_BATCH" "$SELECTED_EVAL_BATCH" "$SELECTED_WORKERS" "$PAIRED_MODE"
+printf 'formal_preflight=PASS handoff=%s eval_batch=%s grpo_workers=%s paired_mode=%s\n' \
+  "$HANDOFF" "$SELECTED_EVAL_BATCH" "$SELECTED_WORKERS" "$PAIRED_MODE"
 
 if [[ "$ACTION" == "preflight" ]]; then
   echo "preflight only: no GRPO training was started"
+  exit 0
+fi
+if [[ "$ACTION" == "prepare" ]]; then
+  echo "prepare PASS: fixed execution contract is frozen and both k=8 pilot100 arms are green; formal300 was not started"
   exit 0
 fi
 

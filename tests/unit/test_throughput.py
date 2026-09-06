@@ -130,6 +130,42 @@ def test_benchmark_selects_fastest_exact_artifact_and_rejects_drift(tmp_path: Pa
         throughput.check_refresh_benchmark_report(summary.report_path, allow_engineering=True)
 
 
+def test_fixed_execution_contract_selects_explicit_operational_values(tmp_path: Path) -> None:
+    report_path = tmp_path / "fixed-execution.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "version": "wp9c-fixed-execution-v1",
+                "evidence_class": "formal",
+                "selection_source": "operator_fixed_reuse",
+                "selected_eval_generation_batch_size": 4,
+                "selected_eval_verification_workers": 64,
+                "selected_grpo_verification_workers": 8,
+                "paired_grpo_mode": "sequential",
+                "calibration_identity": {
+                    "calibration_manifest_sha256": "a" * 64,
+                    "active_order_sha256": "b" * 64,
+                    "active_public_training_sha256": "c" * 64,
+                    "active_hidden_training_sha256": "d" * 64,
+                },
+                "note": "fixed operator execution contract",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = throughput.check_refresh_benchmark_report(report_path)
+    assert summary.evidence_class == "formal"
+    assert summary.selected_eval_generation_batch_size == 4
+    assert summary.selected_eval_verification_workers == 64
+    assert summary.selected_grpo_verification_workers == 8
+    assert summary.paired_grpo_mode == "sequential"
+    assert summary.calibration_manifest_sha256 == "a" * 64
+    assert summary.active_order_sha256 == "b" * 64
+    assert summary.active_public_training_sha256 == "c" * 64
+    assert summary.active_hidden_training_sha256 == "d" * 64
+
+
 def test_formal_generation_benchmark_requires_available_runtime_utilization(tmp_path: Path) -> None:
     baseline = _bundle(tmp_path, batch_size=1, latency_ms=4.0)
 

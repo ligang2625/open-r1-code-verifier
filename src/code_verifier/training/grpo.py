@@ -1654,7 +1654,7 @@ def load_grpo_refresh_binding(
     if benchmark_calibration_identity != calibration_identity:
         raise GRPOTrainingError("benchmark calibration identity differs from the calibrated active pool")
     benchmark = _strict_json_object(benchmark_report_path, description="refresh benchmark report")
-    if benchmark.get("version") != "wp9b-refresh-benchmark-v1":
+    if benchmark.get("version") not in {"wp9b-refresh-benchmark-v1", "wp9c-fixed-execution-v1"}:
         raise GRPOTrainingError("refresh benchmark report version is invalid")
     if not allow_engineering and benchmark.get("evidence_class") != "formal":
         raise GRPOTrainingError("refresh training requires a formal throughput benchmark")

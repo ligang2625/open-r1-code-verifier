@@ -44,6 +44,7 @@ if value.get("ordered_problem_ids_sha256") != "8a723184e8c3787cf8c18f2d9f6ddd59f
 PY_EVAL200
 
 CONFIG="$REPO_ROOT/configs/eval/base.yaml"
+PISTON_CONFIG="$REPO_ROOT/configs/execution/piston-local.yaml"
 "$PY" - "$GENERATION_RUN" <<'PY_GEN'
 import json, sys
 from pathlib import Path
@@ -57,7 +58,7 @@ if value.get("batch_size") != 1 or value.get("total_problems") != 200 or value.g
     raise SystemExit("batch-1 generation source is not complete formal eval200")
 PY_GEN
 
-"$PY" - "$CONFIG" <<'PY_PISTON'
+"$PY" - "$PISTON_CONFIG" <<'PY_PISTON'
 import sys
 from pathlib import Path
 from code_verifier.execution.piston import PistonExecutor, load_piston_executor_config
