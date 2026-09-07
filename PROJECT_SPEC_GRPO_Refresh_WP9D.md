@@ -1,6 +1,6 @@
 # PROJECT SPEC — WP9-d GRPO Optimization Amendment
 
-**Status:** Active amendment v1.0
+**Status:** Active amendment v1.1
 **Effective date:** 2026-09-07
 **Applies to:** WP9-d and later GRPO-optimization stages derived from the completed WP9-c active1354 experiments
 **Parent specifications:** `PROJECT_SPEC_Open-R1_CodeVerifier.md`, `PROJECT_SPEC_GRPO_Refresh.md`
@@ -24,9 +24,11 @@ The stage must distinguish three questions:
 
 1. **Can the existing reward signal produce sustained learning if given approximately one epoch of coverage and non-vanishing LR?**
 2. **Is policy movement still too weak after fixing coverage/schedule?**
-3. **If movement is sufficient, does it transfer to a non-eval400 functional development set without destabilizing executable code generation?**
+3. **Does the resulting policy improve the canonical eval400 benchmark without destabilizing executable code generation?**
 
-Frozen eval400 is not a hyperparameter-development tool. It is reserved for a later formal gate after a WP9-d recipe has been selected without using eval400 outcomes.
+By explicit user decision on 2026-09-07, **eval400 is the canonical benchmark for all subsequent WP9-d recipe selection, checkpoint selection, and performance evaluation**. No additional functional-development dataset is required.
+
+Because eval400 has already been observed in WP9-c and will now be reused for tuning, WP9-d and later reports MUST describe its results as **eval400-selected / reused-benchmark evidence**, not as an untouched independent held-out generalization estimate.
 
 ---
 
@@ -76,7 +78,37 @@ The old WP9-c 300-step runs remain immutable historical controls and MUST NOT be
 
 ---
 
-# 3. First candidate: coverage/scheduler correction
+# 3. Canonical eval400 benchmark
+
+WP9-d reuses the exact WP9-c eval400 definition as the single tuning/evaluation benchmark:
+
+```yaml
+wp9d_eval400:
+  dataset_sha256: 770b772c738514888c5900f815fc074ddb3f6c3c5f67fc5346073565536138ae
+  ordered_problem_ids_sha256: 2d811d62613c122da6ee73f372008e44a40464ec9ad7c8df628ae01de4a234c9
+  canonical_problems_sha256: d310b68f5644214177c00784d8af64e8a87dbd982068c028f72ec5974d3d71c6
+  piston_config_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  eval_config_sha256: 3fa1b8f0dbc6853c894ac9f02b6820afd838ff68ca9f090ecbbef4ae495dbac3
+  seed: 42
+  generation_batch_size: 4
+  verification_workers: 64
+  primary_metric: eval_hidden_pass_at_1
+  decode: deterministic_pass_at_1
+```
+
+Rules:
+
+- the same 400 problem IDs/order MUST be used for every candidate/checkpoint;
+- the same deterministic decode, seed, generation batch, verifier/runtime, and aggregation contract MUST be used unless a separately approved systems-only amendment proves exact output parity;
+- B remains the fixed benchmark baseline;
+- existing B/C/D results remain historical controls and are not regenerated unless required by a strict identity repair;
+- eval400 results MAY be used directly to choose LR, beta, recipe, and checkpoint;
+- per-problem outcomes MAY be inspected for diagnosis, but any subsequent change informed by them must be recorded as benchmark-guided tuning;
+- all later scientific claims must disclose that eval400 was used for model selection and therefore is no longer an untouched held-out set.
+
+---
+
+# 4. First candidate: coverage/scheduler correction
 
 The first WP9-d candidate is frozen as **Recipe A**:
 
@@ -115,40 +147,19 @@ Recipe A is the default next experiment but **this specification does not author
 
 ---
 
-# 4. Mandatory functional development set before training
-
-Before any WP9-d optimizer run, the stage MUST freeze a non-eval400 functional development set.
-
-Requirements:
-
-- target size SHOULD be `200–300` problems;
-- zero problem overlap with active1354 training IDs;
-- zero problem overlap with frozen eval400 IDs;
-- zero use of frozen eval400 completions/results when selecting or constructing the dev set;
-- every problem must have the same three-layer test contract needed to compute visible / train-hidden / dev-hidden functional metrics;
-- source/difficulty mix SHOULD be reasonably representative of the code-generation domain, but source selection MUST be reward-outcome-independent;
-- exact problem IDs/order, dataset hash, Piston config hash, prompt/model/decode contract, and verification concurrency MUST be frozen before the first WP9-d run.
-
-The existing 300-problem C32 validation set MAY be reused **only if** a strict audit proves all requirements above, including the required hidden-test layers and exact zero overlap with active1354 and eval400. Otherwise WP9-d must build a new dedicated functional dev set from eligible non-held-out data.
-
-This functional dev set is a development resource. It is not a replacement for frozen eval400. In this amendment, **dev-hidden** means the `eval_hidden_tests` layer belonging to these newly frozen development problems; it never means the separate formal eval400 problem set.
-
----
-
 # 5. Checkpoint and measurement protocol
 
 For Recipe A and every later recipe candidate:
 
 - trainer metrics log every optimizer step;
 - checkpoint save cadence: every `100` optimizer steps;
-- mandatory functional-dev evaluation checkpoints: `300`, `600`, `900`, `1200`;
-- B baseline MUST be evaluated on the same functional dev contract before candidate comparison;
+- mandatory eval400 measurement checkpoints for Recipe A: `300`, `600`, `900`, `1200`;
+- each measured checkpoint uses the exact canonical eval400 contract from §3;
 - Public and Hidden candidate arms, when both are run, must start independently from the same frozen B and use the same selected recipe/checkpoint schedule;
-- no candidate may use another candidate's checkpoint as parent.
+- no candidate may use another candidate's checkpoint as parent;
+- generation runs on the 24GB worker; verification/aggregation returns to the GTX 1660 Ti/Piston control plane whenever practical.
 
-Functional-dev generation/evaluation MUST use deterministic pass@1 and a frozen decode contract. Generation can run on the 24GB worker; verification/aggregation should return to the GTX 1660 Ti/Piston control plane as in the existing staged-evaluation workflow.
-
-No eval400 generation may occur during recipe selection.
+Repeated eval400 evaluation is explicitly permitted for WP9-d tuning. Each result must retain exact checkpoint/recipe identity so later analysis can reconstruct the full tuning path rather than report only the winning checkpoint.
 
 ---
 
@@ -168,23 +179,24 @@ Every candidate must report at least:
 - learning rate;
 - generated tokens and GPU-hours.
 
-## 6.2 Functional development metrics
+## 6.2 Canonical benchmark metrics
 
-Primary development metric:
+Primary selection metric:
 
-- **dev-hidden Pass@1** on the frozen non-eval400 functional dev set.
+- **eval400 Eval-Hidden Pass@1**.
 
 Required secondary metrics:
 
 - visible Pass@1;
 - train-hidden Pass@1;
-- average dev-hidden test pass rate;
+- average eval-hidden test pass rate;
 - parse success / target-function-found rate;
 - runtime-error rate;
 - timeout rate;
-- mean / p50 / p95 completion tokens.
+- mean / p50 / p95 completion tokens;
+- problem-paired delta versus B and, when useful, versus the prior candidate/checkpoint.
 
-A candidate is not considered better merely because trainer reward rises. Functional transfer and executable stability are required.
+A candidate is not considered better merely because trainer reward rises. The benchmark must improve or provide a clear trade-off that is explicitly accepted.
 
 ## 6.3 KL interpretation bands
 
@@ -194,14 +206,14 @@ The following are **engineering diagnostic bands, not formal optimality claims**
 wp9d_kl_diagnostics:
   likely_too_weak:
     mean_kl_below: 3.0e-4
-    condition: no_functional_dev_improvement
+    condition: no_eval400_improvement
 
   useful_search_region:
     mean_kl: 5.0e-4_to_5.0e-3
 
   caution:
     sustained_or_peak_kl_near_or_above: 1.0e-2
-    interpretation: inspect executable stability before any stronger update
+    interpretation: inspect eval400 executable stability before any stronger update
 ```
 
 No candidate is selected by KL alone. KL is used to diagnose whether the policy moved enough or too aggressively.
@@ -229,7 +241,7 @@ A answers the highest-confidence hypothesis from WP9-c.
 B is permitted only if Recipe A evidence shows both:
 
 - policy movement remains weak, e.g. KL remains in the old approximately `1e-4` regime or below the diagnostic weak band; and
-- no convincing functional-dev improvement appears despite stable execution.
+- eval400 does not improve despite stable execution.
 
 Then change only:
 
@@ -241,7 +253,7 @@ Everything else remains Recipe A.
 
 ## 7.3 Recipe C — only if B still appears KL-constrained
 
-C is permitted only after B completes and remains stable but still shows insufficient policy movement. Then change only:
+C is permitted only after B completes and remains stable but still shows insufficient policy movement or eval400 improvement. Then change only:
 
 ```yaml
 beta: 0.005
@@ -266,42 +278,42 @@ Hyperparameter search MUST NOT silently privilege one reward arm and later prese
 Preferred protocol:
 
 - each accepted recipe candidate is evaluated as a paired Public/Hidden run from the same B with identical non-reward hyperparameters;
-- recipe decisions use an arm-symmetric functional-dev summary, e.g. both-arm metrics and the mean/minimum dev-hidden improvement, plus executable-stability guards;
-- if compute constraints force a single mechanics-development arm, that choice and its scientific bias MUST be declared before training, and any later formal Public/Hidden comparison must rerun both arms from B with the frozen selected recipe.
+- recipe decisions use the same eval400 metric contract for both arms;
+- if compute constraints force a single mechanics-development arm, that choice and its scientific bias MUST be declared before training, and any later paired comparison must rerun both arms from B with the frozen selected recipe.
 
-No arm-specific post-hoc LR/beta/rank/checkpoint selection is allowed in a final paired comparison.
+No arm-specific post-hoc LR/beta/rank/checkpoint rule is allowed in a final paired comparison unless the project explicitly changes the research question from paired Public-vs-Hidden comparison to arm-specific optimization.
 
 ---
 
 # 9. Checkpoint selection
 
-Recipe comparison and checkpoint selection must be pre-declared before observing WP9-d functional-dev results.
-
 Default checkpoint rule for Recipe A:
 
-1. evaluate steps `300/600/900/1200` on the frozen functional dev set;
-2. rank by dev-hidden Pass@1;
-3. break exact ties by higher average dev-hidden test pass rate;
+1. evaluate steps `300/600/900/1200` on canonical eval400;
+2. rank by Eval-Hidden Pass@1;
+3. break exact ties by higher average eval-hidden test pass rate;
 4. next tie-break by lower runtime-error rate;
-5. next tie-break by earlier checkpoint;
-6. reject any checkpoint with a material parse/runtime stability regression that violates the stage plan's pre-registered guardrails.
+5. next tie-break by lower parse-error rate;
+6. next tie-break by earlier checkpoint.
 
-The chosen checkpoint is then frozen. Eval400 may only be run after that selection is complete.
+All measured checkpoints remain in the report. Do not hide losing checkpoints after selecting the winner.
 
-A future WP9-d plan MAY tighten numeric stability guardrails before execution, but MUST do so before seeing WP9-d candidate outcomes.
+A future WP9-d plan MAY tighten numeric stability guardrails before execution. Parameter/checkpoint choices MAY use observed eval400 results, but each such decision must be logged as benchmark-guided tuning.
 
 ---
 
-# 10. Eval400 firewall
+# 10. Reused-benchmark interpretation
 
-Frozen eval400 has already been used for formal B/C/D and SFT1354 conclusions. To preserve its remaining value:
+The project explicitly accepts the cost of using eval400 for tuning because no sufficiently independent additional benchmark is available.
 
-- MUST NOT use eval400 to choose Recipe A/B/C;
-- MUST NOT use eval400 to choose checkpoint 300/600/900/1200;
-- MUST NOT inspect eval400 per-problem outcomes while deciding LR/beta/rank;
-- MUST NOT repeatedly run eval400 after every candidate;
-- MAY run eval400 once for a recipe/checkpoint that has been frozen by the non-eval400 development protocol;
-- any later recipe change after seeing that formal eval400 result is a new stage/experiment and the prior eval400 must be treated as observed evidence, not a clean development set.
+Therefore:
+
+- eval400 is the authoritative performance standard for WP9-d and subsequent GRPO optimization;
+- repeated eval400 use for recipe/checkpoint selection is allowed;
+- the complete sequence of tried recipes/checkpoints and their eval400 results MUST be retained to avoid winner-only reporting;
+- confidence intervals remain useful as uncertainty summaries for the 400 benchmark problems, but MUST NOT be described as correcting for adaptive hyperparameter selection;
+- after WP9-d starts using eval400 for tuning, phrases such as “untouched held-out improvement” or “independent generalization estimate” MUST NOT be used for the selected result;
+- acceptable wording includes “eval400-selected benchmark improvement”, “reused-benchmark result”, and “performance on the canonical 400-problem benchmark”.
 
 ---
 
@@ -329,16 +341,18 @@ WP9-d is not successful merely because a longer GRPO run completes.
 
 A useful WP9-d outcome must establish one of the following with auditable evidence:
 
-1. **coverage hypothesis supported:** Recipe A produces materially larger, stable policy movement and improved non-eval400 functional transfer;
-2. **coverage hypothesis rejected:** even approximately one epoch with sustained `5e-6` fails to improve functional transfer, justifying Recipe B or a change in research direction;
-3. **stronger update needed:** Recipe B/C improves functional transfer without unacceptable executable instability;
-4. **optimization is not the main bottleneck:** A/B/C produce movement but functional transfer remains absent, indicating the next stage should investigate reward/data/objective design rather than further scaling LR/beta/rank.
+1. **coverage hypothesis supported:** Recipe A produces materially larger, stable policy movement and improves canonical eval400;
+2. **coverage hypothesis rejected:** even approximately one epoch with sustained `5e-6` fails to improve eval400, justifying Recipe B or a change in research direction;
+3. **stronger update needed:** Recipe B/C improves eval400 without unacceptable executable instability;
+4. **optimization is not the main bottleneck:** A/B/C produce movement but eval400 remains flat, indicating the next stage should investigate reward/data/objective design rather than further scaling LR/beta/rank.
 
-The stage report MUST include training curves, KL/reward/length/stability diagnostics, functional-dev results, exact recipe identities, GPU-hours, and a clear statement of which hypothesis was supported or rejected.
+The stage report MUST include training curves, KL/reward/length/stability diagnostics, all measured eval400 checkpoint results, exact recipe identities, GPU-hours, paired comparisons, and a clear statement of which hypothesis was supported or rejected.
 
 ---
 
-# 13. Routing
+# 13. Branch and stage routing
+
+WP9-c must be integrated and closed before WP9-d begins. **WP9-d MUST branch from the cleaned, integrated `main` branch**, not from `feat/wp9-c`, a detached handoff commit, or an archival snapshot.
 
 After the WP9-c closeout decision, the next dependency-ready research stage is **WP9-d — GRPO coverage/scheduler optimization**.
 
@@ -348,6 +362,7 @@ A new conversation asked to “continue the project” MUST:
 2. read `PROJECT_SPEC_GRPO_Refresh.md` as historical/parent WP9 contract;
 3. read this amendment;
 4. read `docs/wp9c-stage-closeout.md` and latest `proceedings.md`;
-5. create/seal a WP9-d plan before starting any new optimizer run.
+5. confirm `main` contains the completed WP9-c integration and is clean;
+6. create/seal a WP9-d plan and branch/worktree from that `main` before starting any optimizer run.
 
 No WP9-d optimizer execution is authorized solely by the existence of this specification.

@@ -17,7 +17,7 @@ From this closeout onward:
 - no second seed is started automatically for an unchanged WP9-c recipe;
 - the completed B/C/D/SFT1354 artifacts and analyses below are frozen reference evidence;
 - any optimizer/scheduler/LR/beta/LoRA change is a **new WP9-d experiment identity**;
-- frozen eval400 remains a formal held-out endpoint and MUST NOT be used to choose WP9-d hyperparameters or checkpoints.
+- by explicit user decision, the same frozen eval400 definition becomes the canonical WP9-d tuning/evaluation benchmark and MAY be used to choose hyperparameters and checkpoints; future selected results must be described as reused-benchmark/eval400-selected evidence rather than untouched held-out estimates.
 
 ## 2. Frozen scientific result
 
@@ -99,7 +99,7 @@ Primary local authority:
 
 Historical 4090 artifacts may be archived or the worker may remain offline after successful synchronization. The control-plane copies above are the retained analysis authority for future planning.
 
-The original dirty `.worktrees/wp9-c` checkout contains historical uncommitted/track-local work and MUST NOT be reset, cleaned, or used as a blanket source for a closeout commit. New WP9-d planning/implementation should start from a clean isolated worktree and import only explicitly required, reviewed lineage.
+The original `.worktrees/wp9-c` working state has been preserved as explicit archival Git evidence before cleanup. WP9-c is then integrated into `main`; WP9-d planning/implementation MUST start from the cleaned integrated `main`, not from the historical feature worktree, detached handoff commits, or archival snapshot.
 
 ## 5. Closeout decision
 
@@ -107,6 +107,6 @@ WP9-c result: **valid negative result / no held-out GRPO improvement under the f
 
 The next research question is no longer “does the existing 300-step GRPO recipe beat B?” That question has been answered negatively. The next question is:
 
-> Does a schedule that provides approximately one epoch of active1354 coverage and sustained nonzero learning rate produce meaningful policy movement and non-eval400 functional transfer without destabilizing code generation?
+> Does a schedule that provides approximately one epoch of active1354 coverage and sustained nonzero learning rate produce meaningful policy movement and improved canonical eval400 performance without destabilizing code generation?
 
 That question belongs to WP9-d and is specified separately.
