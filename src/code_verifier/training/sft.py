@@ -710,6 +710,7 @@ def _runtime_arguments(
         max_steps=config.max_steps,
         num_train_epochs=config.num_train_epochs,
         per_device_train_batch_size=config.per_device_train_batch_size,
+        per_device_eval_batch_size=4,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         learning_rate=config.learning_rate,
         warmup_ratio=config.warmup_ratio,

@@ -20,7 +20,7 @@ lora_alpha: 32
 lora_dropout: 0.05
 logging_steps: 1
 save_strategy: steps
-save_steps: 100
+save_steps: 30
 eval_strategy: steps
 eval_steps: 100
 seed: 42
