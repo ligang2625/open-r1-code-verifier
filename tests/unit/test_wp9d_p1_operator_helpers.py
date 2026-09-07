@@ -7,6 +7,7 @@ from pathlib import Path
 
 EVIDENCE = Path("ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/operator_evidence.py")
 ACCEPTED = Path("ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/accepted_pointer.py")
+RUN_SH = Path("ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/run.sh")
 COMMIT = "a" * 40
 SCRIPT_SHA = "b" * 64
 
@@ -122,3 +123,28 @@ def test_passed_operator_evidence_rejects_nonzero_command_rc(tmp_path: Path) -> 
     )
     assert result.returncode != 0
     assert "requires command_rc=0" in result.stderr
+
+
+def test_wp9d_operator_uses_current_4090_qkvo_contract() -> None:
+    text = RUN_SH.read_text(encoding="utf-8")
+    for expected in (
+        "/root/open-r1-code-verifier",
+        "/root/sj-tmp/open-r1-code-verifier-outputs",
+        "/root/open-r1-code-verifier-data-4090",
+        "/root/huggingface",
+        "RTX 4090",
+        "CUDA_VISIBLE_DEVICES",
+        "wp9d-P1-public-vllm-qkvo-smoke-seed42",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+    ):
+        assert expected in text
+    for stale in (
+        "82fc18bf24a337808841697d14ae732dff3e27f9",
+        "0ef4009d60f6bbb2c89bda0776b6bab0cc31b5ce",
+        "/data/open-r1-code-verifier-outputs",
+    ):
+        assert stale not in text
+    assert "--id=0" not in text

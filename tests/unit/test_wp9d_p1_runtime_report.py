@@ -8,6 +8,7 @@ from types import ModuleType
 import pytest
 
 SCRIPT = Path("ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/p1_runtime_report.py")
+QKVO_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 
 def _load_module() -> ModuleType:
@@ -109,8 +110,8 @@ def _grpo_run(path: Path, *, mode: str, commit: str, attempt_wall: float = 9.0) 
     _write_jsonl(path / "group_metrics.jsonl", [{"sample_count": 8, "verifier_batch_wall_seconds": 0.4}])
     checkpoint = path / "checkpoints/checkpoint-1"
     checkpoint.mkdir(parents=True)
+    _write_json(checkpoint / "adapter_config.json", {"target_modules": QKVO_TARGETS})
     for name in (
-        "adapter_config.json",
         "adapter_model.safetensors",
         "optimizer.pt",
         "scheduler.pt",
@@ -157,8 +158,8 @@ def _base_fixture(tmp_path: Path, *, hidden_commit: str | None = None) -> tuple[
 
     public_phase = root / "single/public/phase-meta.json"
     hidden_phase = root / "single/hidden-r1/phase-meta.json"
-    public_run = root / "single/public/grpo/wp9d-P1-public-vllm-smoke-seed42"
-    hidden_run = root / "single/hidden-r1/grpo/wp9d-P1-hidden-vllm-smoke-seed42-r1"
+    public_run = root / "single/public/grpo/wp9d-P1-public-vllm-qkvo-smoke-seed42"
+    hidden_run = root / "single/hidden-r1/grpo/wp9d-P1-hidden-vllm-qkvo-smoke-seed42-r1"
     _phase(public_phase, 10.0)
     _phase(hidden_phase, 12.0)
     _grpo_run(public_run, mode="public", commit=commit)
@@ -233,8 +234,8 @@ def _write_concurrent_success(
     }
     _write_json(concurrent / "concurrent-result.json", result)
     _write_json(root / f"latest/concurrent-{tag}.json", result)
-    public_run = concurrent / f"public/grpo/wp9d-P1-public-concurrent-{tag}-seed42-r1"
-    hidden_run = concurrent / f"hidden/grpo/wp9d-P1-hidden-concurrent-{tag}-seed42-r1"
+    public_run = concurrent / f"public/grpo/wp9d-P1-public-vllm-qkvo-concurrent-{tag}-seed42-r1"
+    hidden_run = concurrent / f"hidden/grpo/wp9d-P1-hidden-vllm-qkvo-concurrent-{tag}-seed42-r1"
     _grpo_run(public_run, mode="public", commit=commit)
     _grpo_run(hidden_run, mode="hidden", commit=commit)
     detail = {"m040": "0.40", "m030": "0.30", "m025": "0.25"}[tag]
@@ -262,6 +263,7 @@ def test_report_selects_safe_material_concurrent_and_dual_b4(tmp_path: Path) -> 
     assert report["dual_b4"]["decision"] == "dual"
     assert report["dual_b4"]["total_wall_speedup"] == pytest.approx(10.0 / 6.0)
     assert report["runtime_freeze_candidate"]["GRPO"]["public_hidden_execution"] == "concurrent"
+    assert report["runtime_freeze_candidate"]["GRPO"]["lora_target_modules"] == QKVO_TARGETS
     assert report["runtime_freeze_candidate"]["Eval"]["parallel_generators"] == 2
     assert report["single_arm"]["hidden"]["run_dir"].endswith("-r1")
 
@@ -310,3 +312,15 @@ def test_report_allows_unaffected_accepted_evidence_from_prior_handoff(tmp_path:
 
     assert report["all_evidence_same_handoff_commit"] is False
     assert report["evidence_handoff_commits"] == [commit, prior]
+
+
+def test_report_rejects_old_qv_checkpoint(tmp_path: Path) -> None:
+    module = _load_module()
+    root, eval8, _, _ = _base_fixture(tmp_path)
+    adapter = (
+        root / "single/public/grpo/wp9d-P1-public-vllm-qkvo-smoke-seed42/checkpoints/checkpoint-1/adapter_config.json"
+    )
+    _write_json(adapter, {"target_modules": ["q_proj", "v_proj"]})
+
+    with pytest.raises(SystemExit, match="not qkvo"):
+        module.build_report(root, eval8)

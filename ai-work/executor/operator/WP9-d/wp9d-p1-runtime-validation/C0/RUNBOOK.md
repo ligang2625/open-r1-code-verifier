@@ -46,11 +46,11 @@ export WP9D_P1_SCRIPT_SHA256=<sha256 of run.sh>
 The target script additionally verifies:
 
 - clean target checkout;
-- RTX 4090-class VRAM (`>=22528 MiB`);
+- an actual RTX 4090 with `>=22528 MiB` total and `>=20000 MiB` free VRAM; if more than one GPU is visible, the script selects the 4090 explicitly and exports `CUDA_VISIBLE_DEVICES`;
 - CUDA + BF16;
 - pinned TRL `0.18.0` and vLLM `0.8.5.post1`;
 - exact frozen B model/revision/seed;
-- exact one-step WP9-d smoke config hashes and exact qkvo LoRA target semantics;
+- exact one-step WP9-d smoke config hashes, qkvo LoRA target semantics, and qkvo checkpoint readback;
 - exact C29 Public/Hidden training hashes and benchmark binding;
 - canonical eval400 dataset identity before accepting the 8-problem systems subset;
 - target-local validation-machine pointer is exactly `READY_FOR_VALIDATION_PLANNER`, uses the current `/root` roots, and exposes only `http://127.0.0.1:2000` for Piston;

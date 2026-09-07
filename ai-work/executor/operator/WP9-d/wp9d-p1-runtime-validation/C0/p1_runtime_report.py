@@ -17,6 +17,7 @@ CONCURRENT_SPEEDUP_MIN = 1.15
 SAFE_HEADROOM_MIB = 1024.0
 _ACCEPTED_SCHEMA = "wp9d-p1-accepted-v1"
 _REPORT_SCHEMA = "wp9d-p1-runtime-report-v1"
+_QKVO_TARGETS = {"q_proj", "k_proj", "v_proj", "o_proj"}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -159,6 +160,10 @@ def _arm_summary(run_dir: Path, *, handoff_commit: str, phase_wall: float | None
     )
     if not checkpoint.is_dir() or not all((checkpoint / name).is_file() for name in required):
         raise SystemExit(f"GRPO P1 checkpoint-1 is incomplete: {checkpoint}")
+    adapter = _read_json(checkpoint / "adapter_config.json")
+    targets = adapter.get("target_modules")
+    if not isinstance(targets, list) or set(targets) != _QKVO_TARGETS:
+        raise SystemExit(f"GRPO P1 checkpoint is not qkvo: {checkpoint}")
     attempts = meta.get("attempts")
     if not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(attempts[0], dict):
         raise SystemExit(f"GRPO P1 must have one fresh attempt: {run_dir}")
@@ -437,6 +442,10 @@ def build_report(p1_root: Path, eval8_dir: Path) -> dict[str, Any]:
                 "num_generations": 8,
                 "train_batch": 1,
                 "grad_accum": 8,
+                "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+                "lora_r": 16,
+                "lora_alpha": 32,
+                "lora_dropout": 0.05,
                 "reward_workers": 8,
             },
             "Eval": {
