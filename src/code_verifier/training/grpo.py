@@ -1239,7 +1239,9 @@ def _install_grpo_runtime_telemetry(
             finally:
                 generation_elapsed = time.perf_counter() - generation_started
                 if was_checkpointing:
-                    unwrapped_model.gradient_checkpointing_enable()
+                    unwrapped_model.gradient_checkpointing_enable(
+                        gradient_checkpointing_kwargs={"use_reentrant": False}
+                    )
                 if not math.isfinite(generation_elapsed) or generation_elapsed < 0.0:
                     raise GRPOTrainingError("GRPO generation runtime must be finite and non-negative")
                 self._metrics[mode]["generation_runtime_seconds"].append(generation_elapsed)
@@ -1277,7 +1279,7 @@ def _install_grpo_runtime_telemetry(
         finally:
             elapsed = time.perf_counter() - started
             if was_checkpointing:
-                model.gradient_checkpointing_enable()
+                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             if not math.isfinite(elapsed) or elapsed < 0.0:
                 raise GRPOTrainingError("GRPO no-grad log-prob runtime must be finite and non-negative")
             if self.model.training:

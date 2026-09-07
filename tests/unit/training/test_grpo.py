@@ -1193,12 +1193,14 @@ def test_grpo_runtime_telemetry_times_generation_rollout_and_optimizer_step(
             self.training = True
             self.is_gradient_checkpointing = True
             self.generate_states: list[tuple[bool, bool]] = []
+            self.checkpoint_enable_kwargs: list[dict[str, bool]] = []
 
         def gradient_checkpointing_disable(self) -> None:
             assert self.is_gradient_checkpointing is True
             self.is_gradient_checkpointing = False
 
-        def gradient_checkpointing_enable(self) -> None:
+        def gradient_checkpointing_enable(self, *, gradient_checkpointing_kwargs: dict[str, bool]) -> None:
+            self.checkpoint_enable_kwargs.append(dict(gradient_checkpointing_kwargs))
             self.is_gradient_checkpointing = True
 
         def generate(self) -> str:
@@ -1254,6 +1256,10 @@ def test_grpo_runtime_telemetry_times_generation_rollout_and_optimizer_step(
         assert trainer._get_per_token_logps(trainer.model) == "logps"
     assert trainer.logps_states == [(False, False)]
     assert trainer.model.is_gradient_checkpointing is True
+    assert trainer.model.checkpoint_enable_kwargs == [
+        {"use_reentrant": False},
+        {"use_reentrant": False},
+    ]
     assert trainer.training_step() == "loss"
     trainer.state.global_step = 1
     assert trainer._maybe_log_save_evaluate() == "logged"
