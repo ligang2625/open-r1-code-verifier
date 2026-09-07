@@ -383,7 +383,12 @@ PY_CFG
 
 train_one() {
   local mode="$1" output_root="$2" public_name="$3" hidden_name="$4" pub_cfg="$5" hid_cfg="$6" log="$7"
-  "$PY" -m code_verifier.cli train-grpo \
+  "$PY" -m torch.distributed.run \
+    --standalone \
+    --nnodes=1 \
+    --nproc-per-node=1 \
+    --max-restarts=0 \
+    -m code_verifier.cli train-grpo \
     --public-config "$pub_cfg" \
     --hidden-config "$hid_cfg" \
     --dataset-dir "$POOL_DIR" \
