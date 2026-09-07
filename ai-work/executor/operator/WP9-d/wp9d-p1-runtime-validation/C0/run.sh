@@ -284,7 +284,7 @@ static_runtime_preflight() {
   "$PY" - "$PUBLIC_CONFIG" "$HIDDEN_CONFIG" "$B_RUN" <<'PY_STATIC'
 import importlib.metadata as md, sys
 from pathlib import Path
-from code_verifier.training.grpo import load_grpo_training_config
+from code_verifier.training.grpo import _load_grpo_runtime, _runtime_arguments, load_grpo_training_config
 from code_verifier.training.sft import load_completed_sft_checkpoint
 pub=load_grpo_training_config(Path(sys.argv[1])); hid=load_grpo_training_config(Path(sys.argv[2]))
 for cfg, mode in ((pub,"public"),(hid,"hidden")):
@@ -292,6 +292,8 @@ for cfg, mode in ((pub,"public"),(hid,"hidden")):
         raise SystemExit(f"{mode} smoke config semantics drift")
     if cfg.per_device_train_batch_size != 1 or cfg.gradient_accumulation_steps != 8:
         raise SystemExit(f"{mode} scientific batch semantics drift")
+    if not cfg.gradient_checkpointing:
+        raise SystemExit(f"{mode} gradient checkpointing drift")
     if tuple(cfg.lora_target_modules or ()) != ("q_proj", "k_proj", "v_proj", "o_proj"):
         raise SystemExit(f"{mode} GRPO LoRA qkvo target semantics drift")
     if not cfg.use_vllm or cfg.vllm_mode != "colocate" or cfg.vllm_gpu_memory_utilization != 0.4:
@@ -305,6 +307,10 @@ expected={"trl":"0.18.0","vllm":"0.8.5.post1","transformers":"4.52.3","accelerat
 for package, version in expected.items():
     actual=md.version(package)
     if actual != version: raise SystemExit(f"{package} version drift: {actual} != {version}")
+runtime=_load_grpo_runtime()
+_, training_args=_runtime_arguments(pub, checkpoint_dir=Path("/root/tmp/wp9d-p1-preflight-checkpoints"), parent_sft=identity, seed=42, runtime=runtime)
+if getattr(training_args, "gradient_checkpointing_kwargs", None) != {"use_reentrant": False}:
+    raise SystemExit("pinned GRPO runtime must use non-reentrant gradient checkpointing")
 print("static_runtime_identity=ok")
 PY_STATIC
 }

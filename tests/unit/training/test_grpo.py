@@ -633,6 +633,8 @@ def test_grpo_runtime_arguments_bind_parent_model_and_frozen_invariants(tmp_path
     assert training_kwargs["do_eval"] is False
     assert training_kwargs["eval_strategy"] == "no"
     assert training_kwargs["use_vllm"] is False
+    assert training_kwargs["gradient_checkpointing"] is True
+    assert training_kwargs["gradient_checkpointing_kwargs"] == {"use_reentrant": False}
     assert training_kwargs["report_to"] == []
     assert training_kwargs["push_to_hub"] is False
     assert training_kwargs["seed"] == 7

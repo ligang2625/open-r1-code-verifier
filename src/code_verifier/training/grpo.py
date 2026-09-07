@@ -1469,6 +1469,7 @@ def _runtime_arguments(
             bf16=config.bf16,
             fp16=config.fp16,
             gradient_checkpointing=config.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False} if config.gradient_checkpointing else None,
             logging_steps=config.logging_steps,
             save_strategy="steps",
             save_steps=config.save_steps,
