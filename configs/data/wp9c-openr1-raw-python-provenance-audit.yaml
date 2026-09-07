@@ -1,0 +1,62 @@
+version: wp9c-openr1-raw-python-provenance-audit-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+seed: 42
+targets:
+  active_pool: 2500
+  sft_reuse_exact: 225
+  external_new_exact: 2275
+  pre_piston_external_new_buffer_min: 2600
+  pre_piston_external_new_buffer_target: 2800
+baseline:
+  historical_aggregate_report: /home/dzy/wp9c-function-supply-aggregate-audit-C0/report.json
+  historical_aggregate_report_sha256: f6ff5a9cb688fb60d433f7f9e973d3273e5d18f04e3088855a1a43a06c2cdfd5
+  correction_report: /home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json
+  correction_report_sha256: dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953
+  c7_taco_under8_report: /home/dzy/wp9c-taco-under8-supply-audit-C7/report.json
+  c7_taco_under8_report_sha256: 3702fd1ca16d276edee63337f11c80879c0fcdbf325fea3f35e63e23b6fda2ff
+  c8_report: /home/dzy/wp9c-deepcoder-function-supply-audit-C8/report.json
+  c8_report_sha256: d3fb7f7abf66ca42e2099be08d49593967da3b793199d9feb4cca051bf5acee8
+  c9_report: /home/dzy/wp9c-openr1-decontaminated-full-audit-C9/report.json
+  c9_report_sha256: 570c7a6a02d2e5ed994c38243756692b90e7391fecce44c094af41955cccc314
+  ready_context_eligible_count: 1276
+  under8_preaugmentation_planning_count: 1119
+  under8_formal_context_eligible_count: null
+  zero_attrition_planning_potential_count: 2395
+  c7_under8_preaugmentation_planning_union: 1126
+  c7_zero_attrition_planning_union: 2402
+  c8_under8_preaugmentation_planning_union: 1229
+  c8_zero_attrition_planning_union: 2505
+  c9_zero_attrition_planning_union: 2505
+source:
+  source_name: open-r1-vcp-python-raw
+  dataset_id: open-r1/verifiable-coding-problems-python
+  revision: db558678436c3c1275212172746e1dd67a990059
+  config_name: default
+  split: train
+  declared_license: NOT_DECLARED
+  license_status: unresolved_upstream
+  provenance_note: Open-R1 raw Python mirror of PrimeIntellect/verifiable-coding-problems; metadata and verification_info are dictionary-formatted while task data is otherwise unchanged; per-row upstream source and URL terms require review
+  shard_glob: data/train-*-of-00011.parquet
+  expected_shard_count: 11
+  expected_total_rows: 35735
+  download_manifest: /home/dzy/wp9c-openr1-raw-python-download-C10/manifest.json
+selection:
+  minimum_unique_tests: 1
+  under8_maximum_unique_tests: 7
+  ready_minimum_unique_tests: 8
+  max_prompt_tokens: 2048
+  formal_prompt_protocol: canonicalize_refresh_candidate_seed42_then_build_code_prompt_v1
+  preaugmentation_prompt_protocol: build_code_prompt_from_fields_preaugmentation_visible_proxy_v1
+  token_ngram_size: 5
+  near_jaccard_threshold: 0.90
+  priority: current_ready_then_c8_union_then_openr1_raw_new
+  deepcoder_provenance_match: normalized_problem_plus_exact_gold_solution_hash
+quality:
+  execute_source_code: false
+  generate_tests: false
+  run_piston: false
+  threshold_relaxation_allowed: false
+  require_reference_solution_execution_validation: true
+  exclude_unresolved_quality_gate: true
+  final_augmented_context_recheck_required: true
+  unresolved_upstream_license_blocks_formal_admission: true

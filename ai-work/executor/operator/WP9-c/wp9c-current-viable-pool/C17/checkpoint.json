@@ -1,0 +1,65 @@
+{
+  "checkpoint_id": "C17-current-viable-pool-freeze",
+  "parent_checkpoint": "C16-synthetic1-response-lineage-rejoin",
+  "status": "completed",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-current-viable-pool-freeze",
+  "user_decision": {
+    "fixed_external_new_exact_quota_withdrawn": true,
+    "minimum_external_new_count": null,
+    "unresolved_or_unavailable_candidates_may_be_dropped": true,
+    "backfill_required": false,
+    "source_expansion_allowed": false,
+    "threshold_relaxation": false,
+    "single_oracle_relaxation": false
+  },
+  "completed_output": {
+    "output_dir": "/home/dzy/wp9c-current-viable-pool-C17",
+    "report": "/home/dzy/wp9c-current-viable-pool-C17/report.json",
+    "report_sha256": "6c16e3f95311759a8679915fc44ff199de61ee33d78680eed7ac41b4e179d322",
+    "viable_candidates": "/home/dzy/wp9c-current-viable-pool-C17/viable_candidates.jsonl",
+    "viable_candidates_sha256": "a98d83aa59eda30081199e665c05df116de0a9d059984ea19e7c1282586f91bf",
+    "dropped_candidates": "/home/dzy/wp9c-current-viable-pool-C17/dropped_candidates.jsonl",
+    "dropped_candidates_sha256": "e4d03e5312f3f6fb88d480c1ba5cb2c8395b838281cef498528ab712433f1249"
+  },
+  "counts": {
+    "previous_frozen_universe": 2505,
+    "current_viable_pipeline_pool": 1914,
+    "ready_for_final_piston": 1276,
+    "ready_for_augmentation_execution": 638,
+    "dropped_under8": 591,
+    "dropped_deepcoder_primeintellect": 541,
+    "dropped_other_under8": 50,
+    "final_formally_usable_before_remaining_gates": 0
+  },
+  "viable_source_counts": {
+    "BAAI/TACO": 567,
+    "codeparrot/apps": 75,
+    "deepcoder-lcbv5-train": 100,
+    "deepcoder-primeintellect": 539,
+    "deepcoder-taco": 16,
+    "opencoder-educational": 420,
+    "tkeskin/leetcode-solutions": 197
+  },
+  "dropped_source_counts": {
+    "BAAI/TACO": 35,
+    "codeparrot/apps": 15,
+    "deepcoder-primeintellect": 541
+  },
+  "bindings": {
+    "config_sha256": "7e393735b55b776023e8fc9e32ffaa1a49186646c7212ce4def98280a0742fe3",
+    "audit_script_sha256": "69dd739391cc3c072e7b6592902e89b673cbb7cd9d6fbb56356ced8cad24c8a1",
+    "c12_candidates_sha256": "98fca412643057e6a992c288d0121e83569e3fa77369b3bb617bc3d331b61840",
+    "c13_jobs_sha256": "186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d",
+    "c16_checkpoint_sha256": "3f3d8838f9a00e7bc3209097f34a8b4ee29c430adb291ba747405988268d4b9f"
+  },
+  "execution_boundaries": {
+    "source_solution_execution_run": false,
+    "test_generation_run": false,
+    "piston_run": false,
+    "calibration_run": false,
+    "grpo_run": false,
+    "gpu_run": false
+  },
+  "next_policy": "Keep every candidate that passes its remaining gates; drop later failures without replacement or threshold relaxation."
+}

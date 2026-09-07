@@ -1,0 +1,32 @@
+{
+  "checkpoint_id": "C14-local-vcp-lineage",
+  "parent_checkpoint": "C13-under8-augmentation-design",
+  "status": "completed",
+  "protocol_amendment": "wp9c-active-pool-2500-amendment-v1",
+  "operator_gate": "wp9c-local-vcp-lineage-recovery",
+  "source_expansion_frozen": true,
+  "download_run": false,
+  "source_solution_execution_run": false,
+  "piston_run": false,
+  "generation_run": false,
+  "threshold_relaxation": false,
+  "completed_output": {
+    "report": "/home/dzy/wp9c-local-vcp-lineage-C14/report.json",
+    "report_sha256": "cf9aade38c9b4f775c4db180685af7be7df6544c4845c78948757a2a6bb350ee",
+    "target_count": 541,
+    "raw_rows_scanned": 35735,
+    "prompt_unmatched": 541,
+    "strict_prompt_plus_code_unmatched": 541,
+    "strict_unique_lineage": 0,
+    "independent_second_oracle_established": 0,
+    "candidate_supply_increment": 0
+  },
+  "bindings": {
+    "config_sha256": "44f620382b62b9325d26e0bc061c43e25c0888fb1cacdd300f0efbbee5e6aca7",
+    "audit_script_sha256": "dc8dbd8f4d64f10054a92378e0885f94883d648563760c863b57789ebc143b60",
+    "c13_report_sha256": "649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe",
+    "c10_report_sha256": "b3964526b1d5d4760a6af18be5aec70d617f5b3abc88ab17ac60821709ee1cd2",
+    "c10_download_manifest_sha256": "877ae0ba0dfa8b860d4d6849bd90959b2afcab5cb9b6a0bcd71b26a0d4583a1d"
+  },
+  "decision": "local_c10_raw_vcp_cannot_close_deepcoder_primeintellect_lineage; provenance_only_response_lineage_gate_required"
+}

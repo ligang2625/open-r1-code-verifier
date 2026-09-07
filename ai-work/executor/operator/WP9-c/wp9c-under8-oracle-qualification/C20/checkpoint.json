@@ -1,0 +1,92 @@
+{
+  "checkpoint_id": "C20-under8-existing-test-oracle-qualification",
+  "parent_checkpoint": "C19-ready-final-formal-piston",
+  "status": "completed_verified",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-under8-existing-test-oracle-qualification",
+  "requires_rtx4090": false,
+  "backfill_failed_candidates": false,
+  "minimum_pass_count": null,
+  "source_expansion_allowed": false,
+  "threshold_relaxation": false,
+  "correctness_retry_allowed": false,
+  "transport_safe_retry_only": true,
+  "execute_input_proposals": false,
+  "freeze_augmented_tests": false,
+  "run_final_exact_b": false,
+  "run_final_formal_piston": false,
+  "input_counts": {
+    "under8_jobs": 638,
+    "BAAI/TACO": 567,
+    "codeparrot/apps": 70,
+    "deepcoder-taco": 1
+  },
+  "verified_result": {
+    "oracle_pair_qualified": 615,
+    "oracle_pair_fail": 23,
+    "infrastructure_blocked": 0,
+    "under8_oracle_pair_survivors": 615,
+    "backfill_required": false,
+    "total_solution_executions": 2118
+  },
+  "source_qualified_counts": {
+    "BAAI/TACO": 552,
+    "codeparrot/apps": 62,
+    "deepcoder-taco": 1
+  },
+  "source_fail_counts": {
+    "BAAI/TACO": 15,
+    "codeparrot/apps": 8
+  },
+  "qualification_contract": {
+    "solution_order": "transformed_code_sha256_ascending",
+    "qualifying_solution_rule": "passes_all_existing_frozen_tests",
+    "required_qualified_solutions": 2,
+    "qualified_pair_rule": "first_two_qualifying_solutions_in_frozen_sha_order",
+    "stop_after_required_qualified_solutions": true,
+    "oracle_pair_fail": "all_distinct_transformable_solutions_exhausted_without_infrastructure_failure_and_fewer_than_two_qualify",
+    "infrastructure_blocked": "fewer_than_two_qualify_after_all_solutions_and_at_least_one_structured_infrastructure_failure"
+  },
+  "verified_artifacts": {
+    "report": "/home/dzy/wp9c-under8-oracle-qualification-C20/report.json",
+    "report_sha256": "02f372efd135a77ffcac6fcabc5bfbe6703be369ee9b905848bae904bc2fb6bb",
+    "checkpoint_results": "/home/dzy/wp9c-under8-oracle-qualification-C20/checkpoint_results.jsonl",
+    "checkpoint_results_sha256": "c942932c9d36a06584649672642cfa6c194c213050106518626bbf5baa265ea8",
+    "candidate_results": "/home/dzy/wp9c-under8-oracle-qualification-C20/candidate_results.jsonl",
+    "candidate_results_sha256": "4300c1ad03377b95ed9280d863ffe54b05dd6b8bf6eae010c6f86f3ee639b1a8",
+    "oracle_pair_qualified": "/home/dzy/wp9c-under8-oracle-qualification-C20/oracle_pair_qualified.jsonl",
+    "oracle_pair_qualified_sha256": "e13c9f06be73b9b010d623fe1fe72d7866ea057bc18405e237acb4c5972b5bed",
+    "oracle_pair_failures": "/home/dzy/wp9c-under8-oracle-qualification-C20/oracle_pair_failures.jsonl",
+    "oracle_pair_failures_sha256": "2d9fba5fdc8d83ef210c3a6131bd10818d89790f80d20b31ee62b928b9e218c8",
+    "infrastructure_blocked": "/home/dzy/wp9c-under8-oracle-qualification-C20/infrastructure_blocked.jsonl",
+    "infrastructure_blocked_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "log": "/home/dzy/wp9c-under8-oracle-qualification-C20.log",
+    "log_sha256": "bb2c629709a8246306ae55ebffc24754954a070785b2573ab00f2db3a692576f"
+  },
+  "bindings": {
+    "c19_checkpoint_sha256": "e1a828515797b43871606d2a60e6b9dff592986f0ba10b606b8a9f6514fe5ad6",
+    "preparation_report_sha256": "ebb861e2f309f48ad5446651620029f916fe7813fa6f0c9e38bd51b611970a2f",
+    "qualification_jobs_sha256": "3239b22f817506a5ef944f1f844191128b6ce0566106974986276e8256675b25",
+    "config_sha256": "955c7b976ce796cd74942411f79664fec768ca951e09c681ec3fef5e685b5db3",
+    "preparation_script_sha256": "150eb816c4af1ae673879219236b84abb28e6e8261de809c977c56c7387e40fd",
+    "python_runner_sha256": "d40be7f0c6c889806d59758242a6403c023daa9ac1482c7255c9aa681c1f4307",
+    "shell_runner_sha256": "c54501546954ce83a037b7d84d9123611f7b2ddeda20e396859b1dc297e0518c",
+    "piston_config_sha256": "f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e",
+    "piston_transport_policy_sha256": "16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c"
+  },
+  "verification": {
+    "report_sidecar_verified": true,
+    "all_report_artifact_digests_verified": true,
+    "job_digest_bindings_verified_for_all_638": true,
+    "checkpoint_unique_candidate_ids": 638,
+    "candidate_result_unique_candidate_ids": 638,
+    "classification_recomputed_for_all_candidates": true,
+    "qualified_pairs_are_first_two_qualifying_solutions_in_frozen_order": true,
+    "all_23_correctness_failures_exhausted_all_solutions": true,
+    "structured_infrastructure_failure_count": 0,
+    "log_traceback": false,
+    "log_contains_final_report": true,
+    "piston_runtime": "3.10.0"
+  },
+  "next_gate": "C21-under8-deterministic-proposal-consensus"
+}

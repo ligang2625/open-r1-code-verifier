@@ -1,0 +1,101 @@
+{
+  "checkpoint_id": "C21-under8-deterministic-proposal-consensus",
+  "parent_checkpoint": "C20-under8-existing-test-oracle-qualification",
+  "status": "completed_verified",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-under8-deterministic-proposal-consensus",
+  "requires_rtx4090": false,
+  "backfill_failed_candidates": false,
+  "minimum_pass_count": null,
+  "source_expansion_allowed": false,
+  "threshold_relaxation": false,
+  "correctness_retry_allowed": false,
+  "transport_safe_retry_only": true,
+  "run_final_exact_b": false,
+  "run_final_formal_piston": false,
+  "input_counts": {
+    "consensus_jobs": 615,
+    "BAAI/TACO": 552,
+    "codeparrot/apps": 62,
+    "deepcoder-taco": 1
+  },
+  "verified_result": {
+    "consensus_frozen": 572,
+    "proposal_consensus_fail": 43,
+    "infrastructure_blocked": 0,
+    "under8_exact8_survivors": 572,
+    "total_probe_calls": 8121,
+    "backfill_required": false
+  },
+  "source_frozen_counts": {
+    "BAAI/TACO": 513,
+    "codeparrot/apps": 58,
+    "deepcoder-taco": 1
+  },
+  "source_fail_counts": {
+    "BAAI/TACO": 39,
+    "codeparrot/apps": 4
+  },
+  "proposal_classification_counts": {
+    "consensus_test_accepted": 2982,
+    "oracle_disagreement_rejected": 403,
+    "oracle_runtime_or_non_json_rejected": 1036
+  },
+  "consensus_contract": {
+    "proposal_order": "c13_input_proposals_in_frozen_rank_order",
+    "oracle_order": "c20_qualified_solution_sha256_order",
+    "oracle_pair_size": 2,
+    "output_protocol": "wp9c-piston-json-output-probe-v1",
+    "consensus_rule": "strict_same_json_type_and_value_from_both_qualified_oracles",
+    "accepted_test_rule": "first_consensus_valid_proposals_in_frozen_order_until_missing_slots_filled",
+    "freeze_rule": "existing_tests_then_consensus_tests_exactly_8",
+    "probe_timeout_seconds": 2.0,
+    "probe_memory_limit_mb": 512,
+    "probe_result_max_bytes": 65536
+  },
+  "verified_artifacts": {
+    "report": "/home/dzy/wp9c-under8-proposal-consensus-C21/report.json",
+    "report_sha256": "45c173edcd986d3aa58dd0cb88b069ba65863d69c37fb0bd078161f7d3431d6f",
+    "checkpoint_results": "/home/dzy/wp9c-under8-proposal-consensus-C21/checkpoint_results.jsonl",
+    "checkpoint_results_sha256": "c9a5d3e8ac42acd0f5c94a5c9bec1c0701543cabea853dfa0d925b7ff4b2e95d",
+    "candidate_results": "/home/dzy/wp9c-under8-proposal-consensus-C21/candidate_results.jsonl",
+    "candidate_results_sha256": "d17d4126b9f3d43e90f96c3d01a498d7178ef5a3023c7a8b1fb267e682629a02",
+    "frozen_exact8": "/home/dzy/wp9c-under8-proposal-consensus-C21/frozen_exact8.jsonl",
+    "frozen_exact8_sha256": "10e78d00792cfccacf389cdeebcb5ca68ad662cb8ab56308eb7272a9e0260555",
+    "proposal_consensus_failures": "/home/dzy/wp9c-under8-proposal-consensus-C21/proposal_consensus_failures.jsonl",
+    "proposal_consensus_failures_sha256": "936421c6d063878bc18b42ba420887943653d6432b5670fdd9776d6b537edee5",
+    "infrastructure_blocked": "/home/dzy/wp9c-under8-proposal-consensus-C21/infrastructure_blocked.jsonl",
+    "infrastructure_blocked_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "log": "/home/dzy/wp9c-under8-proposal-consensus-C21.log",
+    "log_sha256": "94d7e94448e87c4cc5feef1d0a6d43357b45709967f842f53780e628a77c2f15"
+  },
+  "bindings": {
+    "c20_checkpoint_sha256": "ee5f2659537fcd0c169e1f632b318eb32e5b9b1a65cd421ba08f11504cfc81f8",
+    "preparation_report_sha256": "513bdad54dc3c352e273d7abc81cd137eda0101ad1bdeeffea17a5458f8b3fbd",
+    "consensus_jobs_sha256": "b353fbe74695239a38ade1fc4102c19a0ffa2ded3a03abc72b7a889928bb5f84",
+    "config_sha256": "b4ecbbea7c76819172fe2dc5ec572edf6b6b2db531aaa727dae536e8b9456ede",
+    "preparation_script_sha256": "5eec5ffdf66dc2b86a6b432bbbd7741d25689e667d39851e7eac8b2edea107d7",
+    "python_runner_sha256": "c1d40c8f5bfc25d97744e507b4a69efe4e65a9dbe9b5b3ac8bd8545bc25ebdc3",
+    "shell_runner_sha256": "af80c6f3f48318ccc4fd1a3e89aeb89d00712e099deb5bde32d784f234130e7b",
+    "piston_config_sha256": "f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e",
+    "piston_transport_policy_sha256": "16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c",
+    "harness_source_sha256": "cd73e19ad1c76f4ebfe9dc54cf1522a9ebdea0be397d884aa5da1c053dcf9b2b",
+    "piston_source_sha256": "b83d067db25e955c55d18318c5e2920a9fcbd1a683c1ec90e894a4a191efac8e"
+  },
+  "verification": {
+    "report_sidecar_verified": true,
+    "all_report_artifact_digests_verified": true,
+    "job_digest_bindings_verified_for_all_615": true,
+    "checkpoint_unique_candidate_ids": 615,
+    "candidate_result_unique_candidate_ids": 615,
+    "classification_recomputed_for_all_candidates": true,
+    "successful_rows_use_frozen_proposal_prefix": true,
+    "successful_rows_freeze_exactly_8_unique_tests": true,
+    "all_43_correctness_failures_exhausted_all_proposals": true,
+    "structured_infrastructure_failure_count": 0,
+    "log_traceback": false,
+    "log_contains_final_report": true,
+    "piston_runtime": "3.10.0"
+  },
+  "next_gate": "C22-under8-final-exact-b-context"
+}

@@ -1,0 +1,71 @@
+{
+  "checkpoint_id": "C6-context-correction",
+  "parent_checkpoint": "C6",
+  "status": "completed",
+  "protocol_amendment": "wp9c-active-pool-2500-amendment-v1",
+  "operator_gate": "wp9c-function-supply-context-correction",
+  "requires_rtx4090": false,
+  "old_calibration_retry_frozen": true,
+  "old_rtx4090_calibration_frozen": true,
+  "historical_aggregate": {
+    "report_path": "/home/dzy/wp9c-function-supply-aggregate-audit-C0/report.json",
+    "report_sha256": "f6ff5a9cb688fb60d433f7f9e973d3273e5d18f04e3088855a1a43a06c2cdfd5",
+    "reported_ready_context_eligible_count": 1278,
+    "reported_augmentable_context_eligible_count": 1126,
+    "mutate_historical_evidence": false
+  },
+  "correction_contract": {
+    "seed": 42,
+    "max_prompt_tokens": 2048,
+    "formal_prompt_protocol": "build_code_prompt_v1",
+    "under8_pre_augmentation_prompt_protocol": "build_code_prompt_from_fields_preaugmentation_visible_proxy_v1",
+    "under8_4_7_must_crosscheck_production_prompt": true,
+    "under8_1_3_proxy_is_formal_eligibility_evidence": false,
+    "under8_formal_context_eligible_count_must_be_null_before_augmentation": true,
+    "under8_proxy_is_final_prompt_bound": false,
+    "preserve_ready_dedup_decisions": true,
+    "recompute_under8_after_corrected_ready_priority": true,
+    "under8_context_is_pre_augmentation_planning_only": true,
+    "post_augmentation_context_recheck_required": true
+  },
+  "bindings": {
+    "config_sha256": "da46031876d8865b59e2e24b655051e5c2bf57abe5774ee83422e06dd71a1adf",
+    "runner_sha256": "8eb3beec3f90a10dd0552daab0d4f66b354219d0b1dded5ff5fbb64737e102fb",
+    "audit_script_sha256": "04393e84d2afa18da79c07c20df5d093197760af56356eeeba6387b3d5de30f2",
+    "runbook_sha256": "55a0a020cd1e6f0cfb4ab2ce33fa7ca35ae5b6c0b3290e1f619c374f87220014"
+  },
+  "connector_attempt": {
+    "status": "timed_out_without_published_output",
+    "published_output_exists": false,
+    "temporary_siblings_exist": false
+  },
+  "manual_attempts": [
+    {
+      "attempt_id": "C6-manual-1",
+      "status": "failed_before_atomic_publication",
+      "log_path": "/home/dzy/wp9c-function-supply-context-correction-C6.log",
+      "log_sha256": "04d492bceebee7811a13bfc3ae5e20265a6d8ee205bc6ff09d240bb74df04399",
+      "published_output_path": "/home/dzy/wp9c-function-supply-context-correction-C6",
+      "published_output_exists": false,
+      "error_type": "ValueError",
+      "error_summary": "APPS-under8 planning row with 3 tests was incorrectly sent through production canonicalization, which requires at least 4 unique tests",
+      "supply_counts_published": false,
+      "historical_evidence_mutated": false
+    }
+  ],
+  "completed_output": {
+    "report_path": "/home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json",
+    "report_sha256": "dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953",
+    "corrected_ready_context_eligible_count": 1276,
+    "under8_preaugmentation_planning_count": 1119,
+    "under8_formal_context_eligible_count": null,
+    "zero_attrition_planning_potential_count": 2395,
+    "historical_evidence_mutated": false,
+    "formal_eligible": false
+  },
+  "expected_outputs": {
+    "report": "/home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json",
+    "report_sha256": "/home/dzy/wp9c-function-supply-context-correction-C6-r1/report.sha256",
+    "log": "/home/dzy/wp9c-function-supply-context-correction-C6-r1.log"
+  }
+}

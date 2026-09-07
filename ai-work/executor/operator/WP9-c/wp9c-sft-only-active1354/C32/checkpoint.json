@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C32",
+  "status": "awaiting_4090_training",
+  "purpose": "compare supervised continuation on the exact accepted C29 active 1354 against the GRPO arm, using the same frozen parent B and no GRPO in this arm",
+  "evidence_class": "experimental",
+  "comparison_design": "B -> SFT continuation on exact C29 active 1354; no GRPO; evaluate on the same frozen 400-problem held-out suite",
+  "frozen_parent_b": {
+    "run_id": "B-sft-formal-seed42",
+    "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "model_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+    "dataset_hash": "4b90cf95de2d8f12bdc98decbfb712b8eacf5987b02b02b868075ed9ca69eb0c",
+    "config_hash": "250fbc15ececb040d2b90d3cb1606e412d1256e10ab9063c073c4ad2b1fb5244",
+    "dependency_lock_hash": "59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560",
+    "seed": 42
+  },
+  "dataset": {
+    "source_c29_calibration_manifest_sha256": "5593fe90c19a096678f19e45ca6736e0fc97d242e4f27f92f0b10bb303077d5b",
+    "root": "/home/dzy/wp9c-sft-only-active1354-C32",
+    "report_sha256": "fb8a6eb053cf76ab947caeeff68a7328e5b6fd10c4e6d06936c1d8b64cd73e99",
+    "train_problem_count": 1354,
+    "validation_problem_count": 300,
+    "parent_b_train_overlap_count": 0,
+    "parent_b_validation_overlap_count": 0,
+    "active_order_sha256": "401f854032095cb638637dcf2d1ec000b770cd2d4c78619331f0b13746618c14",
+    "max_seq_length": 2304,
+    "max_observed_sequence_length": 2130,
+    "target_source_counts": {
+      "ready_formal_source": 905,
+      "under8_formal_oracle": 446,
+      "manual_concise_equivalent": 3
+    },
+    "entrypoint_alias_count": 101,
+    "manual_concise_equivalent_count": 3,
+    "manual_equivalent_full_formal_test_results": [
+      {"passed": 10, "total": 10},
+      {"passed": 14, "total": 14},
+      {"passed": 9, "total": 9}
+    ],
+    "artifacts": {
+      "training/sft.jsonl": "de72d223f6722fd70d855526be5a27bb635baf3128fc1faae7635a59f7109582",
+      "training/sft_validation.jsonl": "7f143a85859486d918ebb405adce3e87d9bdddf8b9831b7e9feaba04aa1ecec2",
+      "manifest/target_provenance.jsonl": "802bf96d3df5c53e2f1238db56dc122ac52ed7fec13ac5cc65d99a99d3edd94f",
+      "manifest/problem_order.jsonl": "82a58dcb6283d85149d7715675639a7782c4ed9a7c3d17646287a390719dd986"
+    }
+  },
+  "prevalidation": {
+    "status": "completed",
+    "manifest": "/home/dzy/wp9c-sft-only-active1354-C32/prevalidation.json",
+    "manifest_sha256": "c40fc3fdf35faf98fa85bc4c021c31fa6b471718547cce81d8557cb4f160cc86",
+    "workers": 16,
+    "train_passed": 1354,
+    "validation_passed": 300,
+    "total_passed": 1654,
+    "max_token_count": 2130,
+    "piston_config_sha256": "f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e",
+    "runtime_version": "3.10.0",
+    "note": "a 32-worker diagnostic first completed all 1354 train rows but hit one validation timeout; the accepted fresh 16-worker run completed all 1654 without changing test or timeout semantics"
+  },
+  "training_recipe": {
+    "config": "configs/sft/wp9c-sft-only-active1354.yaml",
+    "config_sha256": "205fc26db8b1c932ac8ce3279998e6d31b5aad8de7607fd94a69c833a72ae3f1",
+    "num_train_epochs": 2.0,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 16,
+    "learning_rate": 0.0002,
+    "warmup_ratio": 0.05,
+    "lr_scheduler_type": "cosine",
+    "bf16": true,
+    "gradient_checkpointing": true,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "seed": 42,
+    "continuation_semantics": "load base A, attach frozen completed B adapter read-only, safe_merge B, then train a fresh LoRA on the exact 1354 SFT dataset"
+  },
+  "implementation": {
+    "dataset_builder": "ai-work/executor/operator/WP9-c/wp9c-sft-only-active1354/C32/prepare_sft_only_dataset.py",
+    "dataset_builder_sha256": "1a7b08dbd80daaaa44560873a36ca9412c19627bddc8c4c20e70c7a034887d5a",
+    "training_runtime": "src/code_verifier/training/sft.py",
+    "training_runtime_sha256": "8ade6d543cab165b7e3c44ae902986f514c1f49d2a9cccea01285b364ba9c8e2",
+    "target_runner": "ai-work/executor/operator/WP9-c/wp9c-sft-only-active1354/C32/run_sft_continuation.py",
+    "target_runner_sha256": "e1e19fab82f62cf2a1d62a50425b1407344bcca065cb8ebbf4311b15b75b6cdf",
+    "target_shell_runner": "ai-work/executor/operator/WP9-c/wp9c-sft-only-active1354/C32/run.sh",
+    "target_shell_runner_sha256": "b132c2aa6f89e0f5768598044c88361543c5a5bb0043f1498681455cffb7f230",
+    "sync_helper": "ai-work/executor/operator/WP9-c/wp9c-sft-only-active1354/C32/sync_4090.sh",
+    "sync_helper_sha256": "73dae3e78cd29d4d22704b26901c69f5fe2876766a73d4b774670801b7662fb5",
+    "continuation_unit_test": "tests/unit/training/test_sft_continuation.py",
+    "continuation_unit_test_sha256": "b14c723e2b94e9fe3e25d6bfcf2684e2bbc15f6a34245ba3e10088de35c52b1f"
+  },
+  "verification": {
+    "ruff": "passed",
+    "mypy": "passed",
+    "sft_unit_tests": "43 passed",
+    "parent_continuation_branch": "SFT_PARENT_CONTINUATION_BRANCH_OK",
+    "run_sh_bash_n": "passed",
+    "sync_4090_sh_bash_n": "passed",
+    "target_training_execution": "pending_4090_available"
+  },
+  "baseline_b_heldout_400": {
+    "summary": "/home/dzy/wp6d-b-verified/evaluation/B-sft-formal-seed42/summary.json",
+    "summary_sha256": "dc279cd2dafa5bb8cb7e2a8434540079b8e7eebd91982ff79fb82a6b5a24a2de",
+    "total_problems": 400,
+    "eval_hidden_pass_at_1": 0.3775,
+    "eval_hidden_pass_at_1_ci95": [0.33, 0.425],
+    "eval_hidden_average_test_pass_rate": 0.4525,
+    "visible_pass_at_1": 0.3525,
+    "train_hidden_pass_at_1": 0.335
+  },
+  "target_paths": {
+    "dataset_dir": "/root/open-r1-code-verifier-data-4090/wp9c/sft-only-active1354-C32",
+    "parent_sft_run_dir": "/root/sj-tmp/open-r1-code-verifier-outputs/sft/B-sft-formal-seed42",
+    "output_root": "/root/sj-tmp/open-r1-code-verifier-outputs/sft",
+    "expected_run_dir": "/root/sj-tmp/open-r1-code-verifier-outputs/sft/wp9c-sft-only-active1354-seed42"
+  },
+  "next_gate": "run C32 on the 24GB target, then evaluate the completed continuation checkpoint on the exact same frozen 400-problem held-out suite used for B and for the GRPO comparison"
+}

@@ -623,7 +623,8 @@ def _generate_refresh_calibration(args: argparse.Namespace) -> int:
 
 
 def _score_refresh_calibration(args: argparse.Namespace) -> int:
-    piston_config = load_piston_executor_config(Path(args.piston_config))
+    piston_config_path = Path(args.piston_config)
+    piston_config = load_piston_executor_config(piston_config_path)
     output = score_calibration_generation(
         refresh_dataset_dir=Path(args.dataset_dir),
         reference_dataset_dir=Path(args.reference_dataset_dir),
@@ -632,6 +633,7 @@ def _score_refresh_calibration(args: argparse.Namespace) -> int:
         output_dir=Path(args.output_dir),
         executor_factory=lambda: PistonExecutor(piston_config),
         workers=int(args.workers),
+        piston_config_sha256=_sha256_file(piston_config_path),
     )
     print(f"calibration_scoring={output}")
     return 0

@@ -641,3 +641,94 @@ After the C5 checkpoint was assembled, the control-plane validation suite passed
 - `.venv/bin/python -m pytest` -> `1201 passed, 3 skipped in 112.63s`; skips are only the existing opt-in real-Piston tests.
 
 No RTX 4090 formal operator command was started, stopped, or mutated during this repair. C5 remains `awaiting_operator`.
+
+
+## C6 — user-authorized active-pool 2500 protocol amendment and function-supply reset
+
+Date: 2026-09-04. The user explicitly amended the WP9-c active-pool target after the C5 handoff but before C5 execution. This is an append-only audited protocol amendment; the sealed 3000-problem WP9-c plan/reviewer/proceedings evidence remains unchanged as historical provenance.
+
+Effective active-pool protocol: `wp9c-active-pool-2500-amendment-v1`.
+
+- active pool exact: `2500`
+- SFT reuse exact: `225` (9%); this is an integer protocol quota, not a rounded fraction target
+- external-new exact: `2275`
+- dual-informative minimum: `1750`
+- public-only maximum: `375`
+- hidden-only maximum: `375`
+- dual-uninformative exact: `0`
+- unresolved/required quality-gate rows remain excluded
+- >=8 unique tests, frozen dedup/leakage, Exact Formal-B context <=2048, provenance/license/source identity, Piston/reference-solution validation, and informativeness thresholds remain unchanged and may not be relaxed to fill quota
+
+C5 disposition under C6: **superseded-before-execution / frozen**. Its historical sidecar and hashes remain evidence, but its old 5000 stdio-dominated calibration path, retry path, and 3000-problem selector MUST NOT be started. No historical C5 evidence is rewritten.
+
+Supply baseline is bound to the already completed aggregate audit `/home/dzy/wp9c-function-supply-aggregate-audit-C0/report.json`, SHA256 `f6ff5a9cb688fb60d433f7f9e973d3273e5d18f04e3088855a1a43a06c2cdfd5`:
+
+- aggregate-ready external-new: `1278`
+- APPS-under8 dedup+Exact-B-context augmentation candidates: `1126`
+- zero-attrition potential: `2404`
+- minimum additional unique test slots for those 1126: `4843`
+
+For the amended external-new target 2275, APPS-under8 alone would require `997 / 1126 = 88.5%` successful augmentation before any later Piston attrition. This is not an acceptable supply buffer. C6 therefore freezes a pre-Piston planning target of approximately `2600–2800` dedup + Exact-B-context-qualified external-new candidates.
+
+The completed BAAI/TACO shard0 audit reported 73 conservative >=8-test direct-signature function candidates before formal-reference/cross-source dedup, Exact-B context, or Piston. Naive nine-shard extrapolation (`73 * 9 = 657`) is planning math only, not evidence. Under that extrapolation:
+
+- only `196` incremental TACO survivors are needed to raise `2404` zero-attrition potential to `2600` (~29.8% of 657);
+- `396` survivors raise it to `2800` (~60.3% of 657);
+- if TACO contributes 196 survivors, APPS successes needed for the exact 2275 target drop from 997 to 801 (`71.1%` of 1126);
+- if TACO contributes 396 survivors, APPS successes needed drop to 601 (`53.4%`).
+
+Therefore full pinned TACO is now worth auditing before designing substantive APPS synthetic test augmentation. Natural existing >=8-test supply has priority over generated-test supply.
+
+Control-plane implementation under C6:
+
+- `configs/grpo/refresh-calibration.yaml` now binds `active_pool_protocol: wp9c-active-pool-2500-amendment-v1` and exact integer quotas 2500/225/2275/1750/375/375/0.
+- `CalibrationConfig`, active selector, active-pool manifest, and strict checker consume exact counts; unavailable SFT reuse now fails closed instead of creating a preferred-overlap shortfall.
+- active-pool manifests bind the new protocol ID and recompute actual SFT/external-new counts.
+- focused calibration/refresh integration tests passed after the quota change: calibration + WP9-b engineering `26 passed`; wider refresh-source/dedup/WP9-a regression `60 passed`.
+- production `check-refresh-data` on the existing WP9-a 10000 artifact and frozen formal reference dataset still passes with selected `10000`, external retained `9565`, SFT overlap `750/10000`, quality-gate-required `1086`.
+- `make lint` passes across 138 source/test files (ruff check, ruff format check, strict mypy); `make test` passes with `1208 passed, 3 skipped`, where all skips are the existing opt-in real-Piston tests.
+- full-TACO manual sidecar is prepared at `ai-work/executor/operator/WP9-c/wp9c-full-taco-supply-audit/C6/`; its Python compiles, both shell runners pass `bash -n`, it remains static-only, preserves dataset/shard/row/upstream provenance in candidate staging, and produces `formal_eligible=false` engineering evidence.
+
+C6 operator boundary:
+
+```yaml
+checkpoint_id: C6
+supersedes_checkpoint: C5
+status: awaiting_operator
+operator_gate: wp9c-full-taco-supply-audit
+requires_rtx4090: false
+old_calibration_retry_frozen: true
+old_rtx4090_calibration_frozen: true
+next_manual_steps:
+  - pinned full-TACO download with per-shard LFS SHA256/size verification
+  - offline static full-TACO stage/dedup/Exact-B-context audit
+post_operator_decision:
+  - recompute APPS-under8 augmentation need from actual incremental TACO survivors
+  - do not start Piston or fresh function-level calibration until the formal candidate-supply protocol is closed
+```
+
+
+### C6 context-gate correction — append-only blocker before full TACO
+
+A final control-plane code review found that aggregate C0 did not use the production calibration prompt projection for newly reconstructed native/OpenCoder/APPS-under8 context filtering. Its helper tokenized candidate.prompt directly, while formal calibration first builds the fixed visible-only code prompt from problem statement, function signature, visible examples, and the section 7.2 wrapper before applying the Formal-B chat template/tokenizer.
+
+A read-only cross-check on the 559 canonical inputs bound to the earlier exact-context report confirmed the distinction is material: raw problem prompts retain 558/559 at <=2048 (max 2718, mean 403.613595706619), while formal build_code_prompt(problem) retains 554/559 (max 5906, mean 529.0715563506261). The formal numbers exactly reproduce the prior exact-context report.
+
+The published aggregate C0 report remains immutable historical engineering evidence, but its 1278 ready / 1126 APPS-under8 / 2404 zero-attrition values are now classified as historically reported aggregate counts until a new correction artifact establishes the counts under the actual Formal-B prompt contract. The correction preserves the same formal references and requires ready dedup decisions to remain identical; only the context gate is corrected. APPS-under8 is then re-deduplicated after corrected ready survivors under the unchanged priority. Under8 context is pre-augmentation planning evidence and must be checked again after final generated tests.
+
+A connector execution attempt hit the 180-second control-plane limit and was terminated. A post-termination check confirmed no published correction output and no atomic temporary sibling, so no partial evidence exists. Per the long-task boundary, the scan is now manual-only.
+
+The new C6-context-correction checkpoint is awaiting_operator. The full-TACO C6 checkpoint is now blocked_by_context_correction; its runners require awaiting_operator and therefore fail closed until the correction report is reviewed and TACO is re-frozen against the corrected baseline. Old calibration/retry, APPS test generation, Piston, GRPO, and RTX4090 remain frozen.
+
+Current operator state:
+
+- checkpoint: C6-context-correction
+- parent: C6
+- status: awaiting_operator
+- operator gate: wp9c-function-supply-context-correction
+- requires RTX4090: false
+- old calibration retry frozen: true
+- old RTX4090 calibration frozen: true
+- full TACO status: blocked_by_context_correction
+- next manual step: run the offline context-correction sidecar
+- after review: verify corrected ready/under8 supply, re-freeze full-TACO baseline and exact Formal-B context implementation, then authorize the pinned full-TACO audit.

@@ -1,0 +1,81 @@
+version: wp9c-ready-final-piston-v1
+protocol_amendment: wp9c-reduced-quota-current-viable-v1
+
+user_decision:
+  keep_only_remaining_gate_passers: true
+  backfill_failed_candidates: false
+  source_expansion_allowed: false
+  minimum_ready_piston_pass_count: null
+  threshold_relaxation_allowed: false
+
+bindings:
+  c17_checkpoint: ai-work/executor/operator/WP9-c/wp9c-current-viable-pool/C17/checkpoint.json
+  c17_checkpoint_sha256: a3dd90c207afb59504139ef27d98dc6152ecff11b1f90a339f440319f6cf5525
+  c17_report: /home/dzy/wp9c-current-viable-pool-C17/report.json
+  c17_report_sha256: 6c16e3f95311759a8679915fc44ff199de61ee33d78680eed7ac41b4e179d322
+  c17_viable_candidates: /home/dzy/wp9c-current-viable-pool-C17/viable_candidates.jsonl
+  c17_viable_candidates_sha256: a98d83aa59eda30081199e665c05df116de0a9d059984ea19e7c1282586f91bf
+  incumbent_summary: /home/dzy/wp9c-function-refresh-context-654-C0/reports/summary.json
+  incumbent_canonical: /home/dzy/wp9c-function-refresh-context-654-C0/canonical/problems.jsonl
+  incumbent_canonical_sha256: 548c01697fc63e1faccf711acc28047195df554bca145f9c61038b0277401a3d
+  refresh_config: configs/data/refresh.yaml
+  refresh_config_sha256: 84c8a424d285a87ea03fe8eb5c2d4c01942c41478520bf8dd95ede8539c2714e
+  native_source_config: configs/data/wp9c-native-function-supply-audit-v2.yaml
+  native_source_config_sha256: 892b3544bb46ca34f397cf3a602c67c15e7e61fffe4a8047a0669e281063ae04
+  opencoder_source_config: configs/data/wp9c-function-refresh-sources.yaml
+  opencoder_source_config_sha256: 98caeac70cc338cb615b215d19147a43dc1e7cfeab7799296822cf3aef08e645
+  aggregate_config: configs/data/wp9c-function-supply-aggregate-audit.yaml
+  aggregate_config_sha256: c857b4df0665f42c210e23caa608a4c3ef29f95184743b2328638a52667e090e
+  solution_transform: ai-work/executor/operator/WP9-c/wp9c-under8-test-augmentation/C13/augmentation_protocol.py
+  solution_transform_sha256: 5d3089e1e440c6ef46954bd6037ecb312a5f17acac72e50760faac2a2683fc49
+  piston_config: configs/execution/piston-local.yaml
+  piston_config_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  piston_transport_policy: configs/execution/piston-transport-resilience.yaml
+  piston_transport_policy_sha256: 16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c
+
+expected:
+  ready_lane: 1276
+  incumbent_ready: 654
+  newly_reconstructed_ready: 622
+  ready_source_counts:
+    deepcoder-primeintellect: 539
+    deepcoder-taco: 15
+    deepcoder-lcbv5-train: 100
+    opencoder-educational: 420
+    tkeskin/leetcode-solutions: 197
+    codeparrot/apps: 5
+  lcbv5_without_source_reference_solution: 100
+  maximum_pre_piston_jobs_before_transform_failures: 1176
+
+reference_solution_protocol:
+  source_solution_scope: all_nonempty_accepted_source_solutions
+  transform_protocol: wp9c-c13-source-solution-transform-v1
+  reference_entry: __wp9c_reference_entry__
+  transformed_solution_order: transformed_code_sha256_ascending
+  duplicate_transformed_solutions_collapsed: true
+  minimum_transformable_source_solutions: 1
+  candidate_pass_rule: any_transformable_accepted_source_solution_passes_all_frozen_tests
+  correctness_failure_rule: all_transformable_source_solutions_complete_without_infrastructure_failure_and_none_pass
+  infrastructure_block_rule: no_solution_passes_and_at_least_one_source_solution_has_infrastructure_failure
+  execute_all_distinct_transformable_solutions: true
+  retry_correctness_failure: false
+  transport_safe_retry_only: true
+
+formal_piston:
+  all_canonical_test_layers: true
+  expected_minimum_unique_tests: 8
+  workers: 8
+  output_overwrite_allowed: false
+  final_formal_admission_at_this_gate: true
+  drop_failed_without_backfill: true
+
+isolation:
+  local_source_snapshots_only: true
+  network_download_allowed: false
+  add_candidate_ids: false
+  rescan_for_new_candidates: false
+  generate_tests: false
+  use_old_reward_outcomes: false
+  run_calibration: false
+  run_grpo: false
+  use_gpu: false

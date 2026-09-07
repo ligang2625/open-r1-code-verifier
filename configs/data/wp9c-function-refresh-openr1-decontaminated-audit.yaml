@@ -1,0 +1,25 @@
+version: wp9c-function-refresh-openr1-decontaminated-audit-v1
+source:
+  source_name: open-r1-vcp-python-decontaminated
+  dataset_id: open-r1/verifiable-coding-problems-python_decontaminated
+  revision: 0d251c23dcff7f7e525e7a4e184be5232bf63db6
+  config_name: default
+  split: train
+  declared_license: NOT_DECLARED
+  license_status: unresolved_upstream
+  adapter: audit_only_v1
+  shards:
+    - shard_index: 0
+      parquet_path: data/train-00000-of-00006.parquet
+      parquet_size: 36295672
+      parquet_sha256: 181d2e480df556e10e49f6dd1c6160a98adf5c1ae77c5e44fb03accc19129c89
+    - shard_index: 5
+      parquet_path: data/train-00005-of-00006.parquet
+      parquet_size: 218679740
+      parquet_sha256: f302c5aaa01d126c0dc72a541b3d445d0dd6259577a88a930cdd02c771c903b6
+selection:
+  minimum_unique_tests: 8
+  max_prompt_tokens: 2048
+quality:
+  require_reference_solution_execution_validation: true
+  exclude_unresolved_quality_gate: true

@@ -1,0 +1,68 @@
+version: wp9c-under8-deterministic-proposal-consensus-v1
+protocol_amendment: wp9c-reduced-quota-current-viable-v1
+
+user_decision:
+  keep_only_remaining_gate_passers: true
+  backfill_failed_candidates: false
+  source_expansion_allowed: false
+  minimum_under8_pass_count: null
+  threshold_relaxation_allowed: false
+
+bindings:
+  c20_checkpoint: ai-work/executor/operator/WP9-c/wp9c-under8-oracle-qualification/C20/checkpoint.json
+  c20_checkpoint_sha256: ee5f2659537fcd0c169e1f632b318eb32e5b9b1a65cd421ba08f11504cfc81f8
+  c20_qualified: /home/dzy/wp9c-under8-oracle-qualification-C20/oracle_pair_qualified.jsonl
+  c20_qualified_sha256: e13c9f06be73b9b010d623fe1fe72d7866ea057bc18405e237acb4c5972b5bed
+  c20_qualification_jobs: /home/dzy/wp9c-under8-oracle-qualification-prep-C20/qualification_jobs.jsonl
+  c20_qualification_jobs_sha256: 3239b22f817506a5ef944f1f844191128b6ce0566106974986276e8256675b25
+  c13_jobs: /home/dzy/wp9c-under8-augmentation-design-C13-r1/augmentation_jobs.jsonl
+  c13_jobs_sha256: 186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d
+  piston_config: configs/execution/piston-local.yaml
+  piston_config_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  piston_transport_policy: configs/execution/piston-transport-resilience.yaml
+  piston_transport_policy_sha256: 16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c
+  harness_source: src/code_verifier/execution/harness.py
+  harness_source_sha256: cd73e19ad1c76f4ebfe9dc54cf1522a9ebdea0be397d884aa5da1c053dcf9b2b
+  piston_source: src/code_verifier/execution/piston.py
+  piston_source_sha256: b83d067db25e955c55d18318c5e2920a9fcbd1a683c1ec90e894a4a191efac8e
+
+expected:
+  consensus_jobs: 615
+  source_counts:
+    BAAI/TACO: 552
+    codeparrot/apps: 62
+    deepcoder-taco: 1
+  oracle_pair_size: 2
+  target_unique_tests_exact: 8
+  existing_test_count_min: 1
+  existing_test_count_max: 7
+
+consensus_protocol:
+  proposal_order: c13_input_proposals_in_frozen_rank_order
+  oracle_order: c20_qualified_solution_sha256_order
+  oracle_pair_size: 2
+  output_protocol: wp9c-piston-json-output-probe-v1
+  consensus_rule: strict_same_json_type_and_value_from_both_qualified_oracles
+  accepted_test_rule: first_consensus_valid_proposals_in_frozen_order_until_missing_slots_filled
+  proposal_runtime_or_non_json_rule: reject_proposal_and_continue
+  proposal_oracle_disagreement_rule: reject_proposal_and_continue
+  infrastructure_rule: structured_infrastructure_failure_before_slots_filled_blocks_candidate
+  freeze_rule: existing_tests_then_consensus_tests_exactly_8
+  correctness_retry_allowed: false
+  transport_safe_retry_only: true
+  probe_timeout_seconds: 2.0
+  probe_memory_limit_mb: 512
+  probe_result_max_bytes: 65536
+
+isolation:
+  execute_only_qualified_oracle_pair: true
+  use_only_c13_frozen_proposals: true
+  generate_new_inputs: false
+  use_reward_outcomes: false
+  run_final_exact_b: false
+  run_final_formal_piston: false
+  add_candidate_ids: false
+  source_expansion_allowed: false
+  run_calibration: false
+  run_grpo: false
+  use_gpu: false

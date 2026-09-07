@@ -1,0 +1,68 @@
+version: wp9c-under8-test-augmentation-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+
+fixed_universe:
+  c12_report: /home/dzy/wp9c-fixed-2505-candidate-freeze-C12-r1/report.json
+  c12_report_sha256: fc37c6792403d1ddc7c6336cb793b49a8a2d09587aed0d6dba3126f36fafb15b
+  c12_manifest: /home/dzy/wp9c-fixed-2505-candidate-freeze-C12-r1/candidates.jsonl
+  c12_manifest_sha256: 98fca412643057e6a992c288d0121e83569e3fa77369b3bb617bc3d331b61840
+  under8_exact: 1229
+  source_counts:
+    codeparrot/apps: 85
+    BAAI/TACO: 602
+    deepcoder-primeintellect: 541
+    deepcoder-taco: 1
+
+published_evidence:
+  c7_report: /home/dzy/wp9c-taco-under8-supply-audit-C7/report.json
+  c7_report_sha256: 3702fd1ca16d276edee63337f11c80879c0fcdbf325fea3f35e63e23b6fda2ff
+  c8_report: /home/dzy/wp9c-deepcoder-function-supply-audit-C8/report.json
+  c8_report_sha256: d3fb7f7abf66ca42e2099be08d49593967da3b793199d9feb4cca051bf5acee8
+  c11_checkpoint: ai-work/executor/operator/WP9-c/wp9c-synthetic1-sft-lineage-audit/C11/checkpoint.json
+  c11_required_status: paused_by_user
+
+apps_source:
+  dataset_id: codeparrot/apps
+  revision: 21e74ddf8de1a21436da12e3e653065c5213e9d1
+  file_path: train.jsonl
+  file_size: 107101272
+  file_sha256: 45e82ef22ed8e7c0c04d881a21b923e9dd233157896b0b8d5b3493e887499cae
+  local_files_only: true
+
+augmentation:
+  target_unique_tests_exact: 8
+  minimum_existing_unique_tests: 1
+  maximum_existing_unique_tests: 7
+  minimum_transformable_source_solutions_for_job: 2
+  minimum_piston_qualified_source_solutions: 2
+  maximum_consensus_oracles: 3
+  source_solution_order: transformed_code_sha256_ascending
+  proposal_protocol: wp9c-json-boundary-mutation-v1
+  maximum_input_proposals_per_candidate: 128
+  final_split_seed: 42
+  final_split_protocol: wp9a-refresh-tests-v1
+  expected_final_split_for_8_tests:
+    visible: 2
+    train_hidden: 3
+    eval_hidden: 3
+
+piston:
+  config: configs/execution/piston-local.yaml
+  config_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  reference_solution_consensus_required: true
+  final_formal_piston_is_separate_later_gate: true
+  retry_to_success_allowed: false
+  infrastructure_failure_is_correctness_failure: false
+
+isolation:
+  source_expansion_allowed: false
+  new_candidate_ids_allowed: false
+  old_public_hidden_reward_outcomes_allowed: false
+  synthetic_proposal_is_formal_evidence: false
+  threshold_relaxation_allowed: false
+  generation_failure_counts_as_pass: false
+  unresolved_deepcoder_primeintellect_formal_admission_allowed: false
+  unresolved_deepcoder_primeintellect_engineering_augmentation_allowed: true
+  c11_download_allowed: false
+  grpo_allowed: false
+  gpu_allowed: false

@@ -1,0 +1,95 @@
+version: wp9c-synthetic1-response-lineage-rejoin-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+
+targets:
+  deepcoder_primeintellect_exact: 541
+  fixed_candidate_universe: 2505
+  ready_before_final_piston: 1276
+  under8_total: 1229
+  external_new_exact: 2275
+  minimum_primeintellect_successes_required: 311
+
+bindings:
+  c15_checkpoint: ai-work/executor/operator/WP9-c/wp9c-synthetic1-provenance-reopen/C15/checkpoint.json
+  c15_checkpoint_sha256: 20a3fc59634a10c64633a7193654557f3e286a3a9dea2c2d4801a7dbd6c2b38e
+  c15_manifest: /home/dzy/wp9c-synthetic1-provenance-download-C15/manifest.json
+  c15_manifest_sha256: b910233e8adf693834f122de74db440bcbd64b562f5fe24cec800c2b62210858
+  c8_report: /home/dzy/wp9c-deepcoder-function-supply-audit-C8/report.json
+  c8_report_sha256: d3fb7f7abf66ca42e2099be08d49593967da3b793199d9feb4cca051bf5acee8
+  c8_deepcoder_under8_candidates: /home/dzy/wp9c-deepcoder-function-supply-audit-C8/deepcoder_under8_candidates.jsonl
+  c8_deepcoder_under8_candidates_sha256: b3ac660a24a4e302362d63a2b7a36e9b84d86e735c22cc26a78fed638d6020a5
+  c13_report: /home/dzy/wp9c-under8-augmentation-design-C13-r1/report.json
+  c13_report_sha256: 649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe
+  c13_jobs: /home/dzy/wp9c-under8-augmentation-design-C13-r1/augmentation_jobs.jsonl
+  c13_jobs_sha256: 186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d
+  c14_report: /home/dzy/wp9c-local-vcp-lineage-C14/report.json
+  c14_report_sha256: cf9aade38c9b4f775c4db180685af7be7df6544c4845c78948757a2a6bb350ee
+  c10_report: /home/dzy/wp9c-openr1-raw-python-provenance-audit-C10/report.json
+  c10_report_sha256: b3964526b1d5d4760a6af18be5aec70d617f5b3abc88ab17ac60821709ee1cd2
+  c10_config: configs/data/wp9c-openr1-raw-python-provenance-audit.yaml
+  c10_download_manifest: /home/dzy/wp9c-openr1-raw-python-download-C10/manifest.json
+  c10_download_manifest_sha256: 877ae0ba0dfa8b860d4d6849bd90959b2afcab5cb9b6a0bcd71b26a0d4583a1d
+  c11_checkpoint: ai-work/executor/operator/WP9-c/wp9c-synthetic1-sft-lineage-audit/C11/checkpoint.json
+  c11_required_status: paused_by_user
+
+sft_source:
+  dataset_id: PrimeIntellect/SYNTHETIC-1-SFT-Data
+  revision: e8d30e75e8da4fdb176b7aa0c345eb88a8bbf2e8
+  required_task_type: verifiable_code
+  expected_shards: 17
+  expected_rows: 894086
+  expected_schema_fields:
+    - response_id
+    - problem_id
+    - task_type
+    - score
+    - messages
+  scan_columns:
+    - response_id
+    - problem_id
+    - task_type
+    - messages
+  score_field_must_not_be_loaded: true
+
+lineage:
+  prompt_match: normalize_text_exact
+  assistant_response_extractor: code_verifier_extract_python_code_final_python_block_v1
+  assistant_code_match: exact_extracted_code_bytes
+  unique_lineage_unit: problem_id
+  prompt_only_admissible: false
+  fuzzy_prompt_allowed: false
+  fuzzy_code_allowed: false
+
+raw_vcp_rejoin:
+  key: problem_id_exact
+  expected_rows: 35735
+  expected_shards: 11
+  require_unique_raw_row_per_problem_id: true
+  collect_fields:
+    - source
+    - in_source_id
+    - problem_id
+    - problem_statement
+    - gold_standard_solution
+    - metadata
+  gold_extractor: fenced_final_python_else_exact_plain_python
+  second_oracle_static_candidate_requires:
+    - unique_exact_response_lineage
+    - unique_raw_vcp_problem_id_rejoin
+    - extractable_raw_gold_python
+    - raw_gold_code_bytes_distinct_from_deepcoder_code
+  project_piston_required_later: true
+  source_solution_transformation_required_later: true
+  upstream_terms_review_required_later: true
+
+isolation:
+  incremental_candidate_supply_allowed: false
+  source_expansion_allowed: false
+  score_use_allowed: false
+  execute_source_code: false
+  generate_tests: false
+  run_piston: false
+  run_calibration: false
+  run_grpo: false
+  use_gpu: false
+  threshold_relaxation_allowed: false

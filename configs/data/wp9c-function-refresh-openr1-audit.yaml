@@ -1,0 +1,20 @@
+version: wp9c-function-refresh-openr1-audit-v1
+sources:
+  openr1_tested_shuffled:
+    source_name: openr1-vcp-python-tested-shuffled
+    dataset_id: open-r1/verifiable-coding-problems-python_decontaminated-tested-shuffled
+    revision: 98191eb6eefd276b7ebb4eb8d25c4a167cc65605
+    config_name: default
+    split: train
+    declared_license: NOT_DECLARED
+    license_status: unresolved_upstream
+    parquet_path: data/train-00000-of-00001.parquet
+    parquet_size: 146139801
+    parquet_sha256: 0f4967c744a1ef7acfc9aadcdefcb64be7b5567448e507f80a48d3b3d0bb2686
+    adapter: audit_only_v1
+    upstream_reward_evidence: informational_only
+selection:
+  minimum_unique_tests: 8
+quality:
+  require_reference_solution_execution_validation: true
+  exclude_unresolved_quality_gate: true

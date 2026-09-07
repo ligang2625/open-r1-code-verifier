@@ -1,0 +1,77 @@
+{
+  "checkpoint_id": "C15-synthetic1-provenance-reopen",
+  "parent_checkpoint": "C14-local-vcp-lineage",
+  "status": "completed_download_verified",
+  "status_before_completion": "awaiting_operator",
+  "prepared_checkpoint_sha256_before_completion": "e159bbeaac514248df55aa7d383a59d283ac8ef710c39049dcc4f65cce1115f6",
+  "protocol_amendment": "wp9c-active-pool-2500-amendment-v1",
+  "operator_gate": "wp9c-synthetic1-provenance-reopen",
+  "requires_rtx4090": false,
+  "candidate_supply_increment_allowed": false,
+  "source_expansion_frozen": true,
+  "generation_frozen": true,
+  "piston_frozen": true,
+  "calibration_frozen": true,
+  "grpo_frozen": true,
+  "gpu_frozen": true,
+  "threshold_relaxation": false,
+  "necessity": {
+    "fixed_candidate_universe": 2505,
+    "ready_before_final_piston": 1276,
+    "under8_total": 1229,
+    "under8_successes_required": 999,
+    "non_primeintellect_under8_maximum": 688,
+    "minimum_deepcoder_primeintellect_successes_required": 311,
+    "deepcoder_primeintellect_targets": 541,
+    "deepcoder_primeintellect_accepted_source_solutions_each": 1
+  },
+  "completed_static_evidence": {
+    "c13_report_sha256": "649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe",
+    "c13_jobs_sha256": "186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d",
+    "c13_static_augmentation_ready": 638,
+    "c13_primeintellect_single_solution_rows": 541,
+    "c14_report_sha256": "cf9aade38c9b4f775c4db180685af7be7df6544c4845c78948757a2a6bb350ee",
+    "c14_raw_vcp_prompt_unmatched": 541,
+    "c14_raw_vcp_strict_unmatched": 541,
+    "c14_independent_second_oracle_established": 0
+  },
+  "historical_c11": {
+    "status_required": "paused_by_user",
+    "pre_pause_checkpoint_sha256": "c40d38ed02db42dac16e7fed07e686fa84f4c3d613ee7a35d819ebf451dab98c",
+    "must_remain_paused": true,
+    "not_the_authority_for_c15_download": true
+  },
+  "source": {
+    "dataset_id": "PrimeIntellect/SYNTHETIC-1-SFT-Data",
+    "revision": "e8d30e75e8da4fdb176b7aa0c345eb88a8bbf2e8",
+    "expected_shards": 17,
+    "expected_rows": 894086,
+    "use_class": "provenance_index_only",
+    "incremental_candidate_supply": 0,
+    "score_values_must_not_be_loaded_or_used": true
+  },
+  "bindings": {
+    "audit_config_sha256": "ba54aaccf9a18b1e922942a3be239073c278985145604e74b8d7d3d0e44135cd",
+    "download_runner_sha256": "f9a29260b63ab4de5a4103e8bac268a1bab9b8460927bb2869c34883722e0d80",
+    "download_verifier_sha256": "dc139caff20519ece7cbfaec4a928869cdd0f97642f45113e71c8079689482c6",
+    "c12_report_sha256": "fc37c6792403d1ddc7c6336cb793b49a8a2d09587aed0d6dba3126f36fafb15b",
+    "c13_report_sha256": "649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe",
+    "c14_report_sha256": "cf9aade38c9b4f775c4db180685af7be7df6544c4845c78948757a2a6bb350ee"
+  },
+  "verified_download": {
+    "manifest": "/home/dzy/wp9c-synthetic1-provenance-download-C15/manifest.json",
+    "manifest_sha256": "b910233e8adf693834f122de74db440bcbd64b562f5fe24cec800c2b62210858",
+    "download_log": "/home/dzy/wp9c-synthetic1-provenance-download-C15.log",
+    "download_log_sha256": "aa545d2a625160c1070bd561d1cf7ea4be82b53b102528c6d937abc951cd1117",
+    "snapshot_path": "/home/dzy/.cache/huggingface/hub/datasets--PrimeIntellect--SYNTHETIC-1-SFT-Data/snapshots/e8d30e75e8da4fdb176b7aa0c345eb88a8bbf2e8",
+    "shard_count": 17,
+    "total_rows": 894086,
+    "total_bytes": 3638559349,
+    "incremental_candidate_supply": 0,
+    "response_lineage_scan_run": false,
+    "piston_run": false,
+    "generation_run": false
+  },
+  "next_gate": "C16-offline-exact-response-lineage-and-raw-vcp-rejoin",
+  "authorization": "C15 download is closed; no rerun. C16 may be prepared but must remain manual-run."
+}

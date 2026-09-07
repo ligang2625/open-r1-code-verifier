@@ -19,6 +19,7 @@ from code_verifier.data.refresh import prepare_refresh_data
 from code_verifier.evaluation.generate import GenerationResult
 from code_verifier.execution import ExecutionResult, ExecutionStatus
 from code_verifier.execution import TestCaseResult as ExecutionTestCaseResult
+from code_verifier.execution.base import ExecutionInfrastructureFailureKind
 from code_verifier.throughput import summarize_refresh_benchmarks
 from code_verifier.training.calibration import (
     CalibrationConfig,
@@ -95,6 +96,52 @@ class _PatternExecutor:
             runtime_ms=0.1 * len(tests),
             test_results=test_results,
         )
+
+
+class _CountingPatternExecutor(_PatternExecutor):
+    """Pattern executor with shared call counting and one optional infrastructure failure."""
+
+    def __init__(
+        self,
+        pass_pattern: tuple[bool, ...],
+        state: dict[str, int],
+        *,
+        fail_at_call: int | None = None,
+    ) -> None:
+        super().__init__(pass_pattern)
+        self._state = state
+        self._fail_at_call = fail_at_call
+
+    def execute(
+        self,
+        code: str,
+        function_name: str,
+        tests: list[dict[str, Any]],
+        timeout_seconds: float,
+        memory_limit_mb: int,
+    ) -> ExecutionResult:
+        self._state["calls"] = self._state.get("calls", 0) + 1
+        if self._fail_at_call is not None and self._state["calls"] == self._fail_at_call:
+            test_results = [
+                ExecutionTestCaseResult(
+                    status=ExecutionStatus.SANDBOX_ERROR,
+                    passed=False,
+                    runtime_ms=0.1,
+                    stdout="",
+                    stderr="injected infrastructure failure",
+                    infrastructure_failure_kind=ExecutionInfrastructureFailureKind.HARNESS_PROTOCOL,
+                )
+                for _ in tests
+            ]
+            return ExecutionResult(
+                status=ExecutionStatus.SANDBOX_ERROR,
+                passed_tests=0,
+                total_tests=len(tests),
+                pass_rate=0.0,
+                runtime_ms=0.1 * len(tests),
+                test_results=test_results,
+            )
+        return super().execute(code, function_name, tests, timeout_seconds, memory_limit_mb)
 
 
 def _fake_sft_identity(root: Path) -> SFTCheckpointIdentity:
@@ -279,6 +326,119 @@ def test_calibration_input_quality_safe_tranche_is_strict_and_deterministic(
     assert (first / "tranche_reserve.jsonl").read_bytes() == (second / "tranche_reserve.jsonl").read_bytes()
 
 
+def test_calibration_scoring_resumes_exact_checkpoint_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampling = json.loads((FIXTURE_DIR / "engineering_sampling.json").read_text(encoding="utf-8"))
+    pass_pattern = tuple(bool(value) for value in sampling["pass_pattern"])
+
+    refresh_config, reference_dir = _setup_fixture_environment(tmp_path, monkeypatch)
+    refresh_dir = tmp_path / "refresh-resume"
+    prepare_refresh_data(
+        refresh_config,
+        seed=42,
+        reference_dataset_dir=reference_dir,
+        source_cache_dir=tmp_path / "cache-resume",
+        output_dir=refresh_dir,
+    )
+    input_dir = tmp_path / "calibration-input-resume"
+    prepare_calibration_input_bundle(
+        refresh_dataset_dir=refresh_dir,
+        reference_dataset_dir=reference_dir,
+        output_dir=input_dir,
+        seed=42,
+        allow_test_protocol=True,
+        maximum_records=5,
+    )
+    monkeypatch.setattr(
+        calibration_module,
+        "load_completed_sft_checkpoint",
+        lambda _: _fake_sft_identity(tmp_path),
+    )
+    generation_dir = tmp_path / "calibration-generation-resume"
+    run_calibration_generation(
+        input_bundle_dir=input_dir,
+        sft_run_dir=tmp_path / "unused-sft-resume",
+        generator=_AlternatingGenerator(),
+        output_dir=generation_dir,
+        block_index=0,
+    )
+
+    score_dir = tmp_path / "calibration-score-resume"
+    failed_state = {"calls": 0}
+    with pytest.raises(CalibrationError, match="infrastructure failure"):
+        score_calibration_generation(
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            input_bundle_dir=input_dir,
+            generation_run_dir=generation_dir,
+            output_dir=score_dir,
+            executor_factory=lambda: _CountingPatternExecutor(
+                pass_pattern,
+                failed_state,
+                fail_at_call=33,
+            ),
+            workers=8,
+            allow_test_protocol=True,
+        )
+    assert not score_dir.exists()
+    checkpoint_dir = score_dir.with_name(f"{score_dir.name}.checkpoint")
+    progress = json.loads((checkpoint_dir / "progress.json").read_text(encoding="utf-8"))
+    assert progress["problem_count"] == 2
+    checkpoint_rows = (checkpoint_dir / "records" / "scoring.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(checkpoint_rows) == 2
+
+    mismatch_state = {"calls": 0}
+    with pytest.raises(CalibrationError, match="checkpoint binding"):
+        score_calibration_generation(
+            refresh_dataset_dir=refresh_dir,
+            reference_dataset_dir=reference_dir,
+            input_bundle_dir=input_dir,
+            generation_run_dir=generation_dir,
+            output_dir=score_dir,
+            executor_factory=lambda: _CountingPatternExecutor(pass_pattern, mismatch_state),
+            workers=4,
+            allow_test_protocol=True,
+        )
+    assert mismatch_state["calls"] == 0
+
+    resumed_state = {"calls": 0}
+    score_calibration_generation(
+        refresh_dataset_dir=refresh_dir,
+        reference_dataset_dir=reference_dir,
+        input_bundle_dir=input_dir,
+        generation_run_dir=generation_dir,
+        output_dir=score_dir,
+        executor_factory=lambda: _CountingPatternExecutor(pass_pattern, resumed_state),
+        workers=8,
+        allow_test_protocol=True,
+    )
+    assert resumed_state["calls"] == 3 * 16
+    progress = json.loads((checkpoint_dir / "progress.json").read_text(encoding="utf-8"))
+    assert progress["problem_count"] == 5
+
+    fresh_dir = tmp_path / "calibration-score-fresh"
+    fresh_state = {"calls": 0}
+    score_calibration_generation(
+        refresh_dataset_dir=refresh_dir,
+        reference_dataset_dir=reference_dir,
+        input_bundle_dir=input_dir,
+        generation_run_dir=generation_dir,
+        output_dir=fresh_dir,
+        executor_factory=lambda: _CountingPatternExecutor(pass_pattern, fresh_state),
+        workers=8,
+        allow_test_protocol=True,
+    )
+    assert fresh_state["calls"] == 5 * 16
+    for relative in (
+        Path("records/scoring.jsonl"),
+        Path("manifest/retry_problem_ids.jsonl"),
+        Path("score_manifest.json"),
+    ):
+        assert (score_dir / relative).read_bytes() == (fresh_dir / relative).read_bytes()
+
+
 def test_wp9b_production_shadow_calibration_active_pool_and_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -349,11 +509,13 @@ def test_wp9b_production_shadow_calibration_active_pool_and_binding(
         max_new_tokens=512,
         max_prompt_tokens=2048,
         active_pool_size=4,
-        sft_overlap_fraction=0.0,
+        sft_overlap_count=0,
+        external_new_count=4,
         sft_overlap_hard_max=0.15,
-        dual_informative_min_fraction=0.70,
-        public_only_max_fraction=0.15,
-        hidden_only_max_fraction=0.15,
+        dual_informative_min_count=3,
+        public_only_max_count=0,
+        hidden_only_max_count=0,
+        dual_uninformative_count=0,
     )
     active_dir = tmp_path / "active-pool"
     built = build_calibrated_active_pool(

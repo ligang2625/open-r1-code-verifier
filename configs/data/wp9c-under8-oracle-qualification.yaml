@@ -1,0 +1,60 @@
+version: wp9c-under8-existing-test-oracle-qualification-v1
+protocol_amendment: wp9c-reduced-quota-current-viable-v1
+
+user_decision:
+  keep_only_remaining_gate_passers: true
+  backfill_failed_candidates: false
+  source_expansion_allowed: false
+  minimum_under8_pass_count: null
+  threshold_relaxation_allowed: false
+
+bindings:
+  c19_checkpoint: ai-work/executor/operator/WP9-c/wp9c-ready-final-piston/C19/checkpoint.json
+  c19_checkpoint_sha256: e1a828515797b43871606d2a60e6b9dff592986f0ba10b606b8a9f6514fe5ad6
+  c13_report: /home/dzy/wp9c-under8-augmentation-design-C13-r1/report.json
+  c13_report_sha256: 649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe
+  c13_jobs: /home/dzy/wp9c-under8-augmentation-design-C13-r1/augmentation_jobs.jsonl
+  c13_jobs_sha256: 186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d
+  c17_viable_candidates: /home/dzy/wp9c-current-viable-pool-C17/viable_candidates.jsonl
+  c17_viable_candidates_sha256: a98d83aa59eda30081199e665c05df116de0a9d059984ea19e7c1282586f91bf
+  piston_config: configs/execution/piston-local.yaml
+  piston_config_sha256: f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e
+  piston_transport_policy: configs/execution/piston-transport-resilience.yaml
+  piston_transport_policy_sha256: 16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c
+
+expected:
+  under8_lane: 638
+  source_counts:
+    BAAI/TACO: 567
+    codeparrot/apps: 70
+    deepcoder-taco: 1
+  minimum_transformable_source_solutions_per_candidate: 2
+  existing_test_count_min: 1
+  existing_test_count_max: 7
+
+qualification_protocol:
+  solution_order: transformed_code_sha256_ascending
+  qualifying_solution_rule: passes_all_existing_frozen_tests
+  required_qualified_solutions: 2
+  stop_after_required_qualified_solutions: true
+  qualified_pair_rule: first_two_qualifying_solutions_in_frozen_sha_order
+  candidate_pass_rule: at_least_two_distinct_accepted_source_solutions_qualify
+  candidate_correctness_fail_rule: all_distinct_transformable_solutions_exhausted_without_infrastructure_failure_and_fewer_than_two_qualify
+  candidate_infrastructure_block_rule: fewer_than_two_qualify_after_all_available_nonblocked_work_and_at_least_one_structured_infrastructure_failure
+  correctness_retry_allowed: false
+  transport_safe_retry_only: true
+  duplicate_transformed_solutions_collapsed: true
+
+isolation:
+  use_existing_frozen_tests_only: true
+  generate_tests: false
+  execute_input_proposals: false
+  freeze_augmented_tests: false
+  run_final_exact_b: false
+  run_final_formal_piston: false
+  add_candidate_ids: false
+  source_expansion_allowed: false
+  use_reward_outcomes: false
+  run_calibration: false
+  run_grpo: false
+  use_gpu: false

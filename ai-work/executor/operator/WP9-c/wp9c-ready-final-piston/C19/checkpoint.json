@@ -1,0 +1,87 @@
+{
+  "checkpoint_id": "C19-ready-final-formal-piston",
+  "parent_checkpoint": "C18-ready-final-piston-preparation",
+  "status": "completed_verified",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-ready-final-formal-piston",
+  "requires_rtx4090": false,
+  "backfill_failed_candidates": false,
+  "minimum_pass_count": null,
+  "source_expansion_allowed": false,
+  "threshold_relaxation": false,
+  "correctness_retry_allowed": false,
+  "transport_safe_retry_only": true,
+  "infrastructure_failure_is_correctness_failure": false,
+  "input_counts": {
+    "c17_ready_input": 1276,
+    "c18_pre_piston_dropped": 109,
+    "piston_jobs": 1167
+  },
+  "verified_result": {
+    "formal_pass": 1030,
+    "formal_fail": 137,
+    "infrastructure_blocked": 0,
+    "ready_lane_final_formal_survivors": 1030,
+    "ready_lane_total_dropped_from_c17": 246,
+    "backfill_required": false
+  },
+  "source_pass_counts": {
+    "codeparrot/apps": 4,
+    "deepcoder-primeintellect": 507,
+    "deepcoder-taco": 13,
+    "opencoder-educational": 418,
+    "tkeskin/leetcode-solutions": 88
+  },
+  "source_fail_counts": {
+    "codeparrot/apps": 1,
+    "deepcoder-primeintellect": 23,
+    "deepcoder-taco": 2,
+    "opencoder-educational": 2,
+    "tkeskin/leetcode-solutions": 109
+  },
+  "classification_contract": {
+    "formal_pass": "any transformable accepted source solution passes all frozen tests",
+    "formal_fail": "all transformable accepted source solutions complete without infrastructure failure and none pass",
+    "infrastructure_blocked": "no source solution passes and at least one execution has structured infrastructure failure",
+    "execute_all_distinct_transformable_solutions": true
+  },
+  "verified_artifacts": {
+    "report": "/home/dzy/wp9c-ready-final-piston-C19/report.json",
+    "report_sha256": "3a2b135d61125d794136f2ee4c68b1f436c216398e98ccd47a7b2e14cafcf3c4",
+    "checkpoint_results": "/home/dzy/wp9c-ready-final-piston-C19/checkpoint_results.jsonl",
+    "checkpoint_results_sha256": "33099a932f967dd2cf63017add5e2267ff3121a342155e63106a4308853855fb",
+    "candidate_results": "/home/dzy/wp9c-ready-final-piston-C19/candidate_results.jsonl",
+    "candidate_results_sha256": "c924880a3aa271ac14e8f7aa97d0940e49e8349b1b3802d07dce41c3fcb0af9a",
+    "formal_passers": "/home/dzy/wp9c-ready-final-piston-C19/formal_passers.jsonl",
+    "formal_passers_sha256": "aef07311638fd3bd292003aa4097d0adf22ef6ac7e7432530b29546511dccb8f",
+    "formal_failures": "/home/dzy/wp9c-ready-final-piston-C19/formal_failures.jsonl",
+    "formal_failures_sha256": "50df6e4befe85b2f4673d80e0dad914d57051c7f87292502378ffaa10e7a2973",
+    "infrastructure_blocked": "/home/dzy/wp9c-ready-final-piston-C19/infrastructure_blocked.jsonl",
+    "infrastructure_blocked_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "log": "/home/dzy/wp9c-ready-final-piston-C19.log",
+    "log_sha256": "b65e45cd64a5d3b01ef20e7f977aa835bb128d410d5a3a054179f446bed4cb91"
+  },
+  "bindings": {
+    "c18_checkpoint_sha256": "a737f27dc820e8626cc033466c9f3a8992d367ea793580577a86eafaf80c0b83",
+    "c18_report_sha256": "1d87bb7d87f55af65b08fd96636283bf93933d8f841dea1b61d41e409d594737",
+    "piston_jobs_sha256": "f83455c5baf4c2e0a360db74e641b24cfc8976b6535356e86f5d5c7c39b50188",
+    "dropped_pre_piston_sha256": "fa1670860994df87b914be4a5dd5d841019bafee909508e13665a5145c760d93",
+    "python_runner_sha256": "0cbde6443a155ba0cf93c11360e736e87447791cce77b88cc4904b39396e6b7c",
+    "shell_runner_sha256": "657c38a065536ec45942bd83f6b4059b9fe0ed9f0cdf9e6e57146ff3908b375a",
+    "piston_config_sha256": "f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e",
+    "piston_transport_policy_sha256": "16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c"
+  },
+  "verification": {
+    "report_sidecar_verified": true,
+    "all_report_artifact_digests_verified": true,
+    "job_digest_bindings_verified_for_all_1167": true,
+    "checkpoint_unique_candidate_ids": 1167,
+    "candidate_result_unique_candidate_ids": 1167,
+    "classification_recomputed_for_all_candidates": true,
+    "formal_failures_have_no_structured_infrastructure_failure": true,
+    "log_traceback": false,
+    "log_contains_final_report": true,
+    "piston_runtime": "3.10.0"
+  },
+  "next_gate": "C20-under8-existing-test-oracle-qualification"
+}

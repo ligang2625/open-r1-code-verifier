@@ -1,0 +1,43 @@
+version: wp9c-apps-under8-augmentability-audit-v1
+source:
+  source_name: codeparrot/apps
+  dataset_id: codeparrot/apps
+  revision: 21e74ddf8de1a21436da12e3e653065c5213e9d1
+  split: train
+  declared_license: MIT
+  file_path: train.jsonl
+  file_size: 107101272
+  file_sha256: 45e82ef22ed8e7c0c04d881a21b923e9dd233157896b0b8d5b3493e887499cae
+  adapter: apps_native_under8_augmentability_v1
+  schema_fields:
+    - id
+    - question
+    - solutions
+    - input_output
+    - difficulty
+    - url
+    - starter_code
+  source_url_hash: sha256_raw_utf8_url
+  oversized_json_integer_policy: fail_closed
+selection:
+  minimum_existing_unique_tests: 1
+  maximum_existing_unique_tests: 7
+  target_unique_tests_after_augmentation: 8
+  minimum_nonempty_source_solutions: 2
+  require_recoverable_function_signature: true
+  token_ngram_size: 5
+  near_jaccard_threshold: 0.90
+augmentation:
+  status: not_authorized_by_this_audit
+  execute_source_code: false
+  generate_tests: false
+  intended_validation_if_later_authorized: multi_source_solution_consensus_plus_project_piston
+quality:
+  threshold_relaxation_allowed: false
+  require_exact_B_tokenizer_context_later: true
+  require_project_piston_later: true
+exclusions:
+  sft: required
+  validation: required
+  project_test: required
+  humanevalplus: required

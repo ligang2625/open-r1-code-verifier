@@ -1,0 +1,54 @@
+{
+  "checkpoint_id": "C22-under8-final-exact-b-context",
+  "parent_checkpoint": "C21-under8-deterministic-proposal-consensus",
+  "status": "completed_verified",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-under8-final-exact-b-context",
+  "backfill_failed_candidates": false,
+  "minimum_pass_count": null,
+  "source_expansion_allowed": false,
+  "threshold_relaxation": false,
+  "input_count": 572,
+  "verified_result": {
+    "context_pass": 572,
+    "context_fail": 0,
+    "final_split_2_3_3": 572,
+    "max_prompt_tokens_observed": 2019,
+    "formal_b_cap": 2048,
+    "backfill_required": false
+  },
+  "source_pass_counts": {
+    "BAAI/TACO": 513,
+    "codeparrot/apps": 58,
+    "deepcoder-taco": 1
+  },
+  "verified_artifacts": {
+    "report": "/home/dzy/wp9c-under8-final-exact-b-C22/report.json",
+    "report_sha256": "fbca34d579989c7e931b87fcc21121ac1fc335ea77dd6c696b14daadf7ecdb2e",
+    "context_rows": "/home/dzy/wp9c-under8-final-exact-b-C22/context_rows.jsonl",
+    "context_rows_sha256": "75a3b8a4a5a404a6e054c22f8cc61a070eea4ec3406bf40122df726036af246b",
+    "context_passers": "/home/dzy/wp9c-under8-final-exact-b-C22/context_passers.jsonl",
+    "context_passers_sha256": "75b9404d7a6ceb84e686631882edbbf6c4462b18ada24c7b4254072618fbdf20",
+    "context_failures": "/home/dzy/wp9c-under8-final-exact-b-C22/context_failures.jsonl",
+    "context_failures_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "bindings": {
+    "c21_checkpoint_sha256": "80bbe53787ae7b59cd3b5b781069d543c806d9f0d991a6ab0d625b4791659af6",
+    "c21_frozen_exact8_sha256": "10e78d00792cfccacf389cdeebcb5ca68ad662cb8ab56308eb7272a9e0260555",
+    "c6_formal_b_report_sha256": "dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953",
+    "audit_script_sha256": "22478fdc8e5213c9aeebc9ecb4c8a2034485dc130d6599328da8c11a67ca4ae0",
+    "refresh_sources_sha256": "6e51b95965ed1d5781941715087629715ba72ebcb91fec5d6bd0632ec535900f",
+    "split_tests_sha256": "4423c449ed3e7cb4a177176d159e560c747f7ec479d32ba6fcf1f2b0ca1cd9c2",
+    "prompting_sha256": "40a7c98110c19c4d0e4ec497375b54e175266e33769d7e2b962c36e90de75116"
+  },
+  "execution_boundaries": {
+    "candidate_code_execution": false,
+    "piston_run": false,
+    "tests_generated": false,
+    "frozen_tests_modified": false,
+    "calibration_run": false,
+    "grpo_run": false,
+    "gpu_run": false
+  },
+  "next_gate": "C23-under8-final-formal-piston"
+}

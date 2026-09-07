@@ -642,6 +642,23 @@ def _safe_run_dir(output_root: Path, run_name: str) -> Path:
     return run_dir
 
 
+def _validate_parent_sft(config: SFTTrainingConfig, parent_sft: SFTCheckpointIdentity) -> None:
+    if parent_sft.model_id != config.model_id or parent_sft.model_revision != config.model_revision:
+        raise SFTTrainingError("parent SFT model identity differs from the continuation config")
+
+
+def _parent_sft_mapping(parent_sft: SFTCheckpointIdentity) -> dict[str, object]:
+    return {
+        "run_id": parent_sft.run_id,
+        "model_id": parent_sft.model_id,
+        "model_revision": parent_sft.model_revision,
+        "dataset_hash": parent_sft.dataset_hash,
+        "config_hash": parent_sft.config_hash,
+        "dependency_lock_hash": parent_sft.dependency_lock_hash,
+        "seed": parent_sft.seed,
+    }
+
+
 @contextmanager
 def _without_unconfigured_deepspeed_backend() -> Iterator[None]:
     """Prevent Accelerate from importing an unused DeepSpeed backend during plain SFT."""
@@ -716,6 +733,42 @@ def _runtime_arguments(
         push_to_hub=False,
     )
     return model_args, training_args
+
+
+def _load_merged_parent_sft_policy(
+    *,
+    parent_sft: SFTCheckpointIdentity,
+    model_args: Any,
+    training_args: Any,
+    runtime: _SFTRuntime,
+) -> Any:
+    try:
+        peft_runtime = importlib.import_module("peft")
+        config_type = peft_runtime.PeftConfig
+        model_type = peft_runtime.PeftModel
+        config_loader = getattr(config_type, "from_" + "pretrained")
+        adapter_config = config_loader(str(parent_sft.checkpoint_dir))
+        if getattr(adapter_config, "base_model_name_or_path", None) != parent_sft.model_id:
+            raise SFTTrainingError("parent SFT adapter base model identity is invalid")
+        adapter_revision = getattr(adapter_config, "revision", None)
+        if adapter_revision is not None and adapter_revision != parent_sft.model_revision:
+            raise SFTTrainingError("parent SFT adapter revision is invalid")
+        base_model = runtime.get_model(model_args, training_args)
+        model_loader = getattr(model_type, "from_" + "pretrained")
+        parent_policy = model_loader(
+            base_model,
+            str(parent_sft.checkpoint_dir),
+            is_trainable=False,
+            config=adapter_config,
+        )
+        merge = getattr(parent_policy, "merge_and_unload", None)
+        if not callable(merge):
+            raise SFTTrainingError("parent SFT adapter does not provide merge_and_unload")
+        return merge(safe_merge=True)
+    except SFTTrainingError:
+        raise
+    except Exception as error:
+        raise SFTTrainingError(f"could not construct merged parent SFT policy: {type(error).__name__}") from None
 
 
 def _initialize_run(
@@ -891,10 +944,15 @@ def run_sft_training(
     seed: int,
     prevalidation_manifest: Path,
     resume_from_checkpoint: Path | None = None,
+    parent_sft_run_dir: Path | None = None,
 ) -> SFTTrainingSummary:
     """Run one pinned LoRA SFT lifecycle using durable off-GPU prevalidation evidence."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise SFTTrainingError("seed must be an integer")
+    parent_sft = None if parent_sft_run_dir is None else load_completed_sft_checkpoint(parent_sft_run_dir)
+    if parent_sft is not None:
+        _validate_parent_sft(config, parent_sft)
+
     prevalidation_evidence = validate_sft_prevalidation_manifest(
         prevalidation_manifest,
         dataset_path=config.dataset_path,
@@ -914,6 +972,9 @@ def run_sft_training(
     )
     config_hash = _config_hash(config, seed=seed)
     environment = collect_environment()
+    if parent_sft is not None and parent_sft.dependency_lock_hash != environment["dependency_lock_hash"]:
+        raise SFTTrainingError("parent SFT dependency identity differs from the continuation runtime")
+
     resume_path: str | None = None
     resume_source: str | None = None
     if resume_from_checkpoint is not None:
@@ -950,6 +1011,14 @@ def run_sft_training(
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
+    expected_parent = None if parent_sft is None else _parent_sft_mapping(parent_sft)
+    if resume_from_checkpoint is not None and run_metadata.get("parent_sft") != expected_parent:
+        raise SFTTrainingError("existing SFT run parent identity does not match the requested resume")
+    if expected_parent is not None:
+        run_metadata["parent_sft"] = expected_parent
+    elif run_metadata.get("parent_sft") is not None:
+        raise SFTTrainingError("non-continuation SFT may not resume a parented run")
+
     gpu_count_used = cast(int, run_metadata["gpu_count_used"])
     _begin_attempt(run_metadata, resume_source=resume_source)
     _write_json(run_dir / "run.json", run_metadata)
@@ -974,7 +1043,15 @@ def run_sft_training(
         eval_dataset = None if validation_records is None else build_prevalidated_sft_dataset(validation_records)
         _reset_cuda_peak_memory()
         with _without_unconfigured_deepspeed_backend():
-            model = runtime.get_model(model_args, training_args)
+            if parent_sft is None:
+                model = runtime.get_model(model_args, training_args)
+            else:
+                model = _load_merged_parent_sft_policy(
+                    parent_sft=parent_sft,
+                    model_args=model_args,
+                    training_args=training_args,
+                    runtime=runtime,
+                )
             trainer = runtime.trainer_type(
                 model=model,
                 args=training_args,

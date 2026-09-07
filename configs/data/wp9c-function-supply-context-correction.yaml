@@ -1,0 +1,20 @@
+version: wp9c-function-supply-context-correction-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+seed: 42
+baseline:
+  aggregate_report: /home/dzy/wp9c-function-supply-aggregate-audit-C0/report.json
+  aggregate_report_sha256_file: /home/dzy/wp9c-function-supply-aggregate-audit-C0/report.sha256
+  aggregate_config: configs/data/wp9c-function-supply-aggregate-audit.yaml
+  reported_ready_context_eligible_count: 1278
+  reported_augmentable_context_eligible_count: 1126
+context_filter:
+  max_prompt_tokens: 2048
+  prompt_protocol: build_code_prompt_v1
+  under8_pre_augmentation_prompt_protocol: build_code_prompt_from_fields_preaugmentation_visible_proxy_v1
+  model_identity_policy: reuse_aggregate_formal_b_identity
+quality:
+  execute_source_code: false
+  generate_tests: false
+  run_piston: false
+  threshold_relaxation_allowed: false
+  preserve_old_aggregate_evidence: true

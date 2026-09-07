@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C29",
+  "parent_checkpoint": "C28-fresh-reduced-calibration-retry-scoring",
+  "status": "completed_verified",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "purpose": "merge accepted C26 initial and C28 retry scoring, classify all 1602, and freeze the actual informative reduced active pool without backfill",
+  "post_calibration_rule": "report actual class counts; exclude dual_uninformative without backfill",
+  "source_expansion_allowed": false,
+  "backfill_performed": false,
+  "minimum_pool_count": null,
+  "verified_result": {
+    "precalibration_problem_count": 1602,
+    "retry_problem_count": 195,
+    "dual_informative": 1123,
+    "public_only": 88,
+    "hidden_only": 143,
+    "dual_uninformative": 248,
+    "active_problem_count": 1354,
+    "excluded_dual_uninformative_count": 248,
+    "dual_saturated_excluded": 101,
+    "dual_uninformative_after_16_excluded": 138,
+    "other_dual_uninformative_excluded": 9,
+    "active_dual_uninformative": 0
+  },
+  "bindings": {
+    "c24_checkpoint_sha256": "48ac639cc3fba0c540437bfbba0b65403575f424c06eefd6b8c51d00771313f1",
+    "c26_score_manifest_sha256": "b7333162acb0e24d7285d8ca9145b220c10636541db09f5fac531de670edd226",
+    "c26_score_records_sha256": "b9c7ada9d21a2f3140eeb074248a4b306d49d14b8dcdc90b39e9e3692ffff08e",
+    "c26_retry_problem_ids_sha256": "f0c03e55771bc86dd3f9966214ade7d34a9734cff133bdbdd1e6d1d8071c2eb5",
+    "c27_generation_run_sha256": "824e92881d63d9d44f2c230f169d649077d21c957f7e02bcf1fdfa61362434d6",
+    "c27_generation_records_sha256": "4f3a83f49821cb20952228f976577eab64664e076dc0c94483757e9c144e697d",
+    "c28_checkpoint_sha256": "be4d28b0c79b460cc562f813b92e7dfdc49697e0462506900cc03219dd3d8473",
+    "c28_score_manifest_sha256": "bcf02cce16217e575b5095c7af4f3ff54c4a689a6925323cb12cef6ab7008b77",
+    "c28_score_records_sha256": "76b934b60876500a0a7f27dac48828f72c51cb39c08be57b490064b9cf866cca",
+    "freeze_script_sha256": "8d8f5e17cfc6b3a7e4590c5ae218f74dae1c0b47f5ca21c482f5a46b5f99c2fd"
+  },
+  "verified_artifacts": {
+    "calibration_manifest": "/home/dzy/wp9c-final-reduced-calibration-C29/calibration_manifest.json",
+    "calibration_manifest_sha256": "5593fe90c19a096678f19e45ca6736e0fc97d242e4f27f92f0b10bb303077d5b",
+    "records_sha256": "70f3cdb5330d84fbe79e15c8668da001626d85466b7bb419920533e9db36085e",
+    "active_selection_sha256": "3b099b95873eb98252af5bf7d2c4422199d4bb095c0a2e2eebe4b44ae63331b2",
+    "problem_order_sha256": "82a58dcb6283d85149d7715675639a7782c4ed9a7c3d17646287a390719dd986",
+    "excluded_dual_uninformative_sha256": "b4b2f5ae347fd6635aa8b24a271b0f60ce8b7fd3be29360ee1741a19f3f5b8b9",
+    "public_grpo_sha256": "558250d06043702e153f88067a88d34378923255ef015cfbc97e106592d9188c",
+    "hidden_grpo_sha256": "9aae7ce46347236f69a67aadb60a719c76f089451873a4fd8d4b92147f74abec",
+    "classification_summary_sha256": "08e963ab366d400477ca93295be280bbf6aa01dd8f6a7817d0be7a8163fdd69c",
+    "disposition_summary_sha256": "f81fbf59f67d9854bb01ab5c2ac09bafab3e919f2d2872330662258a24f36f41",
+    "pool_composition_sha256": "b43c289bbdff0830b94f1139bdc15985dc1aa2c48bdf8b1605fd08f39537e969",
+    "active_order_sha256": "401f854032095cb638637dcf2d1ec000b770cd2d4c78619331f0b13746618c14"
+  },
+  "execution_boundaries": {
+    "new_generation_run": false,
+    "new_piston_scoring_run": false,
+    "grpo_run": false,
+    "gpu_run": false
+  },
+  "next_gate": "target-side reduced active-pool compatibility and formal runtime/eval/GRPO benchmark gates"
+}

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from code_verifier.config import ConfigError
-from code_verifier.data.json_strict import json_values_equal
+from code_verifier.data.json_strict import StrictJsonError, json_values_equal, loads_strict
 from code_verifier.data.leakage_checks import LeakageError, TrainingArtifactKind, build_training_record
 from code_verifier.data.prepare import (
     HF_DATASET_SCHEMA_FIELD,
@@ -457,6 +458,19 @@ def test_check_prepared_data_rejects_json_number_type_drift(tmp_path: Path) -> N
 )
 def test_json_values_equal_is_type_sensitive(left: object, right: object, equal: bool) -> None:
     assert json_values_equal(left, right) is equal
+
+
+def test_loads_strict_wraps_integer_conversion_limit() -> None:
+    get_limit = getattr(sys, "get_int_max_str_digits", None)
+    if get_limit is None:
+        pytest.skip("interpreter does not expose the integer string conversion limit")
+    limit = get_limit()
+    if limit == 0:
+        pytest.skip("integer string conversion limit is disabled")
+
+    payload = '{"value":' + ("9" * (limit + 1)) + "}"
+    with pytest.raises(StrictJsonError, match="integer string conversion"):
+        loads_strict(payload)
 
 
 def test_export_hf_dataset_round_trips_records(tmp_path: Path) -> None:

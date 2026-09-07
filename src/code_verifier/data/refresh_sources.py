@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import keyword
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -19,7 +22,14 @@ from code_verifier.data.deduplicate import (
     test_case_hash,
 )
 from code_verifier.data.json_strict import StrictJsonError, loads_strict
-from code_verifier.data.schema import CodeProblem, ProblemMetadata, TestCase, validate_problem
+from code_verifier.data.schema import (
+    CodeProblem,
+    FrozenJsonValue,
+    ProblemMetadata,
+    TestCase,
+    validate_json_value,
+    validate_problem,
+)
 from code_verifier.data.split_tests import _split_refresh_test_cases_prevalidated, split_refresh_test_cases
 
 Difficulty = Literal["easy", "medium", "hard", "unknown"]
@@ -164,13 +174,56 @@ def _validate_license(snapshot: Path, declared_license: str) -> None:
         raise RefreshSourceError(f"dataset-card license {actual!r} does not match declared license {expected!r}")
 
 
+def _iter_lcbv5_parquet_rows(
+    snapshot: Path,
+    split: str,
+    *,
+    shard_index: int | None = None,
+) -> Iterable[tuple[int, Mapping[str, object]]]:
+    config_dir = snapshot / "lcbv5"
+    files = sorted(config_dir.glob(f"{split}-*.parquet"))
+    if not files:
+        raise RefreshSourceError(f"pinned snapshot has no parquet files for lcbv5/{split}")
+    if shard_index is not None and not 0 <= shard_index < len(files):
+        raise RefreshSourceError(f"lcbv5 shard index must be in [0, {len(files) - 1}]")
+    expected = {"problem", "starter_code", "tests", "metadata"}
+    try:
+        import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
+        offsets: list[int] = []
+        running = 0
+        for path in files:
+            offsets.append(running)
+            running += pq.ParquetFile(path).metadata.num_rows
+        selected = range(len(files)) if shard_index is None else (shard_index,)
+        for file_index in selected:
+            path = files[file_index]
+            parquet_file = pq.ParquetFile(path)
+            column_names = parquet_file.schema_arrow.names
+            if set(column_names) != expected:
+                raise RefreshSourceError(
+                    f"DeepCoder lcbv5 schema drift in {path.name}: expected {sorted(expected)}, got {column_names}"
+                )
+            local_index = 0
+            for batch in parquet_file.iter_batches(batch_size=128, columns=column_names):
+                for row in batch.to_pylist():
+                    if not isinstance(row, Mapping):
+                        raise RefreshSourceError(f"DeepCoder row in {path.name} is not a mapping")
+                    yield offsets[file_index] + local_index, cast(Mapping[str, object], row)
+                    local_index += 1
+    except RefreshSourceError:
+        raise
+    except Exception as error:
+        raise RefreshSourceError(f"could not read DeepCoder parquet projection lcbv5/{split}: {error}") from error
+
+
 def _iter_parquet_rows(snapshot: Path, config_name: str, split: str) -> Iterable[Mapping[str, object]]:
     config_dir = snapshot / config_name
     files = sorted(config_dir.glob(f"{split}-*.parquet"))
     if not files:
         raise RefreshSourceError(f"pinned snapshot has no parquet files for {config_name}/{split}")
     try:
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
+        import pyarrow.parquet as pq
 
         for path in files:
             parquet_file = pq.ParquetFile(path)
@@ -237,6 +290,156 @@ def _taco_tests(value: object, *, record_id: str) -> tuple[TestCase, ...]:
         TestCase(input=input_text, expected=output_text)
         for input_text, output_text in zip(inputs, outputs, strict=True)
     )
+
+
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, item in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = item
+    return result
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _decode_concatenated_json_values(value: object, *, record_id: str, field: str) -> tuple[object, ...]:
+    if not isinstance(value, str):
+        raise ValueError(f"{record_id}: {field} must be a JSON text string")
+    decoder = json.JSONDecoder(
+        object_pairs_hook=_json_object_without_duplicate_keys,
+        parse_constant=_reject_json_constant,
+    )
+    values: list[object] = []
+    index = 0
+    while index < len(value):
+        while index < len(value) and value[index].isspace():
+            index += 1
+        if index == len(value):
+            break
+        try:
+            decoded, next_index = decoder.raw_decode(value, index)
+        except (json.JSONDecodeError, ValueError, RecursionError) as error:
+            raise ValueError(f"{record_id}: {field} contains invalid JSON values") from error
+        values.append(decoded)
+        index = next_index
+    if not values:
+        raise ValueError(f"{record_id}: {field} contains no JSON values")
+    return tuple(values)
+
+
+def _function_call_expected(value: object, *, record_id: str) -> FrozenJsonValue:
+    """Unwrap and validate the DeepCoder function-call output envelope without guessing lists."""
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise ValueError(f"{record_id}: function-call output envelope must contain exactly one value")
+        value = value[0]
+    return validate_json_value(value, field_path=f"{record_id}.expected")
+
+
+def _primeintellect_function_call_tests(
+    value: object,
+    *,
+    record_id: str,
+) -> tuple[str, tuple[TestCase, ...]] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    if not all(isinstance(item, dict) and item.get("type") == "function_call" for item in value):
+        return None
+    if any(set(item) != {"type", "fn_name", "input", "output"} for item in value):
+        raise ValueError(f"{record_id}: unsupported primeintellect function-call test schema")
+    function_names = {item["fn_name"] for item in value}
+    if len(function_names) != 1:
+        raise ValueError(f"{record_id}: function-call tests must use one function name")
+    function_name = next(iter(function_names))
+    if not isinstance(function_name, str) or not function_name.isidentifier() or keyword.iskeyword(function_name):
+        raise ValueError(f"{record_id}: function-call function name is invalid")
+    tests: list[TestCase] = []
+    for item in value:
+        input_value = item["input"]
+        if not isinstance(input_value, list):
+            raise ValueError(f"{record_id}: function-call input must be a positional-argument list")
+        tests.append(
+            TestCase(
+                input=validate_json_value(input_value, field_path=f"{record_id}.input"),
+                expected=_function_call_expected(item["output"], record_id=record_id),
+            )
+        )
+    return function_name, tuple(tests)
+
+
+def _taco_function_call_tests(
+    value: object,
+    *,
+    record_id: str,
+) -> tuple[str, tuple[TestCase, ...]] | None:
+    if not isinstance(value, dict) or "fn_name" not in value:
+        return None
+    if set(value) != {"fn_name", "inputs", "outputs"}:
+        raise ValueError(f"{record_id}: unsupported TACO function-call test schema")
+    function_name = value["fn_name"]
+    inputs = value["inputs"]
+    outputs = value["outputs"]
+    if not isinstance(function_name, str) or not function_name.isidentifier() or keyword.iskeyword(function_name):
+        raise ValueError(f"{record_id}: function-call function name is invalid")
+    if not isinstance(inputs, list) or not isinstance(outputs, list) or len(inputs) != len(outputs):
+        raise ValueError(f"{record_id}: function-call inputs/outputs must be equal-length lists")
+    if any(not isinstance(item, list) for item in inputs):
+        raise ValueError(f"{record_id}: function-call input must be a positional-argument list")
+    tests = tuple(
+        TestCase(
+            input=validate_json_value(input_value, field_path=f"{record_id}.input"),
+            expected=_function_call_expected(output_value, record_id=record_id),
+        )
+        for input_value, output_value in zip(inputs, outputs, strict=True)
+    )
+    return function_name, tests
+
+
+def _signature_supports_arities(signature: str, arities: set[int]) -> bool:
+    try:
+        parsed = ast.parse(f"{signature}\n    pass\n")
+    except SyntaxError:
+        return False
+    if len(parsed.body) != 1 or not isinstance(parsed.body[0], ast.FunctionDef):
+        return False
+    arguments = parsed.body[0].args
+    if any(default is None for default in arguments.kw_defaults):
+        return False
+    positional_count = len(arguments.posonlyargs) + len(arguments.args)
+    required_count = positional_count - len(arguments.defaults)
+    maximum_count = None if arguments.vararg is not None else positional_count
+    return all(arity >= required_count and (maximum_count is None or arity <= maximum_count) for arity in arities)
+
+
+def _function_signature_from_row(
+    row: Mapping[str, object],
+    *,
+    function_name: str,
+    arities: set[int],
+) -> str | None:
+    escaped = re.escape(function_name)
+    pattern = re.compile(rf"(?m)^[ \t]*def[ \t]+{escaped}[ \t]*\([^\n]*\)[ \t]*(?:->[ \t]*[^:\n]+)?[ \t]*:")
+    problem = row.get("problem")
+    solutions = row.get("solutions")
+    if (
+        not isinstance(problem, str)
+        or not isinstance(solutions, list)
+        or any(not isinstance(item, str) for item in solutions)
+    ):
+        return None
+    seen: set[str] = set()
+    for text in (problem, *solutions):
+        for match in pattern.finditer(text):
+            signature = match.group(0).strip()
+            if signature in seen:
+                continue
+            seen.add(signature)
+            if _signature_supports_arities(signature, arities):
+                return signature
+    return None
 
 
 def _framed_text(value: str) -> bytes:
@@ -412,6 +615,307 @@ def _candidate_from_row(
     )
 
 
+def _function_candidate_from_row(
+    spec: RefreshSourceSpec,
+    row: Mapping[str, object],
+    *,
+    row_index: int,
+    raw_hash: str | None = None,
+) -> RefreshCandidate | None:
+    if set(row) != {"problem", "solutions", "tests"}:
+        raise RefreshSourceError(f"{spec.source_name} row {row_index}: unexpected top-level schema")
+    prompt = row["problem"]
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    record_id = f"{spec.config_name}/{spec.split}/{row_index}"
+    resolved_raw_hash = _deepcoder_raw_record_hash(row) if raw_hash is None else raw_hash
+    solution_hash = _raw_reference_solution_hash(row["solutions"], record_id=record_id)
+    try:
+        parsed_tests = _strict_tests_json(row["tests"], record_id=record_id)
+        parsed_function: tuple[str, tuple[TestCase, ...]] | None
+        if spec.config_name == "primeintellect":
+            parsed_function = _primeintellect_function_call_tests(parsed_tests, record_id=record_id)
+        elif spec.config_name == "taco":
+            parsed_function = _taco_function_call_tests(parsed_tests, record_id=record_id)
+        else:
+            raise RefreshSourceError(f"unsupported DeepCoder config {spec.config_name!r}")
+        if parsed_function is None:
+            return None
+        function_name, tests = parsed_function
+        if len(tests) < 4:
+            return None
+        arities = {len(cast(Sequence[object], test.input)) for test in tests}
+        function_signature = _function_signature_from_row(
+            row,
+            function_name=function_name,
+            arities=arities,
+        )
+        if function_signature is None:
+            return None
+        test_fingerprint = refresh_test_set_fingerprint(tests, context=record_id)
+    except (DuplicateDataError, ValueError):
+        return None
+    candidate_id = stable_json_hash(
+        {
+            "protocol": "wp9a-refresh-candidate-v1",
+            "source_name": spec.source_name,
+            "dataset_id": spec.dataset_id,
+            "revision": spec.revision,
+            "config_name": spec.config_name,
+            "split": spec.split,
+            "row_index": row_index,
+            "raw_record_sha256": resolved_raw_hash,
+        }
+    )
+    return RefreshCandidate(
+        candidate_id=candidate_id,
+        source_name=spec.source_name,
+        source_record_id=record_id,
+        prompt=prompt.strip(),
+        function_name=function_name,
+        function_signature=function_signature,
+        tests=tests,
+        source_url_hash=None,
+        raw_reference_solution_hash=solution_hash,
+        difficulty="unknown",
+        category=("function_call",),
+        raw_record_sha256=resolved_raw_hash,
+        test_fingerprint=test_fingerprint,
+        test_validation_guard=None,
+    )
+
+
+def _lcbv5_function_candidate_from_row(
+    spec: RefreshSourceSpec,
+    row: Mapping[str, object],
+    *,
+    row_index: int,
+    raw_hash: str | None = None,
+) -> RefreshCandidate | None:
+    expected_fields = {"problem", "starter_code", "tests", "metadata"}
+    if set(row) != expected_fields:
+        raise RefreshSourceError(f"{spec.source_name} row {row_index}: unexpected lcbv5 schema")
+    prompt = row["problem"]
+    starter_code = row["starter_code"]
+    metadata = row["metadata"]
+    tests_text = row["tests"]
+    if (
+        not isinstance(prompt, str)
+        or not prompt.strip()
+        or not isinstance(starter_code, str)
+        or not isinstance(metadata, Mapping)
+        or not isinstance(tests_text, str)
+    ):
+        return None
+    function_name = metadata.get("func_name")
+    if not isinstance(function_name, str) or not function_name.isidentifier() or keyword.iskeyword(function_name):
+        return None
+    record_id = f"lcbv5/{spec.split}/{row_index}"
+    try:
+        parsed = ast.parse(starter_code + "pass\n")
+        methods = [
+            node for node in ast.walk(parsed) if isinstance(node, ast.FunctionDef) and node.name == function_name
+        ]
+        if len(methods) != 1:
+            return None
+        arguments = methods[0].args
+        positional = [*arguments.posonlyargs, *arguments.args]
+        if (
+            len(positional) < 2
+            or positional[0].arg != "self"
+            or arguments.defaults
+            or arguments.vararg is not None
+            or arguments.kwonlyargs
+            or arguments.kwarg is not None
+        ):
+            return None
+        parameter_names = [argument.arg for argument in positional[1:]]
+        function_signature = f"def {function_name}({', '.join(parameter_names)}):"
+        raw_tests = loads_strict(tests_text)
+        if not isinstance(raw_tests, list) or len(raw_tests) < 4:
+            return None
+        tests: list[TestCase] = []
+        for test_index, item in enumerate(raw_tests):
+            if not isinstance(item, dict) or set(item) != {"input", "output", "testtype"}:
+                return None
+            if item["testtype"] != "functional":
+                return None
+            input_values = _decode_concatenated_json_values(
+                item["input"],
+                record_id=record_id,
+                field=f"tests[{test_index}].input",
+            )
+            output_values = _decode_concatenated_json_values(
+                item["output"],
+                record_id=record_id,
+                field=f"tests[{test_index}].output",
+            )
+            if len(input_values) != len(parameter_names) or len(output_values) != 1:
+                return None
+            tests.append(
+                TestCase(
+                    input=tuple(validate_json_value(value, field_path=f"{record_id}.input") for value in input_values),
+                    expected=validate_json_value(output_values[0], field_path=f"{record_id}.expected"),
+                )
+            )
+        test_fingerprint = refresh_test_set_fingerprint(tests, context=record_id)
+    except (DuplicateDataError, StrictJsonError, ValueError, SyntaxError):
+        return None
+    resolved_raw_hash = stable_json_hash(row) if raw_hash is None else raw_hash
+    candidate_id = stable_json_hash(
+        {
+            "protocol": "wp9c-function-refresh-lcbv5-v1",
+            "source_name": spec.source_name,
+            "dataset_id": spec.dataset_id,
+            "revision": spec.revision,
+            "config_name": spec.config_name,
+            "split": spec.split,
+            "row_index": row_index,
+            "raw_record_sha256": resolved_raw_hash,
+        }
+    )
+    return RefreshCandidate(
+        candidate_id=candidate_id,
+        source_name=spec.source_name,
+        source_record_id=record_id,
+        prompt=prompt.strip(),
+        function_name=function_name,
+        function_signature=function_signature,
+        tests=tuple(tests),
+        source_url_hash=None,
+        raw_reference_solution_hash=None,
+        difficulty="unknown",
+        category=("function_call", "lcbv5_train"),
+        raw_record_sha256=resolved_raw_hash,
+        test_fingerprint=test_fingerprint,
+        test_validation_guard=None,
+    )
+
+
+def _opencoder_assert_test_case(
+    text: object,
+    *,
+    record_id: str,
+    function_name: str,
+) -> TestCase:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"{record_id}: OpenCoder testcase must be a non-empty string")
+    try:
+        module = ast.parse(text)
+    except SyntaxError as error:
+        raise ValueError(f"{record_id}: OpenCoder testcase has invalid Python syntax") from error
+    if len(module.body) != 1 or not isinstance(module.body[0], ast.Assert):
+        raise ValueError(f"{record_id}: OpenCoder testcase must contain exactly one assert")
+    expression = module.body[0].test
+    if (
+        not isinstance(expression, ast.Compare)
+        or len(expression.ops) != 1
+        or not isinstance(expression.ops[0], ast.Eq)
+        or len(expression.comparators) != 1
+    ):
+        raise ValueError(f"{record_id}: OpenCoder testcase must be a single equality assertion")
+    sides = (expression.left, expression.comparators[0])
+    call_side: ast.Call | None = None
+    expected_side: ast.expr | None = None
+    for left, right in (sides, sides[::-1]):
+        if (
+            isinstance(left, ast.Call)
+            and isinstance(left.func, ast.Name)
+            and left.func.id == function_name
+            and not left.keywords
+            and all(not isinstance(argument, ast.Starred) for argument in left.args)
+        ):
+            call_side = left
+            expected_side = right
+            break
+    if call_side is None or expected_side is None:
+        raise ValueError(f"{record_id}: OpenCoder testcase does not call the frozen entry point")
+    try:
+        arguments = [ast.literal_eval(argument) for argument in call_side.args]
+        expected = ast.literal_eval(expected_side)
+    except (ValueError, TypeError, MemoryError, RecursionError) as error:
+        raise ValueError(f"{record_id}: OpenCoder testcase contains non-literal values") from error
+    return TestCase(
+        input=tuple(validate_json_value(value, field_path=f"{record_id}.input") for value in arguments),
+        expected=validate_json_value(expected, field_path=f"{record_id}.expected"),
+    )
+
+
+def _opencoder_candidate_from_row(
+    row: Mapping[str, object],
+    *,
+    row_index: int,
+    dataset_id: str,
+    revision: str,
+    source_name: str = "opencoder-educational",
+) -> RefreshCandidate | None:
+    expected_fields = {"seq_id", "instruction", "output", "code", "entry_point", "testcase"}
+    if set(row) != expected_fields:
+        raise RefreshSourceError(f"{source_name} row {row_index}: unexpected schema")
+    instruction = row["instruction"]
+    code = row["code"]
+    entry_point = row["entry_point"]
+    testcases = row["testcase"]
+    if (
+        not isinstance(instruction, str)
+        or not instruction.strip()
+        or not isinstance(code, str)
+        or not code.strip()
+        or not isinstance(entry_point, str)
+        or not entry_point.isidentifier()
+        or keyword.iskeyword(entry_point)
+        or not isinstance(testcases, list)
+        or len(testcases) < 4
+    ):
+        return None
+    record_id = f"educational_instruct/train/{row_index}"
+    try:
+        tests = tuple(
+            _opencoder_assert_test_case(testcase, record_id=record_id, function_name=entry_point)
+            for testcase in testcases
+        )
+        arities = {len(cast(Sequence[object], test.input)) for test in tests}
+        function_signature = _function_signature_from_row(
+            {"problem": instruction, "solutions": [code]},
+            function_name=entry_point,
+            arities=arities,
+        )
+        if function_signature is None:
+            return None
+        test_fingerprint = refresh_test_set_fingerprint(tests, context=record_id)
+    except (DuplicateDataError, ValueError):
+        return None
+    raw_hash = stable_json_hash(row)
+    candidate_id = stable_json_hash(
+        {
+            "protocol": "wp9c-function-refresh-opencoder-v1",
+            "source_name": source_name,
+            "dataset_id": dataset_id,
+            "revision": revision,
+            "config_name": "educational_instruct",
+            "split": "train",
+            "row_index": row_index,
+            "raw_record_sha256": raw_hash,
+        }
+    )
+    return RefreshCandidate(
+        candidate_id=candidate_id,
+        source_name=source_name,
+        source_record_id=record_id,
+        prompt=instruction.strip(),
+        function_name=entry_point,
+        function_signature=function_signature,
+        tests=tests,
+        source_url_hash=None,
+        raw_reference_solution_hash=stable_json_hash([code]),
+        difficulty="unknown",
+        category=("function_call", "opencoder_educational"),
+        raw_record_sha256=raw_hash,
+        test_fingerprint=test_fingerprint,
+        test_validation_guard=None,
+    )
+
+
 def _projection_fingerprint(raw_hashes: Iterable[str]) -> str:
     digest = hashlib.sha256()
     for raw_hash in raw_hashes:
@@ -458,6 +962,156 @@ def load_refresh_source(
         config_name=spec.config_name,
         split=spec.split,
         declared_license=spec.declared_license,
+        scanned_rows=scanned_rows,
+        accepted_rows=len(candidates),
+        projection_fingerprint_sha256=projection_digest.hexdigest(),
+    )
+    return snapshot, candidates
+
+
+def load_refresh_function_call_source(
+    spec: RefreshSourceSpec,
+    *,
+    cache_dir: Path | None,
+) -> tuple[RefreshSourceSnapshot, list[RefreshCandidate]]:
+    """Load the pinned DeepCoder projection and retain only validated function-call candidates."""
+    if spec.adapter != "deepcoder":
+        raise RefreshSourceError(f"unsupported refresh source adapter {spec.adapter!r}")
+    if spec.config_name not in {"primeintellect", "taco"} or spec.split != "train":
+        raise RefreshSourceError("DeepCoder function-call sources must use primeintellect/train or taco/train")
+    snapshot_dir = _resolve_snapshot(spec.dataset_id, spec.revision, cache_dir=cache_dir)
+    _validate_license(snapshot_dir, spec.declared_license)
+
+    candidates: list[RefreshCandidate] = []
+    projection_digest = hashlib.sha256()
+    scanned_rows = 0
+    rows = enumerate(_iter_parquet_rows(snapshot_dir, spec.config_name, spec.split), start=0)
+
+    def project_row(item: tuple[int, Mapping[str, object]]) -> tuple[str, RefreshCandidate | None]:
+        row_index, row = item
+        raw_hash = _deepcoder_raw_record_hash(row)
+        return raw_hash, _function_candidate_from_row(spec, row, row_index=row_index, raw_hash=raw_hash)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        while batch := list(islice(rows, 128)):
+            scanned_rows += len(batch)
+            for raw_hash, candidate in pool.map(project_row, batch):
+                projection_digest.update(raw_hash.encode("ascii"))
+                projection_digest.update(b"\n")
+                if candidate is not None:
+                    candidates.append(candidate)
+    snapshot = RefreshSourceSnapshot(
+        source_name=spec.source_name,
+        dataset_id=spec.dataset_id,
+        revision=spec.revision,
+        config_name=spec.config_name,
+        split=spec.split,
+        declared_license=spec.declared_license,
+        scanned_rows=scanned_rows,
+        accepted_rows=len(candidates),
+        projection_fingerprint_sha256=projection_digest.hexdigest(),
+    )
+    return snapshot, candidates
+
+
+def load_lcbv5_function_call_source(
+    spec: RefreshSourceSpec,
+    *,
+    cache_dir: Path | None,
+    shard_index: int | None = None,
+) -> tuple[RefreshSourceSnapshot, list[RefreshCandidate]]:
+    """Load the pinned DeepCoder lcbv5 train split and retain only functional-call candidates."""
+    if spec.adapter != "deepcoder" or spec.config_name != "lcbv5" or spec.split != "train":
+        raise RefreshSourceError("DeepCoder lcbv5 function-call source must use lcbv5/train")
+    snapshot_dir = _resolve_snapshot(spec.dataset_id, spec.revision, cache_dir=cache_dir)
+    _validate_license(snapshot_dir, spec.declared_license)
+    candidates: list[RefreshCandidate] = []
+    projection_digest = hashlib.sha256()
+    scanned_rows = 0
+    rows = _iter_lcbv5_parquet_rows(snapshot_dir, spec.split, shard_index=shard_index)
+    for row_index, row in rows:
+        scanned_rows += 1
+        raw_hash = stable_json_hash(row)
+        projection_digest.update(raw_hash.encode("ascii"))
+        projection_digest.update(b"\n")
+        candidate = _lcbv5_function_candidate_from_row(spec, row, row_index=row_index, raw_hash=raw_hash)
+        if candidate is not None:
+            candidates.append(candidate)
+    snapshot = RefreshSourceSnapshot(
+        source_name=spec.source_name,
+        dataset_id=spec.dataset_id,
+        revision=spec.revision,
+        config_name=spec.config_name,
+        split=spec.split,
+        declared_license=spec.declared_license,
+        scanned_rows=scanned_rows,
+        accepted_rows=len(candidates),
+        projection_fingerprint_sha256=projection_digest.hexdigest(),
+    )
+    return snapshot, candidates
+
+
+def load_opencoder_educational_source(
+    *,
+    dataset_id: str,
+    revision: str,
+    declared_license: str,
+    cache_dir: Path | None,
+    expected_parquet_sha256: str | None = None,
+) -> tuple[RefreshSourceSnapshot, list[RefreshCandidate]]:
+    """Load the pinned OpenCoder educational_instruct parquet with a conservative assert-only adapter."""
+    snapshot_dir = _resolve_snapshot(dataset_id, revision, cache_dir=cache_dir)
+    _validate_license(snapshot_dir, declared_license)
+    path = snapshot_dir / "educational_instruct" / "train-00000-of-00001.parquet"
+    if not path.is_file():
+        raise RefreshSourceError(f"pinned OpenCoder snapshot is missing {path.relative_to(snapshot_dir)}")
+    if expected_parquet_sha256 is not None:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_parquet_sha256:
+            raise RefreshSourceError("OpenCoder educational parquet SHA256 mismatch")
+    expected_fields = {"seq_id", "instruction", "output", "code", "entry_point", "testcase"}
+    try:
+        import pyarrow.parquet as pq
+
+        parquet_file = pq.ParquetFile(path)
+        column_names = parquet_file.schema_arrow.names
+        if set(column_names) != expected_fields:
+            raise RefreshSourceError(
+                f"OpenCoder educational schema drift: expected {sorted(expected_fields)}, got {column_names}"
+            )
+        candidates: list[RefreshCandidate] = []
+        projection_digest = hashlib.sha256()
+        scanned_rows = 0
+        for batch in parquet_file.iter_batches(batch_size=128, columns=column_names):
+            for row in batch.to_pylist():
+                if not isinstance(row, Mapping):
+                    raise RefreshSourceError("OpenCoder educational row is not a mapping")
+                raw_hash = stable_json_hash(row)
+                projection_digest.update(raw_hash.encode("ascii"))
+                projection_digest.update(b"\n")
+                candidate = _opencoder_candidate_from_row(
+                    row,
+                    row_index=scanned_rows,
+                    dataset_id=dataset_id,
+                    revision=revision,
+                )
+                scanned_rows += 1
+                if candidate is not None:
+                    candidates.append(candidate)
+    except RefreshSourceError:
+        raise
+    except Exception as error:
+        raise RefreshSourceError(f"could not read OpenCoder educational parquet: {error}") from error
+    snapshot = RefreshSourceSnapshot(
+        source_name="opencoder-educational",
+        dataset_id=dataset_id,
+        revision=revision,
+        config_name="educational_instruct",
+        split="train",
+        declared_license=declared_license,
         scanned_rows=scanned_rows,
         accepted_rows=len(candidates),
         projection_fingerprint_sha256=projection_digest.hexdigest(),
@@ -544,6 +1198,10 @@ _REFRESH_INTERFACE_NOTE = (
 
 def canonicalize_refresh_candidate(candidate: RefreshCandidate, *, seed: int) -> tuple[CodeProblem, bool]:
     """Return a canonical train problem plus whether its test count needs a later quality gate."""
+    is_stdio = (
+        candidate.function_name == "solve_io"
+        and candidate.function_signature == "def solve_io(input_text: str) -> str:"
+    )
     if candidate.test_validation_guard is None:
         visible, train_hidden, eval_hidden = split_refresh_test_cases(
             candidate.tests,
@@ -551,6 +1209,8 @@ def canonicalize_refresh_candidate(candidate: RefreshCandidate, *, seed: int) ->
             seed=seed,
         )
     else:
+        if not is_stdio:
+            raise ValueError("prevalidated DeepCoder test guards are valid only for the frozen stdio projection")
         if candidate.test_fingerprint is None:
             raise ValueError(
                 f"refresh candidate {candidate.candidate_id} is missing its prevalidated test fingerprint"
@@ -564,13 +1224,16 @@ def canonicalize_refresh_candidate(candidate: RefreshCandidate, *, seed: int) ->
             problem_id=candidate.candidate_id,
             seed=seed,
         )
+    canonical_prompt = (
+        f"{candidate.prompt.rstrip()}\n\n{_REFRESH_INTERFACE_NOTE}" if is_stdio else candidate.prompt.rstrip()
+    )
     problem = CodeProblem(
         problem_id=candidate.candidate_id,
         source=candidate.source_name,
         split="train",
-        prompt=f"{candidate.prompt.rstrip()}\n\n{_REFRESH_INTERFACE_NOTE}",
-        function_name="solve_io",
-        function_signature="def solve_io(input_text: str) -> str:",
+        prompt=canonical_prompt,
+        function_name=candidate.function_name,
+        function_signature=candidate.function_signature,
         starter_code=None,
         visible_tests=visible,
         train_hidden_tests=train_hidden,

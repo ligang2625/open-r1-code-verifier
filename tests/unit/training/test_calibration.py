@@ -109,15 +109,15 @@ def _fake_sft_identity(root: Path) -> SFTCheckpointIdentity:
 
 def test_tracked_calibration_config_is_frozen() -> None:
     config = load_calibration_config(Path("configs/grpo/refresh-calibration.yaml"))
-    assert config == CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
+    assert config == CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 2500, 225, 2275, 0.15, 1750, 375, 375, 0)
 
 
 def test_tracked_calibration_config_rejects_protocol_drift(tmp_path: Path) -> None:
     source = Path("configs/grpo/refresh-calibration.yaml").read_text(encoding="utf-8")
     drifted = tmp_path / "drifted.yaml"
-    drifted.write_text(source.replace("size: 3000", "size: 2999"), encoding="utf-8")
+    drifted.write_text(source.replace("size: 2500", "size: 2499"), encoding="utf-8")
 
-    with pytest.raises(ConfigError, match="frozen WP9 protocol"):
+    with pytest.raises(ConfigError, match="quota counts must sum to active_pool_size"):
         load_calibration_config(drifted)
 
 
@@ -507,7 +507,7 @@ def test_retry_and_disposition_rules_cover_hard_easy_and_quality_priority() -> N
 
 
 def test_active_selection_stratifies_unequal_source_difficulty_in_both_overlap_buckets() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 20, 0.10, 0.15, 0.70, 0.15, 0.15)
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 20, 2, 18, 0.15, 14, 3, 3, 0)
     records: list[dict[str, object]] = []
     for prefix, count, source_name, difficulty, overlap_origin in (
         ("sft-a", 3, "source-a", "easy", "sft_reuse"),
@@ -551,7 +551,7 @@ def test_active_selection_stratifies_unequal_source_difficulty_in_both_overlap_b
 
 
 def test_active_selection_allocates_whole_bucket_before_class_preference() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 18, 0, 18, 0.15, 13, 2, 2, 0)
     records: list[dict[str, object]] = [
         {
             "problem_id": f"dual-{index}",
@@ -604,7 +604,7 @@ def test_active_selection_allocates_whole_bucket_before_class_preference() -> No
 
 
 def test_active_selection_rejects_correlated_single_arm_cap_with_diagnostics() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 18, 0.0, 0.15, 0.70, 0.15, 0.15)
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 18, 0, 18, 0.15, 13, 2, 2, 0)
     records: list[dict[str, object]] = [
         {
             "problem_id": f"dual-{index}",
@@ -638,8 +638,8 @@ def test_active_selection_rejects_correlated_single_arm_cap_with_diagnostics() -
         assert expected in message
 
 
-def test_active_selection_treats_overlap_fraction_as_preferred_target() -> None:
-    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 10, 0.10, 0.15, 0.70, 0.15, 0.15)
+def test_active_selection_requires_exact_sft_overlap_quota() -> None:
+    config = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 10, 1, 9, 0.15, 7, 1, 1, 0)
     records: list[dict[str, object]] = [
         {
             "problem_id": f"p-{index}",
@@ -651,8 +651,5 @@ def test_active_selection_treats_overlap_fraction_as_preferred_target() -> None:
         for index in range(10)
     ]
 
-    selected, reserve = calibration._select_active_records(records, config=config, seed=42)
-
-    assert len(selected) == 10
-    assert reserve == []
-    assert all(record["overlap_origin"] == "external_new" for record in selected)
+    with pytest.raises(CalibrationError, match="insufficient sft_reuse calibrated population"):
+        calibration._select_active_records(records, config=config, seed=42)

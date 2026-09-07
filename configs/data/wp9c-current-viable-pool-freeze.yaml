@@ -1,0 +1,76 @@
+version: wp9c-current-viable-pool-freeze-v1
+protocol_amendment: wp9c-reduced-quota-current-viable-v1
+
+user_decision:
+  fixed_external_new_exact_quota_withdrawn: true
+  keep_all_currently_viable_candidates: true
+  minimum_external_new_count: null
+  unresolved_or_unavailable_candidates_may_be_dropped: true
+  backfill_required: false
+  source_expansion_allowed: false
+  single_oracle_relaxation_allowed: false
+  quality_threshold_relaxation_allowed: false
+  provenance_threshold_relaxation_allowed: false
+  context_threshold_relaxation_allowed: false
+  piston_threshold_relaxation_allowed: false
+  informativeness_threshold_relaxation_allowed: false
+
+bindings:
+  c12_report: /home/dzy/wp9c-fixed-2505-candidate-freeze-C12-r1/report.json
+  c12_report_sha256: fc37c6792403d1ddc7c6336cb793b49a8a2d09587aed0d6dba3126f36fafb15b
+  c12_candidates: /home/dzy/wp9c-fixed-2505-candidate-freeze-C12-r1/candidates.jsonl
+  c12_candidates_sha256: 98fca412643057e6a992c288d0121e83569e3fa77369b3bb617bc3d331b61840
+  c13_report: /home/dzy/wp9c-under8-augmentation-design-C13-r1/report.json
+  c13_report_sha256: 649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe
+  c13_jobs: /home/dzy/wp9c-under8-augmentation-design-C13-r1/augmentation_jobs.jsonl
+  c13_jobs_sha256: 186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d
+  c16_checkpoint: ai-work/executor/operator/WP9-c/wp9c-synthetic1-response-lineage-rejoin/C16/checkpoint.json
+  c16_checkpoint_sha256: 3f3d8838f9a00e7bc3209097f34a8b4ee29c430adb291ba747405988268d4b9f
+
+expected:
+  frozen_candidate_universe: 2505
+  ready_before_final_piston: 1276
+  under8_total: 1229
+  under8_static_augmentation_viable: 638
+  under8_dropped: 591
+  current_viable_pool: 1914
+  deepcoder_primeintellect_dropped: 541
+  final_formally_usable_count_before_remaining_gates: 0
+
+inclusion:
+  ready:
+    supply_class: ready
+    formal_context_eligible: true
+    requires_test_augmentation: false
+    requires_final_piston: true
+    lane: ready_for_final_piston
+  under8:
+    supply_class: under8
+    c13_static_augmentation_ready: true
+    c13_formal_admission_provenance_blocked: false
+    c13_static_blockers_exact_empty: true
+    lane: ready_for_augmentation_execution
+
+remaining_gates:
+  ready:
+    - final_formal_function_level_piston
+    - reward_independent_pool_accounting
+  under8:
+    - source_solution_piston_qualification
+    - deterministic_multi_solution_consensus_test_augmentation
+    - freeze_exact_8_unique_tests
+    - final_exact_b_context_recheck
+    - final_formal_function_level_piston
+    - reward_independent_pool_accounting
+
+isolation:
+  add_candidate_ids: false
+  rescan_sources: false
+  download_sources: false
+  use_old_reward_outcomes: false
+  execute_source_solutions: false
+  generate_tests: false
+  run_piston: false
+  run_calibration: false
+  run_grpo: false
+  use_gpu: false

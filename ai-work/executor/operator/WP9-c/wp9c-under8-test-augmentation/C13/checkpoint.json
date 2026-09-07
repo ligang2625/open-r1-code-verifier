@@ -1,0 +1,34 @@
+{
+  "checkpoint_id": "C13-under8-augmentation-design",
+  "parent_checkpoint": "C12-fixed-2505-candidate-universe",
+  "status": "completed",
+  "protocol_amendment": "wp9c-active-pool-2500-amendment-v1",
+  "operator_gate": "wp9c-under8-augmentation-design",
+  "source_expansion_frozen": true,
+  "generation_frozen": true,
+  "piston_frozen": true,
+  "grpo_frozen": true,
+  "gpu_frozen": true,
+  "threshold_relaxation": false,
+  "completed_output": {
+    "report": "/home/dzy/wp9c-under8-augmentation-design-C13-r1/report.json",
+    "report_sha256": "649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe",
+    "jobs": "/home/dzy/wp9c-under8-augmentation-design-C13-r1/augmentation_jobs.jsonl",
+    "jobs_sha256": "186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d",
+    "under8_jobs": 1229,
+    "static_augmentation_ready": 638,
+    "fewer_than_two_transformable_source_solutions": 545,
+    "insufficient_deterministic_input_proposals": 47,
+    "deepcoder_primeintellect_jobs": 541,
+    "deepcoder_primeintellect_jobs_with_exactly_one_accepted_solution": 541,
+    "under8_formal_context_eligible": null,
+    "quality_gate_passed": 0
+  },
+  "bindings": {
+    "config_sha256": "038521dfedc78787d8d224c3521bb768b2539988456f2558d03c01980d6f1be6",
+    "audit_script_sha256": "b709d7fa5158511c30395d8acf62de1269199af730a159d883d9317bac556501",
+    "augmentation_protocol_sha256": "5d3089e1e440c6ef46954bd6037ecb312a5f17acac72e50760faac2a2683fc49",
+    "c12_manifest_sha256": "98fca412643057e6a992c288d0121e83569e3fa77369b3bb617bc3d331b61840"
+  },
+  "decision": "multi_solution_consensus_cannot_cover_primeintellect_without_additional_lineage_oracle"
+}

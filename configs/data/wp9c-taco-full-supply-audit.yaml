@@ -1,0 +1,44 @@
+version: wp9c-taco-full-supply-audit-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+seed: 42
+targets:
+  active_pool: 2500
+  sft_reuse_exact: 225
+  external_new_exact: 2275
+  pre_piston_external_new_buffer_min: 2600
+  pre_piston_external_new_buffer_target: 2800
+baseline:
+  historical_aggregate_report: /home/dzy/wp9c-function-supply-aggregate-audit-C0/report.json
+  historical_aggregate_report_sha256: f6ff5a9cb688fb60d433f7f9e973d3273e5d18f04e3088855a1a43a06c2cdfd5
+  correction_report: /home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json
+  correction_report_sha256: dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953
+  ready_context_eligible_count: 1276
+  under8_preaugmentation_planning_count: 1119
+  under8_formal_context_eligible_count: null
+  zero_attrition_planning_potential_count: 2395
+source:
+  source_name: BAAI/TACO
+  dataset_id: BAAI/TACO
+  revision: d593ed0a2becbbc952230bb89be09189bf1056dc
+  config_name: ALL
+  split: train
+  declared_license: Apache-2.0
+  provenance_note: mixed upstream material; preserve source/url and review upstream terms before formal admission
+  shard_glob: ALL/train-*-of-00009.parquet
+  expected_shard_count: 9
+  download_manifest: /home/dzy/wp9c-taco-full-download-C6/manifest.json
+  adapter: taco_function_call_full_audit_v1
+selection:
+  minimum_unique_tests: 8
+  max_prompt_tokens: 2048
+  formal_prompt_protocol: canonicalize_refresh_candidate_seed42_then_build_code_prompt_v1
+  token_ngram_size: 5
+  near_jaccard_threshold: 0.90
+  priority: after_current_ready_before_apps_under8
+quality:
+  execute_source_code: false
+  generate_tests: false
+  run_piston: false
+  threshold_relaxation_allowed: false
+  require_reference_solution_execution_validation: true
+  exclude_unresolved_quality_gate: true

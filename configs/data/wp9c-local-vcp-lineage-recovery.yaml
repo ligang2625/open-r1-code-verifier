@@ -1,0 +1,42 @@
+version: wp9c-local-vcp-lineage-recovery-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+
+augmentation_design:
+  c13_report: /home/dzy/wp9c-under8-augmentation-design-C13-r1/report.json
+  c13_report_sha256: 649679f6ce415a93ce698199ea991dc19181a988f38f7b344f6eb4009a6e83fe
+  c13_jobs: /home/dzy/wp9c-under8-augmentation-design-C13-r1/augmentation_jobs.jsonl
+  c13_jobs_sha256: 186158e2d96bc78044e26d87d5ed4447d0f82d12348987632ba99436578eaf2d
+  deepcoder_primeintellect_targets: 541
+  deepcoder_primeintellect_accepted_solutions_per_target: 1
+
+c8:
+  report: /home/dzy/wp9c-deepcoder-function-supply-audit-C8/report.json
+  report_sha256: d3fb7f7abf66ca42e2099be08d49593967da3b793199d9feb4cca051bf5acee8
+
+c10:
+  report: /home/dzy/wp9c-openr1-raw-python-provenance-audit-C10/report.json
+  report_sha256: b3964526b1d5d4760a6af18be5aec70d617f5b3abc88ab17ac60821709ee1cd2
+  config: configs/data/wp9c-openr1-raw-python-provenance-audit.yaml
+  download_manifest: /home/dzy/wp9c-openr1-raw-python-download-C10/manifest.json
+  download_manifest_sha256: 877ae0ba0dfa8b860d4d6849bd90959b2afcab5cb9b6a0bcd71b26a0d4583a1d
+  expected_rows: 35735
+  expected_shards: 11
+
+matching:
+  prompt: normalize_text_exact
+  deepcoder_solution: shared_final_python_block_exact
+  raw_gold_solution: fenced_final_python_else_exact_plain_python
+  strict_lineage_key: normalized_prompt_plus_exact_code_bytes
+  prompt_only_is_formal_lineage: false
+  fuzzy_prompt_allowed: false
+  fuzzy_code_allowed: false
+  incremental_candidate_supply_allowed: false
+
+isolation:
+  source_expansion_allowed: false
+  download_allowed: false
+  generate_tests: false
+  execute_source_code: false
+  run_piston: false
+  threshold_relaxation_allowed: false
+  c11_must_remain_paused: true

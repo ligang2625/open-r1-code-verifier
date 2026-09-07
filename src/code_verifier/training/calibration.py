@@ -24,11 +24,18 @@ from code_verifier.data.refresh import check_refresh_data
 from code_verifier.evaluation.generate import BatchedGroupSamplingGenerator, GenerationResult, GroupSamplingGenerator
 from code_verifier.execution.base import CodeExecutor
 from code_verifier.rewards.common import RewardContractError, compute_code_rewards_concurrent
+from code_verifier.training.calibration_checkpoint import (
+    ScoringCheckpointError,
+    append_scoring_checkpoint_record,
+    load_or_initialize_scoring_checkpoint,
+    scoring_checkpoint_dir,
+)
 from code_verifier.training.grpo_data import build_grpo_row
 from code_verifier.training.sft import SFTCheckpointIdentity, load_completed_sft_checkpoint
 
 CALIBRATION_SCHEMA_VERSION = "wp9b-calibration-v1"
 CALIBRATION_TEST_SCHEMA_VERSION = "wp9b-calibration-test-v1"
+ACTIVE_POOL_PROTOCOL_ID = "wp9c-active-pool-2500-amendment-v1"
 _CALIBRATION_PROGRESS_VERSION = 1
 _INPUT_FIELDS = {
     "problem_id",
@@ -66,11 +73,13 @@ class CalibrationConfig:
     max_new_tokens: int
     max_prompt_tokens: int
     active_pool_size: int
-    sft_overlap_fraction: float
+    sft_overlap_count: int
+    external_new_count: int
     sft_overlap_hard_max: float
-    dual_informative_min_fraction: float
-    public_only_max_fraction: float
-    hidden_only_max_fraction: float
+    dual_informative_min_count: int
+    public_only_max_count: int
+    hidden_only_max_count: int
+    dual_uninformative_count: int
 
     def __post_init__(self) -> None:
         for name in ("initial_generations", "retry_generations"):
@@ -86,27 +95,36 @@ class CalibrationConfig:
             raise CalibrationError("active_pool_size must be a positive integer")
         if self.active_pool_size <= 0:
             raise CalibrationError("active_pool_size must be a positive integer")
-        fractions = {
-            "sft_overlap_fraction": self.sft_overlap_fraction,
-            "sft_overlap_hard_max": self.sft_overlap_hard_max,
-            "dual_informative_min_fraction": self.dual_informative_min_fraction,
-            "public_only_max_fraction": self.public_only_max_fraction,
-            "hidden_only_max_fraction": self.hidden_only_max_fraction,
+        count_fields = {
+            "sft_overlap_count": self.sft_overlap_count,
+            "external_new_count": self.external_new_count,
+            "dual_informative_min_count": self.dual_informative_min_count,
+            "public_only_max_count": self.public_only_max_count,
+            "hidden_only_max_count": self.hidden_only_max_count,
+            "dual_uninformative_count": self.dual_uninformative_count,
         }
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, int | float)
-            or not math.isfinite(float(value))
-            or not 0.0 <= float(value) <= 1.0
-            for value in fractions.values()
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in count_fields.values()):
+            raise CalibrationError("active-pool quota counts must be non-negative integers")
+        if self.sft_overlap_count + self.external_new_count != self.active_pool_size:
+            raise CalibrationError("SFT and external-new quota counts must sum to active_pool_size")
+        if (
+            isinstance(self.sft_overlap_hard_max, bool)
+            or not isinstance(self.sft_overlap_hard_max, int | float)
+            or not math.isfinite(float(self.sft_overlap_hard_max))
+            or not 0.0 <= float(self.sft_overlap_hard_max) <= 0.15
         ):
-            raise CalibrationError("calibration fractions must be finite values in [0, 1]")
-        if self.sft_overlap_fraction > self.sft_overlap_hard_max or self.sft_overlap_hard_max > 0.15:
+            raise CalibrationError("SFT overlap hard maximum must be finite and in [0, 0.15]")
+        if self.sft_overlap_count > math.floor(self.active_pool_size * float(self.sft_overlap_hard_max)):
             raise CalibrationError("SFT overlap exceeds the frozen 15% hard maximum")
-        if self.dual_informative_min_fraction < 0.70:
+        if self.external_new_count < math.ceil(self.active_pool_size * 0.85):
+            raise CalibrationError("external-new quota cannot be below 85% of the active pool")
+        if self.dual_informative_min_count < math.ceil(self.active_pool_size * 0.70):
             raise CalibrationError("dual informative minimum cannot be below 70%")
-        if self.public_only_max_fraction > 0.15 or self.hidden_only_max_fraction > 0.15:
+        single_arm_cap = math.floor(self.active_pool_size * 0.15)
+        if self.public_only_max_count > single_arm_cap or self.hidden_only_max_count > single_arm_cap:
             raise CalibrationError("single-arm informative caps cannot exceed 15%")
+        if self.dual_uninformative_count != 0:
+            raise CalibrationError("dual-uninformative quota must equal zero")
 
 
 @dataclass(frozen=True)
@@ -331,8 +349,12 @@ def _load_jsonl(path: Path) -> list[dict[str, object]]:
 def load_calibration_config(path: Path) -> CalibrationConfig:
     """Load the exact tracked WP9-b calibration configuration."""
     root = load_yaml_mapping(path)
-    expected = {"version", "sampling", "active_pool"}
-    if set(root) != expected or root.get("version") != CALIBRATION_SCHEMA_VERSION:
+    expected = {"version", "active_pool_protocol", "sampling", "active_pool"}
+    if (
+        set(root) != expected
+        or root.get("version") != CALIBRATION_SCHEMA_VERSION
+        or root.get("active_pool_protocol") != ACTIVE_POOL_PROTOCOL_ID
+    ):
         raise ConfigError("refresh calibration config fields/version are invalid")
     sampling = root.get("sampling")
     pool = root.get("active_pool")
@@ -347,11 +369,13 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
         raise ConfigError("refresh calibration sampling config is invalid")
     if not isinstance(pool, Mapping) or set(pool) != {
         "size",
-        "sft_overlap_fraction",
+        "sft_overlap_count",
+        "external_new_count",
         "sft_overlap_hard_max",
-        "dual_informative_min_fraction",
-        "public_only_max_fraction",
-        "hidden_only_max_fraction",
+        "dual_informative_min_count",
+        "public_only_max_count",
+        "hidden_only_max_count",
+        "dual_uninformative_count",
     }:
         raise ConfigError("refresh calibration active-pool config is invalid")
     try:
@@ -363,11 +387,13 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
             max_new_tokens=cast(int, sampling["max_new_tokens"]),
             max_prompt_tokens=cast(int, sampling["max_prompt_tokens"]),
             active_pool_size=cast(int, pool["size"]),
-            sft_overlap_fraction=cast(float, pool["sft_overlap_fraction"]),
+            sft_overlap_count=cast(int, pool["sft_overlap_count"]),
+            external_new_count=cast(int, pool["external_new_count"]),
             sft_overlap_hard_max=cast(float, pool["sft_overlap_hard_max"]),
-            dual_informative_min_fraction=cast(float, pool["dual_informative_min_fraction"]),
-            public_only_max_fraction=cast(float, pool["public_only_max_fraction"]),
-            hidden_only_max_fraction=cast(float, pool["hidden_only_max_fraction"]),
+            dual_informative_min_count=cast(int, pool["dual_informative_min_count"]),
+            public_only_max_count=cast(int, pool["public_only_max_count"]),
+            hidden_only_max_count=cast(int, pool["hidden_only_max_count"]),
+            dual_uninformative_count=cast(int, pool["dual_uninformative_count"]),
         )
     except CalibrationError as error:
         raise ConfigError(str(error)) from error
@@ -378,12 +404,14 @@ def load_calibration_config(path: Path) -> CalibrationConfig:
         top_p=0.95,
         max_new_tokens=512,
         max_prompt_tokens=2048,
-        active_pool_size=3000,
-        sft_overlap_fraction=0.075,
+        active_pool_size=2500,
+        sft_overlap_count=225,
+        external_new_count=2275,
         sft_overlap_hard_max=0.15,
-        dual_informative_min_fraction=0.70,
-        public_only_max_fraction=0.15,
-        hidden_only_max_fraction=0.15,
+        dual_informative_min_count=1750,
+        public_only_max_count=375,
+        hidden_only_max_count=375,
+        dual_uninformative_count=0,
     )
     if config != frozen:
         raise ConfigError("tracked refresh calibration config must match the frozen WP9 protocol")
@@ -1098,9 +1126,16 @@ def score_calibration_generation(
     output_dir: Path,
     executor_factory: Callable[[], CodeExecutor],
     workers: int,
+    piston_config_sha256: str | None = None,
     allow_test_protocol: bool = False,
 ) -> Path:
     """Score identical sampled completions with Public and Hidden verifiers concurrently."""
+    if output_dir.exists():
+        raise CalibrationError("calibration scoring output directory must not already exist")
+    if piston_config_sha256 is not None and not _is_sha256_text(piston_config_sha256):
+        raise CalibrationError("calibration scoring Piston config SHA256 is invalid")
+    if not allow_test_protocol and piston_config_sha256 is None:
+        raise CalibrationError("production calibration scoring requires a Piston config SHA256")
     summary = check_refresh_data(
         refresh_dataset_dir,
         reference_dataset_dir=reference_dataset_dir,
@@ -1121,8 +1156,38 @@ def score_calibration_generation(
         if not isinstance(problem_id, str) or problem_id not in input_by_id:
             raise CalibrationError("generation bundle contains an unknown problem ID")
         grouped.setdefault(problem_id, []).append(row)
-    score_records: list[dict[str, object]] = []
-    for problem_id, generation_rows in grouped.items():
+    problem_ids = list(grouped)
+    checkpoint_dir = scoring_checkpoint_dir(output_dir)
+    checkpoint_manifest = {
+        "version": 1,
+        "schema_version": CALIBRATION_SCHEMA_VERSION,
+        "scoring_semantics": "same_k8_public_hidden_v1",
+        "block_index": generation_manifest["block_index"],
+        "workers": workers,
+        "piston_config_sha256": piston_config_sha256,
+        "allow_test_protocol": allow_test_protocol,
+        "problem_order_sha256": stable_json_hash(problem_ids),
+        "generation_run_manifest_sha256": _sha256(generation_run_dir / "run.json"),
+        "generation_records_sha256": generation_manifest["records_sha256"],
+        "input_manifest_sha256": _sha256(input_bundle_dir / "input_manifest.json"),
+        "wp9a_manifest_sha256": input_manifest["wp9a_manifest_sha256"],
+        "refresh_root_manifest_sha256": _sha256(summary.root_manifest),
+        "wp9a_public_training_sha256": _sha256(summary.public_grpo_jsonl),
+        "wp9a_hidden_training_sha256": _sha256(summary.hidden_grpo_jsonl),
+        "reference_canonical_sha256": _sha256(reference_dataset_dir / "canonical" / "problems.jsonl"),
+    }
+    try:
+        score_records, checkpoint_byte_count = load_or_initialize_scoring_checkpoint(
+            checkpoint_dir,
+            expected_manifest=checkpoint_manifest,
+            expected_problem_ids=problem_ids,
+        )
+    except (ScoringCheckpointError, OSError) as error:
+        raise CalibrationError(f"calibration scoring checkpoint recovery failed: {error}") from error
+    checkpoint_problem_count = len(score_records)
+    for problem_index, (problem_id, generation_rows) in enumerate(grouped.items()):
+        if problem_index < checkpoint_problem_count:
+            continue
         if problem_id not in public_by_id or problem_id not in hidden_by_id or len(generation_rows) != 8:
             raise CalibrationError("generation and WP9-a training views are not aligned")
         public = public_by_id[problem_id]
@@ -1151,16 +1216,44 @@ def score_calibration_generation(
             )
         except RewardContractError as error:
             raise CalibrationError(f"calibration scoring failed: {error}") from error
-        if any(bool(item["infrastructure_failure"]) for item in (*public_components, *hidden_components)):
-            raise CalibrationError("calibration scoring encountered an infrastructure failure")
-        score_records.append(
-            _score_record(
-                input_record=input_by_id[problem_id],
-                generation_rows=generation_rows,
-                public_components=public_components,
-                hidden_components=hidden_components,
+        infrastructure_failures = [
+            (
+                mode,
+                generation_rows[index].get("sample_index"),
+                item.get("infrastructure_failure_kind"),
+                item.get("status"),
+                item.get("failure_counts"),
             )
+            for mode, components in (("public", public_components), ("hidden", hidden_components))
+            for index, item in enumerate(components)
+            if bool(item["infrastructure_failure"])
+        ]
+        if infrastructure_failures:
+            details = "; ".join(
+                f"{mode}[sample_index={sample_index},kind={kind},status={status},failure_counts={failure_counts}]"
+                for mode, sample_index, kind, status, failure_counts in infrastructure_failures
+            )
+            raise CalibrationError(
+                f"calibration scoring encountered an infrastructure failure problem_id={problem_id}: {details}"
+            )
+        record = _score_record(
+            input_record=input_by_id[problem_id],
+            generation_rows=generation_rows,
+            public_components=public_components,
+            hidden_components=hidden_components,
         )
+        try:
+            checkpoint_problem_count, checkpoint_byte_count = append_scoring_checkpoint_record(
+                checkpoint_dir,
+                record,
+                committed_problem_count=checkpoint_problem_count,
+                committed_byte_count=checkpoint_byte_count,
+            )
+        except (ScoringCheckpointError, OSError) as error:
+            raise CalibrationError(f"calibration scoring checkpoint commit failed: {error}") from error
+        score_records.append(record)
+    if checkpoint_problem_count != len(problem_ids) or len(score_records) != len(problem_ids):
+        raise CalibrationError("calibration scoring checkpoint did not cover the complete problem order")
     retry_ids = sorted(
         cast(str, record["problem_id"])
         for record in score_records
@@ -1168,8 +1261,6 @@ def score_calibration_generation(
         and record["public_all_test_zero"] is True
         and record["hidden_all_test_zero"] is True
     )
-    if output_dir.exists():
-        raise CalibrationError("calibration scoring output directory must not already exist")
     temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
     try:
         records_sha = _write_jsonl(temporary / "records" / "scoring.jsonl", score_records)
@@ -1652,10 +1743,10 @@ def _active_selection_diagnostics(
     payload = {
         "requested_overlap_quotas": dict(quotas),
         "requested_class_constraints": {
-            "dual_informative_min": math.ceil(config.active_pool_size * config.dual_informative_min_fraction),
-            "public_only_max": math.floor(config.active_pool_size * config.public_only_max_fraction),
-            "hidden_only_max": math.floor(config.active_pool_size * config.hidden_only_max_fraction),
-            "dual_uninformative_max": 0,
+            "dual_informative_min": config.dual_informative_min_count,
+            "public_only_max": config.public_only_max_count,
+            "hidden_only_max": config.hidden_only_max_count,
+            "dual_uninformative_max": config.dual_uninformative_count,
         },
         "population": [
             {
@@ -1794,24 +1885,10 @@ def _select_active_records(
     seed: int,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Apply overlap quotas, whole-bucket strata, class priority, and bounded fallback."""
-    preferred_overlap = int(round(config.active_pool_size * config.sft_overlap_fraction))
-    available_sft = sum(record.get("overlap_origin") == "sft_reuse" for record in eligible)
-    available_external = len(eligible) - available_sft
-    minimum_sft_needed = max(0, config.active_pool_size - available_external)
-    overlap_target = min(preferred_overlap, available_sft)
-    if overlap_target < minimum_sft_needed:
-        overlap_target = minimum_sft_needed
     quotas = {
-        "sft_reuse": overlap_target,
-        "external_new": config.active_pool_size - overlap_target,
+        "sft_reuse": config.sft_overlap_count,
+        "external_new": config.external_new_count,
     }
-    if overlap_target / config.active_pool_size > config.sft_overlap_hard_max + 1e-12:
-        _raise_active_selection_error(
-            "selected SFT overlap target exceeds the frozen hard maximum",
-            eligible=eligible,
-            quotas=quotas,
-            config=config,
-        )
     buckets = {
         "sft_reuse": [record for record in eligible if record.get("overlap_origin") == "sft_reuse"],
         "external_new": [record for record in eligible if record.get("overlap_origin") != "sft_reuse"],
@@ -1895,7 +1972,7 @@ def _select_active_records(
             public_available[key] = len(public)
             hidden_available[key] = len(hidden)
 
-    dual_min = math.ceil(config.active_pool_size * config.dual_informative_min_fraction)
+    dual_min = config.dual_informative_min_count
     if len(selected) < dual_min:
         _raise_active_selection_error(
             "selected pool cannot satisfy the dual-informative minimum",
@@ -1903,8 +1980,8 @@ def _select_active_records(
             quotas=quotas,
             config=config,
         )
-    public_cap = math.floor(config.active_pool_size * config.public_only_max_fraction)
-    hidden_cap = math.floor(config.active_pool_size * config.hidden_only_max_fraction)
+    public_cap = config.public_only_max_count
+    hidden_cap = config.hidden_only_max_count
     public_targets = _allocate_public_single_slots(
         single_needs,
         public_available,
@@ -2120,7 +2197,6 @@ def build_calibrated_active_pool(
         seed=seed,
     )
     reserve.extend(informative_reserve)
-    preferred_overlap = int(round(config.active_pool_size * config.sft_overlap_fraction))
     overlap_count = sum(record["overlap_origin"] == "sft_reuse" for record in selected)
     counts = Counter(cast(str, record["calibration_class"]) for record in selected)
     selected.sort(key=lambda record: _selection_hash(seed + 1, cast(str, record["problem_id"])))
@@ -2189,9 +2265,10 @@ def build_calibrated_active_pool(
             "class_counts": class_counts,
             "class_fractions": {key: value / len(selected_ids) for key, value in class_counts.items()},
             "sft_overlap_count": overlap_count,
+            "external_new_count": len(selected_ids) - overlap_count,
             "sft_overlap_fraction": overlap_count / len(selected_ids),
-            "sft_overlap_preferred_count": preferred_overlap,
-            "sft_overlap_shortfall_count": max(0, preferred_overlap - overlap_count),
+            "sft_overlap_required_count": config.sft_overlap_count,
+            "external_new_required_count": config.external_new_count,
             "quality_excluded_count": sum(record["quality_gate_required"] is True for record in final_records),
         }
         classification_report_path = temporary / "reports" / "classification_summary.json"
@@ -2216,6 +2293,7 @@ def build_calibrated_active_pool(
         }
         manifest = {
             "schema_version": CALIBRATION_TEST_SCHEMA_VERSION if allow_test_protocol else CALIBRATION_SCHEMA_VERSION,
+            "active_pool_protocol": ACTIVE_POOL_PROTOCOL_ID,
             "status": "completed",
             "evidence_class": "engineering" if allow_test_protocol else "formal_calibration",
             "seed": seed,
@@ -2268,6 +2346,7 @@ def check_calibrated_active_pool(
     expected_evidence = "engineering" if allow_test_protocol else "formal_calibration"
     expected_manifest_fields = {
         "schema_version",
+        "active_pool_protocol",
         "status",
         "evidence_class",
         "seed",
@@ -2287,6 +2366,7 @@ def check_calibrated_active_pool(
     if (
         set(manifest) != expected_manifest_fields
         or manifest.get("schema_version") != expected_schema
+        or manifest.get("active_pool_protocol") != ACTIVE_POOL_PROTOCOL_ID
         or manifest.get("status") != "completed"
         or manifest.get("evidence_class") != expected_evidence
     ):
@@ -2314,11 +2394,13 @@ def check_calibrated_active_pool(
         "max_new_tokens",
         "max_prompt_tokens",
         "active_pool_size",
-        "sft_overlap_fraction",
+        "sft_overlap_count",
+        "external_new_count",
         "sft_overlap_hard_max",
-        "dual_informative_min_fraction",
-        "public_only_max_fraction",
-        "hidden_only_max_fraction",
+        "dual_informative_min_count",
+        "public_only_max_count",
+        "hidden_only_max_count",
+        "dual_uninformative_count",
     }
     if not isinstance(config_mapping, Mapping) or set(config_mapping) != config_fields:
         raise CalibrationError("calibrated active-pool config is invalid")
@@ -2331,16 +2413,18 @@ def check_calibrated_active_pool(
             max_new_tokens=cast(int, config_mapping["max_new_tokens"]),
             max_prompt_tokens=cast(int, config_mapping["max_prompt_tokens"]),
             active_pool_size=cast(int, config_mapping["active_pool_size"]),
-            sft_overlap_fraction=cast(float, config_mapping["sft_overlap_fraction"]),
+            sft_overlap_count=cast(int, config_mapping["sft_overlap_count"]),
+            external_new_count=cast(int, config_mapping["external_new_count"]),
             sft_overlap_hard_max=cast(float, config_mapping["sft_overlap_hard_max"]),
-            dual_informative_min_fraction=cast(float, config_mapping["dual_informative_min_fraction"]),
-            public_only_max_fraction=cast(float, config_mapping["public_only_max_fraction"]),
-            hidden_only_max_fraction=cast(float, config_mapping["hidden_only_max_fraction"]),
+            dual_informative_min_count=cast(int, config_mapping["dual_informative_min_count"]),
+            public_only_max_count=cast(int, config_mapping["public_only_max_count"]),
+            hidden_only_max_count=cast(int, config_mapping["hidden_only_max_count"]),
+            dual_uninformative_count=cast(int, config_mapping["dual_uninformative_count"]),
         )
     except (CalibrationError, KeyError, TypeError, ValueError) as error:
         raise CalibrationError("calibrated active-pool config is invalid") from error
     if not allow_test_protocol:
-        frozen = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 3000, 0.075, 0.15, 0.70, 0.15, 0.15)
+        frozen = CalibrationConfig(8, 8, 0.8, 0.95, 512, 2048, 2500, 225, 2275, 0.15, 1750, 375, 375, 0)
         if config != frozen:
             raise CalibrationError("formal calibrated active-pool config differs from the frozen WP9 protocol")
 
@@ -2472,7 +2556,6 @@ def check_calibrated_active_pool(
         seed=seed,
     )
     reserve = [*base_reserve, *informative_reserve]
-    preferred_overlap = int(round(config.active_pool_size * config.sft_overlap_fraction))
     selected_counts = Counter(cast(str, record["calibration_class"]) for record in selected_records)
     if selected_counts[CalibrationClass.DUAL_UNINFORMATIVE.value] != 0:
         raise CalibrationError("calibrated active pool contains dual-uninformative problems")
@@ -2536,9 +2619,10 @@ def check_calibrated_active_pool(
         "class_counts": class_counts,
         "class_fractions": {key: value / len(selected_ids) for key, value in class_counts.items()},
         "sft_overlap_count": overlap_count,
+        "external_new_count": len(selected_ids) - overlap_count,
         "sft_overlap_fraction": overlap_count / len(selected_ids),
-        "sft_overlap_preferred_count": preferred_overlap,
-        "sft_overlap_shortfall_count": max(0, preferred_overlap - overlap_count),
+        "sft_overlap_required_count": config.sft_overlap_count,
+        "external_new_required_count": config.external_new_count,
         "quality_excluded_count": sum(record["quality_gate_required"] is True for record in records),
     }
     if (
@@ -2552,6 +2636,8 @@ def check_calibrated_active_pool(
     active_order_sha = stable_json_hash(selected_ids)
     if manifest.get("active_order_sha256") != active_order_sha:
         raise CalibrationError("active pool order hash mismatch")
+    if overlap_count != config.sft_overlap_count or len(selected_ids) - overlap_count != config.external_new_count:
+        raise CalibrationError("active-pool exact overlap quotas do not match the frozen protocol")
     if overlap_count / len(selected_ids) > config.sft_overlap_hard_max + 1e-12:
         raise CalibrationError("active-pool SFT overlap exceeds the frozen hard max")
 

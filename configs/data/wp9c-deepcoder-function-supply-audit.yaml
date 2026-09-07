@@ -1,0 +1,96 @@
+version: wp9c-deepcoder-function-supply-audit-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+seed: 42
+targets:
+  active_pool: 2500
+  sft_reuse_exact: 225
+  external_new_exact: 2275
+  pre_piston_external_new_buffer_min: 2600
+  pre_piston_external_new_buffer_target: 2800
+baseline:
+  historical_aggregate_report: /home/dzy/wp9c-function-supply-aggregate-audit-C0/report.json
+  historical_aggregate_report_sha256: f6ff5a9cb688fb60d433f7f9e973d3273e5d18f04e3088855a1a43a06c2cdfd5
+  correction_report: /home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json
+  correction_report_sha256: dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953
+  c6_full_taco_report: /home/dzy/wp9c-taco-full-supply-audit-C6-r1/report.json
+  c6_full_taco_report_sha256: 28ecf395eb5a5ae209c4abf48b502c94154f3f0c269379506558a6bb22c3d623
+  c7_taco_under8_report: /home/dzy/wp9c-taco-under8-supply-audit-C7/report.json
+  c7_taco_under8_report_sha256: 3702fd1ca16d276edee63337f11c80879c0fcdbf325fea3f35e63e23b6fda2ff
+  ready_context_eligible_count: 1276
+  under8_preaugmentation_planning_count: 1119
+  under8_formal_context_eligible_count: null
+  zero_attrition_planning_potential_count: 2395
+  c7_under8_preaugmentation_planning_union: 1126
+  c7_zero_attrition_planning_union: 2402
+deepcoder:
+  dataset_id: agentica-org/DeepCoder-Preview-Dataset
+  revision: 177913a7bd43791646ef6a43645caa3c871ab3db
+  declared_license: MIT
+  split: train
+  provenance_note: DeepCoder dataset-card MIT; primeintellect/taco projections may contain upstream-derived material and require provenance review before formal admission
+  source_priority:
+    - source_name: deepcoder-primeintellect
+      config_name: primeintellect
+      adapter: deepcoder
+      expected_shard_count: 5
+      expected_row_count: 16252
+    - source_name: deepcoder-taco
+      config_name: taco
+      adapter: deepcoder
+      expected_shard_count: 4
+      expected_row_count: 7436
+  shards:
+    - config_name: primeintellect
+      path: primeintellect/train-00000-of-00005.parquet
+      blob_sha256: a1efc9d5e9eb6a9977576b08e5349758c8b139131ea5d13ef5c390f2a21db538
+      size: 471433458
+    - config_name: primeintellect
+      path: primeintellect/train-00001-of-00005.parquet
+      blob_sha256: 2a645ca9e77976f49699ad9c25d79a697203e8811b0887ae256e7301d3e72681
+      size: 154602996
+    - config_name: primeintellect
+      path: primeintellect/train-00002-of-00005.parquet
+      blob_sha256: 2bd0cc7207fa0aad722cc21a275afd777ab1debb318c4b9a9eccb18f7fee32f0
+      size: 109141620
+    - config_name: primeintellect
+      path: primeintellect/train-00003-of-00005.parquet
+      blob_sha256: 4503d28636d63dab88e4a07a54b4a8257c9ad2e1663e8cdcb1216e2306550427
+      size: 218648455
+    - config_name: primeintellect
+      path: primeintellect/train-00004-of-00005.parquet
+      blob_sha256: b1148bc2f0939843d500e43668e643c619a67f17797358a1ddf8e33c9782a545
+      size: 205323005
+    - config_name: taco
+      path: taco/train-00000-of-00004.parquet
+      blob_sha256: 6e666b446c9feb6232f29a5c843883caba108398981ea25c3c72f02ebdda7eb6
+      size: 207619655
+    - config_name: taco
+      path: taco/train-00001-of-00004.parquet
+      blob_sha256: 594adb3eaea2b813e1b42ca88890e5bf9e70a64b43d11d27d56554ce4a0bd889
+      size: 178070052
+    - config_name: taco
+      path: taco/train-00002-of-00004.parquet
+      blob_sha256: b9c8fb5788bc3b80ce31a78b9ef7e57ee1231d1d4c423d157b7a3b9a9901e481
+      size: 188905427
+    - config_name: taco
+      path: taco/train-00003-of-00004.parquet
+      blob_sha256: 920c612796225d328e4291a8c825bea516c170eb16d97c8bab043026686af14b
+      size: 287699931
+selection:
+  minimum_unique_tests: 1
+  under8_maximum_unique_tests: 7
+  ready_minimum_unique_tests: 8
+  max_prompt_tokens: 2048
+  formal_prompt_protocol: canonicalize_refresh_candidate_seed42_then_build_code_prompt_v1
+  preaugmentation_prompt_protocol: build_code_prompt_from_fields_preaugmentation_visible_proxy_v1
+  token_ngram_size: 5
+  near_jaccard_threshold: 0.90
+  priority: current_ready_then_deepcoder_ready_then_deepcoder_under8_then_c7_under8_union
+quality:
+  execute_source_code: false
+  generate_tests: false
+  run_piston: false
+  threshold_relaxation_allowed: false
+  require_reference_solution_execution_validation: true
+  exclude_unresolved_quality_gate: true
+  final_augmented_context_recheck_required: true

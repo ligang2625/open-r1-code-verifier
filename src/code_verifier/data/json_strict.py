@@ -23,7 +23,9 @@ def loads_strict(text: str) -> object:
     """Parse one JSON value and reject duplicate keys at every nesting level."""
     try:
         return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
-    except json.JSONDecodeError as error:
+    except StrictJsonError:
+        raise
+    except ValueError as error:
         raise StrictJsonError(f"invalid JSON: {error}") from error
 
 

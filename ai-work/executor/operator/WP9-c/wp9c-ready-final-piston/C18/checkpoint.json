@@ -1,0 +1,52 @@
+{
+  "checkpoint_id": "C18-ready-final-piston-preparation",
+  "parent_checkpoint": "C17-current-viable-pool-freeze",
+  "status": "completed",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-ready-final-piston-preparation",
+  "user_policy": {
+    "minimum_ready_piston_pass_count": null,
+    "backfill_failed_candidates": false,
+    "source_expansion_allowed": false,
+    "threshold_relaxation": false
+  },
+  "completed_output": {
+    "output_dir": "/home/dzy/wp9c-ready-final-piston-prep-C18",
+    "report": "/home/dzy/wp9c-ready-final-piston-prep-C18/report.json",
+    "report_sha256": "1d87bb7d87f55af65b08fd96636283bf93933d8f841dea1b61d41e409d594737",
+    "piston_jobs": "/home/dzy/wp9c-ready-final-piston-prep-C18/piston_jobs.jsonl",
+    "piston_jobs_sha256": "f83455c5baf4c2e0a360db74e641b24cfc8976b6535356e86f5d5c7c39b50188",
+    "dropped_pre_piston": "/home/dzy/wp9c-ready-final-piston-prep-C18/dropped_pre_piston.jsonl",
+    "dropped_pre_piston_sha256": "fa1670860994df87b914be4a5dd5d841019bafee909508e13665a5145c760d93"
+  },
+  "counts": {
+    "ready_input": 1276,
+    "piston_jobs": 1167,
+    "pre_piston_dropped": 109,
+    "dropped_lcbv5_no_source_solution": 100,
+    "dropped_primeintellect_no_transformable_solution": 9
+  },
+  "job_source_counts": {
+    "codeparrot/apps": 5,
+    "deepcoder-primeintellect": 530,
+    "deepcoder-taco": 15,
+    "opencoder-educational": 420,
+    "tkeskin/leetcode-solutions": 197
+  },
+  "bindings": {
+    "config_sha256": "d45395ac4134370e84d502d2e050b68a3d61e3cbec0b024fd301d2de000a4ea7",
+    "preparation_script_sha256": "c151169e52bb978065aa3d981094a1da4161cf5c6dab66933c2c7d86baf7bd91",
+    "c17_checkpoint_sha256": "a3dd90c207afb59504139ef27d98dc6152ecff11b1f90a339f440319f6cf5525",
+    "piston_config_sha256": "f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e",
+    "piston_transport_policy_sha256": "16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c"
+  },
+  "execution_boundaries": {
+    "source_solution_execution_run": false,
+    "piston_run": false,
+    "test_generation_run": false,
+    "calibration_run": false,
+    "grpo_run": false,
+    "gpu_run": false
+  },
+  "next_gate": "C19-manual-ready-final-formal-piston"
+}

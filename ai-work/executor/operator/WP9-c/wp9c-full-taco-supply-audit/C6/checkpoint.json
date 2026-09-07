@@ -1,0 +1,118 @@
+{
+  "checkpoint_id": "C6",
+  "supersedes_checkpoint": "C5",
+  "status": "completed",
+  "resolved_blocker_checkpoint": "ai-work/executor/operator/WP9-c/wp9c-function-supply-context-correction/C6/checkpoint.json",
+  "resolved_blocker_report": "/home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json",
+  "resolved_blocker_report_sha256": "dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953",
+  "protocol_amendment": "wp9c-active-pool-2500-amendment-v1",
+  "operator_gate": "wp9c-full-taco-supply-audit",
+  "requires_rtx4090": false,
+  "old_calibration_retry_frozen": true,
+  "old_rtx4090_calibration_frozen": true,
+  "formal_active_pool_quota": {
+    "active_pool_exact": 2500,
+    "sft_reuse_exact": 225,
+    "external_new_exact": 2275,
+    "dual_informative_min": 1750,
+    "public_only_max": 375,
+    "hidden_only_max": 375,
+    "dual_uninformative_exact": 0
+  },
+  "baseline_correction": {
+    "historical_aggregate_report_path": "/home/dzy/wp9c-function-supply-aggregate-audit-C0/report.json",
+    "historical_aggregate_report_sha256": "f6ff5a9cb688fb60d433f7f9e973d3273e5d18f04e3088855a1a43a06c2cdfd5",
+    "correction_report_path": "/home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json",
+    "correction_report_sha256": "dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953",
+    "ready_context_eligible_before_piston": 1276,
+    "apps_under8_preaugmentation_planning": 1119,
+    "apps_under8_formal_context_eligible": null,
+    "zero_attrition_planning_potential": 2395,
+    "under8_post_augmentation_context_recheck_required": true
+  },
+  "planning": {
+    "pre_piston_external_new_buffer_min": 2600,
+    "pre_piston_external_new_buffer_target": 2800,
+    "taco_naive_nine_shard_extrapolation": 657,
+    "taco_incremental_needed_for_2600_before_under8_overlap": 205,
+    "taco_incremental_needed_for_2800_before_under8_overlap": 405,
+    "under8_overlap_can_increase_required_taco_increment": true,
+    "extrapolation_is_evidence": false
+  },
+  "manual_attempts": [
+    {
+      "attempt": 1,
+      "step": "offline_static_audit",
+      "status": "failed_before_atomic_publication",
+      "failed_log": "/home/dzy/wp9c-taco-full-supply-audit-C6.log",
+      "failed_log_sha256": "5e6d6e9f60339d8a02edbb998bc71bc7ec112eb21e72efefcea64ec7c3257bbc",
+      "failure_class": "source_json_integer_conversion_limit",
+      "oversized_integer_digits": 9131,
+      "published_audit_output": false,
+      "reported_supply_counts_published": false,
+      "historical_evidence_mutated": false,
+      "pinned_download_reused_for_retry": true
+    },
+    {
+      "attempt": 2,
+      "step": "offline_static_audit_retry",
+      "status": "completed",
+      "report": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1/report.json",
+      "report_sha256": "28ecf395eb5a5ae209c4abf48b502c94154f3f0c269379506558a6bb22c3d623",
+      "audit_log": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1.log",
+      "audit_log_sha256": "28ecf395eb5a5ae209c4abf48b502c94154f3f0c269379506558a6bb22c3d623",
+      "incremental_taco_context_eligible": 0,
+      "published_audit_output": true,
+      "formal_eligible": false
+    }
+  ],
+  "completed_output": {
+    "report": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1/report.json",
+    "report_sha256": "28ecf395eb5a5ae209c4abf48b502c94154f3f0c269379506558a6bb22c3d623",
+    "structural_ge8_direct_signature": 715,
+    "dedup_retained": 2,
+    "context_eligible": 0,
+    "apps_under8_preaugmentation_planning_after_taco_dedup": 1119,
+    "zero_attrition_planning_potential": 2395,
+    "pre_piston_buffer_min_met": false,
+    "pre_piston_buffer_target_met": false,
+    "formal_eligible": false
+  },
+  "bindings": {
+    "refresh_calibration_config_sha256": "3c6edde3485a15318e3c3c1e881b0207f189f52560e5e668cc3fe2e1d6a35ad5",
+    "taco_audit_config_sha256": "71302fa0d5fd18d135982617e64129850a4d2f3445aed47048eb29cbccd3a7f3",
+    "download_script_sha256": "26467e5421de8db1f8c556e18a43312e37f86a0b287281cf13cdb952bb9aaad0",
+    "audit_runner_sha256": "fb842701ff744e98c7aba41d650442cef1765796f8c9a16772f424ba3864c3c8",
+    "audit_python_sha256": "723eed3322bd9f85da1e937532d73c96f3c0b5fe968da340be5f6d61e4479ee0",
+    "runbook_sha256": "eeec1186d616084c141250a7add739e6b4717a54cc87e38138b62bcefa52ac97",
+    "json_strict_sha256": "4ddc10c5a2510f91df04e04d268a512f24a142abd510ff0d9f57e2ed916bba3a"
+  },
+  "control_plane_validation": {
+    "focused_calibration_wp9b_passed": 26,
+    "refresh_wp9a_regression_passed": 60,
+    "legacy_wp9a_check_refresh_data": "passed",
+    "make_lint": "passed",
+    "make_test_passed": 1209,
+    "make_test_skipped": 3,
+    "skips_are_existing_real_piston_opt_in_only": true,
+    "full_taco_python_compile": "passed",
+    "full_taco_ruff_check": "passed",
+    "full_taco_ruff_format_check": "passed",
+    "full_taco_shell_syntax": "passed",
+    "context_correction_report_and_artifacts": "verified",
+    "corrected_formal_prompt_path": "verified",
+    "under8_planning_only_semantics": "verified",
+    "strict_json_integer_limit_regression_passed": 9,
+    "strict_json_adapter_leakage_regression_passed": 37,
+    "data_unit_regression_passed": 179,
+    "oversized_integer_not_accepted": true
+  },
+  "expected_outputs": {
+    "download_manifest": "/home/dzy/wp9c-taco-full-download-C6/manifest.json",
+    "audit_report": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1/report.json",
+    "audit_report_sha256": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1/report.sha256",
+    "candidate_stage": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1/candidates.jsonl",
+    "apps_under8_after_taco_decisions": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1/apps_under8_after_taco_decisions.jsonl",
+    "audit_log": "/home/dzy/wp9c-taco-full-supply-audit-C6-r1.log"
+  }
+}

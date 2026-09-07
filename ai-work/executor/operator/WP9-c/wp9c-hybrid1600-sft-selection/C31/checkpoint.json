@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C31",
+  "status": "completed_verified_experimental_selection",
+  "purpose": "deterministically select 246 frozen formal-SFT overlap problems to form a 1600-problem hybrid candidate set with the accepted C29 active 1354",
+  "evidence_class": "experimental",
+  "mutates_c29": false,
+  "formal_grpo_pool_claim": false,
+  "seed": 42,
+  "selection_namespace": "wp9c-hybrid1600-sft-overlap-v1",
+  "verified_result": {
+    "base_c29_count": 1354,
+    "selected_sft_overlap_count": 246,
+    "hybrid_candidate_count": 1600,
+    "sft_overlap_fraction": 0.15375,
+    "selected_difficulty_counts": {
+      "easy": 117,
+      "medium": 90,
+      "hard": 39
+    },
+    "hybrid_difficulty_counts": {
+      "easy": 561,
+      "medium": 154,
+      "hard": 51,
+      "unknown": 834
+    },
+    "selected_source_counts": {
+      "BAAI/TACO": 75,
+      "codeparrot/apps": 3,
+      "newfacade/LeetCodeDataset": 168
+    },
+    "hybrid_source_counts": {
+      "BAAI/TACO": 473,
+      "codeparrot/apps": 52,
+      "deepcoder-primeintellect": 433,
+      "deepcoder-taco": 11,
+      "newfacade/LeetCodeDataset": 168,
+      "opencoder-educational": 387,
+      "tkeskin/leetcode-solutions": 76
+    },
+    "base_active_order_sha256": "401f854032095cb638637dcf2d1ec000b770cd2d4c78619331f0b13746618c14",
+    "selected_sft_order_sha256": "ff16b4313f6e4be7ebc1e26f5138c6b2d715ca697106376ab9011dc8a50e3ec4",
+    "hybrid_order_sha256": "49331ab2387aa82010063ce8341ec1c0cc1bd40339f16fc8c4106054b5a558f3"
+  },
+  "bindings": {
+    "c29_calibration_manifest_sha256": "5593fe90c19a096678f19e45ca6736e0fc97d242e4f27f92f0b10bb303077d5b",
+    "formal_b_sft_dataset_sha256": "4b90cf95de2d8f12bdc98decbfb712b8eacf5987b02b02b868075ed9ca69eb0c",
+    "wp9a_selection_sha256": "e543eb2ae5275d06e6faf057fd6cd0eedec0c48870bfa7564b37d65a8da749a5",
+    "c24_sft_reuse_audit_sha256": "c24a9909e3ce06f4db95ff7639254e1a083b8a447d0f565a466d921f28fc5f6c",
+    "selection_script_sha256": "0060045db0fad2567530a8243125426ab20498c6f62dbc2771bea3dcb4ae1d7f"
+  },
+  "verified_artifacts": {
+    "root": "/home/dzy/wp9c-hybrid1600-sft-selection-C31",
+    "report_sha256": "68bed6b3dfe774a1fedabed2b2684e6aa0e2283ece7b31b60ce252167ebf600f",
+    "selected_sft_overlap_sha256": "c966a4c9b7f3e878600a0647178c1cdf781719adb60dd02d8a231a187a20e6e6",
+    "reserve_sft_overlap_sha256": "96a60c822001a4fe3ffbffc268b95a12783c0e2c68273ec1496e31a04baba93d",
+    "hybrid_problem_order_sha256": "e9253c7859acb703aba35fd58147c6fa78e012f46acfbc595b21606208cdbeee"
+  },
+  "next_gate": "fresh calibration of the 246 B-seen additions before any production-GRPO claim; exact-1600 uncalibrated inclusion is only an explicit ablation"
+}

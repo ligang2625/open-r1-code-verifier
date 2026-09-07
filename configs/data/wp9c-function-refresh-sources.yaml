@@ -1,0 +1,26 @@
+version: wp9c-function-refresh-engineering-v1
+sources:
+  opencoder_educational:
+    source_name: opencoder-educational
+    dataset_id: OpenCoder-LLM/opc-sft-stage2
+    revision: 87a3b8da70131b3cf5ef6504c26a51b8c17347a4
+    config_name: educational_instruct
+    split: train
+    declared_license: MIT
+    parquet_path: educational_instruct/train-00000-of-00001.parquet
+    parquet_sha256: 59cc262e240140ca265655a8d14d2a0f28139164a8e532294308692408095759
+    adapter: opencoder_assert_literal_v1
+selection:
+  minimum_unique_tests: 8
+  max_prompt_tokens: 2048
+  token_ngram_size: 5
+  near_jaccard_threshold: 0.90
+  seed: 42
+quality:
+  require_reference_solution_execution_validation: true
+  exclude_unresolved_quality_gate: true
+exclusions:
+  sft: required
+  validation: required
+  project_test: required
+  humanevalplus: required

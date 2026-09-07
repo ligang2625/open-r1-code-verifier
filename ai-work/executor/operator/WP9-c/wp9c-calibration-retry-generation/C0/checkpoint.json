@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "stage_id": "WP9-c",
+  "checkpoint_id": "C0",
+  "task_kind": "continuation",
+  "source_plan_commit": "5a1f083af6bfdf2e1333bd70e95e9257b4e66b48",
+  "source_initial_generation_handoff_commit": "c3cf0d66befe99be38c83925ba8b8980a71b1dce",
+  "operator_gate_id": "wp9c-calibration-retry-generation",
+  "operator_handoff_mode": "portable_target",
+  "operator_restart_policy": "exact_prefix_resume_or_strict_completed",
+  "calibration_config_sha256": "97b2706808e1d4d2fa9088be018617c3e1459633767d3505de138fc5f48c68b0",
+  "problem_batch_size": 4,
+  "retry_problem_count": 4386,
+  "expected_record_count": 35088,
+  "expected_sample_index_start": 8,
+  "expected_sample_index_end": 15,
+  "retry_problem_order_sha256": "337c9b85a6744f308dec1a699ce71421a2d5a6c94e2e73748b429fbe2932e111",
+  "retry_manifest_sha256": "251e7eac7aba350925734aa024e95165f1358195d4e0811a3e48f3757c54edab",
+  "initial_scoring": {
+    "control_plane_dir": "/home/dzy/wp9c-calibration-score-initial-C5",
+    "status": 0,
+    "score_manifest_sha256": "2147d72603001ee2fdc951470f3981d6f373a5c3e4e21dc20b4736a5b3fda771",
+    "records_sha256": "9bb39a67e3c97ca3a84c1e1393bf5e17824e4d9eacb93410c35a865aaac04621",
+    "problem_count": 5000,
+    "retry_problem_count": 4386,
+    "retry_manifest_sha256": "251e7eac7aba350925734aa024e95165f1358195d4e0811a3e48f3757c54edab",
+    "retry_rule": "public_all_test_zero && hidden_all_test_zero"
+  },
+  "initial_generation": {
+    "control_plane_dir": "/home/dzy/wp9c-calibration-initial-C5",
+    "run_manifest_sha256": "7ab6d5a2bff51cc1871cc06d59b3ccb37080e309f3c82abb9ccfd31e58a58cb8",
+    "records_sha256": "c90a46254d05bb9abe043c6ca6c82696ab4ab2b2cfd58b21e6817f50e726e622",
+    "problem_count": 5000,
+    "record_count": 40000,
+    "block_index": 0
+  },
+  "input_bundle": {
+    "control_plane_dir": "/home/dzy/wp9c-calibration-input-C4-qualitysafe-5000",
+    "target_dir": "$CODE_VERIFIER_DATA_ROOT/wp9c/calibration-input-C4-qualitysafe-5000",
+    "input_manifest_sha256": "f53cd897530756df5e8ae78903bf52225dc988d636051a4030323b71726506d5",
+    "records_sha256": "18c77583dc0695747fd5d6a46a3439730f4e3abc0b8e32a7f79aafa4e1b46361",
+    "problem_order_sha256": "e48e3803be5a7a6d497f677e0bc2da2233840b56cade7a7f4305579d770687de",
+    "record_count": 5000,
+    "seed": 42,
+    "max_prompt_tokens": 2048,
+    "quality_gate_required": false,
+    "overlap_origin": "external_new"
+  },
+  "retry_manifest": {
+    "control_plane_path": "/home/dzy/wp9c-calibration-score-initial-C5/manifest/retry_problem_ids.jsonl",
+    "target_path": "$CODE_VERIFIER_DATA_ROOT/wp9c/retry_problem_ids.jsonl",
+    "sha256": "251e7eac7aba350925734aa024e95165f1358195d4e0811a3e48f3757c54edab",
+    "problem_order_sha256": "337c9b85a6744f308dec1a699ce71421a2d5a6c94e2e73748b429fbe2932e111",
+    "record_count": 4386,
+    "sorted_unique": true,
+    "byte_identity_required": true
+  },
+  "wp9a": {
+    "manifest_sha256": "98a0fb8192661f6358c29819d8a70eb4039397cc2a3ec5444f0581cfbcb81625",
+    "public_training_sha256": "cc2d033ae580d26bb346f5a1e1058645b365c2f5d76cd6b1d6662f8f294126ad",
+    "hidden_training_sha256": "e4d72704841095bf057ccbf6318db138429caab11f02886ad892a950ac73a65d"
+  },
+  "formal_b": {
+    "run_name": "B-sft-formal-seed42",
+    "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "model_revision": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+    "dataset_hash": "4b90cf95de2d8f12bdc98decbfb712b8eacf5987b02b02b868075ed9ca69eb0c",
+    "config_hash": "250fbc15ececb040d2b90d3cb1606e412d1256e10ab9063c073c4ad2b1fb5244",
+    "dependency_lock_hash": "59e6292f72bdc6f7f9d889d1969d87715c83ccb09ed95766a50f81d9d762d560",
+    "checkpoint_sha256": "0fe4ff5d18b980bf6109007b0f0a0a229c716cbcd713d687d642e852e280dbba",
+    "seed": 42
+  },
+  "target_output": "$CODE_VERIFIER_ARTIFACT_ROOT/wp9c/calibration/retry",
+  "storage_gate": {
+    "minimum_free_gib": 20,
+    "minimum_free_inodes": 100000,
+    "active_roots_must_be_under": "/root",
+    "retired_root": "/data"
+  },
+  "postcheck_contract": {
+    "block_index": 1,
+    "samples_per_problem": 8,
+    "sample_indices": "8..15",
+    "problem_ids_and_order": "exact retry manifest",
+    "sample_seed": "calibration_problem_seed(42, problem_id, 1)",
+    "strict_loader": "load_completed_calibration_generation",
+    "same_input_identity": true,
+    "same_formal_b_identity": true
+  },
+  "status": "awaiting_operator"
+}

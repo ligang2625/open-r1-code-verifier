@@ -1,0 +1,38 @@
+version: wp9c-fixed-2505-candidate-freeze-v1
+protocol_amendment: wp9c-active-pool-2500-amendment-v1
+
+expected:
+  ready: 1276
+  under8: 1229
+  total: 2505
+  deepcoder_under8: 542
+  c7_under8_after_deepcoder_dedup: 687
+  deepcoder_primeintellect_under8: 541
+  under8_successes_needed_for_external_new_exact: 999
+  external_new_exact: 2275
+
+evidence:
+  context_correction_report: /home/dzy/wp9c-function-supply-context-correction-C6-r1/report.json
+  context_correction_report_sha256: dfcf62177d0e8b3d643db2a528ea5c8915a16351e1e7ef75b0e1a37d21f8b953
+  c7_report: /home/dzy/wp9c-taco-under8-supply-audit-C7/report.json
+  c7_report_sha256: 3702fd1ca16d276edee63337f11c80879c0fcdbf325fea3f35e63e23b6fda2ff
+  c8_report: /home/dzy/wp9c-deepcoder-function-supply-audit-C8/report.json
+  c8_report_sha256: d3fb7f7abf66ca42e2099be08d49593967da3b793199d9feb4cca051bf5acee8
+  c10_report: /home/dzy/wp9c-openr1-raw-python-provenance-audit-C10/report.json
+  c10_report_sha256: b3964526b1d5d4760a6af18be5aec70d617f5b3abc88ab17ac60821709ee1cd2
+
+policy:
+  source_expansion_allowed: false
+  download_allowed: false
+  source_rescan_allowed: false
+  execute_source_code: false
+  execute_tests: false
+  generate_tests: false
+  run_piston: false
+  run_calibration: false
+  run_grpo: false
+  use_gpu: false
+  threshold_relaxation_allowed: false
+  under8_formal_context_eligible_before_augmentation: null
+  c11_status_required: paused_by_user
+  c11_incremental_supply_if_reopened: 0

@@ -1,4 +1,5 @@
 version: wp9b-calibration-v1
+active_pool_protocol: wp9c-active-pool-2500-amendment-v1
 sampling:
   initial_generations: 8
   retry_generations: 8
@@ -7,9 +8,11 @@ sampling:
   max_new_tokens: 512
   max_prompt_tokens: 2048
 active_pool:
-  size: 3000
-  sft_overlap_fraction: 0.075
+  size: 2500
+  sft_overlap_count: 225
+  external_new_count: 2275
   sft_overlap_hard_max: 0.15
-  dual_informative_min_fraction: 0.70
-  public_only_max_fraction: 0.15
-  hidden_only_max_fraction: 0.15
+  dual_informative_min_count: 1750
+  public_only_max_count: 375
+  hidden_only_max_count: 375
+  dual_uninformative_count: 0

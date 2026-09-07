@@ -1,0 +1,94 @@
+{
+  "checkpoint_id": "C23-under8-final-formal-piston",
+  "parent_checkpoint": "C22-under8-final-exact-b-context",
+  "status": "completed_verified",
+  "protocol_amendment": "wp9c-reduced-quota-current-viable-v1",
+  "operator_gate": "wp9c-under8-final-formal-piston",
+  "requires_rtx4090": false,
+  "backfill_failed_candidates": false,
+  "minimum_pass_count": null,
+  "source_expansion_allowed": false,
+  "threshold_relaxation": false,
+  "correctness_retry_allowed": false,
+  "transport_safe_retry_only": true,
+  "formal_pass_rule": "both_frozen_qualified_oracles_pass_all_final_exact8_tests",
+  "input_counts": {
+    "jobs": 572,
+    "BAAI/TACO": 513,
+    "codeparrot/apps": 58,
+    "deepcoder-taco": 1,
+    "tests_per_candidate": 8,
+    "oracles_per_candidate": 2
+  },
+  "verified_result": {
+    "formal_pass": 572,
+    "formal_fail": 0,
+    "infrastructure_blocked": 0,
+    "solution_executions": 1144,
+    "passing_oracle_count_two": 572,
+    "backfill_required": false
+  },
+  "source_pass_counts": {
+    "BAAI/TACO": 513,
+    "codeparrot/apps": 58,
+    "deepcoder-taco": 1
+  },
+  "classification_contract": {
+    "formal_pass": "both frozen C20-qualified oracle solutions pass all eight final frozen tests",
+    "formal_fail": "fewer than two oracle solutions pass all eight tests and neither execution has structured infrastructure failure",
+    "infrastructure_blocked": "fewer than two oracle solutions pass and at least one execution has structured infrastructure failure",
+    "execute_both_oracles": true
+  },
+  "preparation": {
+    "output_dir": "/home/dzy/wp9c-under8-final-piston-prep-C23",
+    "report": "/home/dzy/wp9c-under8-final-piston-prep-C23/report.json",
+    "report_sha256": "b2968c3be8f67cf496d4f2f70ef7f207b47ca9d3a8c1d1c53e08ae1c4fdb3fcf",
+    "final_piston_jobs": "/home/dzy/wp9c-under8-final-piston-prep-C23/final_piston_jobs.jsonl",
+    "final_piston_jobs_sha256": "2531e7dd8ac464686526283f78e7f9560c5e9c29bcc4fc559abd3c9003689339"
+  },
+  "verified_artifacts": {
+    "report": "/home/dzy/wp9c-under8-final-piston-C23/report.json",
+    "report_sha256": "cdbb796e7f64abdaa50eab43203ab2ee564425e42fb12a03080750c167e65995",
+    "checkpoint_results": "/home/dzy/wp9c-under8-final-piston-C23/checkpoint_results.jsonl",
+    "checkpoint_results_sha256": "6539467f55229a5d5e5619f8128763a03f74f8c15bb29a16b9fa35cb2d43018f",
+    "candidate_results": "/home/dzy/wp9c-under8-final-piston-C23/candidate_results.jsonl",
+    "candidate_results_sha256": "8bc30e295b49fcf6c35bf6629434f6787f678eebd45516e09502339b1bfeccf4",
+    "formal_passers": "/home/dzy/wp9c-under8-final-piston-C23/formal_passers.jsonl",
+    "formal_passers_sha256": "3f4992359a4828331b155931c0a6d64c739e9d1e3f07aa60c67308a2e47780e0",
+    "formal_failures": "/home/dzy/wp9c-under8-final-piston-C23/formal_failures.jsonl",
+    "formal_failures_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "infrastructure_blocked": "/home/dzy/wp9c-under8-final-piston-C23/infrastructure_blocked.jsonl",
+    "infrastructure_blocked_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "log": "/home/dzy/wp9c-under8-final-piston-C23.log",
+    "log_sha256": "3e9f79c556b84675eaae356a3ff32d9531c27788cf3daa5eaeb64e4597820035"
+  },
+  "bindings": {
+    "c22_checkpoint_sha256": "77482d5b1195e2185dd30d3c0845e531d0753569cb452ce716fd9f8a3d3ff851",
+    "preparation_report_sha256": "b2968c3be8f67cf496d4f2f70ef7f207b47ca9d3a8c1d1c53e08ae1c4fdb3fcf",
+    "final_piston_jobs_sha256": "2531e7dd8ac464686526283f78e7f9560c5e9c29bcc4fc559abd3c9003689339",
+    "preparation_script_sha256": "54b66e2c2c28653630e04be55bb337c6aaa5bdb0660c84117e9978c592efc19c",
+    "python_runner_sha256": "653e8e0e29d7777445074a3941bd13ececdf96dd981895416fac732a495ee43a",
+    "shell_runner_sha256": "0d90add24ce2a3adc10f4d802a1a2eee925ab5200e45885f6420653cbc34ec81",
+    "piston_config_sha256": "f049f4ea344285e2b732bb2a602e7c8888ae3ac449320039144c8a0dff62657e",
+    "piston_transport_policy_sha256": "16ae94c26c0c8dfdc47998f2f9b52af2ff9b40022221f41a963836cd992fc62c"
+  },
+  "verification": {
+    "report_sidecar_verified": true,
+    "all_report_artifact_digests_verified": true,
+    "job_digest_bindings_verified_for_all_572": true,
+    "checkpoint_unique_candidate_ids": 572,
+    "candidate_result_unique_candidate_ids": 572,
+    "both_oracles_executed_for_all_572": true,
+    "all_1144_solution_executions_passed_8_of_8": true,
+    "structured_infrastructure_failure_count": 0,
+    "log_traceback": false,
+    "log_contains_final_report": true,
+    "piston_runtime": "3.10.0"
+  },
+  "final_external_new_supply": {
+    "ready_lane_formal_pass": 1030,
+    "under8_formal_pass": 572,
+    "external_new_formal_total": 1602
+  },
+  "next_gate": "C24-final-reduced-pool-assembly-and-sft-reuse-audit"
+}

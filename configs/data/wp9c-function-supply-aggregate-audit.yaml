@@ -1,0 +1,35 @@
+version: wp9c-function-supply-aggregate-audit-v1
+required_external_new: 2775
+inputs:
+  existing_incumbent_dir: /home/dzy/wp9c-function-refresh-context-654-C0
+  incumbent_primary_context_report: /home/dzy/wp9c-function-refresh-quality-context-C0/reports/summary.json
+  incumbent_lcb_context_report: /home/dzy/wp9c-function-refresh-lcb-context-C0/reports/summary.json
+  incumbent_lcb_canonical_report: /home/dzy/wp9c-function-refresh-lcb-context-canonical-C0/reports/summary.json
+  native_ready_report: /home/dzy/wp9c-native-function-supply-audit-C4/report.json
+  native_ready_config: configs/data/wp9c-native-function-supply-audit-v2.yaml
+  opencoder_stage_dir: /home/dzy/wp9c-function-refresh-stage-opencoder-C0
+  under8_report: /home/dzy/wp9c-apps-under8-augmentability-audit-C0/report.json
+  under8_config: configs/data/wp9c-apps-under8-augmentability-audit.yaml
+  formal_reference_dir: /home/dzy/wp8-formal-sync/data/prepared
+  refresh_config: configs/data/refresh.yaml
+expected_counts:
+  existing_incumbent: 654
+  native_ready_structural: 1707
+  opencoder_stage_total: 17130
+  opencoder_ready_ge8: 490
+  under8_augmentable: 1930
+dedup:
+  token_ngram_size: 5
+  near_jaccard_threshold: 0.90
+context_filter:
+  policy: reuse_existing_incumbent_exact_B_identity
+  max_prompt_tokens: 2048
+priority:
+  - existing_incumbent
+  - ready_ge8
+  - under8_augmentable
+quality:
+  execute_source_code: false
+  generate_tests: false
+  run_piston: false
+  threshold_relaxation_allowed: false

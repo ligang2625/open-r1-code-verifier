@@ -1,0 +1,19 @@
+version: wp9c-function-refresh-taco-audit-v1
+source:
+  source_name: BAAI/TACO
+  dataset_id: BAAI/TACO
+  revision: d593ed0a2becbbc952230bb89be09189bf1056dc
+  config_name: ALL
+  split: train
+  declared_license: Apache-2.0
+  provenance_note: mixed upstream material; preserve source/url and review upstream terms before formal admission
+  shard_path: ALL/train-00000-of-00009.parquet
+  shard_size: 286917870
+  shard_sha256: bee336c14dda183b1f700d54a149173418c7b3def295666159dd72c32aa8b326
+  adapter: taco_function_call_audit_v1
+selection:
+  minimum_unique_tests: 8
+  max_prompt_tokens: 2048
+quality:
+  require_reference_solution_execution_validation: true
+  exclude_unresolved_quality_gate: true
