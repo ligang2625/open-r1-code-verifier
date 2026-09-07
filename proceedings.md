@@ -906,3 +906,19 @@ WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next depen
 - 本阶段未修改 `third_party/open-r1` gitlink；项目规格与历史 WP0–WP8 completion record 保持 immutable。
 
 ---
+
+## Project decision：关闭 WP9-c 当前实验阶段并启用 WP9-d GRPO optimization（2026-09-07）
+
+- **性质**：用户明确的 research-stage closeout / routing decision；不追溯修改 WP0–WP9-b finalized evidence，也不把 WP9-c 历史执行伪装成原 sealed plan 的逐条 literal compliance。
+- **WP9-c scientific closeout**：当前 seed-42 active1354 正式结论已经封存。Frozen eval400 上 B / C-Public / D-Hidden 的 Eval-Hidden Pass@1 均为 `0.3750 = 150/400`；C-B 与 D-B primary delta 均为 `0.0000`，paired 95% CI `[-0.0100, +0.0100]`。D 相对 B 的 Train-Hidden Pass@1 为 `+0.0125`，95% CI `[+0.0025, +0.0250]`，说明存在 reward-source-local adaptation，但未观察到 held-out transfer。
+- **WP9-c supplemental control**：SFT-only active1354 continuation 的 Eval-Hidden Pass@1 为 `0.3425 = 137/400`，作为 negative control 保留；后续优化阶段不以 SFT 为当前主方向。
+- **Artifact authority**：WP9-c B/C/D 主分析固定在 `/home/dzy/wp9c-formal-sync/analysis/wp9c-eval400-bcd`；`final_report.md` SHA256 `cc9bbc3d0f6c641c70f9862b0edb4ba0fed29378cd2b80a987bb97579856d9ed`，`paired_report.json` SHA256 `3ce026c9a601909b53f2ac8108b71c3c657d71bbdf5c5015eb08d4bdaed15f8a`，`training_dynamics.json` SHA256 `8bb59a72ae62a6e5088bffe288ac687630e8e74726c615e8af6cddebf5371e83`。完整 closeout 见 `docs/wp9c-stage-closeout.md`。
+- **No-more-WP9-c rule**：从本 decision 起，不再在 `WP9-c` identity 下追加新的 LR/beta/scheduler/LoRA/step-count 实验，也不自动运行 unchanged-recipe second seed。历史 artifacts/failed attempts/operator evidence 保留不改。
+- **Diagnosis carried forward**：当前最高置信度 GRPO 假设是 coverage/scheduler/update-budget mismatch：正式 C/D 各仅 300 optimizer steps、trainer-reported coverage 约 `0.2216 epoch`，但 cosine LR 已从 peak `5e-6` 在 300 steps 内衰减到近零；mean KL 仅约 `1.2e-4`，clip region 为 0，而 reward variance 健康。
+- **New normative amendment**：新增 `PROJECT_SPEC_GRPO_Refresh_WP9D.md`，作为 WP9-d 的 active amendment。它在 WP9-d scope 上 supersede 旧 `PROJECT_SPEC_GRPO_Refresh.md` §17.4 的“直接 formal C2/D2”路由，但不改变 parent specification 的安全、hidden-test isolation、artifact provenance、Public/Hidden fairness 与 24GB operator boundary。
+- **WP9-d first recipe hypothesis**：下一阶段的第一候选固定为 coverage/scheduler-only correction：`max_steps=1200`、`learning_rate=5e-6`、`warmup_ratio=0.05`、`constant_with_warmup`、`beta=0.01`、LoRA `r16/alpha32/dropout0.05`、`num_generations=8`，其余 sampling/batch/reward/pool identity 不变。该记录只冻结策略，不授权自动启动训练。
+- **Hyperparameter order**：先完成 Recipe A；只有 A 证据显示 policy movement 仍弱且 non-eval400 functional dev 无改善时，才允许把 LR 单独升到 `1e-5`（Recipe B）；只有 B 仍稳定但 KL/update 明显受限时，才允许把 beta 单独降到 `0.005`（Recipe C）。A/B/C 期间 LoRA rank、sampling、reward source、active pool 保持不变。
+- **Eval400 firewall**：WP9-d 必须先冻结一个与 active1354 和 eval400 都 zero-overlap 的 `200–300` 题 non-eval400 functional dev set，并用它做 recipe/checkpoint selection。Frozen eval400 不得用于挑 Recipe A/B/C 或 300/600/900/1200 checkpoint；只有 recipe/checkpoint 在 dev contract 下冻结后才可再次运行 formal eval400。
+- **Next dependency-ready stage**：**`WP9-d — GRPO coverage/scheduler optimization`**。新对话继续项目时必须读取主规格、`PROJECT_SPEC_GRPO_Refresh.md`、`PROJECT_SPEC_GRPO_Refresh_WP9D.md`、`docs/wp9c-stage-closeout.md` 与本 proceedings，然后先创建/seal WP9-d plan；不得仅凭本 decision 自动启动 24GB optimizer run。
+
+---
