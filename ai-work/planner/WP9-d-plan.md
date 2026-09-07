@@ -2,9 +2,9 @@
 
 ## Status
 
-Prepared on 2026-09-07 from integrated `main` commit `11d48b244ed9fa6b2556e1970755992fc6b8827a` on branch `feat/wp9-d`.
+Prepared on 2026-09-07 from integrated `main` commit `11d48b244ed9fa6b2556e1970755992fc6b8827a` on branch `feat/wp9-d`. P0 runtime implementation is at `69dfc35b8f9476843a8a96da51f63923b9a9b200`; the P1 control-plane handoff is now prepared while the RTX 4090 is offline. No P1 target result or runtime-freeze decision is claimed yet.
 
-WP9-d is capability-first. Runtime throughput is optimized before Recipe A; exact trajectory/output parity with WP9-c is not required.
+WP9-d is capability-first. Runtime throughput is optimized before Recipe A; exact trajectory/output parity with WP9-c is not required. The GTX 1660 Ti remains the control plane; only the bounded P1 smoke phases move to the 4090 through the tracked operator handoff.
 
 ## P0 — Runtime implementation
 
@@ -19,16 +19,25 @@ WP9-d is capability-first. Runtime throughput is optimized before Recipe A; exac
 
 ## P1 — 4090 bounded systems validation before full training
 
-Do not start the 1200-step run until all of the following pass on the RTX 4090. Use the paired one-step systems configs `configs/grpo/wp9d-runtime-smoke-{public,hidden}.yaml`; they are not capability-result arms.
+Do not start the 1200-step run until P1 is complete. The tracked operator checkpoint is `ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/`. It is deliberately phase-addressable and has no full-eval or Recipe-A command. Use the paired one-step systems configs `configs/grpo/wp9d-runtime-smoke-{public,hidden}.yaml`; they are systems evidence, not capability-result arms.
 
-- vLLM colocate initializes from the frozen B lineage;
-- one bounded GRPO optimizer update completes with reward execution and current-policy weight synchronization;
-- checkpoint save/load path remains valid;
-- no CUDA OOM and adequate memory headroom is recorded;
-- rollout wall time, GPU utilization, and peak memory are recorded;
-- dual-b4 eval generation completes a bounded subset with two concurrent workers, correct total/order, no generation errors, and recorded wall time/utilization/memory.
+Control-plane preparation already completed:
 
-Exact output parity with WP9-c is diagnostic only, not a gate.
+- colocated-vLLM timing now instruments the actual TRL `trainer.llm.generate()` path as `vllm_generation_runtime_seconds` while preserving ordinary Transformers timing;
+- per-optimizer-step backward telemetry records `backward_runtime_total_seconds` and `backward_calls`;
+- deterministic canonical eval8 transfer bundle is `/home/dzy/wp9d-p1-eval8-C0`, with first-8 ordered-ID SHA256 `0e9d0d2f93422aa9cee4b1d66dcb56d498a6fa40b44d31270c237c7ab975324e`;
+- target phases emit atomic status + secret-free operator evidence and successful phases update stable accepted pointers, so only an affected failed smoke is retried after repair.
+
+Target sequence after the 4090 is online:
+
+1. `preflight`: exact handoff commit/script SHA, clean checkout, READY machine pointer/current `/root` roots, pinned runtime, frozen B/C29/eval400 identity, CUDA/BF16, storage, Piston, and eval8 verification. No model training/generation.
+2. Public single arm: exactly one optimizer step from frozen B. Record total wall, step, vLLM generation, verifier wall, backward, optimizer, GPU utilization mean/p95, driver-visible VRAM, torch allocated/reserved peak, OOM/weight-sync status, and strict checkpoint-1 readback.
+3. Hidden single arm: same exact one-step contract. Do not run a second optimizer step.
+4. Same-GPU pair: exactly one Public + one Hidden optimizer step in independent processes/output roots. Start with `vllm_gpu_memory_utilization=0.40`. Only memory-pressure/OOM/vLLM-init failure or <1024 MiB measured headroom may authorize `0.30`; only the same condition at `0.30` may authorize `0.25`. No intermediate grid. Same-GPU concurrency is selected only when stable/safe and total wall is at least 15% below the single-arm sequential estimate, matching the parent §10.2 contract; otherwise freeze sequential execution.
+5. Eval systems wave: exactly the canonical first 8 problems. Run b4/p1 reference once and b4/p2 candidate once. p2 must load two independent model instances, enable one dedicated CUDA stream per instance, complete exactly two concurrent b4 chunks, persist all 8 rows in canonical order, and record wall/utilization/memory. Do not expand to eval400.
+6. `report`: read accepted bounded evidence only, derive the runtime-freeze candidate, and stop. If a narrow repair commit changes only one affected phase, prior passed unrelated accepted evidence may remain valid and is recorded by its own handoff commit rather than being rerun mechanically.
+
+Exact output parity with WP9-c is diagnostic only, not a gate. The current status is **P1 control-plane prepared / 4090 target validation pending**.
 
 ## P2 — Freeze WP9-d runtime and refresh benchmark baseline
 

@@ -119,6 +119,9 @@ def test_refresh_runtime_telemetry_times_backward_optimizer_and_exports_rolling_
 
     train_metrics = trainer._metrics["train"]
     assert len(train_metrics["backward_runtime_seconds"]) == 1
+    assert len(train_metrics["backward_runtime_total_seconds"]) == 1
+    assert train_metrics["backward_runtime_total_seconds"] == train_metrics["backward_runtime_seconds"]
+    assert train_metrics["backward_calls"] == [1.0]
     assert len(train_metrics["optimizer_runtime_seconds"]) == 1
     assert len(train_metrics["step_runtime_seconds"]) == 1
     assert train_metrics["rolling_window_groups"] == [1.0]

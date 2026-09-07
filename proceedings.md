@@ -926,3 +926,16 @@ WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next depen
 - **Next dependency-ready action**：`feat/wp9-d` 已从 integrated `main` 创建，`ai-work/planner/WP9-d-plan.md` 已建立。下一动作是 **P1 bounded 4090 runtime validation**：验证 colocated vLLM 一次完整 GRPO update/checkpoint 路径，以及双 b4 generation 的并发、显存与吞吐；P1 通过后冻结 WP9-d runtime、用同一新协议刷新 B eval400 baseline，然后才启动 1200-step Recipe A。
 
 ---
+
+## WP9-d P1 control-plane preparation — target pending（2026-09-07）
+
+- **状态**：GTX 1660 Ti control-plane preparation complete；RTX 4090 当前未开机，因此本记录不包含任何 P1 measured runtime、并发 speedup、显存结论或 runtime-freeze 决策。Recipe A / B refresh / eval400 均未启动。
+- **P1 operator handoff**：新增 `ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/`。入口只暴露 `preflight`、Public/Hidden one-step、受限 `0.40 -> 0.30 -> 0.25` concurrent、eval8 b4/p1+b4/p2 与 final report；没有 full-eval 或 Recipe-A 命令。Target invocation fail-closed 绑定 exact handoff commit、tracked `run.sh` SHA、clean checkout、READY validation-machine pointer/current `/root` roots、storage/GPU/runtime/Piston，并写 atomic `status` + secret-free `operator-evidence.json`。
+- **最小重试语义**：成功 phase 写稳定 `accepted/*.json` pointer；失败 artifacts 保留不覆盖。窄修复后只重跑受影响的最小 phase，final report 对每个 accepted evidence 保留自己的 handoff commit，因此不会为了单项 repair 机械重跑其它已通过的 one-step/8-problem smoke。
+- **GRPO telemetry repair**：pinned TRL `0.18.0` colocated-vLLM 实际走 `trainer.llm.generate()`，因此新增显式 `vllm_generation_runtime_seconds` timing hook，并保持普通 Transformers generation timing；同时补齐单 optimizer step 内所有 accumulation backward calls 的 `backward_runtime_total_seconds` / `backward_calls`，供 P1 精确拆分 generation/reward/backward/optimizer wall。
+- **Eval8 transfer artifact**：1660 Ti 已从 frozen canonical eval400 构建 `/home/dzy/wp9d-p1-eval8-C0`，只把 test split 缩为 canonical 前 8 题，train/validation sidecars 不变。ordered problem-ID SHA256 为 `0e9d0d2f93422aa9cee4b1d66dcb56d498a6fa40b44d31270c237c7ab975324e`；目标机后续可直接 rsync 后严格 verify。重复 target-side verification 已压缩为约 2 秒的 hash/order recheck，不会每个 eval smoke 重建 prepared dataset。
+- **Control-plane validation**：current focused suite `113 passed`；operator/report helper regression `7 passed`；`make lint` PASS（ruff/format/mypy）；完整 test suite 在显式 worktree import binding `PYTHONPATH=src` 下 `1240 passed, 3 skipped`，3 个 skip 均为既有 real-Piston opt-in tests。一次未带 `PYTHONPATH=src` 的 `make test` 暴露的是共享 `.venv` editable install 仍指 primary checkout 的 worktree tooling 问题，不作为代码失败；随后按正确 worktree import contract 全量通过。
+- **Spec/plan sync**：`PROJECT_SPEC_GRPO_Refresh_WP9D.md` 升级为 active amendment v1.4，固化用户授权的最小 P1 1-step / first-8 / bounded-memory-search contract，并明确当前仅为 control-plane prepared、4090 target pending；`ai-work/planner/WP9-d-plan.md` 同步。
+- **Next action**：等待用户确认 RTX 4090 开机。随后只同步 exact handoff commit 与 `/home/dzy/wp9d-p1-eval8-C0`，恢复 canonical reverse Piston forward，按 C0 RUNBOOK 运行 P1；P1 report/freeze 后立即停止并回报，由用户决定是否进入 B refresh + Recipe A。
+
+---

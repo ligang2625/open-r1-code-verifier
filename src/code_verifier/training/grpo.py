@@ -48,6 +48,7 @@ from code_verifier.throughput import ThroughputError, check_refresh_benchmark_re
 from code_verifier.training.calibration import CalibrationError, check_calibrated_active_pool
 from code_verifier.training.grpo_data import build_grpo_dataset
 from code_verifier.training.grpo_telemetry import GRPORollingTelemetry
+from code_verifier.training.grpo_vllm_telemetry import GRPOVLLMTelemetryError, install_colocated_vllm_generation_timing
 from code_verifier.training.open_r1_adapter import import_open_r1_module
 from code_verifier.training.reduced_calibrated_pool import ReducedCalibratedPoolError, check_reduced_calibrated_pool
 from code_verifier.training.sft import (
@@ -1184,6 +1185,8 @@ def _install_grpo_runtime_telemetry(
     last_timed_global_step = int(getattr(trainer.state, "global_step", 0) or 0)
     no_grad_logps_runtime_seconds = 0.0
     no_grad_logps_calls = 0
+    backward_runtime_total_seconds = 0.0
+    backward_calls = 0
 
     def timed_rollout(self: Any, inputs: object) -> object:
         mode = "train" if self.model.training else "eval"
@@ -1194,6 +1197,10 @@ def _install_grpo_runtime_telemetry(
         instance_dict = getattr(unwrapped_model, "__dict__", {})
         had_instance_generate = isinstance(instance_dict, dict) and "generate" in instance_dict
         previous_instance_generate = instance_dict.get("generate") if had_instance_generate else None
+        try:
+            restore_vllm_generation = install_colocated_vllm_generation_timing(self, mode=mode)
+        except GRPOVLLMTelemetryError as error:
+            raise GRPOTrainingError(str(error)) from None
 
         def generate_without_checkpointing(*args: object, **kwargs: object) -> object:
             was_checkpointing = bool(getattr(unwrapped_model, "is_gradient_checkpointing", False))
@@ -1225,6 +1232,7 @@ def _install_grpo_runtime_telemetry(
             else:
                 with suppress(AttributeError):
                     del unwrapped_model.generate
+            restore_vllm_generation()
             if not math.isfinite(elapsed) or elapsed < 0.0:
                 raise GRPOTrainingError("GRPO rollout runtime must be finite and non-negative")
             self._metrics[mode]["rollout_runtime_seconds"].append(elapsed)
@@ -1267,6 +1275,7 @@ def _install_grpo_runtime_telemetry(
             raise
 
     def timed_maybe_log(self: Any, *args: object, **kwargs: object) -> object:
+        nonlocal backward_calls, backward_runtime_total_seconds
         nonlocal last_timed_global_step, no_grad_logps_calls, no_grad_logps_runtime_seconds, step_started_at
         raw_global_step = getattr(self.state, "global_step", None)
         if (
@@ -1281,6 +1290,9 @@ def _install_grpo_runtime_telemetry(
             self._metrics["train"]["step_runtime_seconds"].append(elapsed)
             self._metrics["train"]["no_grad_logps_runtime_seconds"].append(no_grad_logps_runtime_seconds)
             self._metrics["train"]["no_grad_logps_calls"].append(float(no_grad_logps_calls))
+            if require_optimizer_breakdown:
+                self._metrics["train"]["backward_runtime_total_seconds"].append(backward_runtime_total_seconds)
+                self._metrics["train"]["backward_calls"].append(float(backward_calls))
             if rolling_telemetry is not None:
                 try:
                     rolling_snapshot = rolling_telemetry.snapshot()
@@ -1290,10 +1302,13 @@ def _install_grpo_runtime_telemetry(
                     self._metrics["train"][metric_name].append(metric_value)
             no_grad_logps_runtime_seconds = 0.0
             no_grad_logps_calls = 0
+            backward_runtime_total_seconds = 0.0
+            backward_calls = 0
             last_timed_global_step = raw_global_step
         return original_maybe_log(*args, **kwargs)
 
     def timed_backward(*args: object, **kwargs: object) -> object:
+        nonlocal backward_calls, backward_runtime_total_seconds
         if not callable(original_backward):
             raise GRPOTrainingError("pinned GRPO accelerator backward hook is unavailable")
         started = time.perf_counter()
@@ -1304,6 +1319,8 @@ def _install_grpo_runtime_telemetry(
             if not math.isfinite(elapsed) or elapsed < 0.0:
                 raise GRPOTrainingError("GRPO backward runtime must be finite and non-negative")
             trainer._metrics["train"]["backward_runtime_seconds"].append(elapsed)
+            backward_runtime_total_seconds += elapsed
+            backward_calls += 1
 
     def install_optimizer_step_hook() -> None:
         optimizer = getattr(trainer, "optimizer", None)
