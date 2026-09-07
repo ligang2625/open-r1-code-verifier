@@ -146,6 +146,7 @@ printf 'running\n' >"$STATUS_FILE.tmp"; mv "$STATUS_FILE.tmp" "$STATUS_FILE"
 COMMAND_RC="null"
 POSTCHECK_RC="null"
 EVIDENCE_WRITTEN=0
+GPU_INDEX=""
 GPU_NAME=""
 GPU_TOTAL_MIB=""
 
@@ -335,17 +336,21 @@ eval_input_preflight() {
 
 gpu_preflight() {
   command -v nvidia-smi >/dev/null 2>&1 || { echo "nvidia-smi unavailable" >&2; exit 125; }
-  local line free_mib
-  line="$(nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits --id=0)"
-  IFS=',' read -r GPU_NAME GPU_TOTAL_MIB free_mib <<<"$line"
-  GPU_NAME="${GPU_NAME# }"; GPU_TOTAL_MIB="${GPU_TOTAL_MIB// /}"; free_mib="${free_mib// /}"
-  [[ "$GPU_TOTAL_MIB" =~ ^[0-9]+$ && "$GPU_TOTAL_MIB" -ge 22528 ]] || { echo "target GPU total VRAM below 22528 MiB" >&2; exit 125; }
-  [[ "$free_mib" =~ ^[0-9]+$ && "$free_mib" -ge 20000 ]] || { echo "target GPU free VRAM below 20000 MiB before P1 launch" >&2; exit 125; }
+  local gpu_list gpu_row free_mib
+  gpu_list="$(nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader,nounits)"
+  gpu_row="$(printf '%s\n' "$gpu_list" | awk -F',' '$2 ~ /RTX 4090/ {gsub(/ /,"",$1); gsub(/ /,"",$3); gsub(/ /,"",$4); if ($3+0 >= 22528 && $4+0 >= 20000) {print $1"|"$2"|"$3"|"$4; exit}}')"
+  [[ -n "$gpu_row" ]] || { echo "P1 requires RTX 4090 with >=22528 MiB total and >=20000 MiB free VRAM" >&2; exit 125; }
+  IFS='|' read -r GPU_INDEX GPU_NAME GPU_TOTAL_MIB free_mib <<<"$gpu_row"
+  GPU_NAME="$(printf '%s' "$GPU_NAME" | sed 's/^ *//;s/ *$//')"
+  export CUDA_VISIBLE_DEVICES="$GPU_INDEX"
   "$PY" - <<'PY_CUDA'
 import torch
-if not torch.cuda.is_available(): raise SystemExit("CUDA unavailable")
+if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+    raise SystemExit("P1 requires exactly one visible CUDA device")
+name=torch.cuda.get_device_name(0)
+if "RTX 4090" not in name: raise SystemExit("visible CUDA device is not RTX 4090")
 if not torch.cuda.is_bf16_supported(): raise SystemExit("BF16 unavailable")
-print(torch.cuda.get_device_name(0))
+print(name)
 PY_CUDA
 }
 
@@ -430,7 +435,9 @@ ckpt=run/"checkpoints/checkpoint-1"
 if not ckpt.is_dir(): raise SystemExit("checkpoint-1 missing")
 state=json.loads((ckpt/"trainer_state.json").read_text(encoding="utf-8"))
 if state.get("global_step") != 1: raise SystemExit("checkpoint-1 trainer_state global_step drift")
-PeftConfig.from_pretrained(str(ckpt), local_files_only=True)
+adapter=PeftConfig.from_pretrained(str(ckpt), local_files_only=True)
+if set(adapter.target_modules or ()) != {"q_proj","k_proj","v_proj","o_proj"}:
+    raise SystemExit("checkpoint-1 PEFT adapter target_modules are not qkvo")
 for required in ("adapter_model.safetensors","optimizer.pt","scheduler.pt","rng_state.pth","training_args.bin"):
     if not (ckpt/required).is_file(): raise SystemExit(f"checkpoint-1 missing {required}")
 print(f"checkpoint_1_readback=ok mode={mode}")
@@ -442,7 +449,7 @@ start_pair_sampler() {
   : >"$csv"; rm -f "$stop"
   (
     while [[ ! -e "$stop" ]]; do
-      local_row="$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits --id=0 2>/dev/null || true)"
+      local_row="$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits --id="$GPU_INDEX" 2>/dev/null || true)"
       [[ -n "$local_row" ]] && printf '%s,%s\n' "$(date +%s.%N)" "$local_row" >>"$csv"
       sleep 1
     done
@@ -537,9 +544,9 @@ if [[ "$PHASE" == "single" ]]; then
   MODE="$ARG"
   OUT="$P1_ROOT/single/$MODE$DIR_SUFFIX"
   RUN_ROOT="$OUT/grpo"
-  RUN_NAME="wp9d-P1-$MODE-vllm-smoke-seed42$RUN_SUFFIX"
-  PUBLIC_NAME="wp9d-P1-public-vllm-smoke-seed42$RUN_SUFFIX"
-  HIDDEN_NAME="wp9d-P1-hidden-vllm-smoke-seed42$RUN_SUFFIX"
+  RUN_NAME="wp9d-P1-$MODE-vllm-qkvo-smoke-seed42$RUN_SUFFIX"
+  PUBLIC_NAME="wp9d-P1-public-vllm-qkvo-smoke-seed42$RUN_SUFFIX"
+  HIDDEN_NAME="wp9d-P1-hidden-vllm-qkvo-smoke-seed42$RUN_SUFFIX"
   RUN_DIR="$RUN_ROOT/$RUN_NAME"
   [[ ! -e "$RUN_DIR" ]] || { echo "single-arm run exists; preserve it and use WP9D_P1_RETRY_TAG after repair" >&2; exit 125; }
   mkdir -p "$RUN_ROOT"
@@ -607,8 +614,8 @@ PY_PREV
   PUB_OUT="$OUT/public"; HID_OUT="$OUT/hidden"
   PUB_ROOT="$PUB_OUT/grpo"; HID_ROOT="$HID_OUT/grpo"
   mkdir -p "$PUB_ROOT" "$HID_ROOT"
-  PUB_NAME="wp9d-P1-public-concurrent-$FRACTION_TAG-seed42$RUN_SUFFIX"
-  HID_NAME="wp9d-P1-hidden-concurrent-$FRACTION_TAG-seed42$RUN_SUFFIX"
+  PUB_NAME="wp9d-P1-public-vllm-qkvo-concurrent-$FRACTION_TAG-seed42$RUN_SUFFIX"
+  HID_NAME="wp9d-P1-hidden-vllm-qkvo-concurrent-$FRACTION_TAG-seed42$RUN_SUFFIX"
   PUB_RUN="$PUB_ROOT/$PUB_NAME"; HID_RUN="$HID_ROOT/$HID_NAME"
   [[ ! -e "$PUB_RUN" && ! -e "$HID_RUN" ]] || { echo "concurrent arm run exists; preserve before retry" >&2; exit 125; }
   CSV="$OUT/gpu-pair-telemetry.csv"; STOP="$OUT/.gpu-sampler-stop"
