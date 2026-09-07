@@ -2,7 +2,7 @@
 
 ## Status
 
-Prepared on 2026-09-07 from integrated `main` commit `11d48b244ed9fa6b2556e1970755992fc6b8827a` on branch `feat/wp9-d`. P0 runtime implementation is at `69dfc35b8f9476843a8a96da51f63923b9a9b200`; the P1 control-plane handoff is now prepared while the RTX 4090 is offline. No P1 target result or runtime-freeze decision is claimed yet.
+Prepared on 2026-09-07 from integrated `main` commit `11d48b244ed9fa6b2556e1970755992fc6b8827a` on branch `feat/wp9-d`. P0 runtime implementation is at `69dfc35b8f9476843a8a96da51f63923b9a9b200`; the P1 control-plane handoff is now prepared on the user-selected qkvo GRPO baseline while the RTX 4090 is offline. No P1 target result or runtime-freeze decision is claimed yet.
 
 WP9-d is capability-first. Runtime throughput is optimized before Recipe A; exact trajectory/output parity with WP9-c is not required. The GTX 1660 Ti remains the control plane; only the bounded P1 smoke phases move to the 4090 through the tracked operator handoff.
 
@@ -16,6 +16,7 @@ WP9-d is capability-first. Runtime throughput is optimized before Recipe A; exac
    - retain `num_generations=8`, train batch 1, grad accumulation 8, reward workers 8.
 2. Eval generation: retain logical `batch_size=4`, load two independent model instances, give each a dedicated CUDA stream, execute two b4 chunks concurrently, and persist results in canonical problem order.
 3. Verification remains controller/Piston with 64 workers.
+4. Fresh GRPO LoRA explicitly targets `q_proj,k_proj,v_proj,o_proj` with r16 / alpha32 / dropout0.05. Frozen SFT B remains read-only and is safe-merged before the fresh qkvo adapter is created.
 
 ## P1 — 4090 bounded systems validation before full training
 
@@ -25,6 +26,7 @@ Control-plane preparation already completed:
 
 - colocated-vLLM timing now instruments the actual TRL `trainer.llm.generate()` path as `vllm_generation_runtime_seconds` while preserving ordinary Transformers timing;
 - per-optimizer-step backward telemetry records `backward_runtime_total_seconds` and `backward_calls`;
+- paired P1 smoke configs explicitly bind the fresh GRPO adapter to qkvo, and target preflight fails closed if that target set drifts;
 - deterministic canonical eval8 transfer bundle is `/home/dzy/wp9d-p1-eval8-C0`, with first-8 ordered-ID SHA256 `0e9d0d2f93422aa9cee4b1d66dcb56d498a6fa40b44d31270c237c7ab975324e`;
 - target phases emit atomic status + secret-free operator evidence and successful phases update stable accepted pointers, so only an affected failed smoke is retried after repair.
 
@@ -56,7 +58,7 @@ Run paired Public/Hidden arms independently from frozen B with:
 - LR `5e-6`;
 - `constant_with_warmup`, warmup ratio 0.05;
 - beta 0.01;
-- LoRA r16 / alpha32 / dropout0.05;
+- LoRA r16 / alpha32 / dropout0.05 on explicit `q_proj,k_proj,v_proj,o_proj` targets;
 - k=8, train batch1, grad accumulation8;
 - vLLM colocate runtime from P0/P1;
 - checkpoint every 100 steps.
@@ -69,6 +71,6 @@ Use eval400 directly for selection. If A remains weak:
 
 1. Recipe B: LR `1e-5`, otherwise frozen A runtime/recipe.
 2. Recipe C: beta `0.005` with LR `1e-5`, otherwise frozen.
-3. Only after A/B/C consider LoRA rank or larger effective generation/update batches.
+3. Only after A/B/C consider LoRA rank, another target-module expansion/contraction beyond qkvo, or larger effective generation/update batches.
 
 Every attempted recipe/checkpoint remains in the report; eval400 is explicitly a reused tuning benchmark.

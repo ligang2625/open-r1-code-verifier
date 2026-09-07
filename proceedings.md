@@ -939,3 +939,14 @@ WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next depen
 - **Next action**：等待用户确认 RTX 4090 开机。随后只同步 exact handoff commit 与 `/home/dzy/wp9d-p1-eval8-C0`，恢复 canonical reverse Piston forward，按 C0 RUNBOOK 运行 P1；P1 report/freeze 后立即停止并回报，由用户决定是否进入 B refresh + Recipe A。
 
 ---
+
+## WP9-d GRPO LoRA target expansion to qkvo — pre-P1 baseline amendment（2026-09-07）
+
+- **用户决策**：后续新的 GRPO 不再使用 PEFT Qwen2 auto 默认的 `q_proj + v_proj`，而是显式同时优化 `q_proj + k_proj + v_proj + o_proj`。该决定发生在任何 4090 P1 smoke / Recipe A 执行之前，因此后续 P1、B refresh、Recipe A/B/C 都必须基于同一 qkvo fresh-GRPO-adapter baseline。
+- **SFT B 不变**：completed `B-sft-formal-seed42` 仍按既有历史配置只读加载并 safe-merge；qkvo 只作用于 merge 后新建的 GRPO LoRA，不追溯修改 SFT B 或 WP9-c 历史 artifacts。
+- **实现**：GRPO strict config 新增可选 `lora_target_modules`；历史配置缺省时继续映射到 `None`/PEFT auto，WP9-d 的 P1 smoke 与 Recipe A 四个配置显式固定 `[q_proj, k_proj, v_proj, o_proj]`，runtime 把该列表传给 Open-R1 `ModelConfig`。Qwen2 projection 名称、非空/去重规则均 fail closed。
+- **P1 保护**：4090 operator preflight 除配置 SHA 外，额外验证 Public/Hidden smoke 的 target modules 必须精确为 qkvo，防止旧 q+v 配置被误用于后续 systems evidence。
+- **Control-plane validation**：qkvo affected regression `99 passed`；`bash -n` PASS；`make lint VENV=../../.venv` PASS（ruff/format/mypy）；完整 suite 在 `PYTHONPATH=src` 下 `1247 passed, 3 skipped`，skip 仍仅为既有 real-Piston opt-in tests。
+- **当前边界**：RTX 4090 仍未确认开机；本 amendment 只完成 control-plane baseline 更新，不声称任何 qkvo 显存、吞吐、稳定性或能力收益。下一步仍是 bounded P1，且 P1 完成后停止回报。
+
+---

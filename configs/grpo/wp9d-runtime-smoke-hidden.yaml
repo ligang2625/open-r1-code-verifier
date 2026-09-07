@@ -1,4 +1,4 @@
-run_name: wp9d-P1-hidden-vllm-smoke-seed42
+run_name: wp9d-P1-hidden-vllm-qkvo-smoke-seed42
 reward_mode: hidden
 dataset_path: wp9c/final-reduced-calibration-C29/training/hidden_grpo.jsonl
 piston_config: configs/execution/piston-local.yaml
@@ -21,6 +21,7 @@ gradient_checkpointing: true
 lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.05
+lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
 logging_steps: 1
 save_steps: 1
 eval_steps: 1

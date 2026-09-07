@@ -1,6 +1,6 @@
 # PROJECT SPEC — WP9-d GRPO Optimization Amendment
 
-**Status:** Active amendment v1.4
+**Status:** Active amendment v1.5
 **Effective date:** 2026-09-07
 **Applies to:** WP9-d and later GRPO-optimization stages derived from the completed WP9-c active1354 experiments
 **Parent specifications:** `PROJECT_SPEC_Open-R1_CodeVerifier.md`, `PROJECT_SPEC_GRPO_Refresh.md`
@@ -18,7 +18,7 @@ The primary hypothesis to test is:
 
 > The WP9-c GRPO recipe under-updated the policy because 300 optimizer steps covered only approximately 0.2216 epoch of active1354 while the cosine learning-rate schedule decayed the full `5e-6` budget to approximately zero within those 300 steps.
 
-WP9-d therefore optimizes **systems throughput first, then coverage / scheduler / effective policy movement**. By explicit user decision on 2026-09-07, the project objective is capability improvement rather than a strict one-variable hyperparameter study. The WP9-d runtime MAY therefore adopt a better rollout/generation backend before Recipe A, provided the new runtime is frozen and used consistently for subsequent WP9-d candidates. Learning rate, beta, LoRA rank, reward definition, active pool, and scientific sampling settings remain sequential tuning dimensions unless separately changed.
+WP9-d therefore optimizes **systems throughput first, then coverage / scheduler / effective policy movement**. By explicit user decision on 2026-09-07, the project objective is capability improvement rather than a strict one-variable hyperparameter study. The WP9-d runtime MAY therefore adopt a better rollout/generation backend before Recipe A, provided the new runtime is frozen and used consistently for subsequent WP9-d candidates. By a later explicit user decision on the same date, the fresh GRPO adapter target set is expanded from the PEFT Qwen2 auto default (`q_proj`,`v_proj`) to explicit `q_proj`,`k_proj`,`v_proj`,`o_proj`; this qkvo target set is part of the new WP9-d frozen baseline. Learning rate, beta, LoRA rank, reward definition, active pool, and scientific sampling settings remain sequential tuning dimensions unless separately changed.
 
 The stage must distinguish three questions:
 
@@ -65,6 +65,7 @@ wp9d_frozen_start:
     lora_r: 16
     lora_alpha: 32
     lora_dropout: 0.05
+    lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
 
   reward:
     public: visible_tests_only
@@ -163,7 +164,7 @@ Rationale:
 - `1200` steps correspond to approximately `0.89` epoch under the observed WP9-c trainer accounting, compared with approximately `0.22` epoch previously;
 - LR remains at the previously accepted `5e-6` after warmup, so within the **new frozen WP9-d runtime** Recipe A still tests the coverage/scheduler change without simultaneously increasing LR;
 - the systems baseline itself changes before Recipe A: rollout generation uses colocated vLLM and eval generation uses two concurrent logical-b4 generators. Stochastic GRPO trajectories and deterministic eval outputs are allowed to differ from WP9-c; the project accepts this because the objective is capability improvement, not strict runtime ablation;
-- `beta=0.01`, sampling, LoRA capacity, batch structure, and reward definitions remain unchanged;
+- `beta=0.01`, sampling, LoRA rank/alpha/dropout, batch structure, and reward definitions remain unchanged; the fresh GRPO LoRA target coverage is intentionally expanded to qkvo before P1 and is frozen for subsequent WP9-d tests;
 - with `per_device_train_batch_size=1` and `gradient_accumulation_steps=8`, the pinned single-GPU effective generation batch is `8` completion rows; with `num_generations=8`, this is exactly **one problem group of eight completions per optimizer step**. This mapping is what makes 1200 steps approximately 1200 active-problem groups and approximately 0.89 epoch;
 - GRPO training reward verification remains at `8` workers for Recipe A, matching the completed WP9-c formal runs. Changing reward workers is a systems-only benchmark dimension, not part of the initial scientific recipe.
 
@@ -287,7 +288,7 @@ with `lr=1e-5`, `steps=1200`, `r=16`, and all other fields unchanged.
 
 ## 7.4 LoRA rank is not an early search dimension
 
-`r=16 / alpha=32` remains fixed through A/B/C. A move to `r=32 / alpha=64` requires a separate explicit amendment after A/B/C evidence indicates that optimization budget and KL regularization are no longer the obvious bottleneck.
+`r=16 / alpha=32 / dropout=0.05` remains fixed through A/B/C, and the fresh GRPO adapter target set is fixed to `q_proj,k_proj,v_proj,o_proj`. The qkvo expansion is a pre-P1 baseline amendment, not an A/B/C search dimension. A move to `r=32 / alpha=64`, a return to q+v, or expansion into MLP projections requires a separate explicit amendment after evidence justifies changing adapter capacity/coverage again.
 
 ## 7.5 Sampling and reward definitions stay frozen
 
@@ -362,6 +363,7 @@ Recipe A MUST retain:
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
 num_generations: 8
+lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
 reward_verification_workers: 8
 ```
 
@@ -369,6 +371,7 @@ Consequences:
 
 - effective single-GPU rollout/generation batch = `1 * 8 = 8` completion rows;
 - `8 / num_generations(8) = 1` active problem group per optimizer step;
+- the fresh GRPO adapter trains LoRA deltas on all attention projections `q_proj,k_proj,v_proj,o_proj`; SFT B is loaded read-only and safe-merged first, so this does not retroactively alter the completed B adapter;
 - changing the effective generation batch to `16` would process two problem groups per generation/update batch and changes optimizer noise, update frequency, epoch accounting, and the meaning of `max_steps`; it is therefore a **scientific recipe change**, not a free systems optimization;
 - changing only `per_device_train_batch_size` versus gradient accumulation while keeping their product `8` may increase backward utilization, but backward is a small fraction of measured step time and is not a priority optimization.
 
@@ -392,13 +395,13 @@ Before any B refresh or 1200-step Recipe A run, WP9-d MUST close a bounded P1 sy
 
 The P1 GRPO scope is exact:
 
-- Public: exactly one optimizer step from frozen B with `num_generations=8`, train batch `1`, gradient accumulation `8`, reward workers `8`, and colocated vLLM;
+- Public: exactly one optimizer step from frozen B with fresh GRPO LoRA targets `q_proj,k_proj,v_proj,o_proj`, `num_generations=8`, train batch `1`, gradient accumulation `8`, reward workers `8`, and colocated vLLM;
 - Hidden: the same exact one-step contract, independently initialized from the same frozen B;
 - only after both single-arm smokes pass, one same-GPU Public/Hidden pair MAY be run with one independent process/output namespace per arm;
 - same-GPU memory search MUST start at `vllm_gpu_memory_utilization=0.40`; `0.30` is authorized only after OOM/vLLM memory initialization failure or measured unsafe headroom at `0.40`, and `0.25` only after the same condition at `0.30`; no intermediate memory-fraction grid is allowed;
 - same-GPU concurrency is selected only when both arms are stable, checkpointable, have safe VRAM headroom, and satisfy the parent-spec §10.2 requirement of at least 15% total-wall reduction versus the measured single-arm sequential estimate (or equivalent aggregate useful-throughput evidence). Otherwise Public/Hidden MUST remain sequential.
 
-Each successful one-step arm MUST demonstrate the complete chain `frozen B -> GRPO LoRA -> colocated vLLM init/weight sync -> 8 rollouts -> reward verification -> backward -> optimizer update -> checkpoint-1`, and MUST record at least total wall, optimizer-step wall, actual vLLM generation wall, reward verification wall, backward total, optimizer timing, GPU utilization mean/p95, driver-visible memory mean/max, torch allocated/reserved peaks, OOM/weight-sync status, and strict checkpoint-1 readback. For the pinned TRL colocated path, actual generation timing MUST instrument `trainer.llm.generate()`; the generic metric MAY mirror it, while `vllm_generation_runtime_seconds` is the explicit systems field. Backward telemetry MUST include the total across all accumulation calls contributing to the optimizer step.
+Each successful one-step arm MUST demonstrate the complete chain `frozen B -> fresh qkvo GRPO LoRA -> colocated vLLM init/weight sync -> 8 rollouts -> reward verification -> backward -> optimizer update -> checkpoint-1`, and MUST record at least total wall, optimizer-step wall, actual vLLM generation wall, reward verification wall, backward total, optimizer timing, GPU utilization mean/p95, driver-visible memory mean/max, torch allocated/reserved peaks, OOM/weight-sync status, and strict checkpoint-1 readback. For the pinned TRL colocated path, actual generation timing MUST instrument `trainer.llm.generate()`; the generic metric MAY mirror it, while `vllm_generation_runtime_seconds` is the explicit systems field. Backward telemetry MUST include the total across all accumulation calls contributing to the optimizer step.
 
 The P1 eval-generation scope is also exact:
 
@@ -410,7 +413,7 @@ The P1 eval-generation scope is also exact:
 
 P1 execution MUST use a tracked operator handoff bound to the exact target commit and `run.sh` SHA, current READY machine-pointer roots, atomic status/evidence, and non-destructive artifacts. Failed attempts remain preserved. After a diagnosed narrow repair, only the affected minimal phase is rerun; previously passed unrelated phase evidence MAY remain accepted if its own handoff/operator identity is retained in the final P1 report. The final P1 report freezes the runtime candidate and then the invocation MUST stop; B eval400 refresh and Recipe A remain separate later actions.
 
-As of the v1.4 amendment update, the GTX 1660 Ti control-plane implementation/handoff is prepared, including the deterministic first-8 order SHA `0e9d0d2f93422aa9cee4b1d66dcb56d498a6fa40b44d31270c237c7ab975324e`; the RTX 4090 is offline, so **no P1 measured runtime decision has yet been made**.
+As of the v1.5 amendment update, the GTX 1660 Ti control-plane implementation/handoff is prepared for the qkvo GRPO baseline, including the deterministic first-8 order SHA `0e9d0d2f93422aa9cee4b1d66dcb56d498a6fa40b44d31270c237c7ab975324e`; the RTX 4090 is offline, so **no P1 measured runtime decision has yet been made**.
 
 ---
 

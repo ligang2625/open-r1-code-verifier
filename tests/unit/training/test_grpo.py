@@ -112,6 +112,30 @@ def test_grpo_config_accepts_constant_with_warmup_for_wp9d(tmp_path: Path) -> No
     assert config.lr_scheduler_type == "constant_with_warmup"
 
 
+def test_grpo_config_accepts_explicit_qkvo_lora_targets(tmp_path: Path) -> None:
+    mapping = _config_mapping(tmp_path)
+    mapping["lora_target_modules"] = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    config = grpo_training_config_from_mapping(mapping)
+    assert config.lora_target_modules == ("q_proj", "k_proj", "v_proj", "o_proj")
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        [],
+        "q_proj",
+        ["q_proj", "q_proj"],
+        ["q_proj", "not_a_qwen2_projection"],
+        ["q_proj", 1],
+    ],
+)
+def test_grpo_config_rejects_invalid_lora_targets(tmp_path: Path, targets: object) -> None:
+    mapping = _config_mapping(tmp_path)
+    mapping["lora_target_modules"] = targets
+    with pytest.raises(GRPOTrainingError, match="lora_target_modules"):
+        grpo_training_config_from_mapping(mapping)
+
+
 def test_checked_in_grpo_configs_match_spec_and_each_other() -> None:
     public = load_grpo_training_config(Path("configs/grpo/public.yaml"))
     hidden = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))
@@ -601,6 +625,7 @@ def test_grpo_runtime_arguments_bind_parent_model_and_frozen_invariants(tmp_path
     assert model_kwargs["model_name_or_path"] == "example/model"
     assert model_kwargs["model_revision"] == "a" * 40
     assert model_kwargs["use_peft"] is True
+    assert model_kwargs["lora_target_modules"] is None
     assert model_kwargs["trust_remote_code"] is False
     assert model_kwargs["load_in_4bit"] is False
     assert model_kwargs["load_in_8bit"] is False
@@ -615,6 +640,21 @@ def test_grpo_runtime_arguments_bind_parent_model_and_frozen_invariants(tmp_path
     assert training_kwargs["logging_nan_inf_filter"] is False
     assert training_kwargs["save_total_limit"] is None
     assert training_kwargs["save_only_model"] is False
+
+
+def test_grpo_runtime_arguments_bind_explicit_qkvo_lora_targets(tmp_path: Path) -> None:
+    runtime, model_config, _ = _argument_runtime()
+    mapping = _config_mapping(tmp_path)
+    mapping["lora_target_modules"] = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    config = grpo_training_config_from_mapping(mapping)
+    _runtime_arguments(
+        config,
+        checkpoint_dir=tmp_path / "checkpoints",
+        parent_sft=_parent_sft(tmp_path),
+        seed=7,
+        runtime=runtime,
+    )
+    assert model_config.calls[0]["lora_target_modules"] == ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 
 def test_grpo_runtime_arguments_enable_colocated_vllm(tmp_path: Path) -> None:

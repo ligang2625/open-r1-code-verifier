@@ -19,6 +19,7 @@ def test_wp9d_recipe_a_configs_are_paired_and_use_colocated_vllm() -> None:
     assert public.beta == 0.01
     assert public.lora_r == 16
     assert public.lora_alpha == 32
+    assert public.lora_target_modules == ("q_proj", "k_proj", "v_proj", "o_proj")
     assert public.use_vllm is True
     assert public.vllm_mode == "colocate"
     assert public.vllm_gpu_memory_utilization == 0.4
@@ -31,6 +32,7 @@ def test_historical_wp9c_config_keeps_non_vllm_default() -> None:
     assert historical.use_vllm is False
     assert historical.vllm_mode == "colocate"
     assert historical.vllm_gpu_memory_utilization == 0.4
+    assert historical.lora_target_modules is None
 
 
 def test_wp9d_runtime_smoke_configs_are_one_step_paired_vllm() -> None:
@@ -44,3 +46,4 @@ def test_wp9d_runtime_smoke_configs_are_one_step_paired_vllm() -> None:
     assert public.vllm_mode == "colocate"
     assert public.num_generations == 8
     assert public.per_device_train_batch_size * public.gradient_accumulation_steps == 8
+    assert public.lora_target_modules == ("q_proj", "k_proj", "v_proj", "o_proj")

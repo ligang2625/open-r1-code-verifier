@@ -10,8 +10,8 @@ REPORT_REL="ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/p1_run
 EVIDENCE_REL="ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/operator_evidence.py"
 ACCEPTED_REL="ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/accepted_pointer.py"
 
-PUBLIC_SMOKE_SHA="5f0f673d025d757f00ce0c46b40e675045235b3b3bf55c7bf9009f4950e4a238"
-HIDDEN_SMOKE_SHA="67deaba637de7cc9844cbbc09d5c4f53f1f7e3f35ef05f32db1764ad034aeb53"
+PUBLIC_SMOKE_SHA="6105bb2706460ee7460393205a10770a2004a93c53d2566197281138f0157723"
+HIDDEN_SMOKE_SHA="0e1b9efa674ef2fd10773f2aeeb34aa04579fd0f48de7d847c6785d00df5d4a8"
 C29_MANIFEST_SHA="5593fe90c19a096678f19e45ca6736e0fc97d242e4f27f92f0b10bb303077d5b"
 C29_PUBLIC_SHA="558250d06043702e153f88067a88d34378923255ef015cfbc97e106592d9188c"
 C29_HIDDEN_SHA="9aae7ce46347236f69a67aadb60a719c76f089451873a4fd8d4b92147f74abec"
@@ -291,6 +291,8 @@ for cfg, mode in ((pub,"public"),(hid,"hidden")):
         raise SystemExit(f"{mode} smoke config semantics drift")
     if cfg.per_device_train_batch_size != 1 or cfg.gradient_accumulation_steps != 8:
         raise SystemExit(f"{mode} scientific batch semantics drift")
+    if tuple(cfg.lora_target_modules or ()) != ("q_proj", "k_proj", "v_proj", "o_proj"):
+        raise SystemExit(f"{mode} GRPO LoRA qkvo target semantics drift")
     if not cfg.use_vllm or cfg.vllm_mode != "colocate" or cfg.vllm_gpu_memory_utilization != 0.4:
         raise SystemExit(f"{mode} vLLM smoke semantics drift")
 identity=load_completed_sft_checkpoint(Path(sys.argv[3]))

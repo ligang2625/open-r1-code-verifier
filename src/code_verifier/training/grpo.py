@@ -94,6 +94,7 @@ class GRPOTrainingConfig:
     use_vllm: bool = False
     vllm_mode: str = "colocate"
     vllm_gpu_memory_utilization: float = 0.4
+    lora_target_modules: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,7 @@ _OPTIONAL_CONFIG_FIELDS = {
     "use_vllm",
     "vllm_mode",
     "vllm_gpu_memory_utilization",
+    "lora_target_modules",
 }
 _CONFIG_FIELDS = _REQUIRED_CONFIG_FIELDS | _OPTIONAL_CONFIG_FIELDS
 _PAIR_DIFFERENCES = {"run_name", "reward_mode", "dataset_path"}
@@ -213,6 +215,7 @@ _RUNTIME_VERSIONS = {
     "accelerate": "1.4.0",
     "peft": "0.14.0",
 }
+_QWEN2_LORA_TARGET_MODULES = frozenset({"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"})
 _GRPO_RUN_LAYOUT = {
     "resolved_config.yaml",
     "environment.json",
@@ -304,6 +307,24 @@ def _path(value: object, *, field_name: str) -> Path:
     return resolved
 
 
+def _optional_lora_target_modules(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, str | bytes | bytearray) or not isinstance(value, Sequence) or not value:
+        raise GRPOTrainingError("lora_target_modules must be a non-empty sequence of module names")
+    modules = tuple(
+        _nonempty_string(item, field_name="lora_target_modules entry") for item in cast(Sequence[object], value)
+    )
+    if len(set(modules)) != len(modules):
+        raise GRPOTrainingError("lora_target_modules must not contain duplicates")
+    unknown = set(modules) - _QWEN2_LORA_TARGET_MODULES
+    if unknown:
+        raise GRPOTrainingError(
+            "lora_target_modules contains unsupported Qwen2 projection(s): " + ", ".join(sorted(unknown))
+        )
+    return modules
+
+
 def grpo_training_config_from_mapping(value: object) -> GRPOTrainingConfig:
     """Parse one exact flat GRPO mapping and reject unsafe experiment settings."""
     root = _exact_mapping(value)
@@ -355,6 +376,7 @@ def grpo_training_config_from_mapping(value: object) -> GRPOTrainingConfig:
         raise GRPOTrainingError("vllm_gpu_memory_utilization must be in [0.05, 0.95)")
     if use_vllm and vllm_mode != "colocate":
         raise GRPOTrainingError("single-GPU project GRPO requires vllm_mode=colocate when use_vllm=true")
+    lora_target_modules = _optional_lora_target_modules(root.get("lora_target_modules"))
     seed = root["seed"]
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise GRPOTrainingError("seed must be an integer")
@@ -405,6 +427,7 @@ def grpo_training_config_from_mapping(value: object) -> GRPOTrainingConfig:
         use_vllm=use_vllm,
         vllm_mode=vllm_mode,
         vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+        lora_target_modules=lora_target_modules,
     )
 
 
@@ -1420,7 +1443,7 @@ def _runtime_arguments(
             lora_r=config.lora_r,
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
-            lora_target_modules=None,
+            lora_target_modules=None if config.lora_target_modules is None else list(config.lora_target_modules),
             load_in_4bit=False,
             load_in_8bit=False,
         )

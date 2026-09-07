@@ -1,6 +1,6 @@
 # WP9-d C0 — P1 bounded runtime validation handoff
 
-This checkpoint prepares the RTX 4090-only P1 systems validation for WP9-d. It is intentionally bounded and must not be used to start Recipe A, full eval400, or any WP9-c rerun.
+This checkpoint prepares the RTX 4090-only P1 systems validation for WP9-d using the frozen fresh-GRPO qkvo LoRA target set (`q_proj,k_proj,v_proj,o_proj`). It is intentionally bounded and must not be used to start Recipe A, full eval400, or any WP9-c rerun.
 
 ## Scope
 
@@ -50,7 +50,7 @@ The target script additionally verifies:
 - CUDA + BF16;
 - pinned TRL `0.18.0` and vLLM `0.8.5.post1`;
 - exact frozen B model/revision/seed;
-- exact one-step WP9-d smoke config hashes;
+- exact one-step WP9-d smoke config hashes and exact qkvo LoRA target semantics;
 - exact C29 Public/Hidden training hashes and benchmark binding;
 - canonical eval400 dataset identity before accepting the 8-problem systems subset;
 - target-local validation-machine pointer is exactly `READY_FOR_VALIDATION_PLANNER`, uses the current `/root` roots, and exposes only `http://127.0.0.1:2000` for Piston;

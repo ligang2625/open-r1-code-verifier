@@ -447,8 +447,8 @@ def build_report(p1_root: Path, eval8_dir: Path) -> dict[str, Any]:
             },
         },
         "key_config_sha256": {
-            "wp9d-runtime-smoke-public.yaml": "5f0f673d025d757f00ce0c46b40e675045235b3b3bf55c7bf9009f4950e4a238",
-            "wp9d-runtime-smoke-hidden.yaml": "67deaba637de7cc9844cbbc09d5c4f53f1f7e3f35ef05f32db1764ad034aeb53",
+            "wp9d-runtime-smoke-public.yaml": "6105bb2706460ee7460393205a10770a2004a93c53d2566197281138f0157723",
+            "wp9d-runtime-smoke-hidden.yaml": "0e1b9efa674ef2fd10773f2aeeb34aa04579fd0f48de7d847c6785d00df5d4a8",
             "eval8_manifest": _sha256(manifest_path),
         },
         "eval8_order_sha256": manifest.get("ordered_problem_ids_sha256"),
