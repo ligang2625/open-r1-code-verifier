@@ -105,6 +105,13 @@ def test_grpo_config_rejects_unknown_and_unsafe_values(tmp_path: Path, field: st
         grpo_training_config_from_mapping(mapping)
 
 
+def test_grpo_config_accepts_constant_with_warmup_for_wp9d(tmp_path: Path) -> None:
+    mapping = _config_mapping(tmp_path)
+    mapping["lr_scheduler_type"] = "constant_with_warmup"
+    config = grpo_training_config_from_mapping(mapping)
+    assert config.lr_scheduler_type == "constant_with_warmup"
+
+
 def test_checked_in_grpo_configs_match_spec_and_each_other() -> None:
     public = load_grpo_training_config(Path("configs/grpo/public.yaml"))
     hidden = load_grpo_training_config(Path("configs/grpo/hidden.yaml"))

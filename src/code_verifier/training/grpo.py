@@ -328,8 +328,8 @@ def grpo_training_config_from_mapping(value: object) -> GRPOTrainingConfig:
     if gradient_checkpointing is not True:
         raise GRPOTrainingError("gradient_checkpointing must be true")
     scheduler = _nonempty_string(root["lr_scheduler_type"], field_name="lr_scheduler_type")
-    if scheduler != "cosine":
-        raise GRPOTrainingError("lr_scheduler_type must be cosine")
+    if scheduler not in {"cosine", "constant_with_warmup"}:
+        raise GRPOTrainingError("lr_scheduler_type must be cosine or constant_with_warmup")
     seed = root["seed"]
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise GRPOTrainingError("seed must be an integer")

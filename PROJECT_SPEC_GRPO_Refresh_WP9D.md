@@ -1,6 +1,6 @@
 # PROJECT SPEC — WP9-d GRPO Optimization Amendment
 
-**Status:** Active amendment v1.1
+**Status:** Active amendment v1.2
 **Effective date:** 2026-09-07
 **Applies to:** WP9-d and later GRPO-optimization stages derived from the completed WP9-c active1354 experiments
 **Parent specifications:** `PROJECT_SPEC_Open-R1_CodeVerifier.md`, `PROJECT_SPEC_GRPO_Refresh.md`
@@ -114,20 +114,25 @@ The first WP9-d candidate is frozen as **Recipe A**:
 
 ```yaml
 wp9d_recipe_A:
-  max_steps: 1200
-  learning_rate: 5.0e-6
-  warmup_ratio: 0.05
-  lr_scheduler_type: constant_with_warmup
-  beta: 0.01
-
   num_generations: 8
+  max_prompt_length: 2048
+  max_completion_length: 512
+
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
+  learning_rate: 5.0e-6
+  num_train_epochs: 1.0
+  max_steps: 1200
+  warmup_ratio: 0.05
+  lr_scheduler_type: constant_with_warmup
 
   temperature: 0.8
   top_p: 0.95
-  max_prompt_length: 2048
-  max_completion_length: 512
+  beta: 0.01
+
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
 
   lora_r: 16
   lora_alpha: 32
@@ -135,13 +140,23 @@ wp9d_recipe_A:
 
   logging_steps: 1
   save_steps: 100
+  eval_steps: 300
+  seed: 42
+  min_cuda_memory_gb: 20.0
+
+wp9d_recipe_A_operator_runtime:
+  reward_verification_workers: 8
 ```
+
+The strict GRPO config loader also requires the arm-specific fields `run_name`, `reward_mode`, `dataset_path`, and `piston_config`. The WP9-d plan/operator MUST bind those explicitly for Public and Hidden; they are not free tuning variables and must preserve the frozen active1354/Piston identities.
 
 Rationale:
 
 - `1200` steps correspond to approximately `0.89` epoch under the observed WP9-c trainer accounting, compared with approximately `0.22` epoch previously;
 - LR remains at the previously accepted `5e-6` after warmup, so Recipe A isolates the **coverage/scheduler** hypothesis rather than simultaneously testing a larger step size;
-- `beta=0.01`, sampling, LoRA capacity, batch structure, and reward definitions remain unchanged.
+- `beta=0.01`, sampling, LoRA capacity, batch structure, and reward definitions remain unchanged;
+- with `per_device_train_batch_size=1` and `gradient_accumulation_steps=8`, the pinned single-GPU effective generation batch is `8` completion rows; with `num_generations=8`, this is exactly **one problem group of eight completions per optimizer step**. This mapping is what makes 1200 steps approximately 1200 active-problem groups and approximately 0.89 epoch;
+- GRPO training reward verification remains at `8` workers for Recipe A, matching the completed WP9-c formal runs. Changing reward workers is a systems-only benchmark dimension, not part of the initial scientific recipe.
 
 Recipe A is the default next experiment but **this specification does not authorize running it automatically**. A WP9-d plan/operator handoff must still be created and explicitly started under the normal stage workflow.
 
@@ -317,7 +332,58 @@ Therefore:
 
 ---
 
-# 11. Safety and operational contracts
+# 11. Throughput and GPU-utilization guardrails
+
+WP9-c leaves substantial systems headroom, but throughput changes MUST be separated from the initial Recipe A scientific change.
+
+Measured formal evidence from the completed C/Public run:
+
+- GRPO GPU utilization: mean `25.35%`, p95 `44%`;
+- GRPO GPU memory used: mean approximately `7187 MiB`, max `7315 MiB` on the RTX 4090;
+- representative trainer telemetry records generation at approximately `8.7–13.7 s` per step while backward is approximately `0.11–0.13 s`; reward verification is not the dominant wall-time component;
+- canonical standalone eval generation at batch `4` used approximately `4214 MiB` mean / `4321 MiB` max GPU memory, with mean utilization `48.81%` and p95 `53%`.
+
+These measurements justify later systems optimization; they do not authorize silently changing the scientific batch contract.
+
+## 11.1 GRPO training throughput
+
+Recipe A MUST retain:
+
+```yaml
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+num_generations: 8
+reward_verification_workers: 8
+```
+
+Consequences:
+
+- effective single-GPU rollout/generation batch = `1 * 8 = 8` completion rows;
+- `8 / num_generations(8) = 1` active problem group per optimizer step;
+- changing the effective generation batch to `16` would process two problem groups per generation/update batch and changes optimizer noise, update frequency, epoch accounting, and the meaning of `max_steps`; it is therefore a **scientific recipe change**, not a free systems optimization;
+- changing only `per_device_train_batch_size` versus gradient accumulation while keeping their product `8` may increase backward utilization, but backward is a small fraction of measured step time and is not a priority optimization.
+
+Increasing GRPO reward verification workers above `8` MAY be benchmarked separately, but the observed verifier wall time is much smaller than generation time, so the expected end-to-end gain is limited.
+
+The highest-potential GRPO systems direction is faster autoregressive rollout generation while retaining `k=8` group semantics. Candidate engineering paths include an optimized generation backend such as vLLM/continuous batching, or compile/cache/attention-kernel improvements. The current project runtime pins `use_vllm=False`; changing that backend requires an explicit systems amendment and dependency/runtime validation. Because GRPO rollout sampling is stochastic, a backend change may alter sampled trajectories even when nominal decode parameters are unchanged. It MUST NOT be combined with Recipe A when the goal is to isolate the coverage/scheduler hypothesis.
+
+## 11.2 Canonical eval400 generation throughput
+
+Canonical eval400 MUST continue to use logical generation batch `4` unless a separately approved benchmark-protocol amendment changes it.
+
+Prior WP9-c systems evidence established:
+
+- batch `4` preserved exact per-problem Pass@1 parity with the batch-1 reference on the systems benchmark;
+- batch `8` was faster but changed per-problem Pass@1 and was therefore rejected;
+- consequently, simply increasing formal eval generation from `4` to `8` is **not** an allowed throughput optimization under the current canonical benchmark.
+
+Preferred eval-generation optimization work should first preserve the batch-4 logical call shape. Candidate approaches may include compile/static-cache/attention improvements or carefully controlled concurrency of independent batch-4 calls. Before adoption, the candidate path MUST prove canonical problem/order identity and exact per-problem Pass@1 parity against the existing batch-4 contract; completion-level parity SHOULD also be checked after removing latency-only metadata.
+
+If a future decision intentionally adopts batch `>4` despite changed outputs, that is a benchmark-protocol change. At minimum B must be regenerated/re-evaluated under the new protocol before candidate deltas are interpreted; historical b4 results must not be mixed directly with the new protocol as if they were identical measurements.
+
+---
+
+# 12. Safety and operational contracts
 
 All parent project requirements remain active, including:
 
@@ -335,7 +401,7 @@ Checkpoint cadence SHOULD remain sufficiently dense to avoid losing large portio
 
 ---
 
-# 12. WP9-d stage acceptance
+# 13. WP9-d stage acceptance
 
 WP9-d is not successful merely because a longer GRPO run completes.
 
@@ -350,7 +416,7 @@ The stage report MUST include training curves, KL/reward/length/stability diagno
 
 ---
 
-# 13. Branch and stage routing
+# 14. Branch and stage routing
 
 WP9-c must be integrated and closed before WP9-d begins. **WP9-d MUST branch from the cleaned, integrated `main` branch**, not from `feat/wp9-c`, a detached handoff commit, or an archival snapshot.
 
