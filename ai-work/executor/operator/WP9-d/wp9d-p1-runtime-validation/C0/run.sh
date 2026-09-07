@@ -282,9 +282,21 @@ static_runtime_preflight() {
   [[ "$(sha256sum "$PUBLIC_CONFIG" | awk '{print $1}')" == "$PUBLIC_SMOKE_SHA" ]] || { echo "Public smoke config hash drift" >&2; exit 125; }
   [[ "$(sha256sum "$HIDDEN_CONFIG" | awk '{print $1}')" == "$HIDDEN_SMOKE_SHA" ]] || { echo "Hidden smoke config hash drift" >&2; exit 125; }
   "$PY" - "$PUBLIC_CONFIG" "$HIDDEN_CONFIG" "$B_RUN" <<'PY_STATIC'
-import importlib.metadata as md, sys
+import importlib.metadata as md, os, sys, tempfile
 from pathlib import Path
-from code_verifier.training.grpo import _load_grpo_runtime, _runtime_arguments, load_grpo_training_config
+from types import SimpleNamespace
+import torch
+import torch.distributed as dist
+from peft import LoraConfig, get_peft_model
+from torch.nn.parallel import DistributedDataParallel as DDP
+from transformers import Qwen2Config, Qwen2ForCausalLM
+from code_verifier.training.grpo import (
+    _clear_stale_merged_peft_metadata,
+    _enforce_nonreentrant_gradient_checkpointing,
+    _load_grpo_runtime,
+    _runtime_arguments,
+    load_grpo_training_config,
+)
 from code_verifier.training.sft import load_completed_sft_checkpoint
 pub=load_grpo_training_config(Path(sys.argv[1])); hid=load_grpo_training_config(Path(sys.argv[2]))
 for cfg, mode in ((pub,"public"),(hid,"hidden")):
@@ -311,6 +323,30 @@ runtime=_load_grpo_runtime()
 _, training_args=_runtime_arguments(pub, checkpoint_dir=Path("/root/tmp/wp9d-p1-preflight-checkpoints"), parent_sft=identity, seed=42, runtime=runtime)
 if getattr(training_args, "gradient_checkpointing_kwargs", None) != {"use_reentrant": False}:
     raise SystemExit("pinned GRPO runtime must use non-reentrant gradient checkpointing")
+tiny_cfg=Qwen2Config(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64, use_cache=False)
+tiny_lora=LoraConfig(r=4, lora_alpha=8, lora_dropout=0.0, target_modules=["q_proj","k_proj","v_proj","o_proj"], task_type="CAUSAL_LM")
+tiny_parent=get_peft_model(Qwen2ForCausalLM(tiny_cfg), tiny_lora)
+tiny_merged=_clear_stale_merged_peft_metadata(tiny_parent.merge_and_unload(safe_merge=True))
+if hasattr(tiny_merged, "peft_config"):
+    raise SystemExit("tiny safe-merge retained stale PEFT metadata")
+tiny_policy=get_peft_model(tiny_merged, tiny_lora)
+tiny_trainer=SimpleNamespace(model=tiny_policy)
+tiny_args=SimpleNamespace(gradient_checkpointing=True, gradient_checkpointing_kwargs={"use_reentrant": False})
+_enforce_nonreentrant_gradient_checkpointing(tiny_trainer, training_args=tiny_args, runtime=runtime)
+rdzv=tempfile.NamedTemporaryFile(delete=False); rdzv.close()
+try:
+    dist.init_process_group("gloo", init_method="file://"+rdzv.name, rank=0, world_size=1)
+    ddp=DDP(tiny_policy, find_unused_parameters=True)
+    ids=torch.randint(0, 64, (2, 16))
+    loss=ddp(input_ids=ids, labels=ids).loss
+    loss.backward()
+    grads=[p.grad for n,p in ddp.named_parameters() if "lora_" in n and p.requires_grad]
+    if not grads or any(g is None for g in grads):
+        raise SystemExit("tiny qkvo DDP non-reentrant backward did not populate all LoRA gradients")
+finally:
+    if dist.is_initialized():
+        dist.destroy_process_group()
+    os.unlink(rdzv.name)
 print("static_runtime_identity=ok")
 PY_STATIC
 }

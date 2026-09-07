@@ -25,6 +25,7 @@ from code_verifier.training.grpo import (
     GRPORefreshBinding,
     GRPOTrainingConfig,
     GRPOTrainingError,
+    _enforce_nonreentrant_gradient_checkpointing,
     _GRPORuntime,
     _load_grpo_runtime,
     _load_merged_sft_policy,
@@ -678,6 +679,51 @@ def test_grpo_runtime_arguments_enable_colocated_vllm(tmp_path: Path) -> None:
     assert training_kwargs["vllm_tensor_parallel_size"] == 1
 
 
+def test_grpo_runtime_rebinds_actual_checkpoint_function_to_nonreentrant() -> None:
+    checkpoint_module = SimpleNamespace(
+        gradient_checkpointing=True,
+        _gradient_checkpointing_func=SimpleNamespace(keywords={"use_reentrant": True}),
+    )
+
+    class _BaseModel:
+        def gradient_checkpointing_enable(self, *, gradient_checkpointing_kwargs: dict[str, bool]) -> None:
+            checkpoint_module._gradient_checkpointing_func = SimpleNamespace(
+                keywords=dict(gradient_checkpointing_kwargs)
+            )
+
+    class _PeftModel:
+        def __init__(self) -> None:
+            self.base_model = _BaseModel()
+
+        def modules(self) -> list[object]:
+            return [self, checkpoint_module]
+
+    model = _PeftModel()
+    trainer = SimpleNamespace(model=model)
+    runtime = _GRPORuntime(
+        model_config_type=object,
+        training_config_type=object,
+        trainer_type=object,
+        get_peft_config=lambda _: object(),
+        get_tokenizer=lambda *_: object(),
+        get_model=lambda *_: object(),
+        peft_config_type=object,
+        peft_model_type=_PeftModel,
+    )
+    training_args = SimpleNamespace(
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+    )
+
+    _enforce_nonreentrant_gradient_checkpointing(
+        trainer,
+        training_args=training_args,
+        runtime=runtime,
+    )
+
+    assert checkpoint_module._gradient_checkpointing_func.keywords == {"use_reentrant": False}
+
+
 def test_grpo_runtime_arguments_normalize_pinned_constructor_value_error(tmp_path: Path) -> None:
     def reject(**kwargs: object) -> object:
         raise ValueError("raw pinned constructor detail")
@@ -727,10 +773,12 @@ def test_sft_adapter_is_loaded_read_only_and_safe_merged_before_grpo_lora(tmp_pa
             calls.append(("adapter_config", path))
             return adapter_config
 
+    merged_policy = SimpleNamespace(peft_config={"default": adapter_config})
+
     class _Policy:
-        def merge_and_unload(self, *, safe_merge: bool) -> str:
+        def merge_and_unload(self, *, safe_merge: bool) -> object:
             calls.append(("merge", safe_merge))
-            return "MERGED_B"
+            return merged_policy
 
     class _PeftModel:
         @staticmethod
@@ -766,7 +814,8 @@ def test_sft_adapter_is_loaded_read_only_and_safe_merged_before_grpo_lora(tmp_pa
         runtime=runtime,
     )
 
-    assert merged == "MERGED_B"
+    assert merged is merged_policy
+    assert not hasattr(merged, "peft_config")
     assert calls[0][0] == "adapter_config"
     assert calls[1] == "base_a"
     assert calls[2][0] == "attach_b"
@@ -1245,6 +1294,7 @@ def _prepare_fake_grpo_run(
     monkeypatch.setattr(grpo_module, "_load_grpo_runtime", _fake_grpo_runtime)
     monkeypatch.setattr(grpo_module, "_reset_cuda_peak_memory", lambda: None)
     monkeypatch.setattr(grpo_module, "_peak_cuda_memory_bytes", lambda: (123, 456))
+    monkeypatch.setattr(grpo_module, "_enforce_nonreentrant_gradient_checkpointing", lambda *args, **kwargs: None)
     monkeypatch.setattr(grpo_module, "_install_grpo_checkpoint_log_snapshots", lambda *args, **kwargs: None)
     return public_config, hidden_config, sft_run_dir, tmp_path / "outputs"
 

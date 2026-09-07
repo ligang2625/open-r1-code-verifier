@@ -379,6 +379,7 @@ def _run_fixture(
     _Trainer.instances.clear()
     monkeypatch.setattr(grpo_module, "validate_grpo_training_hardware", lambda _: None)
     monkeypatch.setattr(grpo_module, "_load_grpo_runtime", _runtime)
+    monkeypatch.setattr(grpo_module, "_enforce_nonreentrant_gradient_checkpointing", lambda *args, **kwargs: None)
     executor = MockExecutor([_result(), _result(), _result(), _result()])
     summary = run_grpo_training(
         public_config,

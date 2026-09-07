@@ -1491,6 +1491,19 @@ def _runtime_arguments(
     return model_args, training_args
 
 
+def _clear_stale_merged_peft_metadata(merged_policy: Any) -> Any:
+    """Remove PEFT metadata left behind by merge_and_unload on the base model."""
+
+    if hasattr(merged_policy, "peft_config"):
+        try:
+            delattr(merged_policy, "peft_config")
+        except (AttributeError, TypeError):
+            raise GRPOTrainingError("merged SFT policy retained stale PEFT metadata") from None
+    if hasattr(merged_policy, "peft_config"):
+        raise GRPOTrainingError("merged SFT policy retained stale PEFT metadata")
+    return merged_policy
+
+
 def _load_merged_sft_policy(
     *,
     parent_sft: SFTCheckpointIdentity,
@@ -1519,11 +1532,47 @@ def _load_merged_sft_policy(
         merge = getattr(parent_policy, "merge_and_unload", None)
         if not callable(merge):
             raise GRPOTrainingError("parent SFT PEFT instance does not provide merge_and_unload")
-        return merge(safe_merge=True)
+        merged_policy = merge(safe_merge=True)
+        return _clear_stale_merged_peft_metadata(merged_policy)
     except GRPOTrainingError:
         raise
     except Exception as error:
         raise GRPOTrainingError(f"could not construct merged SFT policy: {type(error).__name__}") from None
+
+
+def _enforce_nonreentrant_gradient_checkpointing(
+    trainer: Any,
+    *,
+    training_args: Any,
+    runtime: _GRPORuntime,
+) -> None:
+    """Repair the pinned TRL 0.18 checkpointing gap after trainer construction."""
+
+    if not bool(getattr(training_args, "gradient_checkpointing", False)):
+        return
+    checkpoint_kwargs = getattr(training_args, "gradient_checkpointing_kwargs", None)
+    if checkpoint_kwargs != {"use_reentrant": False}:
+        raise GRPOTrainingError("GRPO runtime must request non-reentrant gradient checkpointing")
+    model = getattr(trainer, "model", None)
+    if model is None or not isinstance(model, runtime.peft_model_type):
+        raise GRPOTrainingError("GRPO trainer must own exactly one PEFT policy before checkpoint repair")
+    base_model = getattr(model, "base_model", None)
+    enable_checkpointing = getattr(base_model, "gradient_checkpointing_enable", None)
+    if not callable(enable_checkpointing):
+        raise GRPOTrainingError("GRPO PEFT base model does not support gradient checkpointing")
+    enable_checkpointing(gradient_checkpointing_kwargs={"use_reentrant": False})
+
+    checkpoint_modules = 0
+    for module in model.modules():
+        if not bool(getattr(module, "gradient_checkpointing", False)):
+            continue
+        checkpoint_modules += 1
+        checkpoint_func = getattr(module, "_gradient_checkpointing_func", None)
+        keywords = getattr(checkpoint_func, "keywords", None)
+        if not isinstance(keywords, dict) or keywords.get("use_reentrant") is not False:
+            raise GRPOTrainingError("GRPO checkpoint function was not rebound to non-reentrant mode")
+    if checkpoint_modules == 0:
+        raise GRPOTrainingError("GRPO checkpoint repair found no checkpoint-enabled model modules")
 
 
 def _resolved_config_mapping(config: GRPOTrainingConfig, *, effective_seed: int) -> dict[str, object]:
@@ -2877,6 +2926,11 @@ def run_grpo_training(
                 eval_dataset=None,
                 processing_class=tokenizer,
                 peft_config=runtime.get_peft_config(model_args),
+            )
+            _enforce_nonreentrant_gradient_checkpointing(
+                trainer,
+                training_args=training_args,
+                runtime=runtime,
             )
             _install_grpo_runtime_telemetry(
                 trainer,
