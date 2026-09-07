@@ -1,6 +1,6 @@
 @~/.codex/AGENTS.md
 ## Repository Guidelines
-project instructions are in `PROJECT_SPEC_Open-R1_CodeVerifier.md`; the active post-WP8 research addendum is `PROJECT_SPEC_GRPO_Refresh.md`. For any WP9 / GRPO Refresh planning, implementation, validation, or review, agents MUST read both specifications. When a WP9-specific default conflicts with the original WP0-WP8 specification, the Refresh addendum controls that new scope while historical WP0-WP8 evidence remains immutable.
+project instructions are in `PROJECT_SPEC_Open-R1_CodeVerifier.md`; the post-WP8 research addendum is `PROJECT_SPEC_GRPO_Refresh.md`, and the active WP9-d optimization amendment is `PROJECT_SPEC_GRPO_Refresh_WP9D.md`. For WP9 / GRPO Refresh work, agents MUST read the main specification plus the Refresh addendum; for WP9-d or later GRPO optimization they MUST also read the WP9-d amendment and `docs/wp9c-stage-closeout.md`. The newest scope-specific amendment controls conflicts within its declared scope while historical evidence remains immutable.
 project proceedings are in `proceedings.md`; it is the authoritative source for the currently active research track and next dependency-ready stage.
 use `uv` to manage virtual environment and python packages
 For long-running asynchronous work:

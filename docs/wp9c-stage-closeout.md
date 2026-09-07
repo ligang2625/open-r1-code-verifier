@@ -99,7 +99,14 @@ Primary local authority:
 
 Historical 4090 artifacts may be archived or the worker may remain offline after successful synchronization. The control-plane copies above are the retained analysis authority for future planning.
 
-The original `.worktrees/wp9-c` working state has been preserved as explicit archival Git evidence before cleanup. WP9-c is then integrated into `main`; WP9-d planning/implementation MUST start from the cleaned integrated `main`, not from the historical feature worktree, detached handoff commits, or archival snapshot.
+Git consolidation/archive anchors:
+
+- full pre-cleanup WP9-c working-tree snapshot: commit `98ce5a6b07064593db06d10f99404f6ff5fbe225`, tag `archive/wp9c-working-tree-20260907`;
+- C32 final SFT handoff actually used for the completed run: commit `d59943855e2aab6b786cd5ec5796530a8f486206`, tag `archive/wp9c-c32-final-handoff`;
+- C36 SFT-continuation generation handoff actually used for eval400 generation: commit `094c571636d2f9c342e70b9ef404eb59597b8302`, tag `archive/wp9c-c36-generation-handoff`;
+- original closeout/spec transition lineage: commit `67dc3d1073c8b03316c5e2d3c7be7b505af29aa4`, tag `archive/wp9c-stage-transition-20260907`.
+
+The historical WP9-c feature checkout and detached handoff worktrees were removed only after those commits were retained and their effective contents were integrated into `main`. The local `feat/wp9-c` branch was deleted after integration. WP9-d planning/implementation MUST start from the cleaned integrated `main`, not from a historical feature branch, detached handoff commit, or archival tag.
 
 ## 5. Closeout decision
 
