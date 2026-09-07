@@ -132,7 +132,7 @@ postcheck() {
 import json
 import sys
 from pathlib import Path
-from code_verifier.training import load_completed_grpo_checkpoint
+from code_verifier.training import grpo_evaluation_checkpoint_id, load_completed_grpo_checkpoint
 
 run_dir = Path(sys.argv[1])
 source_run = Path(sys.argv[2])
@@ -154,7 +154,7 @@ checks = {
     "project_commit": expected_head,
     "model_id": model_id,
     "model_revision": revision,
-    "checkpoint": str(identity.checkpoint_dir),
+    "checkpoint": grpo_evaluation_checkpoint_id(identity),
 }
 for key, expected in checks.items():
     if run.get(key) != expected:
