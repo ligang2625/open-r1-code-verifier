@@ -1,6 +1,6 @@
 # PROJECT SPEC — WP9-d GRPO Optimization Amendment
 
-**Status:** Active amendment v1.2
+**Status:** Active amendment v1.3
 **Effective date:** 2026-09-07
 **Applies to:** WP9-d and later GRPO-optimization stages derived from the completed WP9-c active1354 experiments
 **Parent specifications:** `PROJECT_SPEC_Open-R1_CodeVerifier.md`, `PROJECT_SPEC_GRPO_Refresh.md`
@@ -18,7 +18,7 @@ The primary hypothesis to test is:
 
 > The WP9-c GRPO recipe under-updated the policy because 300 optimizer steps covered only approximately 0.2216 epoch of active1354 while the cosine learning-rate schedule decayed the full `5e-6` budget to approximately zero within those 300 steps.
 
-WP9-d therefore optimizes **coverage / scheduler / effective policy movement first**. It MUST NOT begin by simultaneously changing learning rate, beta, LoRA rank, sampling, reward definition, data pool, and training duration.
+WP9-d therefore optimizes **systems throughput first, then coverage / scheduler / effective policy movement**. By explicit user decision on 2026-09-07, the project objective is capability improvement rather than a strict one-variable hyperparameter study. The WP9-d runtime MAY therefore adopt a better rollout/generation backend before Recipe A, provided the new runtime is frozen and used consistently for subsequent WP9-d candidates. Learning rate, beta, LoRA rank, reward definition, active pool, and scientific sampling settings remain sequential tuning dimensions unless separately changed.
 
 The stage must distinguish three questions:
 
@@ -91,6 +91,7 @@ wp9d_eval400:
   eval_config_sha256: 3fa1b8f0dbc6853c894ac9f02b6820afd838ff68ca9f090ecbbef4ae495dbac3
   seed: 42
   generation_batch_size: 4
+  parallel_generators: 2
   verification_workers: 64
   primary_metric: eval_hidden_pass_at_1
   decode: deterministic_pass_at_1
@@ -99,9 +100,10 @@ wp9d_eval400:
 Rules:
 
 - the same 400 problem IDs/order MUST be used for every candidate/checkpoint;
-- the same deterministic decode, seed, generation batch, verifier/runtime, and aggregation contract MUST be used unless a separately approved systems-only amendment proves exact output parity;
-- B remains the fixed benchmark baseline;
-- existing B/C/D results remain historical controls and are not regenerated unless required by a strict identity repair;
+- within WP9-d, the same deterministic decode, seed, logical batch `4`, parallel-generator count, verifier, and aggregation contract MUST be used after the optimized runtime is frozen;
+- exact output parity with the historical WP9-c generation runtime is **not required**; throughput improvements may change deterministic outputs through backend/batching effects, and that protocol change must be disclosed;
+- B remains the benchmark baseline, but after the WP9-d optimized evaluation runtime is frozen, B MUST be regenerated/re-evaluated once under that same runtime before Recipe A checkpoint deltas are interpreted;
+- existing WP9-c B/C/D results remain historical controls and are not mixed numerically with the new WP9-d runtime as if the generation protocol were identical;
 - eval400 results MAY be used directly to choose LR, beta, recipe, and checkpoint;
 - per-problem outcomes MAY be inspected for diagnosis, but any subsequent change informed by them must be recorded as benchmark-guided tuning;
 - all later scientific claims must disclose that eval400 was used for model selection and therefore is no longer an untouched held-out set.
@@ -144,8 +146,14 @@ wp9d_recipe_A:
   seed: 42
   min_cuda_memory_gb: 20.0
 
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.4
+
 wp9d_recipe_A_operator_runtime:
   reward_verification_workers: 8
+  eval_generation_batch_size: 4
+  eval_parallel_generators: 2
 ```
 
 The strict GRPO config loader also requires the arm-specific fields `run_name`, `reward_mode`, `dataset_path`, and `piston_config`. The WP9-d plan/operator MUST bind those explicitly for Public and Hidden; they are not free tuning variables and must preserve the frozen active1354/Piston identities.
@@ -153,7 +161,8 @@ The strict GRPO config loader also requires the arm-specific fields `run_name`, 
 Rationale:
 
 - `1200` steps correspond to approximately `0.89` epoch under the observed WP9-c trainer accounting, compared with approximately `0.22` epoch previously;
-- LR remains at the previously accepted `5e-6` after warmup, so Recipe A isolates the **coverage/scheduler** hypothesis rather than simultaneously testing a larger step size;
+- LR remains at the previously accepted `5e-6` after warmup, so within the **new frozen WP9-d runtime** Recipe A still tests the coverage/scheduler change without simultaneously increasing LR;
+- the systems baseline itself changes before Recipe A: rollout generation uses colocated vLLM and eval generation uses two concurrent logical-b4 generators. Stochastic GRPO trajectories and deterministic eval outputs are allowed to differ from WP9-c; the project accepts this because the objective is capability improvement, not strict runtime ablation;
 - `beta=0.01`, sampling, LoRA capacity, batch structure, and reward definitions remain unchanged;
 - with `per_device_train_batch_size=1` and `gradient_accumulation_steps=8`, the pinned single-GPU effective generation batch is `8` completion rows; with `num_generations=8`, this is exactly **one problem group of eight completions per optimizer step**. This mapping is what makes 1200 steps approximately 1200 active-problem groups and approximately 0.89 epoch;
 - GRPO training reward verification remains at `8` workers for Recipe A, matching the completed WP9-c formal runs. Changing reward workers is a systems-only benchmark dimension, not part of the initial scientific recipe.
@@ -332,9 +341,9 @@ Therefore:
 
 ---
 
-# 11. Throughput and GPU-utilization guardrails
+# 11. Throughput and GPU-utilization baseline
 
-WP9-c leaves substantial systems headroom, but throughput changes MUST be separated from the initial Recipe A scientific change.
+WP9-c leaves substantial systems headroom. By explicit user decision, WP9-d MUST optimize the runtime **before** Recipe A and then freeze that optimized runtime for subsequent training/evaluation. Exact parity with the historical WP9-c runtime is not a gate; consistency within WP9-d and measurable capability/throughput are the priority.
 
 Measured formal evidence from the completed C/Public run:
 
@@ -365,21 +374,17 @@ Consequences:
 
 Increasing GRPO reward verification workers above `8` MAY be benchmarked separately, but the observed verifier wall time is much smaller than generation time, so the expected end-to-end gain is limited.
 
-The highest-potential GRPO systems direction is faster autoregressive rollout generation while retaining `k=8` group semantics. Candidate engineering paths include an optimized generation backend such as vLLM/continuous batching, or compile/cache/attention-kernel improvements. The current project runtime pins `use_vllm=False`; changing that backend requires an explicit systems amendment and dependency/runtime validation. Because GRPO rollout sampling is stochastic, a backend change may alter sampled trajectories even when nominal decode parameters are unchanged. It MUST NOT be combined with Recipe A when the goal is to isolate the coverage/scheduler hypothesis.
+WP9-d adopts the highest-potential GRPO systems direction directly: **TRL colocated vLLM** for autoregressive rollout generation while retaining `k=8`, one active problem group per optimizer step. The pinned runtime exposes `use_vllm`, `vllm_mode=colocate`, and `vllm_gpu_memory_utilization`; Recipe A fixes the initial memory fraction at `0.4`. Because rollout sampling is stochastic, vLLM may change trajectories relative to WP9-c even under the same seed/temperature/top-p. This is accepted as part of the new WP9-d runtime baseline. Before the first full Recipe A run, the target operator MUST perform a bounded startup/smoke validation that confirms vLLM initialization, B-weight synchronization, reward execution, one optimizer update, checkpointability, and safe 24GB memory headroom.
 
 ## 11.2 Canonical eval400 generation throughput
 
-Canonical eval400 MUST continue to use logical generation batch `4` unless a separately approved benchmark-protocol amendment changes it.
+Canonical eval400 keeps **logical generation batch `4`**, but WP9-d standardizes two independent batch-4 model instances running concurrently (`parallel_generators=2`). This uses the observed memory headroom without converting each `model.generate()` call into b8.
 
-Prior WP9-c systems evidence established:
+Prior WP9-c evidence still informs the design: b4 was efficient and historically comparable, while direct b8 changed outputs. WP9-d no longer requires exact parity with the old runtime, but it preserves logical b4 because it is a good throughput/stability operating point and because two b4 model copies should still fit comfortably inside a 24GB RTX 4090.
 
-- batch `4` preserved exact per-problem Pass@1 parity with the batch-1 reference on the systems benchmark;
-- batch `8` was faster but changed per-problem Pass@1 and was therefore rejected;
-- consequently, simply increasing formal eval generation from `4` to `8` is **not** an allowed throughput optimization under the current canonical benchmark.
+The parallel generator MUST preserve the canonical 400 problem order in the persisted bundle even though two b4 chunks execute concurrently. Each model instance uses a dedicated CUDA stream so the two logical-b4 calls can overlap GPU work rather than merely overlap Python scheduling. A bounded pre-A systems check should record wall time, GPU utilization, peak memory, completion count, and any generation failures. Exact completion parity with the old single-generator b4 run is informative but **not an acceptance gate**.
 
-Preferred eval-generation optimization work should first preserve the batch-4 logical call shape. Candidate approaches may include compile/static-cache/attention improvements or carefully controlled concurrency of independent batch-4 calls. Before adoption, the candidate path MUST prove canonical problem/order identity and exact per-problem Pass@1 parity against the existing batch-4 contract; completion-level parity SHOULD also be checked after removing latency-only metadata.
-
-If a future decision intentionally adopts batch `>4` despite changed outputs, that is a benchmark-protocol change. At minimum B must be regenerated/re-evaluated under the new protocol before candidate deltas are interpreted; historical b4 results must not be mixed directly with the new protocol as if they were identical measurements.
+Because the optimized runtime may change outputs, B MUST be regenerated/re-evaluated once with the same `batch_size=4 / parallel_generators=2` protocol. Recipe A and later checkpoints are then compared against that WP9-d B baseline. Historical WP9-c b4 results remain context only and must not be mixed as if they were generated by the same runtime.
 
 ---
 

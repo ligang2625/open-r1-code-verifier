@@ -90,6 +90,9 @@ class GRPOTrainingConfig:
     eval_steps: int
     seed: int
     min_cuda_memory_gb: float
+    use_vllm: bool = False
+    vllm_mode: str = "colocate"
+    vllm_gpu_memory_utilization: float = 0.4
 
 
 @dataclass(frozen=True)
@@ -165,7 +168,7 @@ class _GRPORuntime:
     peft_model_type: Any
 
 
-_CONFIG_FIELDS = {
+_REQUIRED_CONFIG_FIELDS = {
     "run_name",
     "reward_mode",
     "dataset_path",
@@ -195,6 +198,12 @@ _CONFIG_FIELDS = {
     "seed",
     "min_cuda_memory_gb",
 }
+_OPTIONAL_CONFIG_FIELDS = {
+    "use_vllm",
+    "vllm_mode",
+    "vllm_gpu_memory_utilization",
+}
+_CONFIG_FIELDS = _REQUIRED_CONFIG_FIELDS | _OPTIONAL_CONFIG_FIELDS
 _PAIR_DIFFERENCES = {"run_name", "reward_mode", "dataset_path"}
 _MIN_TRAINING_CUDA_MEMORY_GB = 20.0
 _RUNTIME_VERSIONS = {
@@ -251,7 +260,7 @@ _GPU_HOURS_SEMANTICS = (
 def _exact_mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise GRPOTrainingError("GRPO config must be a mapping with string keys")
-    missing = _CONFIG_FIELDS - set(value)
+    missing = _REQUIRED_CONFIG_FIELDS - set(value)
     unknown = set(value) - _CONFIG_FIELDS
     if missing:
         raise GRPOTrainingError(f"GRPO config is missing required field(s): {', '.join(sorted(missing))}")
@@ -330,6 +339,21 @@ def grpo_training_config_from_mapping(value: object) -> GRPOTrainingConfig:
     scheduler = _nonempty_string(root["lr_scheduler_type"], field_name="lr_scheduler_type")
     if scheduler not in {"cosine", "constant_with_warmup"}:
         raise GRPOTrainingError("lr_scheduler_type must be cosine or constant_with_warmup")
+    use_vllm = root.get("use_vllm", False)
+    if not isinstance(use_vllm, bool):
+        raise GRPOTrainingError("use_vllm must be a boolean")
+    vllm_mode = _nonempty_string(root.get("vllm_mode", "colocate"), field_name="vllm_mode")
+    if vllm_mode not in {"colocate", "server"}:
+        raise GRPOTrainingError("vllm_mode must be colocate or server")
+    vllm_gpu_memory_utilization = _finite_float(
+        root.get("vllm_gpu_memory_utilization", 0.4),
+        field_name="vllm_gpu_memory_utilization",
+        positive=True,
+    )
+    if not 0.05 <= vllm_gpu_memory_utilization < 0.95:
+        raise GRPOTrainingError("vllm_gpu_memory_utilization must be in [0.05, 0.95)")
+    if use_vllm and vllm_mode != "colocate":
+        raise GRPOTrainingError("single-GPU project GRPO requires vllm_mode=colocate when use_vllm=true")
     seed = root["seed"]
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise GRPOTrainingError("seed must be an integer")
@@ -377,6 +401,9 @@ def grpo_training_config_from_mapping(value: object) -> GRPOTrainingConfig:
         eval_steps=_positive_int(root["eval_steps"], field_name="eval_steps"),
         seed=seed,
         min_cuda_memory_gb=min_memory,
+        use_vllm=use_vllm,
+        vllm_mode=vllm_mode,
+        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
     )
 
 
@@ -1411,7 +1438,10 @@ def _runtime_arguments(
             logging_nan_inf_filter=False,
             save_total_limit=None,
             save_only_model=False,
-            use_vllm=False,
+            use_vllm=config.use_vllm,
+            vllm_mode=config.vllm_mode,
+            vllm_gpu_memory_utilization=config.vllm_gpu_memory_utilization,
+            vllm_tensor_parallel_size=1,
             report_to=[],
             push_to_hub=False,
         )
@@ -1461,7 +1491,12 @@ def _resolved_config_mapping(config: GRPOTrainingConfig, *, effective_seed: int)
     resolved["piston_config"] = str(config.piston_config)
     resolved["seed"] = effective_seed
     resolved["use_peft"] = True
-    resolved["use_vllm"] = False
+    resolved["use_vllm"] = config.use_vllm
+    if config.use_vllm:
+        resolved["vllm_tensor_parallel_size"] = 1
+    else:
+        resolved.pop("vllm_mode", None)
+        resolved.pop("vllm_gpu_memory_utilization", None)
     resolved["report_to"] = []
     resolved["push_to_hub"] = False
     resolved["trust_remote_code"] = False

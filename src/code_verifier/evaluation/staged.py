@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -667,6 +668,7 @@ def run_generation_bundle(
     output_root: Path,
     seed: int,
     batch_size: int = 1,
+    additional_generators: Sequence[CompletionGenerator] = (),
     utilization_sampler: RuntimeUtilizationSampler | None = None,
 ) -> GenerationBundleSummary:
     """Generate an exact-prefix bundle without constructing or contacting Piston."""
@@ -674,12 +676,18 @@ def run_generation_bundle(
         raise EvaluationError("seed must be an integer")
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size not in _GENERATION_BATCH_SIZES:
         raise EvaluationError("generation batch_size must be one of 1, 2, 4, 8, or 16")
-    batch_generator: BatchedCompletionGenerator | None = None
-    if batch_size > 1:
-        generate_batch = getattr(generator, "generate_batch", None)
-        if not callable(generate_batch):
-            raise EvaluationError("batched generation requires a generator with generate_batch")
-        batch_generator = cast(BatchedCompletionGenerator, generator)
+    generators = (generator, *tuple(additional_generators))
+    if len(generators) not in {1, 2}:
+        raise EvaluationError("generation supports one or two independent generator instances")
+    batch_generators: list[BatchedCompletionGenerator | None] = []
+    for candidate in generators:
+        if batch_size > 1:
+            generate_batch = getattr(candidate, "generate_batch", None)
+            if not callable(generate_batch):
+                raise EvaluationError("batched generation requires every generator to provide generate_batch")
+            batch_generators.append(cast(BatchedCompletionGenerator, candidate))
+        else:
+            batch_generators.append(None)
     model_id = _nonempty(model_id, "model_id")
     _validate_run_id(run_id)
     problems = load_evaluation_problems(config)
@@ -707,6 +715,14 @@ def run_generation_bundle(
             batch_size=batch_size,
         )
         records = []
+    parallel_generators = len(generators)
+    metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
+    recorded_parallel = metadata.get("parallel_generators", 1)
+    if records and recorded_parallel != parallel_generators:
+        raise EvaluationError("generation parallel generator count differs from the persisted run")
+    if not records:
+        metadata["parallel_generators"] = parallel_generators
+        _write_json(context.run_json_path, metadata)
     if len(records) == len(problems):
         return GenerationBundleSummary(
             run_id=run_id,
@@ -722,56 +738,94 @@ def run_generation_bundle(
     contract_identity = _evaluation_contract_sha256(
         config, run_id=run_id, model_id=model_id, seed=seed, problems=problems, batch_size=batch_size
     )
+
+    def persist_batch(
+        problem_batch: Sequence[CodeProblem], prompts: Sequence[str], results: Sequence[GenerationResult]
+    ) -> None:
+        nonlocal generated
+        if len(results) != len(problem_batch):
+            raise EvaluationError("batched generator returned a result count mismatch")
+        for problem, prompt, result in zip(problem_batch, prompts, results, strict=True):
+            record = GenerationBundleRecord(
+                run_id=run_id,
+                model_id=model_id,
+                checkpoint=config.checkpoint,
+                dataset_hash=dataset_identity,
+                evaluation_contract_sha256=contract_identity,
+                problem_id=problem.problem_id,
+                prompt_hash=prompt_hash(prompt),
+                completion=result.completion,
+                completion_tokens=result.completion_tokens,
+                generation_latency_ms=result.latency_ms,
+                hit_max_new_tokens=result.hit_max_new_tokens,
+            )
+            _append_jsonl(context.records_path, generation_bundle_record_to_mapping(record))
+            generated += 1
+        _rewrite_generation_metrics(context, load_generation_bundle_records(context.records_path))
+
+    def generate_chunk(
+        worker_index: int, problem_batch: Sequence[CodeProblem]
+    ) -> tuple[list[str], list[GenerationResult]]:
+        prompts = [build_evaluation_prompt(problem) for problem in problem_batch]
+        batch_generator = batch_generators[worker_index]
+        if batch_generator is None:
+            results = [generators[worker_index].generate(prompts[0], seed=seed)]
+        else:
+            results = batch_generator.generate_batch(prompts, seeds=[seed] * len(prompts))
+        return prompts, results
+
     utilization_started = False
     utilization_snapshot: dict[str, object] | None = None
+    generation_started = time.perf_counter()
     try:
         if utilization_sampler is not None:
             utilization_sampler.start()
             utilization_started = True
-        for start in range(len(records), len(problems), batch_size):
-            problem_batch = problems[start : start + batch_size]
-            prompts = [build_evaluation_prompt(problem) for problem in problem_batch]
-            if batch_generator is None:
-                results = [generator.generate(prompts[0], seed=seed)]
-            else:
-                results = batch_generator.generate_batch(prompts, seeds=[seed] * len(prompts))
-            if len(results) != len(problem_batch):
-                raise EvaluationError("batched generator returned a result count mismatch")
-            for problem, prompt, result in zip(problem_batch, prompts, results, strict=True):
-                record = GenerationBundleRecord(
-                    run_id=run_id,
-                    model_id=model_id,
-                    checkpoint=config.checkpoint,
-                    dataset_hash=dataset_identity,
-                    evaluation_contract_sha256=contract_identity,
-                    problem_id=problem.problem_id,
-                    prompt_hash=prompt_hash(prompt),
-                    completion=result.completion,
-                    completion_tokens=result.completion_tokens,
-                    generation_latency_ms=result.latency_ms,
-                    hit_max_new_tokens=result.hit_max_new_tokens,
-                )
-                _append_jsonl(context.records_path, generation_bundle_record_to_mapping(record))
-                generated += 1
-            _rewrite_generation_metrics(context, load_generation_bundle_records(context.records_path))
+        wave_size = batch_size * parallel_generators
+        if parallel_generators == 1:
+            for start in range(len(records), len(problems), batch_size):
+                problem_batch = problems[start : start + batch_size]
+                prompts, results = generate_chunk(0, problem_batch)
+                persist_batch(problem_batch, prompts, results)
+        else:
+            with ThreadPoolExecutor(max_workers=parallel_generators) as pool:
+                for start in range(len(records), len(problems), wave_size):
+                    wave = problems[start : start + wave_size]
+                    chunks = [wave[index : index + batch_size] for index in range(0, len(wave), batch_size)]
+                    futures = [pool.submit(generate_chunk, index, chunk) for index, chunk in enumerate(chunks)]
+                    for chunk, future in zip(chunks, futures, strict=True):
+                        prompts, results = future.result()
+                        persist_batch(chunk, prompts, results)
     except BaseException as error:
+        invocation_wall_seconds = time.perf_counter() - generation_started
         if utilization_sampler is not None and utilization_started:
             utilization_snapshot = utilization_sampler.stop()
         _update_bundle_status(context, "failed")
+        metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
+        gpu_count_used = metadata.get("gpu_count_used")
+        if isinstance(gpu_count_used, bool) or not isinstance(gpu_count_used, int) or gpu_count_used < 0:
+            raise EvaluationError("generation gpu_count_used is invalid") from error
+        metadata["invocation_generation_wall_seconds"] = invocation_wall_seconds
+        metadata["invocation_wall_gpu_hours"] = invocation_wall_seconds * gpu_count_used / 3600.0
         if utilization_snapshot is not None:
-            metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
             metadata["runtime_utilization"] = utilization_snapshot
-            _write_json(context.run_json_path, metadata)
+        _write_json(context.run_json_path, metadata)
         with context.stderr_path.open("a", encoding="utf-8") as handle:
             handle.write(f"{type(error).__name__}\n")
         raise
+    invocation_wall_seconds = time.perf_counter() - generation_started
     if utilization_sampler is not None and utilization_started:
         utilization_snapshot = utilization_sampler.stop()
     _update_bundle_status(context, "completed")
+    metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
+    gpu_count_used = metadata.get("gpu_count_used")
+    if isinstance(gpu_count_used, bool) or not isinstance(gpu_count_used, int) or gpu_count_used < 0:
+        raise EvaluationError("generation gpu_count_used is invalid")
+    metadata["invocation_generation_wall_seconds"] = invocation_wall_seconds
+    metadata["invocation_wall_gpu_hours"] = invocation_wall_seconds * gpu_count_used / 3600.0
     if utilization_snapshot is not None:
-        metadata = dict(_read_json_object(context.run_json_path, artifact_name="generation run.json"))
         metadata["runtime_utilization"] = utilization_snapshot
-        _write_json(context.run_json_path, metadata)
+    _write_json(context.run_json_path, metadata)
     with context.stdout_path.open("a", encoding="utf-8") as handle:
         handle.write(f"completed={len(problems)} generated_this_run={generated}\n")
     return GenerationBundleSummary(

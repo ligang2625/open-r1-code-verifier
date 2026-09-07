@@ -385,6 +385,31 @@ class TransformersCompletionGenerator:
         self._transformers = transformers_runtime
         self._device = device
         self._config = config
+        self._cuda_stream: Any | None = None
+
+    def enable_dedicated_cuda_stream(self) -> None:
+        """Route generation for this model instance through its own CUDA stream."""
+        if self._device != "cuda":
+            raise GenerationError("dedicated CUDA streams require device=cuda")
+        try:
+            self._torch.cuda.synchronize()
+            self._cuda_stream = self._torch.cuda.Stream()
+        except Exception as error:
+            raise GenerationError(f"could not create dedicated CUDA stream: {type(error).__name__}") from None
+
+    def _model_generate(self, encoded: dict[str, Any], options: dict[str, object], *, batch: bool) -> Any:
+        try:
+            if self._cuda_stream is None:
+                with self._torch.inference_mode():
+                    return self._model.generate(**encoded, **options)
+            self._cuda_stream.wait_stream(self._torch.cuda.current_stream())
+            with self._torch.cuda.stream(self._cuda_stream), self._torch.inference_mode():
+                generated = self._model.generate(**encoded, **options)
+            self._cuda_stream.synchronize()
+            return generated
+        except Exception as error:
+            label = "model batch generation" if batch else "model generation"
+            raise GenerationError(f"{label} failed: {type(error).__name__}") from None
 
     @classmethod
     def from_pretrained(
@@ -611,11 +636,7 @@ class TransformersCompletionGenerator:
         if self._config.top_p is not None:
             options["top_p"] = self._config.top_p
         started = time.perf_counter()
-        try:
-            with self._torch.inference_mode():
-                generated = self._model.generate(**encoded, **options)
-        except Exception as error:
-            raise GenerationError(f"model generation failed: {type(error).__name__}") from None
+        generated = self._model_generate(encoded, options, batch=False)
         latency_ms = (time.perf_counter() - started) * 1000.0
         new_token_ids = generated[0][prompt_length:]
         try:
@@ -692,11 +713,7 @@ class TransformersCompletionGenerator:
             "max_new_tokens": self._config.max_new_tokens,
         }
         started = time.perf_counter()
-        try:
-            with self._torch.inference_mode():
-                generated = self._model.generate(**encoded, **options)
-        except Exception as error:
-            raise GenerationError(f"model batch generation failed: {type(error).__name__}") from None
+        generated = self._model_generate(encoded, options, batch=True)
         latency_ms = (time.perf_counter() - started) * 1000.0
         if len(generated) != len(rendered):
             raise GenerationError("model batch generation returned an unexpected number of sequences")

@@ -27,6 +27,7 @@ from code_verifier.evaluation.generate import GenerationConfig, GenerationError,
 from code_verifier.evaluation.metrics import aggregate_evaluation_run
 from code_verifier.evaluation.staged import (
     load_completed_generation_bundle,
+    load_generation_bundle_records,
     run_generation_bundle,
     run_verification_from_generation_bundle,
 )
@@ -66,6 +67,35 @@ class _BatchGenerator:
                 latency_ms=2.0,
             )
             for index, _ in enumerate(prompts)
+        ]
+
+
+class _ParallelBatchGenerator:
+    def __init__(self, tracker: dict[str, Any], barrier: threading.Barrier) -> None:
+        self._tracker = tracker
+        self._barrier = barrier
+
+    def generate(self, prompt: str, *, seed: int) -> GenerationResult:
+        raise AssertionError("parallel batch generator must use generate_batch")
+
+    def generate_batch(self, prompts: list[str], *, seeds: list[int]) -> list[GenerationResult]:
+        del seeds
+        lock = self._tracker["lock"]
+        assert isinstance(lock, type(threading.Lock()))
+        with lock:
+            self._tracker["active"] = int(self._tracker["active"]) + 1
+            self._tracker["max_active"] = max(int(self._tracker["max_active"]), int(self._tracker["active"]))
+        self._barrier.wait(timeout=1.0)
+        time.sleep(0.01)
+        with lock:
+            self._tracker["active"] = int(self._tracker["active"]) - 1
+        return [
+            GenerationResult(
+                completion="",
+                completion_tokens=8,
+                latency_ms=2.0,
+            )
+            for prompt in prompts
         ]
 
 
@@ -326,6 +356,37 @@ def test_generation_resume_uses_only_the_missing_exact_prefix(tmp_path: Path, mo
     assert completed.completed_before_run == 2
     assert completed.generated_this_run == 0
     assert no_op.calls == []
+
+
+def test_generation_bundle_runs_two_independent_batch_generators_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problems = [_problem(f"p{index}", f"M{index}") for index in range(8)]
+    _patch_problems(monkeypatch, problems)
+    tracker: dict[str, Any] = {"lock": threading.Lock(), "active": 0, "max_active": 0}
+    barrier = threading.Barrier(2)
+    first = _ParallelBatchGenerator(tracker, barrier)
+    second = _ParallelBatchGenerator(tracker, barrier)
+
+    bundle = run_generation_bundle(
+        config=_config(tmp_path),
+        model_id="example/model",
+        generator=first,
+        additional_generators=[second],
+        run_id="parallel-b4",
+        output_root=tmp_path / "outputs",
+        seed=42,
+        batch_size=4,
+    )
+
+    assert tracker["max_active"] == 2
+    records = load_generation_bundle_records(bundle.records_path)
+    assert [record.problem_id for record in records] == [problem.problem_id for problem in problems]
+    metadata = json.loads((bundle.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert metadata["batch_size"] == 4
+    assert metadata["parallel_generators"] == 2
+    assert metadata["invocation_generation_wall_seconds"] >= 0.0
+    assert metadata["invocation_wall_gpu_hours"] >= 0.0
 
 
 def test_generation_batch_v2_persists_partial_batch_provenance(

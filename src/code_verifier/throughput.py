@@ -612,6 +612,7 @@ def _strict_grpo_source(
     try:
         from code_verifier.training.grpo import (
             _CONFIG_FIELDS,
+            _REQUIRED_CONFIG_FIELDS,
             _config_hash,
             _paired_config_hash,
             _resolved_config_mapping,
@@ -619,9 +620,12 @@ def _strict_grpo_source(
         )
     except ImportError as error:
         raise ThroughputError("formal GRPO benchmark requires the strict config checker") from error
-    if set(resolved) != set(_CONFIG_FIELDS) | _GRPO_CONFIG_DERIVED_FIELDS:
+    resolved_fields = set(resolved)
+    required_fields = set(_REQUIRED_CONFIG_FIELDS) | _GRPO_CONFIG_DERIVED_FIELDS
+    allowed_fields = set(_CONFIG_FIELDS) | _GRPO_CONFIG_DERIVED_FIELDS | {"vllm_tensor_parallel_size"}
+    if not required_fields <= resolved_fields <= allowed_fields:
         raise ThroughputError("formal GRPO resolved config schema is invalid")
-    config_values = {field: resolved[field] for field in _CONFIG_FIELDS}
+    config_values = {field: resolved[field] for field in _CONFIG_FIELDS if field in resolved}
     try:
         config = grpo_training_config_from_mapping(config_values)
     except Exception as error:

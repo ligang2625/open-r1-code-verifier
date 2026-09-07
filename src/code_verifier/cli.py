@@ -501,11 +501,20 @@ def _generate_eval(args: argparse.Namespace) -> int:
         print(f"override: dataset_dir: {config.dataset_dir} -> {dataset_dir}", file=sys.stderr)
         config = replace(config, dataset_dir=dataset_dir)
     config, model_id, sft_checkpoint, grpo_checkpoint = _resolve_generation_source(args, config)
-    generator = _build_generation_model(config, model_id, sft_checkpoint, grpo_checkpoint)
+    parallel_generators = int(args.parallel_generators)
+    generators = [
+        _build_generation_model(config, model_id, sft_checkpoint, grpo_checkpoint) for _ in range(parallel_generators)
+    ]
+    if parallel_generators > 1:
+        if config.device != "cuda":
+            raise EvaluationError("parallel generation requires device=cuda")
+        for generator in generators:
+            generator.enable_dedicated_cuda_stream()
     summary = run_generation_bundle(
         config=config,
         model_id=model_id,
-        generator=generator,
+        generator=generators[0],
+        additional_generators=generators[1:],
         run_id=str(args.run_name),
         output_root=Path(str(args.output_dir)),
         seed=int(args.seed),
@@ -1308,6 +1317,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(1, 2, 4, 8, 16),
         default=1,
         help="deterministic generation batch size (default: 1)",
+    )
+    generate_eval_parser.add_argument(
+        "--parallel-generators",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="independent model instances generating batches concurrently (default: 1)",
     )
     _add_common_arguments(
         generate_eval_parser,

@@ -617,6 +617,25 @@ def test_grpo_runtime_arguments_bind_parent_model_and_frozen_invariants(tmp_path
     assert training_kwargs["save_only_model"] is False
 
 
+def test_grpo_runtime_arguments_enable_colocated_vllm(tmp_path: Path) -> None:
+    runtime, _, training_config = _argument_runtime()
+    mapping = _config_mapping(tmp_path)
+    mapping.update({"use_vllm": True, "vllm_mode": "colocate", "vllm_gpu_memory_utilization": 0.4})
+    config = grpo_training_config_from_mapping(mapping)
+    _runtime_arguments(
+        config,
+        checkpoint_dir=tmp_path / "checkpoints",
+        parent_sft=_parent_sft(tmp_path),
+        seed=7,
+        runtime=runtime,
+    )
+    training_kwargs = training_config.calls[0]
+    assert training_kwargs["use_vllm"] is True
+    assert training_kwargs["vllm_mode"] == "colocate"
+    assert training_kwargs["vllm_gpu_memory_utilization"] == 0.4
+    assert training_kwargs["vllm_tensor_parallel_size"] == 1
+
+
 def test_grpo_runtime_arguments_normalize_pinned_constructor_value_error(tmp_path: Path) -> None:
     def reject(**kwargs: object) -> object:
         raise ValueError("raw pinned constructor detail")

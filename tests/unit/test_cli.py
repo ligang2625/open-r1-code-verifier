@@ -666,10 +666,74 @@ def test_generate_eval_handler_does_not_construct_piston(
         == 0
     )
     assert seen["generator"] is generator
+    assert seen["additional_generators"] == []
     assert seen["run_id"] == "split-run"
     assert seen["output_root"] == output_root
     assert seen["batch_size"] == 4
     assert "generated 4 evaluation prompts" in capsys.readouterr().out
+
+
+def test_generate_eval_handler_can_build_two_parallel_generators(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(_evaluation_config(tmp_path), device="cuda")
+    output_root = tmp_path / "outputs"
+    built: list[object] = []
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(cli_module, "load_evaluation_config", lambda path: config)
+
+    class FakeGenerator:
+        def __init__(self) -> None:
+            self.stream_enabled = False
+
+        def enable_dedicated_cuda_stream(self) -> None:
+            self.stream_enabled = True
+
+    def build(*args: object) -> object:
+        del args
+        value = FakeGenerator()
+        built.append(value)
+        return value
+
+    monkeypatch.setattr(cli_module, "_build_generation_model", build)
+
+    def fake_run_generation_bundle(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(
+            total_problems=4,
+            completed_before_run=0,
+            generated_this_run=4,
+            run_dir=output_root / "generation" / "parallel-run",
+            records_path=output_root / "generation" / "parallel-run" / "samples" / "generations.jsonl",
+        )
+
+    monkeypatch.setattr(cli_module, "run_generation_bundle", fake_run_generation_bundle)
+    assert (
+        main(
+            [
+                "generate-eval",
+                "--config",
+                str(tmp_path / "eval.yaml"),
+                "--model-id",
+                "example/model",
+                "--run-name",
+                "parallel-run",
+                "--batch-size",
+                "4",
+                "--parallel-generators",
+                "2",
+                "--output-dir",
+                str(output_root),
+            ]
+        )
+        == 0
+    )
+    assert len(built) == 2
+    assert all(cast(Any, generator).stream_enabled for generator in built)
+    assert seen["generator"] is built[0]
+    assert seen["additional_generators"] == [built[1]]
+    assert seen["batch_size"] == 4
 
 
 def test_verify_eval_handler_does_not_aggregate_implicitly(
