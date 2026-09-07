@@ -301,7 +301,7 @@ if identity.run_id != "B-sft-formal-seed42" or identity.model_id != "Qwen/Qwen2.
     raise SystemExit("frozen B identity drift")
 if identity.model_revision != "2e1fd397ee46e1388853d2af2c993145b0f1098a" or identity.seed != 42:
     raise SystemExit("frozen B revision/seed drift")
-expected={"trl":"0.18.0","vllm":"0.8.5.post1","transformers":"4.52.3","accelerate":"1.4.0","peft":"0.14.0"}
+expected={"trl":"0.18.0","vllm":"0.8.5.post1","transformers":"4.52.3","accelerate":"1.4.0","peft":"0.14.0","setuptools":"83.0.0"}
 for package, version in expected.items():
     actual=md.version(package)
     if actual != version: raise SystemExit(f"{package} version drift: {actual} != {version}")

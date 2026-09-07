@@ -2622,6 +2622,7 @@ gpu = [
 ]
 training = [
     { name = "peft" },
+    { name = "setuptools" },
 ]
 
 [package.metadata]
@@ -2633,6 +2634,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.5" },
     { name = "pyyaml", specifier = "==6.0.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.9.10" },
+    { name = "setuptools", marker = "extra == 'training'", specifier = "==83.0.0" },
     { name = "torch", marker = "extra == 'gpu'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = "==6.0.12.20241230" },
 ]

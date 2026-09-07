@@ -8,6 +8,7 @@ from pathlib import Path
 EVIDENCE = Path("ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/operator_evidence.py")
 ACCEPTED = Path("ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/accepted_pointer.py")
 RUN_SH = Path("ai-work/executor/operator/WP9-d/wp9d-p1-runtime-validation/C0/run.sh")
+PYPROJECT = Path("pyproject.toml")
 COMMIT = "a" * 40
 SCRIPT_SHA = "b" * 64
 
@@ -138,6 +139,7 @@ def test_wp9d_operator_uses_current_4090_qkvo_contract() -> None:
         "--standalone",
         "--nproc-per-node=1",
         "--max-restarts=0",
+        '"setuptools":"83.0.0"',
         "wp9d-P1-public-vllm-qkvo-smoke-seed42",
         "q_proj",
         "k_proj",
@@ -152,3 +154,4 @@ def test_wp9d_operator_uses_current_4090_qkvo_contract() -> None:
     ):
         assert stale not in text
     assert "--id=0" not in text
+    assert '"setuptools==83.0.0"' in PYPROJECT.read_text(encoding="utf-8")
