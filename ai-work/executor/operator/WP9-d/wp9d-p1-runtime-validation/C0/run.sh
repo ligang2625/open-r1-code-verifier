@@ -540,7 +540,9 @@ PY_PAIR
 }
 
 update_latest_concurrent() {
-  local source="$1" tag="$2" target="$P1_ROOT/latest/concurrent-$tag.json"
+  local source="$1"
+  local tag="$2"
+  local target="$P1_ROOT/latest/concurrent-$tag.json"
   cp "$source" "$target.tmp"; mv "$target.tmp" "$target"
 }
 

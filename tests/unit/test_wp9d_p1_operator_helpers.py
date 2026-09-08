@@ -154,4 +154,8 @@ def test_wp9d_operator_uses_current_4090_qkvo_contract() -> None:
     ):
         assert stale not in text
     assert "--id=0" not in text
+    assert 'local source="$1" tag="$2" target="$P1_ROOT/latest/concurrent-$tag.json"' not in text
+    assert 'local source="$1"' in text
+    assert 'local tag="$2"' in text
+    assert 'local target="$P1_ROOT/latest/concurrent-$tag.json"' in text
     assert '"setuptools==83.0.0"' in PYPROJECT.read_text(encoding="utf-8")
