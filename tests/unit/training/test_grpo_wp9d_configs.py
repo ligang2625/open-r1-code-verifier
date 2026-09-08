@@ -1,5 +1,6 @@
 """WP9-d optimized GRPO recipe configuration tests."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from code_verifier.training.grpo import load_grpo_training_config, validate_grpo_config_pair
@@ -25,6 +26,18 @@ def test_wp9d_recipe_a_configs_are_paired_and_use_colocated_vllm() -> None:
     assert public.vllm_gpu_memory_utilization == 0.4
     assert public.eval_steps == 300
     assert public.save_steps == 100
+
+
+def test_wp9d_recipe_a_save50_configs_only_change_checkpoint_cadence() -> None:
+    frozen_public = load_grpo_training_config(Path("configs/grpo/wp9d-recipe-a-public.yaml"))
+    frozen_hidden = load_grpo_training_config(Path("configs/grpo/wp9d-recipe-a-hidden.yaml"))
+    public = load_grpo_training_config(Path("configs/grpo/wp9d-recipe-a-public-save50.yaml"))
+    hidden = load_grpo_training_config(Path("configs/grpo/wp9d-recipe-a-hidden-save50.yaml"))
+
+    validate_grpo_config_pair(public, hidden)
+    assert public.save_steps == hidden.save_steps == 50
+    assert replace(public, save_steps=100) == frozen_public
+    assert replace(hidden, save_steps=100) == frozen_hidden
 
 
 def test_historical_wp9c_config_keeps_non_vllm_default() -> None:
