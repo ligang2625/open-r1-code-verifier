@@ -171,7 +171,7 @@ common_preflight() {
   [[ "$(sha256sum "$P1_REPORT" | awk '{print $1}')" == "$P1_REPORT_SHA" ]] || { echo "P1 report SHA drift" >&2; return 125; }
   [[ "$(sha256sum "$EVAL_CONFIG" | awk '{print $1}')" == "$EVAL_CONFIG_SHA" ]] || { echo "eval config SHA drift" >&2; return 125; }
   [[ -d "$EVAL400_DIR" && -d "$B_RUN" ]] || { echo "eval400 or frozen B missing" >&2; return 125; }
-  "$PY" - "$P1_REPORT" "$B_RUN" <<'PY_PREFLIGHT'
+  "$PY" - "$P1_REPORT" "$B_RUN" "$BASELINE_RUN" <<'PY_PREFLIGHT'
 import json, sys
 from pathlib import Path
 from code_verifier.cli import build_parser
@@ -203,10 +203,12 @@ parallel = next(a for a in gen._actions if getattr(a, "dest", None) == "parallel
 if tuple(parallel.choices or ()) != (1, 2, 4):
     raise SystemExit("generate-eval p4 CLI support missing")
 PY_PREFLIGHT
-  local gpu_row free_mib
-  gpu_row="$(nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader,nounits | awk -F',' '$2 ~ /RTX 4090/ {gsub(/ /,"",$3); gsub(/ /,"",$4); if ($3+0 >= 22528 && $4+0 >= 20000) {print $2"|"$3"|"$4; exit}}')"
-  [[ -n "$gpu_row" ]] || { echo "benchmark requires RTX 4090 with >=20000 MiB free VRAM" >&2; return 125; }
-  IFS='|' read -r _ _ free_mib <<<"$gpu_row"
+  if [[ "$PHASE" != "compare" ]]; then
+    local gpu_row free_mib
+    gpu_row="$(nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader,nounits | awk -F',' '$2 ~ /RTX 4090/ {gsub(/ /,"",$3); gsub(/ /,"",$4); if ($3+0 >= 22528 && $4+0 >= 20000) {print $2"|"$3"|"$4; exit}}')"
+    [[ -n "$gpu_row" ]] || { echo "benchmark generation requires RTX 4090 with >=20000 MiB free VRAM" >&2; return 125; }
+    IFS='|' read -r _ _ free_mib <<<"$gpu_row"
+  fi
 }
 
 set +e

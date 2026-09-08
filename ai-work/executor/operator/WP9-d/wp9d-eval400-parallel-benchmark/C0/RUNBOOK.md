@@ -46,7 +46,7 @@ bash "$C0/run.sh" p4
 bash "$C0/run.sh" compare
 ```
 
-Use tmux for `p2` and `p4` if desired. Never run the two phases concurrently.
+Use tmux for `p2` and `p4` if desired. Never run the two phases concurrently. The `compare` phase is read-only with respect to all three generation bundles and does not require an idle GPU once the bundles are present.
 
 ## Comparison report
 
