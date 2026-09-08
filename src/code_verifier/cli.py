@@ -1321,7 +1321,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate_eval_parser.add_argument(
         "--parallel-generators",
         type=int,
-        choices=(1, 2),
+        choices=(1, 2, 4),
         default=1,
         help="independent model instances generating batches concurrently (default: 1)",
     )

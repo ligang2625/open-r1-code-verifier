@@ -673,8 +673,9 @@ def test_generate_eval_handler_does_not_construct_piston(
     assert "generated 4 evaluation prompts" in capsys.readouterr().out
 
 
-def test_generate_eval_handler_can_build_two_parallel_generators(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("parallel_generators", [2, 4])
+def test_generate_eval_handler_can_build_parallel_generators(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, parallel_generators: int
 ) -> None:
     config = replace(_evaluation_config(tmp_path), device="cuda")
     output_root = tmp_path / "outputs"
@@ -722,17 +723,17 @@ def test_generate_eval_handler_can_build_two_parallel_generators(
                 "--batch-size",
                 "4",
                 "--parallel-generators",
-                "2",
+                str(parallel_generators),
                 "--output-dir",
                 str(output_root),
             ]
         )
         == 0
     )
-    assert len(built) == 2
+    assert len(built) == parallel_generators
     assert all(cast(Any, generator).stream_enabled for generator in built)
     assert seen["generator"] is built[0]
-    assert seen["additional_generators"] == [built[1]]
+    assert seen["additional_generators"] == built[1:]
     assert seen["batch_size"] == 4
 
 

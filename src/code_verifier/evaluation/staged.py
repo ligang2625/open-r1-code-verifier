@@ -677,8 +677,8 @@ def run_generation_bundle(
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size not in _GENERATION_BATCH_SIZES:
         raise EvaluationError("generation batch_size must be one of 1, 2, 4, 8, or 16")
     generators = (generator, *tuple(additional_generators))
-    if len(generators) not in {1, 2}:
-        raise EvaluationError("generation supports one or two independent generator instances")
+    if len(generators) not in {1, 2, 4}:
+        raise EvaluationError("generation supports one, two, or four independent generator instances")
     batch_generators: list[BatchedCompletionGenerator | None] = []
     for candidate in generators:
         if batch_size > 1:

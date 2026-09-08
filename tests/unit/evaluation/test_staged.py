@@ -358,33 +358,33 @@ def test_generation_resume_uses_only_the_missing_exact_prefix(tmp_path: Path, mo
     assert no_op.calls == []
 
 
-def test_generation_bundle_runs_two_independent_batch_generators_concurrently(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("parallel_generators", [2, 4])
+def test_generation_bundle_runs_independent_batch_generators_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parallel_generators: int
 ) -> None:
-    problems = [_problem(f"p{index}", f"M{index}") for index in range(8)]
+    problems = [_problem(f"p{index}", f"M{index}") for index in range(4 * parallel_generators)]
     _patch_problems(monkeypatch, problems)
     tracker: dict[str, Any] = {"lock": threading.Lock(), "active": 0, "max_active": 0}
-    barrier = threading.Barrier(2)
-    first = _ParallelBatchGenerator(tracker, barrier)
-    second = _ParallelBatchGenerator(tracker, barrier)
+    barrier = threading.Barrier(parallel_generators)
+    generators = [_ParallelBatchGenerator(tracker, barrier) for _ in range(parallel_generators)]
 
     bundle = run_generation_bundle(
         config=_config(tmp_path),
         model_id="example/model",
-        generator=first,
-        additional_generators=[second],
-        run_id="parallel-b4",
+        generator=generators[0],
+        additional_generators=generators[1:],
+        run_id=f"parallel-b4-p{parallel_generators}",
         output_root=tmp_path / "outputs",
         seed=42,
         batch_size=4,
     )
 
-    assert tracker["max_active"] == 2
+    assert tracker["max_active"] == parallel_generators
     records = load_generation_bundle_records(bundle.records_path)
     assert [record.problem_id for record in records] == [problem.problem_id for problem in problems]
     metadata = json.loads((bundle.run_dir / "run.json").read_text(encoding="utf-8"))
     assert metadata["batch_size"] == 4
-    assert metadata["parallel_generators"] == 2
+    assert metadata["parallel_generators"] == parallel_generators
     assert metadata["invocation_generation_wall_seconds"] >= 0.0
     assert metadata["invocation_wall_gpu_hours"] >= 0.0
 
