@@ -950,3 +950,18 @@ WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next depen
 - **当前边界**：RTX 4090 仍未确认开机；本 amendment 只完成 control-plane baseline 更新，不声称任何 qkvo 显存、吞吐、稳定性或能力收益。下一步仍是 bounded P1，且 P1 完成后停止回报。
 
 ---
+
+## WP9-d — Recipe A GRPO optimization final closeout（2026-09-09）
+
+- **阶段状态**：用户明确结项；WP9-d 预定 formal Recipe A training、B refresh、step 300/600/900/1200 generation、统一 400 题 verification/scoring 与 stability adjudication 均已结束，不再追加 Recipe A full-400 rerun 或同 stage hyperparameter experiment。
+- **Final benchmark result**：同一 WP9-d protocol 下 refreshed B 的 Eval-Hidden Pass@1 为 `0.3775 = 151/400`；Public1200 为 `0.4425 = 177/400`，相对 B `+0.0650`；Hidden1200 为 `0.4475 = 179/400`，相对 B `+0.0700`，约 `+18.5%` relative improvement。
+- **Paired uncertainty**：10,000-resample problem-level paired bootstrap（seed 42）得到 Public1200−B `+6.50 pp`、95% CI `[+2.25,+10.75] pp`；Hidden1200−B `+7.00 pp`、95% CI `[+2.74,+11.50] pp`。Hidden1200−Public1200 仅 `+0.50 pp`，95% CI `[-3.00,+4.00] pp`。
+- **科学结论**：coverage/scheduler hypothesis 得到支持——将 active-pool coverage 从历史约 `0.22 epoch` 提升到约 `0.89 epoch`，并使用 `5e-6 constant_with_warmup` 后，GRPO 在 canonical eval400 上产生明确能力提升；但 paired result 不支持 Hidden reward 相比 Public reward 具有明确独立优势。
+- **Learning-curve conclusion**：Public/Hidden 均从 300→600→900→1200 上升，但 900→1200 都只增加 `+0.75 pp`，paired CI 包含 0，说明当前 recipe 在 900–1200 附近开始进入平台区；后续不应默认通过继续增加 max_steps 获取同幅度收益。
+- **Final verification adjudication**：C0 Hidden300 因两行 Piston `sandbox_error` 失败；C1 对 Hidden300 完整重跑 400 题并得到 zero-sandbox result，作为最终 scientific Hidden300；C2 再次确认 `apps-4392=passed` 且非 infrastructure rows 与 C1 语义一致，但自身在 `taco-1609` 新出现 independent sandbox failure，因此只保留为 stability evidence，不进入 final scoring。
+- **Final checkpoint rule**：按预声明 Eval-Hidden Pass@1 排序，最终 selected checkpoint 为 Recipe A / Hidden / step1200；所有 measured checkpoints 均保留在报告中，不做 winner-only reporting。
+- **Research report**：完整 STAR 研究报告、算法设计、reward 公式、formal 参数、checkpoint 曲线、paired bootstrap、infrastructure adjudication、局限性与后续 algorithm-research 方向见 `report/wp9d_recipe_a_research_report.md`；阶段冻结与 routing 见 `docs/wp9d-stage-closeout.md`。
+- **Reporting constraint**：eval400 已用于 recipe/checkpoint selection，后续只能称为 `eval400-selected benchmark improvement` / canonical benchmark improvement，不得表述为 untouched held-out 或 independent generalization estimate。
+- **Next-stage routing**：WP9-d 关闭后，reward ablation、beta/KL、group size、mixed reward、LoRA capacity、independent benchmark 等工作必须创建新的 research-stage identity，并从 integrated closeout `main` 开始；不得追溯修改 WP9-d 历史 evidence。
+
+---
