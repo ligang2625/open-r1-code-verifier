@@ -95,7 +95,7 @@ Because eval400 is reused for checkpoint/model selection, future reporting must 
 2. Recipe A improves Eval-Hidden Pass@1 from `37.75%` to as high as `44.75%` without obvious parse/runtime collapse.
 3. The main capability gain is established by approximately step 900; 900→1200 adds only `+0.75 pp` in each arm, indicating an emerging plateau.
 4. Hidden reward is not shown to be superior to Public reward; the final difference is only `+0.50 pp` with a paired CI spanning zero.
-5. The next research stage should prioritize independent-benchmark validation and algorithm ablations over simply extending the same training schedule.
+5. The next research stage should prioritize algorithm research on variance-aware curriculum/adaptive problem sampling and controlled GRPO update-geometry ablations (beta first, then group size under matched rollout budget), rather than simply extending the same training schedule.
 
 ## 6. Provenance anchors
 

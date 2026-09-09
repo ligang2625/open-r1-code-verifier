@@ -639,7 +639,7 @@ Paired bootstrap 可以量化这 400 个 benchmark problems 的抽样不确定�
 
 ### 3.3 缺少独立外部 benchmark
 
-当前可以证明 canonical 400 题上提升，但不能直接推出 HumanEval/MBPP/LiveCodeBench 等独立 benchmark 也会同幅度提升。
+当前可以证明 canonical 400 题上提升，但不能直接推出 HumanEval/MBPP/LiveCodeBench 等独立 benchmark 也会同幅度提升。基于当前数据条件与用户决策，这一点作为研究局限保留，但**不再作为下一阶段待办或优化方向**。
 
 ### 3.4 Verification infrastructure 有偶发 noise
 
@@ -653,70 +653,83 @@ Target GPU 的完整成本 telemetry 没有全部同步到 control plane，因�
 
 # 4. 下一阶段最有价值的算法研究方向
 
-后续不建议单纯把当前 max_steps 从 1200 拉到更高。优先级更高的是：
+基于当前结果，后续不再把寻找独立 benchmark 作为研究任务，也不建议单纯把 `max_steps` 从 1200 继续拉高。最有价值的算法研究应集中到下面两个问题。
 
-## 4.1 独立 benchmark validation
+## 4.1 方向一：Variance-aware curriculum / adaptive problem sampling
 
-先把 selected checkpoint 放到未参与 tuning 的 coding benchmark 上，例如新的 executable-code set / HumanEval / MBPP / LiveCodeBench 合适子集。
+当前 Recipe A 已证明“增加 coverage + sustained LR”有效，但 900→1200 的边际收益已经明显下降。对于 GRPO，真正产生组内相对梯度的前提是同一 problem group 的多个 completion 之间存在 reward 差异；如果 8 个 completion 全部正确、全部错误或 total reward 完全相同，那么 group-relative advantage 的有效学习信号会非常弱甚至为零。
 
-目标是区分：
+因此下一阶段最值得测试的不是继续均匀扫更多 step，而是让训练预算更集中在 **当前 policy 仍然具有组内 reward variance 的 informative problems** 上。
 
-- eval400 adaptive tuning gain；
-- 真正跨 benchmark generalization gain。
-
-## 4.2 Reward component ablation
-
-分别研究：
-
-- test pass reward；
-- +0.1 executable bonus；
-- -0.2 timeout penalty；
-- -0.1 parse penalty。
-
-目标是回答“+7 pp 到底由什么 reward component 驱动”。
-
-## 4.3 beta / KL sweep
-
-Public mean KL 明显高于 Hidden，因此可以系统比较：
+建议比较三种严格等 rollout-budget 的采样策略：
 
 ```text
-beta = 0.005 / 0.01 / 0.02 ...
+A. uniform active1354 sampling              # 当前 Recipe A 对照
+B. static informative-pool sampling         # 基于训练前 calibration 固定筛选
+C. online variance-aware sampling           # 根据 rolling group reward std / all-equal rate 动态重加权
 ```
 
-研究 capability improvement 与 policy drift 的 trade-off。
+关键设计：
 
-## 4.4 Group size / num_generations
+- 保持 model、LoRA、reward、beta、k=8、LR、总 rollout 数全部不变；
+- 只改变 problem sampling distribution；
+- 每个 optimizer step 继续保留 8-completion group；
+- 预先冻结 reweight 规则，例如依据最近窗口 `group reward std`、`all_test_correct`、`all_test_zero`、`all_total_reward_equal`；
+- 不允许看 eval400 单题结果后定向加权。
 
-比较 `k=4/8/16`，同时尽量控制 rollout-token/compute budget，研究 group-relative advantage 质量与样本效率。
+主要观察：
 
-## 4.5 Mixed Public + Hidden reward
+- 相同 rollout budget 下 Eval-Hidden Pass@1；
+- 每 1,000 rollouts 带来的 Pass@1 增益；
+- all-equal / zero-variance group 比例；
+- reward std 与 KL 的关系；
+- 达到当前 900-step 水平所需的 optimizer steps / rollouts。
 
-由于纯 Hidden 并没有显著优于 Public，后续更合理的是预声明 mixed reward，而不是继续假设 Hidden-only 是正确方向。
+这个方向直接回答：
 
-## 4.6 LoRA capacity ablation
+> **GRPO 后期平台是因为模型已经没有能力继续学，还是因为大量 rollout 被浪费在没有组内相对信号的问题上？**
+
+如果 adaptive sampling 能以更少 rollout 达到或超过当前 1200-step 水平，就能得到比“再训练更久”更有算法价值的结论。
+
+## 4.2 方向二：GRPO update geometry——beta × group size 的受控研究
+
+当前 Public/Hidden 使用完全相同的非 reward 参数，却出现明显不同的 mean KL（Public 约 `0.01437`，Hidden 约 `0.00655`），最终 Eval-Hidden 性能却几乎一致。这说明下一阶段更值得研究的是 **更新强度和 group-relative estimator 本身**，而不是继续纠结 reward source。
+
+建议采用两阶段、避免多变量混杂的实验设计。
+
+第一阶段固定 `k=8`，只扫 beta：
+
+```text
+beta = 0.005 / 0.01 / 0.02
+```
 
 比较：
 
-- qv vs qkvo；
-- rank 8/16/32；
+- Eval-Hidden Pass@1；
+- mean / late-window KL；
+- reward、reward std；
+- parse/runtime stability；
+- 900→1200 是否仍出现平台。
 
-确认这轮提升中 qkvo coverage 的实际贡献。
+第二阶段选定一个稳定 beta 后，再比较 group size：
 
-## 4.7 Early stopping / compute-efficient GRPO
+```text
+k = 4 / 8 / 16
+```
 
-由于 900→1200 的收益已经很小，可根据：
+这里必须使用 **matched rollout budget**，不能简单让不同 k 训练相同步数，否则样本量不同会混淆结论。应固定总 completion 数或总 generated tokens，再比较：
 
-- Eval-Hidden trajectory；
-- KL；
-- group reward std；
-- completion stability；
-- compute budget；
+- sample efficiency；
+- group reward std / all-equal rate；
+- policy KL；
+- final Pass@1；
+- wall-clock / rollout efficiency。
 
-设计预声明 early-stopping rule。
+这个方向要回答的是：
 
-## 4.8 更稳健的 verifier execution protocol
+> **当前 +7 pp 的提升需要多大的 policy movement？k=8 是否真的处在较好的 group-relative signal / compute trade-off 上？**
 
-目标不是改变 scientific reward，而是降低 rare sandbox noise 对完整 400 题实验的干扰，并继续保持 infrastructure failure 与 candidate verdict 分离。
+如果只能选一个下一阶段，我优先选 **variance-aware curriculum**；如果允许做第二条主线，再做 **beta → group-size 的 sequential ablation**。这两个方向比继续换 Public/Hidden reward source、继续增加 max_steps 或继续扩 LoRA rank 更能解释当前实验为什么有效、为什么开始平台，以及如何进一步提高样本效率。
 
 ---
 
