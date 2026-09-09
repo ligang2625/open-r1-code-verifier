@@ -1,14 +1,16 @@
 # Open-R1 CodeVerifier
 
-Open-R1 CodeVerifier is an end-to-end 1.5B code post-training study that separates visible tests, train-hidden reward tests, and an independent eval-hidden verifier to measure whether SFT and GRPO gains actually generalize.
+Open-R1 CodeVerifier is an end-to-end 1.5B code post-training study that separates visible tests, train-hidden reward tests, and an eval-hidden verifier to measure whether SFT and verifier-guided GRPO gains transfer beyond the reward surface.
 
-**Current formal scope:** engineering development, seed-42 Base/SFT/Public-RLVR/Hidden-RLVR validation, deterministic statistical analysis, and a 25-case manual failure review are complete. A second training seed or full C/D rerun is intentionally **pending** until the project is reviewed end-to-end; this repository does not claim training-seed robustness yet.
+**Current formal scope:** Base, LoRA SFT, three successive GRPO research rounds, deterministic 400-problem evaluation, problem-paired bootstrap, reward-informativeness calibration, a 25-case manual failure review, and final Recipe-A checkpoint analysis are complete. The project remains single-training-seed for its main formal runs and does not claim training-seed robustness.
 
 ## Key Finding
 
-SFT is the clear improvement in the accepted seed-42 experiment: Eval-Hidden Pass@1 rises from **0.1150** (Base) to **0.3775** (SFT), an observed **+26.25 percentage points**. The subsequent GRPO stage does not improve that held-out metric: Public-RLVR and Hidden-RLVR both score **0.3750**. Relative to SFT, each GRPO arm has a paired Eval-Hidden delta of **-0.0025** with 95% CI **[-0.0125, 0.0075]**, so the supported conclusion is *no observed held-out improvement over SFT in this run*, not a significant degradation.
+The project progresses from **11.50% Eval-Hidden Pass@1** for the Base model to **37.75%** after SFT. Two subsequent GRPO rounds produce no held-out improvement; their failure analysis identifies first `100% SFT/GRPO problem overlap + ~32% zero-variance groups`, then `~0.22 active-pool epoch + cosine LR decay + mean KL ~1.2e-4` as the dominant bottlenecks.
 
-The stronger Hidden-RLVR reward also does not separate from Public-RLVR on the predefined aggregate whole-pass metrics in seed 42. That equality is an observation about this fixed experiment, **not** evidence that the two algorithms are generally equivalent.
+After rebuilding the GRPO data path into a 10k refresh pool, reducing explicit SFT overlap to **7.5%**, calibrating a **1,354-problem informative active pool**, and redesigning the training recipe to `1200 steps + 5e-6 constant_with_warmup + k=8 + q/k/v/o LoRA`, the final Recipe-A checkpoint reaches **44.75% Eval-Hidden Pass@1**. Relative to the same-protocol refreshed SFT B at 37.75%, this is **+7.00 percentage points / +18.5% relative**, with problem-paired 95% CI **[+2.74, +11.50] pp**.
+
+Public1200 reaches **44.25%** and Hidden1200 reaches **44.75%**; the direct Hidden-Public difference is only **+0.50 pp**, 95% CI **[-3.00, +4.00] pp**. The strongest supported conclusion is therefore that the optimized GRPO regime is effective, while the Hidden reward source itself is not shown to be meaningfully better than Public reward.
 
 ## Method
 
@@ -30,16 +32,23 @@ The key experimental boundary is that **Eval-Hidden is never used as a training 
 
 ## Results
 
-| Method | Visible Pass@1 | Train-Hidden Pass@1 | Eval-Hidden Pass@1 |
-| --- | ---: | ---: | ---: |
-| Base | 0.1225 | 0.1175 | 0.1150 |
-| SFT | 0.3525 | 0.3350 | **0.3775** |
-| Public-RLVR | **0.3625** | **0.3400** | 0.3750 |
-| Hidden-RLVR | **0.3625** | **0.3400** | 0.3750 |
+The project contains three GRPO research rounds. Cross-stage evaluation runtimes evolved, so strict scientific claims use the baseline regenerated within each stage.
 
-Problem-paired bootstrap uses seed 42, 10,000 resamples, 95% confidence, and problem as the sampling unit. Public-RLVR − SFT and Hidden-RLVR − SFT both produce Eval-Hidden `-0.0025`, CI `[-0.0125, 0.0075]`. Full numerical provenance is frozen in [`report/final_evidence.json`](report/final_evidence.json); the longer interpretation is in [`report/technical_report.md`](report/technical_report.md).
+| Stage | Policy | Eval-Hidden Pass@1 | Stage-local interpretation |
+| --- | --- | ---: | --- |
+| Base | Qwen2.5-Coder-1.5B | **0.1150** | original capability baseline |
+| SFT | B | **0.3775** | +26.25 pp vs Base |
+| GRPO Round 1 | Public / Hidden | 0.3750 / 0.3750 | no improvement over SFT |
+| GRPO Round 2 | B / Public / Hidden | 0.3750 / 0.3750 / 0.3750 | no improvement after data/informativeness refresh |
+| GRPO Round 3 | refreshed B | **0.3775** | same-protocol Recipe-A baseline |
+| GRPO Round 3 | Public1200 | **0.4425** | +6.50 pp vs refreshed B |
+| GRPO Round 3 | Hidden1200 | **0.4475** | **+7.00 pp vs refreshed B** |
 
-## Reproduce the Final Analysis
+Problem-paired bootstrap uses seed 42, 10,000 resamples, 95% confidence, and problem as the sampling unit. For the final Recipe-A comparison, Public1200 − B is `+0.0650`, 95% CI `[+0.0225,+0.1075]`, and Hidden1200 − B is `+0.0700`, 95% CI `[+0.0274,+0.1150]`. Hidden1200 − Public1200 is only `+0.0050`, CI `[-0.0300,+0.0400]`.
+
+The end-to-end research narrative is in [`report/project_research_report.md`](report/project_research_report.md). The earlier frozen A/B/C/D analysis remains in [`report/final_evidence.json`](report/final_evidence.json) and [`report/technical_report.md`](report/technical_report.md); the final Recipe-A stage report is [`report/wp9d_recipe_a_research_report.md`](report/wp9d_recipe_a_research_report.md).
+
+## Reproduce the Initial A-D Analysis
 
 With the accepted formal A/B/C/D artifacts available, create an analysis manifest that points to those frozen runs and sets `manual_labels_path` to this repository's `report/manual_labels.csv`, then run:
 
@@ -62,7 +71,7 @@ That is **not a 0% Reward-Hacking estimate**. The 25 cases are a candidate-strat
 
 All 25 code-level reviews are in [`report/manual_failure_analysis.md`](report/manual_failure_analysis.md).
 
-## Compute and Cost
+## Initial A-D Compute and Cost
 
 | Method | Formal training hardware | GPU-hours | Rollouts | Generated tokens |
 | --- | --- | ---: | ---: | ---: |
@@ -81,7 +90,7 @@ No auditable USD-per-GPU-hour rate was frozen, so dollar cost is deliberately le
 - **Statistics:** the paired CIs quantify per-problem uncertainty for the fixed accepted policies, not between-training-seed variance.
 - **Cost:** GPU-hours are measured, but no frozen USD rate exists.
 
-For the full research narrative, failed/negative results, statistical interpretation, reproducibility hashes, and next-step decision criteria, see [`report/technical_report.md`](report/technical_report.md).
+For the full end-to-end research narrative from Base/SFT through all three GRPO rounds, failed/negative-result diagnosis, statistical interpretation, and final resume-oriented summary, see [`report/project_research_report.md`](report/project_research_report.md). The earlier [`report/technical_report.md`](report/technical_report.md) remains the frozen WP0–WP8 report.
 
 ## Engineering and Safety Surface
 
