@@ -45,7 +45,7 @@ Formal Recipe A:
 
 - parent: `B-sft-formal-seed42`;
 - base: `Qwen/Qwen2.5-Coder-1.5B-Instruct` revision `2e1fd397ee46e1388853d2af2c993145b0f1098a`;
-- active pool: 1,354 problems;
+- active pool: 1,354 problems, produced by C29 static reward-informativeness calibration from 1,602 candidates: `1123 dual_informative + 88 public_only + 143 hidden_only`, with all `248 dual_uninformative` problems removed and no backfill;
 - two arms: Public=`visible_tests`, Hidden=`train_hidden_tests`;
 - eval-hidden tests never enter GRPO reward;
 - `num_generations=8`;
@@ -95,7 +95,7 @@ Because eval400 is reused for checkpoint/model selection, future reporting must 
 2. Recipe A improves Eval-Hidden Pass@1 from `37.75%` to as high as `44.75%` without obvious parse/runtime collapse.
 3. The main capability gain is established by approximately step 900; 900→1200 adds only `+0.75 pp` in each arm, indicating an emerging plateau.
 4. Hidden reward is not shown to be superior to Public reward; the final difference is only `+0.50 pp` with a paired CI spanning zero.
-5. The next research stage should prioritize algorithm research on variance-aware curriculum/adaptive problem sampling and controlled GRPO update-geometry ablations (beta first, then group size under matched rollout budget), rather than simply extending the same training schedule.
+5. Static variance/informativeness filtering has already been completed by C29; the next research stage should instead prioritize verifier reward geometry / credit-assignment ablations and KL-controlled GRPO update geometry (fixed-beta sweep followed by adaptive KL control), rather than repeating problem filtering or simply extending the same training schedule.
 
 ## 6. Provenance anchors
 

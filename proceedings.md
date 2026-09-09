@@ -962,6 +962,6 @@ WP9-a 已 finalized。按已冻结的 WP9 dependency order，新的 **Next depen
 - **Final checkpoint rule**：按预声明 Eval-Hidden Pass@1 排序，最终 selected checkpoint 为 Recipe A / Hidden / step1200；所有 measured checkpoints 均保留在报告中，不做 winner-only reporting。
 - **Research report**：完整 STAR 研究报告、算法设计、reward 公式、formal 参数、checkpoint 曲线、paired bootstrap、infrastructure adjudication、局限性与后续 algorithm-research 方向见 `report/wp9d_recipe_a_research_report.md`；阶段冻结与 routing 见 `docs/wp9d-stage-closeout.md`。
 - **Reporting constraint**：eval400 已用于 recipe/checkpoint selection，后续只能称为 `eval400-selected benchmark improvement` / canonical benchmark improvement，不得表述为 untouched held-out 或 independent generalization estimate。
-- **Next-stage routing**：WP9-d 关闭后，新的算法研究优先聚焦 variance-aware curriculum / adaptive problem sampling，以及受控的 GRPO update-geometry ablation（先 beta，再在 matched rollout budget 下比较 group size）；这些工作必须创建新的 research-stage identity，并从 integrated closeout `main` 开始，不再把寻找独立 benchmark 作为后续任务，也不得追溯修改 WP9-d 历史 evidence。
+- **Next-stage routing**：C29 已完成 static reward-informativeness filtering（active1354 不含 dual-uninformative），因此后续不再重复“筛掉组内零方差题”路线；新的算法研究优先聚焦 verifier reward geometry / credit assignment，以及 KL-controlled GRPO update geometry（先 fixed-beta sweep，再测试 adaptive KL control）。这些工作必须创建新的 research-stage identity，并从 integrated closeout `main` 开始；不再把寻找独立 benchmark 作为后续任务，也不得追溯修改 WP9-d 历史 evidence。
 
 ---

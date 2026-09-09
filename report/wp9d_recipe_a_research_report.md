@@ -272,7 +272,12 @@ Pinned single-GPU effective generation batch 为 8 completion，因此：
 
 Active pool provenance：
 
-- problem count：1354；
+- C29 先对 `1602` 个候选问题做 k=8 calibration；其中 `195` 个不稳定/边界问题追加 8 个 completion，合并为 16-sample calibration；
+- informativeness 判定直接基于 **test-reward population std 是否大于 0**，而不是把 executable bonus 等 auxiliary reward variance 当成 verifier informativeness；
+- calibration class：`1123 dual_informative + 88 public_only + 143 hidden_only + 248 dual_uninformative`；
+- `248` 个 dual-uninformative 问题全部剔除且不 backfill，因此最终 active pool = `1354`；
+- active pool 中 `dual_uninformative=0`，也就是说每个保留问题至少在 Public/Hidden 其中一个 reward source 上具有非零 test-reward group variance；但 `public_only` / `hidden_only` 仍意味着另一侧 reward source 在 calibration 时可能为零方差；
+- 这一步已经完成了 **static reward-informativeness filtering**，因此后续不应再把“筛掉组内零方差题”包装成新的算法方向；
 - Public training dataset SHA256：`558250d06043702e153f88067a88d34378923255ef015cfbc97e106592d9188c`；
 - Hidden training dataset SHA256：`9aae7ce46347236f69a67aadb60a719c76f089451873a4fd8d4b92147f74abec`。
 
@@ -653,51 +658,74 @@ Target GPU 的完整成本 telemetry 没有全部同步到 control plane，因�
 
 # 4. 下一阶段最有价值的算法研究方向
 
-基于当前结果，后续不再把寻找独立 benchmark 作为研究任务，也不建议单纯把 `max_steps` 从 1200 继续拉高。最有价值的算法研究应集中到下面两个问题。
+active1354 已经完成 static reward-informativeness calibration：C29 用 k=8（边界题扩展到 16 samples）估计 Public/Hidden test-reward variance，剔除了全部 `248 dual_uninformative` 问题。因此“先筛掉组内零方差题再训练”是**已经完成的算法设计**，不再列为后续方向。后续也不再把寻找独立 benchmark 作为研究任务。
 
-## 4.1 方向一：Variance-aware curriculum / adaptive problem sampling
+在这个前提下，最值得继续研究的是下面两个问题。
 
-当前 Recipe A 已证明“增加 coverage + sustained LR”有效，但 900→1200 的边际收益已经明显下降。对于 GRPO，真正产生组内相对梯度的前提是同一 problem group 的多个 completion 之间存在 reward 差异；如果 8 个 completion 全部正确、全部错误或 total reward 完全相同，那么 group-relative advantage 的有效学习信号会非常弱甚至为零。
+## 4.1 方向一：Verifier reward geometry / credit assignment
 
-因此下一阶段最值得测试的不是继续均匀扫更多 step，而是让训练预算更集中在 **当前 policy 仍然具有组内 reward variance 的 informative problems** 上。
+当前实验已经说明 **reward source 本身并不是主要差异来源**：Public1200 与 Hidden1200 只差 `0.5 pp`。真正还没有回答的是：
 
-建议比较三种严格等 rollout-budget 的采样策略：
+> **当前 +7 pp 到底依赖“怎样把 verifier execution signal 映射成 GRPO reward”？**
+
+目前 reward 为：
 
 ```text
-A. uniform active1354 sampling              # 当前 Recipe A 对照
-B. static informative-pool sampling         # 基于训练前 calibration 固定筛选
-C. online variance-aware sampling           # 根据 rolling group reward std / all-equal rate 动态重加权
+total_reward
+  = test pass rate
+  + 0.1 executable bonus
+  - 0.2 timeout penalty
+  - 0.1 parse penalty
 ```
 
-关键设计：
+这里至少混合了两种 credit：
 
-- 保持 model、LoRA、reward、beta、k=8、LR、总 rollout 数全部不变；
-- 只改变 problem sampling distribution；
-- 每个 optimizer step 继续保留 8-completion group；
-- 预先冻结 reweight 规则，例如依据最近窗口 `group reward std`、`all_test_correct`、`all_test_zero`、`all_total_reward_equal`；
-- 不允许看 eval400 单题结果后定向加权。
+1. **任务正确性 credit**：连续的 test pass rate；
+2. **程序有效性 shaping**：executable / timeout / parse 项。
 
-主要观察：
+下一阶段最干净的设计是做一个小型 factorial ablation，在同一个 frozen active1354、同一个 B、同一个 k=8、同一个 beta/LR/LoRA 和 **matched rollout budget** 下，只改变 reward geometry：
 
-- 相同 rollout budget 下 Eval-Hidden Pass@1；
-- 每 1,000 rollouts 带来的 Pass@1 增益；
-- all-equal / zero-variance group 比例；
-- reward std 与 KL 的关系；
-- 达到当前 900-step 水平所需的 optimizer steps / rollouts。
+```text
+R0. Dense pass-rate + auxiliary shaping      # 当前 Recipe A
+R1. Dense pass-rate only                     # 去掉 +0.1/-0.2/-0.1 shaping
+R2. Binary all-tests-pass + shaping          # 稀疏 outcome credit
+R3. Binary all-tests-pass only               # 最纯 outcome reward
+```
 
-这个方向直接回答：
+这样可以把两个问题正交分开：
 
-> **GRPO 后期平台是因为模型已经没有能力继续学，还是因为大量 rollout 被浪费在没有组内相对信号的问题上？**
+- dense partial-credit 是否是 GRPO 有效的关键；
+- executable/timeout/parse shaping 是否真正改善学习，还是只是改变 reward scale / group ranking。
 
-如果 adaptive sampling 能以更少 rollout 达到或超过当前 1200-step 水平，就能得到比“再训练更久”更有算法价值的结论。
+在正式训练前，还可以直接利用现有 calibration / rollout logs 做 **offline reward-rank audit**：重算 R0–R3，统计每个 k=8 group 中 reward std、all-equal rate、candidate ranking flip rate 和 effective informative-group rate。这样能先判断哪些 reward 变化真的会改变 GRPO group-relative advantage，再决定正式训练的最小实验矩阵。
 
-## 4.2 方向二：GRPO update geometry——beta × group size 的受控研究
+主要指标：
 
-当前 Public/Hidden 使用完全相同的非 reward 参数，却出现明显不同的 mean KL（Public 约 `0.01437`，Hidden 约 `0.00655`），最终 Eval-Hidden 性能却几乎一致。这说明下一阶段更值得研究的是 **更新强度和 group-relative estimator 本身**，而不是继续纠结 reward source。
+- Eval-Hidden Pass@1 与 learning curve；
+- 每 1,000 rollouts 的 Pass@1 增益；
+- group reward std / all-equal rate；
+- reward ranking flip rate；
+- KL；
+- parse/runtime/timeout stability。
 
-建议采用两阶段、避免多变量混杂的实验设计。
+这个方向直接解释的是：
 
-第一阶段固定 `k=8`，只扫 beta：
+> **Verifier-guided GRPO 的有效 credit 到底来自 partial test feedback，还是来自代码可执行性 shaping？**
+
+如果能证明 dense test-pass credit 是主要驱动力、而 auxiliary shaping 只影响稳定性，或者反过来证明某个 shaping term 显著提高 sample efficiency，这会比继续比较 Public/Hidden reward source 更有算法价值。
+
+## 4.2 方向二：KL-controlled GRPO update geometry
+
+当前 Public/Hidden 的非 reward 参数完全相同，但 mean KL 差异很大：
+
+- Public ≈ `0.01437`；
+- Hidden ≈ `0.00655`；
+
+最终 Eval-Hidden 却几乎一样。这说明 `beta=0.01` 对不同 reward landscape 产生的实际 policy constraint 并不等价，值得研究 **“需要多大的 policy movement 才能获得当前能力收益”**。
+
+建议分两步。
+
+第一步固定 `k=8`、reward geometry 不变，只做固定 beta sweep：
 
 ```text
 beta = 0.005 / 0.01 / 0.02
@@ -705,31 +733,24 @@ beta = 0.005 / 0.01 / 0.02
 
 比较：
 
-- Eval-Hidden Pass@1；
+- Eval-Hidden Pass@1 trajectory；
 - mean / late-window KL；
-- reward、reward std；
-- parse/runtime stability；
-- 900→1200 是否仍出现平台。
+- reward / reward std；
+- clipping / optimization stability；
+- parse/runtime/timeout；
+- 900→1200 plateau 是否前移或后移。
 
-第二阶段选定一个稳定 beta 后，再比较 group size：
+第二步不是继续无限扫 beta，而是测试一个 **KL-targeted adaptive beta controller**。例如根据 rolling KL 相对预声明 target band 自动增减 beta，同时设置严格 `beta_min/beta_max`，与最优 fixed-beta 方案使用相同 rollout budget 比较。
 
-```text
-k = 4 / 8 / 16
-```
+核心问题：
 
-这里必须使用 **matched rollout budget**，不能简单让不同 k 训练相同步数，否则样本量不同会混淆结论。应固定总 completion 数或总 generated tokens，再比较：
+> **固定 beta 是否让不同 reward landscape 产生过度不同的 policy drift？把 KL 控制在目标区间，能否提高稳定性或 sample efficiency？**
 
-- sample efficiency；
-- group reward std / all-equal rate；
-- policy KL；
-- final Pass@1；
-- wall-clock / rollout efficiency。
+如果 adaptive beta 能在更窄 KL 区间内达到同等或更高 Pass@1，或者减少后段无效 policy drift，这就是比单纯“beta=某个值最好”更强的算法结论。
 
-这个方向要回答的是：
+在这两个方向完成以后，`k=4/8/16` 的 matched-rollout group-size study 可以作为第三优先级，而不是当前第一批实验。
 
-> **当前 +7 pp 的提升需要多大的 policy movement？k=8 是否真的处在较好的 group-relative signal / compute trade-off 上？**
-
-如果只能选一个下一阶段，我优先选 **variance-aware curriculum**；如果允许做第二条主线，再做 **beta → group-size 的 sequential ablation**。这两个方向比继续换 Public/Hidden reward source、继续增加 max_steps 或继续扩 LoRA rank 更能解释当前实验为什么有效、为什么开始平台，以及如何进一步提高样本效率。
+如果只能选一个下一阶段，我优先做 **reward geometry / credit assignment**；如果资源允许第二条主线，再做 **fixed-beta sweep → adaptive KL control**。
 
 ---
 
